@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "candidates": [
+    {
+      "source_url": "https://github.com/nonebot/nb-cli/issues/204",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "sandbox_exec",
+      "research_note": "系统 Python 与实际运行环境不一致；验证是否具备双版本沙箱 Oracle。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/plugin-apscheduler/issues/66",
+      "provisional_support_level": "s2_diagnose",
+      "provisional_execution_mode": "diagnose_only",
+      "research_note": "Pydantic 版本迁移相关导入失败；先检查版本化诊断证据。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/adapter-onebot/issues/129",
+      "provisional_support_level": "s2_diagnose",
+      "provisional_execution_mode": "diagnose_only",
+      "research_note": "反向 WebSocket 连接无法保持；重点检查补证与责任路由。"
+    }
+  ]
+}

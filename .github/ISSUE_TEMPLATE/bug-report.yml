@@ -1,0 +1,54 @@
+name: Bug 反馈
+title: "bug: "
+description: 提交可复现且已脱敏的问题报告
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 提交前请先脱敏
+        只提交复现问题所必需的信息。禁止提交 Bot/API Token、Cookie、密码、密钥、私聊或群聊原文、用户身份信息、原始私密日志，以及任何未脱敏的配置文件。
+        如果无法确认内容是否安全，请不要上传完整文件，只提供删除敏感字段后的最小错误堆栈。
+
+  - type: textarea
+    id: describe
+    attributes:
+      label: 描述问题
+      description: 说明实际结果、期望结果和影响范围。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 最小复现步骤
+      description: 提供最小配置和操作步骤；配置值必须脱敏。
+      placeholder: |
+        1. 安装版本……
+        2. 使用已脱敏配置……
+        3. 执行……
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境与版本
+      description: Python、NoneBot、适配器、插件和操作系统版本。
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已脱敏的最小日志
+      description: 移除 Token、Cookie、账号、群号、用户信息、消息正文、本地私密路径和配置值。
+      render: shell
+
+  - type: checkboxes
+    id: sanitized
+    attributes:
+      label: 敏感信息确认
+      options:
+        - label: 我已确认内容不含 Token、密钥、私密日志、用户隐私、消息原文或未脱敏配置。
+          required: true

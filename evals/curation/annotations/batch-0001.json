@@ -1,0 +1,278 @@
+{
+  "schema_version": 1,
+  "source_manifest": "data/candidates.json",
+  "annotations": [
+    {
+      "case_id": "gh-nonebot-nb-cli-204",
+      "curation": {
+        "field_provenance": {
+          "support_level": [
+            "gold.comment.4432111052",
+            "curator.inference"
+          ],
+          "execution_mode": [
+            "gold.source_current_state",
+            "gold.comment.4432111052"
+          ],
+          "root_cause_cluster": [
+            "gold.comment.4432111052",
+            "gold.comment.4440393788"
+          ],
+          "environment": [
+            "source.body"
+          ],
+          "versions": [
+            "source.body"
+          ],
+          "deployment_topology": [
+            "source.body"
+          ],
+          "observed_behavior": [
+            "source.body"
+          ],
+          "expected_behavior": [
+            "source.body"
+          ],
+          "reproduction_steps": [
+            "source.body"
+          ],
+          "fault_phase": [
+            "source.body"
+          ],
+          "symptoms": [
+            "source.body"
+          ],
+          "candidate_owners": [
+            "source.body",
+            "gold.comment.4432111052"
+          ],
+          "required_evidence_gaps": [
+            "curator.inference_from.source.body"
+          ],
+          "unknowns": [
+            "curator.inference_from.source.body"
+          ]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "nb-cli-project-interpreter-selection-by-design",
+        "environment": {
+          "os": "Windows",
+          "installation": "pipx isolated environment",
+          "system_path_python": "Python 3.8.x"
+        },
+        "versions": {
+          "nb-cli": "1.7.4",
+          "tool_runtime_python": "3.13.5",
+          "system_default_python": "3.8.x"
+        },
+        "deployment_topology": "nb-cli runs from pipx while discovering a target-project interpreter from system PATH",
+        "observed_behavior": "Running nb raises PythonInterpreterError because discovery selects the system Python 3.8 interpreter.",
+        "expected_behavior": "The reporter expects nb-cli to prefer its Python 3.13 pipx runtime when it satisfies the minimum version.",
+        "reproduction_steps": [
+          "Put Python 3.8 first as the system python command on Windows PATH.",
+          "Install nb-cli 1.7.4 with pipx using Python 3.13.",
+          "Run nb and observe PythonInterpreterError for Python 3.8."
+        ],
+        "fault_phase": "boot",
+        "symptoms": [
+          "exception"
+        ],
+        "candidate_owners": [
+          "toolchain"
+        ],
+        "required_evidence_gaps": [
+          "Whether a supported Python interpreter for the target project is installed and discoverable on PATH.",
+          "The target project's intended Python version constraints."
+        ],
+        "ruled_out": [
+          "The pipx tool runtime itself is too old; the report identifies it as Python 3.13.5."
+        ],
+        "unknowns": [
+          "Whether the target project has a supported interpreter independent of the pipx tool environment."
+        ]
+      }
+    },
+    {
+      "case_id": "gh-nonebot-plugin-apscheduler-66",
+      "curation": {
+        "field_provenance": {
+          "support_level": [
+            "source.body",
+            "gold.comment.3092919802",
+            "curator.inference"
+          ],
+          "execution_mode": [
+            "source.body",
+            "gold.comment.3093100635",
+            "curator.inference"
+          ],
+          "root_cause_cluster": [
+            "gold.comment.3093023449",
+            "gold.comment.3093100635"
+          ],
+          "environment": [
+            "source.body"
+          ],
+          "versions": [
+            "source.body"
+          ],
+          "deployment_topology": [
+            "source.body"
+          ],
+          "observed_behavior": [
+            "source.body"
+          ],
+          "expected_behavior": [
+            "source.title",
+            "curator.inference"
+          ],
+          "fault_phase": [
+            "source.body"
+          ],
+          "symptoms": [
+            "source.body"
+          ],
+          "candidate_owners": [
+            "source.body",
+            "gold.comment.3093023449"
+          ],
+          "required_evidence_gaps": [
+            "curator.inference_from.source.body"
+          ],
+          "unknowns": [
+            "curator.inference_from.source.body"
+          ]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "package-upgrade-run-outside-project-virtualenv",
+        "environment": {
+          "os_family": "Linux",
+          "project_environment": "/root/awa/.venv",
+          "package_update_environment_at_opened_at": "unknown"
+        },
+        "versions": {
+          "python": "3.10",
+          "pydantic": "2.11",
+          "nonebot-plugin-apscheduler": "unknown"
+        },
+        "deployment_topology": "local NoneBot project in /root/awa/.venv loading a third-party plugin dependency chain",
+        "observed_behavior": "Plugin import fails because nonebot_plugin_apscheduler imports BaseSettings from Pydantic 2.11, where it has moved to pydantic-settings.",
+        "expected_behavior": "nonebot_plugin_apscheduler should import successfully in the project's active virtual environment.",
+        "reproduction_steps": [
+          "Start the NoneBot project from /root/awa/.venv.",
+          "Load nonebot_plugin_russian, which requires nonebot_plugin_apscheduler.",
+          "Observe PydanticImportError while importing BaseSettings."
+        ],
+        "fault_phase": "boot",
+        "symptoms": [
+          "dependency_error",
+          "exception"
+        ],
+        "candidate_owners": [
+          "environment",
+          "toolchain",
+          "plugin"
+        ],
+        "required_evidence_gaps": [
+          "Installed nonebot-plugin-apscheduler version inside /root/awa/.venv.",
+          "Exact python and pip executables used for the attempted upgrade."
+        ],
+        "unknowns": [
+          "At opened_at, whether the project virtual environment contains a Pydantic-v2-compatible plugin release."
+        ]
+      }
+    },
+    {
+      "case_id": "gh-nonebot-adapter-onebot-129",
+      "curation": {
+        "field_provenance": {
+          "support_level": [
+            "source.body",
+            "curator.inference"
+          ],
+          "execution_mode": [
+            "source.body",
+            "curator.inference"
+          ],
+          "root_cause_cluster": [
+            "source.body",
+            "gold.comment.2767879101"
+          ],
+          "environment": [
+            "source.body"
+          ],
+          "versions": [
+            "source.body"
+          ],
+          "deployment_topology": [
+            "source.title",
+            "source.body"
+          ],
+          "observed_behavior": [
+            "source.body"
+          ],
+          "expected_behavior": [
+            "source.title",
+            "curator.inference"
+          ],
+          "fault_phase": [
+            "source.title",
+            "source.body"
+          ],
+          "symptoms": [
+            "source.title",
+            "source.body"
+          ],
+          "candidate_owners": [
+            "source.body",
+            "curator.inference"
+          ],
+          "required_evidence_gaps": [
+            "curator.inference_from.source.body"
+          ],
+          "unknowns": [
+            "curator.inference_from.source.body"
+          ]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "onebot-v11-v12-protocol-selection-mismatch",
+        "environment": {
+          "protocol_implementation": "NapCat",
+          "operating_system": "unknown",
+          "network_scope": "unknown"
+        },
+        "versions": {
+          "onebot_protocol_from_log": "V12",
+          "adapter_version": "unknown",
+          "napcat_version": "unknown"
+        },
+        "deployment_topology": "reverse WebSocket between NapCat and a NoneBot endpoint; exact server/client configuration is not evidenced",
+        "observed_behavior": "The connection logs Missing connect meta event and then closes instead of remaining available.",
+        "expected_behavior": "The reverse WebSocket connection should complete the required protocol handshake and remain connected.",
+        "reproduction_steps": [
+          "Configure a reverse WebSocket connection between NapCat and NoneBot.",
+          "Start both sides and observe the OneBot V12 Missing connect meta event warning followed by connection closed."
+        ],
+        "fault_phase": "connect",
+        "symptoms": [
+          "timeout_or_disconnect"
+        ],
+        "candidate_owners": [
+          "adapter",
+          "protocol_implementation"
+        ],
+        "required_evidence_gaps": [
+          "Exact adapter package and version selected by the NoneBot project.",
+          "NapCat version plus the redacted reverse WebSocket URL and protocol configuration.",
+          "Which side is expected to send the connect meta event."
+        ],
+        "unknowns": [
+          "Whether the failure is a V11/V12 selection mismatch or another handshake configuration problem."
+        ]
+      }
+    }
+  ]
+}

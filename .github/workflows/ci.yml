@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  ruff:
+    name: Ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+          version: "0.11.28"
+
+      - name: Install test dependencies
+        run: uv sync --no-dev --group test --all-extras
+
+      - name: Ruff check
+        run: uv run --no-sync ruff check --output-format=github .
+
+      - name: Ruff format check
+        run: uv run --no-sync ruff format --check .
+
+  basedpyright:
+    name: BasedPyright
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+          version: "0.11.28"
+
+      - name: Install test dependencies
+        run: uv sync --no-dev --group test --all-extras
+
+      - name: Static typing check
+        run: uv run --no-sync basedpyright
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      UV_NO_SYNC: 1
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+          version: "0.11.28"
+
+      - name: Install dependencies
+        run: >-
+          uv sync --no-dev --group test --all-extras
+          --python "${{ matrix.python-version }}"
+
+      - name: Run tests
+        run: uv run --no-sync --python "${{ matrix.python-version }}" pytest
+
+  package-quality:
+    name: Package quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+          version: "0.11.28"
+
+      - name: Install dependencies
+        run: uv sync --all-groups --all-extras
+
+      - name: Build distributions
+        run: uv build --no-sources
+
+      - name: Verify distribution contents and metadata
+        run: |
+          uv run --no-sync twine check --strict dist/*.whl dist/*.tar.gz
+          uv run --no-sync python scripts/verify_distribution_contents.py dist/*.whl dist/*.tar.gz
+
+      - name: Verify base wheel excludes model providers
+        run: >-
+          uv run --isolated --no-project --python "3.12"
+          --with dist/*.whl python scripts/verify_base_wheel.py
+
+      - name: Verify model provider extras stay isolated
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel_path="$(find dist -maxdepth 1 -name 'nonebot_plugin_triage-*.whl' -print -quit)"
+          test -n "${wheel_path}"
+          wheel_url="file://${{ github.workspace }}/${wheel_path}"
+          uv run --isolated --no-project --python "3.12" \
+            --with "nonebot-plugin-triage[model-openai] @ ${wheel_url}" \
+            python scripts/verify_model_extra.py openai
+          uv run --isolated --no-project --python "3.12" \
+            --with "nonebot-plugin-triage[model-anthropic] @ ${wheel_url}" \
+            python scripts/verify_model_extra.py anthropic

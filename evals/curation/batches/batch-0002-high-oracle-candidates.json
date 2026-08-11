@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "batch_id": "batch-0002-high-oracle-candidates",
+  "selection_note": "从 60 条均衡候选池中优先选择有明确错误、环境或行为边界的案例；执行模式仅为待核验假设。",
+  "candidates": [
+    {
+      "source_url": "https://github.com/nonebot/plugin-apscheduler/issues/28",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "sandbox_exec",
+      "research_note": "Linux 与 NoneBot rc 版本相关的初始化失败，检查是否存在故障/修复版本对。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/nb-cli/issues/180",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "sandbox_exec",
+      "research_note": "安装插件隐式依赖 pip，检查依赖声明或替代安装路径是否形成回归 Oracle。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/adapter-onebot/issues/71",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "设置与取消精华动作报错，检查 API 参数和响应契约是否已修复。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/nb-cli/issues/148",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "sandbox_exec",
+      "research_note": "Windows 10 pipx 安装失败，检查固定解释器和打包版本是否可重建。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/plugin-apscheduler/issues/29",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "sandbox_exec",
+      "research_note": "更新 NoneBot 后调度插件报错，检查兼容性版本矩阵。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/adapter-onebot/issues/63",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "sandbox_exec",
+      "research_note": "日志内容触发 Loguru tag 转义错误，检查最小字符串输入和修复版本。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/nb-cli/issues/122",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "sandbox_exec",
+      "research_note": "重载忽略目录的相对路径行为，检查路径解析回归测试。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/adapter-onebot/issues/108",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "nonebug_exec",
+      "research_note": "回复消息中的 @ 被移除并影响 to_me，检查事件消息变换 Oracle。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/adapter-onebot/issues/83",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "nonebug_exec",
+      "research_note": "取消禁言事件的运行时类型错误，检查事件反序列化和类型断言。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/plugin-apscheduler/issues/56",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "sandbox_exec",
+      "research_note": "require 报告插件未加载，检查插件发现与加载顺序。"
+    }
+  ]
+}

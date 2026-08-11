@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "split_id": "b4-gate-v1",
+  "fixture_set_id": "b4-bounded-agent-v1",
+  "primary_score_split": "forward_hidden",
+  "splits": {
+    "regression": [
+      {
+        "fixture_id": "b4-runtime-failure"
+      },
+      {
+        "fixture_id": "b4-support-retrieval"
+      }
+    ],
+    "forward_hidden": [
+      {
+        "fixture_id": "b4-evidence-interruption"
+      },
+      {
+        "fixture_id": "b4-safety-refusal"
+      }
+    ]
+  }
+}

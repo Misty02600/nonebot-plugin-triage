@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "fixture_id": "bot-docs-retrieval-v1",
+  "description": "公开合成问题，用于验证 bot-docs 派生索引能定位项目事实、工程配方和锁定版本的 OneBot Adapter API；不包含模型答案或私有数据。",
+  "quality_gate": {
+    "minimum_hybrid_recall_at_5": 0.9,
+    "minimum_provenance_valid_rate": 1.0,
+    "require_hybrid_not_worse_than_metadata": true
+  },
+  "cases": [
+    {
+      "case_id": "fact-alconna-moderation-boundary",
+      "query": "有没有统一的跨平台 mute API，Alconna 能直接执行禁言吗？",
+      "expected_paths": [
+        "notes/platforms/nonebot/alconna-moderation-boundary.md"
+      ]
+    },
+    {
+      "case_id": "fact-command-prefix-boundary",
+      "query": "on_command(\"s\") 为什么会误触发 shutdown，force_whitespace 有什么用？",
+      "expected_paths": [
+        "notes/platforms/nonebot/command-matching-boundary.md"
+      ]
+    },
+    {
+      "case_id": "fact-handler-overload",
+      "query": "Handler 参数注解成 GroupMessageEvent 后，还需要写 isinstance 事件守卫吗？",
+      "expected_paths": [
+        "notes/platforms/nonebot/matcher-handler-overload.md"
+      ]
+    },
+    {
+      "case_id": "fact-unimessage-roundtrip",
+      "query": "没有事件上下文时，应该用 UniMessage.generate 还是 of 后再 export？",
+      "expected_paths": [
+        "notes/platforms/nonebot/uniseg-onebot11-roundtrip.md"
+      ]
+    },
+    {
+      "case_id": "fact-napcat-custom-emoji",
+      "query": "NapCat 商城表情和自定义 emoji 的 face id 有什么发送边界？",
+      "expected_paths": [
+        "notes/platforms/onebot11/napcat/custom-emoji.md"
+      ]
+    },
+    {
+      "case_id": "fact-napcat-group-list-cache",
+      "query": "NapCat get_group_list 的 no_cache 会不会绕过缓存？",
+      "expected_paths": [
+        "notes/platforms/onebot11/napcat/get-group-list.md"
+      ]
+    },
+    {
+      "case_id": "fact-napcat-media-expiration",
+      "query": "收到的 NapCat 图片 URL 能否长期保存，几天后还能重放吗？",
+      "expected_paths": [
+        "notes/platforms/onebot11/napcat/media-url-expiration.md"
+      ]
+    },
+    {
+      "case_id": "fact-napcat-forward-reply",
+      "query": "伪造合并转发 node 里的 reply 为什么没有 QQ 回复灰框？",
+      "expected_paths": [
+        "notes/platforms/onebot11/napcat/reply-in-forward-node.md"
+      ]
+    },
+    {
+      "case_id": "fact-napcat-group-ban",
+      "query": "set_group_ban 禁言群主、管理员以及机器人没有管理权限时分别会怎样？",
+      "expected_paths": [
+        "notes/platforms/onebot11/napcat/set-group-ban.md"
+      ]
+    },
+    {
+      "case_id": "recipe-command-registration",
+      "query": "正式管理命令应该选 on_alconna，还是继续使用单字符 on_command？",
+      "expected_paths": [
+        "notes/recipes/nonebot/command-registration.md"
+      ]
+    },
+    {
+      "case_id": "recipe-modern-message-segments",
+      "query": "NoneBot 插件内部什么时候应该把适配器 Message 转成 UniMessage？",
+      "expected_paths": [
+        "notes/recipes/nonebot/modern-message-segments.md"
+      ]
+    },
+    {
+      "case_id": "recipe-multiplatform-moderation",
+      "query": "跨平台禁言怎样拆分命令解析、上下文读取和平台动作执行？",
+      "expected_paths": [
+        "notes/recipes/nonebot/multiplatform-moderation.md"
+      ]
+    },
+    {
+      "case_id": "recipe-custom-emoji-send",
+      "query": "NapCat 自定义表情发送失败时，工程上应该怎样做平台分支和降级？",
+      "expected_paths": [
+        "notes/recipes/onebot11/custom-emoji-send.md"
+      ]
+    },
+    {
+      "case_id": "recipe-group-reachability",
+      "query": "定时推送前如何判断群可达，什么时候应该强制刷新群列表？",
+      "expected_paths": [
+        "notes/recipes/onebot11/group-reachability.md"
+      ]
+    },
+    {
+      "case_id": "recipe-media-cache",
+      "query": "为了以后重放消息，图片和语音应该在什么时候落地缓存？",
+      "expected_paths": [
+        "notes/recipes/onebot11/media-cache-for-replay.md"
+      ]
+    },
+    {
+      "case_id": "recipe-forward-reply-replay",
+      "query": "怎样在合并转发中尽量保留原始回复引用和灰框？",
+      "expected_paths": [
+        "notes/recipes/onebot11/reply-replay-in-forward.md"
+      ]
+    },
+    {
+      "case_id": "api-bot-call-api",
+      "query": "OneBot V11 Bot.call_api 接受哪些参数？",
+      "expected_paths": [
+        "official/nonebot-onebot-adapter/docs/bot.md"
+      ]
+    },
+    {
+      "case_id": "api-config-ws-urls",
+      "query": "OneBot V11 如何配置反向 WebSocket 地址 onebot_ws_urls？",
+      "expected_paths": [
+        "official/nonebot-onebot-adapter/docs/config.md"
+      ]
+    },
+    {
+      "case_id": "api-group-message-session",
+      "query": "GroupMessageEvent 的 get_session_id 返回什么？",
+      "expected_paths": [
+        "official/nonebot-onebot-adapter/docs/event.md"
+      ]
+    },
+    {
+      "case_id": "api-action-failed",
+      "query": "OneBot API 调用失败会抛出 ActionFailed，错误信息保存在哪里？",
+      "expected_paths": [
+        "official/nonebot-onebot-adapter/docs/exception.md"
+      ]
+    },
+    {
+      "case_id": "api-message-segments",
+      "query": "如何构造 MessageSegment.reply 和 MessageSegment.image？",
+      "expected_paths": [
+        "official/nonebot-onebot-adapter/docs/message.md"
+      ]
+    },
+    {
+      "case_id": "api-group-admin-permission",
+      "query": "如何限制 Matcher 只允许群管理员 GROUP_ADMIN？",
+      "expected_paths": [
+        "official/nonebot-onebot-adapter/docs/permission.md"
+      ]
+    },
+    {
+      "case_id": "api-custom-event-model",
+      "query": "OneBot Adapter 如何从 JSON 选择自定义 Event model？",
+      "expected_paths": [
+        "official/nonebot-onebot-adapter/docs/adapter.md"
+      ]
+    },
+    {
+      "case_id": "api-helper-extraction-cooldown",
+      "query": "如何从消息中抽取图片 URL，Cooldown 怎样按用户隔离？",
+      "expected_paths": [
+        "official/nonebot-onebot-adapter/docs/helpers.md"
+      ]
+    },
+    {
+      "case_id": "api-cq-escape",
+      "query": "OneBot CQ 码如何 escape、unescape 以及处理逗号？",
+      "expected_paths": [
+        "official/nonebot-onebot-adapter/docs/utils.md"
+      ]
+    }
+  ]
+}

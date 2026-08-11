@@ -1,0 +1,480 @@
+{
+  "schema_version": 1,
+  "batch_id": "batch-0002",
+  "annotations": [
+    {
+      "case_id": "gh-nonebot-plugin-apscheduler-28",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.1611651901"],
+          "execution_mode": ["source.body", "gold.comment.1611651901", "curator.inference"],
+          "root_cause_cluster": ["gold.comment.1611642367", "gold.comment.1611651901"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.comment.1611651901"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body"],
+          "reproduction_steps": ["source.body"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["source.body", "gold.comment.1611644091", "curator.inference"],
+          "oracle.buggy_ref": ["gold.comment.1611651901"],
+          "oracle.fixed_ref": ["gold.comment.1611651901"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["source.body", "gold.comment.1611651901"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "sandbox_exec",
+        "root_cause_cluster": "fastapi-version-prevents-nonebot-startup-hook-execution",
+        "environment": {
+          "os": "Linux",
+          "protocol_endpoint": "not required",
+          "comparison_environment": "Windows was reported working"
+        },
+        "versions": {
+          "python": "3.8.2",
+          "nonebot": "2.0.0rc4 or stable affected in the reported Linux environment",
+          "adapter-onebot": "2.2.1 and 2.2.3",
+          "fastapi_buggy": "0.89.0",
+          "fastapi_fixed": "0.98.0"
+        },
+        "deployment_topology": "local Linux NoneBot startup without a protocol endpoint",
+        "observed_behavior": "The plugin imports but the scheduler startup hook does not run and scheduler.running remains false.",
+        "expected_behavior": "The scheduler startup hook runs and the scheduler becomes active during NoneBot startup.",
+        "reproduction_steps": [
+          "Create the reported Linux environment with Python 3.8.2, NoneBot 2.0.0rc4 and FastAPI 0.89.0.",
+          "Import nonebot_plugin_apscheduler and start NoneBot without a protocol endpoint.",
+          "Compare startup state after upgrading only FastAPI to 0.98.0."
+        ],
+        "fault_phase": "boot",
+        "symptoms": ["wrong_action"],
+        "candidate_owners": ["environment", "framework", "plugin"],
+        "oracle": {
+          "buggy_ref": "environment:fastapi==0.89.0",
+          "fixed_ref": "environment:fastapi==0.98.0",
+          "failure_signature": "plugin import succeeds but startup hook output is absent and scheduler.running is false",
+          "success_assertion": "with the same fixture after only the FastAPI change, the startup hook runs and scheduler.running becomes true"
+        }
+      }
+    },
+    {
+      "case_id": "gh-nonebot-nb-cli-180",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.pr.183"],
+          "execution_mode": ["source.body", "gold.pr.183", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.pr.183"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.pr.183"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["gold.pr.183", "curator.inference"],
+          "reproduction_steps": ["source.body"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["source.body", "gold.pr.183"],
+          "oracle.buggy_ref": ["gold.pr.183.first_parent"],
+          "oracle.fixed_ref": ["gold.pr.183.fixed_head"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["gold.pr.183", "curator.inference"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "sandbox_exec",
+        "root_cause_cluster": "nb-cli-hardcoded-pip-install-in-uv-managed-project",
+        "environment": {
+          "os": "Linux",
+          "system_environment": "Conda Python 3.10",
+          "tool_installation": "nb-cli installed with pipx",
+          "project_environment": ".venv recreated by uv sync without pip"
+        },
+        "versions": {
+          "python": "3.10",
+          "nonebot": "2.4.4",
+          "adapter-onebot": "2.4.6",
+          "buggy_commit": "19adbc44809a223b996c80410de87d118dda0232",
+          "fixed_commit": "bde2d9a63c6f5acc7ed4ac93b0b15abb804b69af"
+        },
+        "deployment_topology": "pipx-managed nb-cli operates on a project-local uv-managed virtual environment",
+        "observed_behavior": "nb plugin install invokes pip inside a uv-created environment where pip is absent and installation fails.",
+        "expected_behavior": "Plugin installation delegates dependency changes to the project's detected environment manager.",
+        "reproduction_steps": [
+          "Create a NoneBot project, remove its original .venv and recreate it with uv sync.",
+          "Run pipx-installed nb-cli and choose plugin installation for the project.",
+          "Compare the command at the PR parent and final PR head."
+        ],
+        "fault_phase": "install",
+        "symptoms": ["dependency_error", "exception"],
+        "candidate_owners": ["toolchain"],
+        "oracle": {
+          "buggy_ref": "19adbc44809a223b996c80410de87d118dda0232",
+          "fixed_ref": "bde2d9a63c6f5acc7ed4ac93b0b15abb804b69af",
+          "failure_signature": "plugin installation fails because pip is not installed in the uv-managed project environment",
+          "success_assertion": "the same plugin installation is delegated through the detected uv manager without requiring pip inside the project environment"
+        }
+      }
+    },
+    {
+      "case_id": "gh-nonebot-adapter-onebot-71",
+      "curation": {
+        "field_provenance": {
+          "exclusion_reason": ["gold.comment.1698450264", "gold.comment.1713472164"]
+        },
+        "exclusion_reason": "Reporter handler filtering allowed unrelated notice events into a callback annotated for GroupIncreaseNoticeEvent; no adapter defect or repository fix was established."
+      }
+    },
+    {
+      "case_id": "gh-nonebot-nb-cli-148",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.2954581290"],
+          "execution_mode": ["gold.comment.2954108003", "curator.inference"],
+          "root_cause_cluster": ["gold.comment.2954581290"],
+          "environment": ["source.body", "gold.comment.2954581290"],
+          "versions": ["source.body"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.title", "curator.inference"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.comment.2954108003", "gold.comment.2954581290"],
+          "required_evidence_gaps": ["curator.inference_from.source.body"],
+          "unknowns": ["curator.inference_from.source.body"]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "windows-python-app-execution-alias-and-path-conflict",
+        "environment": {
+          "os": "Windows 10",
+          "python_installations": "multiple installations were present",
+          "windows_app_execution_alias": "enabled at opened_at"
+        },
+        "versions": {
+          "python": "3.10",
+          "pipx": "1.7.1",
+          "pip": "22.2.1"
+        },
+        "deployment_topology": "pipx creates an isolated nb-cli environment using a Windows Python discovered through PATH and execution aliases",
+        "observed_behavior": "pipx install nb-cli fails with a fatal pip error even after ensurepip reports pip installed.",
+        "expected_behavior": "pipx resolves the intended Python interpreter and installs nb-cli successfully.",
+        "reproduction_steps": [
+          "On the reported Windows host, keep multiple Python installations and the Microsoft Store execution aliases enabled.",
+          "Run pipx install nb-cli and preserve the complete pipx error log."
+        ],
+        "fault_phase": "install",
+        "symptoms": ["dependency_error", "exception"],
+        "candidate_owners": ["environment", "toolchain"],
+        "required_evidence_gaps": [
+          "Complete pipx pip_errors.log rather than the wrapper message.",
+          "Outputs of where python, py -0p and pipx environment/interpreter selection."
+        ],
+        "ruled_out": [
+          "pip is entirely absent from every Python installation; ensurepip found pip 22.2.1 in one installation."
+        ],
+        "unknowns": [
+          "Which Python executable pipx selected for its isolated environment at opened_at."
+        ]
+      }
+    },
+    {
+      "case_id": "gh-nonebot-plugin-apscheduler-29",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.1626896823"],
+          "execution_mode": ["gold.comment.1626896823", "curator.inference"],
+          "root_cause_cluster": ["gold.comment.1626896823", "gold.comment.1626902550"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.comment.1626896823"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.title", "curator.inference"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["source.body", "gold.comment.1626896823"],
+          "required_evidence_gaps": ["curator.inference_from.source.body"],
+          "unknowns": ["curator.inference_from.source.body"]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "nonebot-core-version-not-actually-upgraded-with-plugin-set",
+        "environment": {
+          "os": "Windows",
+          "project_environment": "project-local .venv"
+        },
+        "versions": {
+          "python": "3.10 inferred from traceback path",
+          "nonebot": "stale version; exact version not supplied",
+          "nonebot-plugin-apscheduler": "not supplied"
+        },
+        "deployment_topology": "local NoneBot project loading plugins from a project virtual environment",
+        "observed_behavior": "nonebot_plugin_apscheduler and dependent plugins fail during import after an attempted NoneBot update.",
+        "expected_behavior": "the plugin set imports against a mutually compatible, actually upgraded NoneBot installation.",
+        "reproduction_steps": [
+          "Start the reported project environment and load nonebot_plugin_apscheduler from the configured plugin list."
+        ],
+        "fault_phase": "boot",
+        "symptoms": ["dependency_error", "exception"],
+        "candidate_owners": ["environment", "framework", "plugin"],
+        "required_evidence_gaps": [
+          "Exact installed NoneBot and plugin versions from the same project interpreter.",
+          "The command and interpreter used for the attempted upgrade."
+        ],
+        "ruled_out": [],
+        "unknowns": [
+          "Which stale NoneBot version remained installed at opened_at."
+        ]
+      }
+    },
+    {
+      "case_id": "gh-nonebot-adapter-onebot-63",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.pr.64"],
+          "execution_mode": ["source.body", "gold.pr.64", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.pr.64"],
+          "environment": ["gold.pr.64", "curator.inference"],
+          "versions": ["gold.pr.64.first_parent", "gold.pr.64.fixed_head"],
+          "deployment_topology": ["source.body", "curator.inference"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body"],
+          "reproduction_steps": ["source.body"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.pr.64"],
+          "oracle.buggy_ref": ["gold.pr.64.first_parent"],
+          "oracle.fixed_ref": ["gold.pr.64.fixed_head"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["source.body", "gold.pr.64"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "sandbox_exec",
+        "root_cause_cluster": "onebot-event-loguru-tag-escaping",
+        "environment": {
+          "execution_scope": "repository test environment resolved from the two frozen adapter commits",
+          "reporter_environment": "issue template placeholders are not treated as real versions"
+        },
+        "versions": {
+          "buggy_commit": "fda084df178e553e24503adbbb67fa41ccf08dfa",
+          "fixed_commit": "66de8fa59e2e92cad292d17263c9ec9f44085bc2"
+        },
+        "deployment_topology": "OneBot adapter receives a message containing C++ angle-bracket syntax and formats the event for Loguru",
+        "observed_behavior": "Event logging interprets angle-bracket content as a Loguru tag and raises instead of processing the command normally.",
+        "expected_behavior": "Arbitrary message text is escaped as data and event logging does not change handler execution.",
+        "reproduction_steps": [
+          "At the buggy commit, construct the issue's OneBot message payload containing C++ angle-bracket syntax.",
+          "Run the adapter event logging path and record the Loguru tag error.",
+          "Repeat at the fixed PR head."
+        ],
+        "fault_phase": "receive",
+        "symptoms": ["exception"],
+        "candidate_owners": ["adapter"],
+        "oracle": {
+          "buggy_ref": "fda084df178e553e24503adbbb67fa41ccf08dfa",
+          "fixed_ref": "66de8fa59e2e92cad292d17263c9ec9f44085bc2",
+          "failure_signature": "Loguru tag parsing error occurs when event text contains unescaped angle brackets",
+          "success_assertion": "the identical event text is logged and delivered without a Loguru tag exception"
+        }
+      }
+    },
+    {
+      "case_id": "gh-nonebot-nb-cli-122",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.pr.124"],
+          "execution_mode": ["source.body", "gold.pr.124", "curator.inference"],
+          "root_cause_cluster": ["gold.comment.2029433384", "gold.pr.124"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.pr.124"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body", "gold.comment.2029395923"],
+          "expected_behavior": ["source.body"],
+          "reproduction_steps": ["source.body", "gold.comment.2029395923"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.comment.2029599822", "gold.pr.124"],
+          "oracle.buggy_ref": ["gold.pr.124.first_parent"],
+          "oracle.fixed_ref": ["gold.pr.124.fixed_head"],
+          "oracle.failure_signature": ["gold.comment.2029395923"],
+          "oracle.success_assertion": ["source.body", "gold.pr.124"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "sandbox_exec",
+        "root_cause_cluster": "reload-exclude-relative-path-not-resolved",
+        "environment": {
+          "os": "Windows PowerShell",
+          "working_directory": "D:/Projects/noctisdice",
+          "excluded_directory": "packages/"
+        },
+        "versions": {
+          "buggy_commit": "aa7fefa7b1b22bd3daa68c28886d8788c3c5d3a0",
+          "fixed_commit": "b78d702b1e50fe31a7dad6586cc1041fa36f7818",
+          "source_code_reference": "74c8c2b2f81c99affb76bbddb31b4f3b66719048"
+        },
+        "deployment_topology": "nb run watches a project tree and receives a relative directory through --reload-excludes",
+        "observed_behavior": "A change beneath packages/ still triggers reload because a relative Path is compared with absolute parent Paths.",
+        "expected_behavior": "A relative excluded directory is resolved against the working directory and suppresses reloads below it.",
+        "reproduction_steps": [
+          "Run nb run --reload --reload-excludes packages/ from D:/Projects/noctisdice.",
+          "Modify packages/ndice/src/ndice.py and observe whether a reload occurs.",
+          "Run the same fixture at the PR parent and fixed head."
+        ],
+        "fault_phase": "boot",
+        "symptoms": ["wrong_action"],
+        "candidate_owners": ["toolchain"],
+        "oracle": {
+          "buggy_ref": "aa7fefa7b1b22bd3daa68c28886d8788c3c5d3a0",
+          "fixed_ref": "b78d702b1e50fe31a7dad6586cc1041fa36f7818",
+          "failure_signature": "editing a file beneath the relative excluded directory emits a watch event and restarts the process",
+          "success_assertion": "the identical edit beneath packages/ produces no reload while edits outside the excluded directory still reload"
+        }
+      }
+    },
+    {
+      "case_id": "gh-nonebot-adapter-onebot-108",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.pr.109"],
+          "execution_mode": ["source.body", "gold.pr.109", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.comment.2209224882", "gold.pr.109"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.pr.109"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body"],
+          "reproduction_steps": ["source.body"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.comment.2209224882", "gold.pr.109"],
+          "oracle.buggy_ref": ["gold.pr.109.first_parent"],
+          "oracle.fixed_ref": ["gold.pr.109.fixed_head"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["source.body", "gold.pr.109"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "nonebug_exec",
+        "root_cause_cluster": "reply-preprocessor-removes-non-replied-user-at-segment",
+        "environment": {
+          "os": "Windows",
+          "protocol_implementation": "NapCat 1.6.1",
+          "protocol": "OneBot V11"
+        },
+        "versions": {
+          "python": "3.10.2",
+          "nonebot": "2.3.1",
+          "adapter-onebot": "2.1.5",
+          "buggy_commit": "5c38f757e27dfe0c79b513f3dddd157da3caa3cb",
+          "fixed_commit": "001f3f5b83ea81af50c36aec6b9da233278a8cbc"
+        },
+        "deployment_topology": "OneBot V11 group reply event is normalized by adapter reply and at-me preprocessing before matcher dispatch",
+        "observed_behavior": "Reply preprocessing removes the at segment even when it targets someone other than the replied user, leaving an empty message and preventing to_me.",
+        "expected_behavior": "Only the protocol-added at for the replied user is removed; another explicit bot mention remains and sets to_me.",
+        "reproduction_steps": [
+          "Inject a group message containing a reply segment followed by an at segment for a user different from the replied sender.",
+          "Run reply and at-me preprocessing at the buggy parent and fixed PR head.",
+          "Observe the normalized message and to_me flag."
+        ],
+        "fault_phase": "match",
+        "symptoms": ["no_match", "wrong_action"],
+        "candidate_owners": ["adapter"],
+        "oracle": {
+          "buggy_ref": "5c38f757e27dfe0c79b513f3dddd157da3caa3cb",
+          "fixed_ref": "001f3f5b83ea81af50c36aec6b9da233278a8cbc",
+          "failure_signature": "reply preprocessing removes the non-replied-user at segment and to_me remains false",
+          "success_assertion": "the non-replied-user at segment remains and an explicit bot mention sets to_me while the automatic reply at is still removed"
+        }
+      }
+    },
+    {
+      "case_id": "gh-nonebot-adapter-onebot-83",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.1871853843"],
+          "execution_mode": ["gold.comment.1871853843", "curator.inference"],
+          "root_cause_cluster": ["gold.comment.1871852460", "gold.comment.1871853843"],
+          "environment": ["source.body"],
+          "versions": ["source.body"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body", "gold.comment.1871852460"],
+          "expected_behavior": ["source.body", "gold.comment.1871853843"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.comment.1871853843"],
+          "escalation_target": ["gold.comment.1871853843"],
+          "safety_or_scope_reason": ["gold.comment.1871848874", "gold.comment.1871853843"]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "escalate",
+        "root_cause_cluster": "protocol-implementation-emits-group-ban-event-without-duration-zero",
+        "environment": {
+          "os": "Windows",
+          "protocol_implementation": "openShamrock"
+        },
+        "versions": {
+          "python": "3.11.16",
+          "nonebot": "2.1.2",
+          "openShamrock": "not supplied"
+        },
+        "deployment_topology": "openShamrock emits a OneBot V11 group_ban notice consumed by adapter-onebot",
+        "observed_behavior": "The unban event omits duration, so adapter validation degrades it to a generic NoticeEvent.",
+        "expected_behavior": "The protocol implementation emits duration=0 for unban and the adapter constructs GroupBanNoticeEvent.",
+        "reproduction_steps": [
+          "Observe the raw openShamrock notice emitted for an unban operation and validate it against the OneBot V11 event schema."
+        ],
+        "fault_phase": "receive",
+        "symptoms": ["wrong_action"],
+        "candidate_owners": ["protocol_implementation"],
+        "escalation_target": "openShamrock protocol implementation",
+        "safety_or_scope_reason": "The adapter correctly requires the OneBot duration field; the malformed upstream event must be fixed at the protocol implementation."
+      }
+    },
+    {
+      "case_id": "gh-nonebot-plugin-apscheduler-56",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.2482697258"],
+          "execution_mode": ["gold.comment.2482697258", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.comment.2482697258"],
+          "environment": ["source.body"],
+          "versions": ["source.body"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["gold.comment.2482697258", "curator.inference"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.comment.2482697258"],
+          "required_evidence_gaps": ["curator.inference_from.source.body"],
+          "unknowns": ["curator.inference_from.source.body"]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "dependent-plugin-imports-apscheduler-without-nonebot-require",
+        "environment": {
+          "os": "Windows",
+          "project_environment": "<USER_HOME>/qqbot/.venv",
+          "additional_python_installation": "D:/ProgramData/miniconda3"
+        },
+        "versions": {
+          "python": "3.12.4",
+          "nb-cli": "1.4.2",
+          "nonebot-plugin-apscheduler": "not supplied"
+        },
+        "deployment_topology": "a project plugin imports nonebot_plugin_apscheduler during NoneBot plugin discovery",
+        "observed_behavior": "Import fails with Module nonebot_plugin_apscheduler is not loaded as a plugin.",
+        "expected_behavior": "The dependent plugin declares require('nonebot_plugin_apscheduler') before importing from it.",
+        "reproduction_steps": [
+          "Load the project's configured third-party plugins and capture which dependent plugin imports apscheduler without require."
+        ],
+        "fault_phase": "boot",
+        "symptoms": ["config_error", "exception"],
+        "candidate_owners": ["plugin"],
+        "required_evidence_gaps": [
+          "Identity and source of the dependent plugin importing apscheduler.",
+          "Installed NoneBot and nonebot-plugin-apscheduler versions from the project interpreter."
+        ],
+        "ruled_out": [],
+        "unknowns": [
+          "Which dependent plugin omitted require and whether its current release has corrected the dependency declaration."
+        ]
+      }
+    }
+  ]
+}

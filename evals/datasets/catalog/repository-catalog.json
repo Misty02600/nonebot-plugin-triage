@@ -1,0 +1,382 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-08-08",
+  "official_docs_snapshot": {
+    "repository": "nonebot/nonebot2",
+    "commit": "8086417e19f3cc22c4262895b960c5bd7d13e61c",
+    "scope": "website/docs/best-practice",
+    "commit_url": "https://github.com/nonebot/nonebot2/commit/8086417e19f3cc22c4262895b960c5bd7d13e61c"
+  },
+  "completeness_boundary": {
+    "included": [
+      "当前 NoneBot 官方组织中与 NoneBot2 运行、插件、适配器、测试和 CLI 直接相关的仓库",
+      "当前官方最佳实践正文直接推荐、链接或用作数据库演练实例的社区仓库",
+      "Alconna 官方最佳实践兼容表中出现的仓库名称"
+    ],
+    "not_claimed": [
+      "不声称覆盖 NoneBot 插件商店中的全部第三方插件",
+      "兼容表链接只证明被列为兼容目标，不等于官方质量背书或适合作为 Issue 数据源",
+      "Star、Issue 和 push 时间是 2026-08-08 的调研快照，不是长期不变事实"
+    ]
+  },
+  "decision_definitions": {
+    "active_discovery": "进入当前真实 Issue 候选发现池，要求任务互补且有足够关闭 Issue。",
+    "heldout_evaluation": "保留作跨实现或跨平台验证，避免与训练池中的近重复任务混用。",
+    "watch": "生态价值明确，但关闭 Issue 太少、任务重复或外部依赖过强，暂不进入发现池。",
+    "reference_only": "用于责任路由、依赖边界或产品对照，不作为当前 Case 来源。",
+    "excluded": "已归档、面向旧版生态，或仅因兼容表出现而未获得数据源资格。"
+  },
+  "repositories": [
+    {
+      "full_name": "nonebot/nonebot2",
+      "evidence_kind": ["official_owned"],
+      "decision": "active_discovery",
+      "task_families": ["framework_core", "dependency_injection", "matcher", "plugin_lifecycle"],
+      "snapshot": {"pushed_at": "2026-08-06", "stars": 7654, "closed_issues": 1819},
+      "evidence_urls": ["https://github.com/nonebot/nonebot2", "https://nonebot.dev/"]
+    },
+    {
+      "full_name": "nonebot/nb-cli",
+      "evidence_kind": ["official_owned", "best_practice_dependency"],
+      "decision": "active_discovery",
+      "task_families": ["project_scaffolding", "dependency_resolution", "plugin_install", "environment"],
+      "snapshot": {"pushed_at": "2026-08-04", "stars": 172, "closed_issues": 60},
+      "evidence_urls": ["https://github.com/nonebot/nb-cli", "https://cli.nonebot.dev/"]
+    },
+    {
+      "full_name": "nonebot/plugin-apscheduler",
+      "evidence_kind": ["official_owned", "best_practice_direct"],
+      "decision": "active_discovery",
+      "task_families": ["scheduler", "startup", "configuration", "plugin_lifecycle"],
+      "snapshot": {"pushed_at": "2026-08-04", "stars": 107, "closed_issues": 30},
+      "evidence_urls": ["https://github.com/nonebot/plugin-apscheduler", "https://nonebot.dev/docs/best-practice/scheduler"]
+    },
+    {
+      "full_name": "nonebot/adapter-onebot",
+      "evidence_kind": ["official_owned"],
+      "decision": "active_discovery",
+      "task_families": ["adapter", "protocol", "event_parsing", "connection"],
+      "snapshot": {"pushed_at": "2026-08-04", "stars": 119, "closed_issues": 44},
+      "evidence_urls": ["https://github.com/nonebot/adapter-onebot"]
+    },
+    {
+      "full_name": "nonebot/adapter-qq",
+      "evidence_kind": ["official_owned", "best_practice_compatibility_link"],
+      "decision": "active_discovery",
+      "task_families": ["official_platform_api", "event_schema", "websocket", "media_upload"],
+      "snapshot": {"pushed_at": "2026-08-05", "stars": 280, "closed_issues": 76},
+      "evidence_urls": ["https://github.com/nonebot/adapter-qq", "https://nonebot.dev/docs/best-practice/alconna/"]
+    },
+    {
+      "full_name": "nonebot/plugin-alconna",
+      "evidence_kind": ["official_owned", "best_practice_direct"],
+      "decision": "active_discovery",
+      "task_families": ["command_parser", "matcher", "universal_message", "cross_adapter"],
+      "snapshot": {"pushed_at": "2026-08-03", "stars": 143, "closed_issues": 51},
+      "evidence_urls": ["https://github.com/nonebot/plugin-alconna", "https://nonebot.dev/docs/best-practice/alconna/", "https://nonebot.dev/docs/best-practice/multi-adapter"]
+    },
+    {
+      "full_name": "RF-Tar-Railt/nonebot-plugin-uninfo",
+      "evidence_kind": ["best_practice_direct"],
+      "decision": "active_discovery",
+      "task_families": ["cross_adapter_identity", "session", "scene", "permission"],
+      "snapshot": {"pushed_at": "2026-06-22", "stars": 44, "closed_issues": 8},
+      "evidence_urls": ["https://github.com/RF-Tar-Railt/nonebot-plugin-uninfo", "https://nonebot.dev/docs/best-practice/multi-adapter"]
+    },
+    {
+      "full_name": "nonebot/plugin-orm",
+      "evidence_kind": ["official_owned", "best_practice_direct"],
+      "decision": "active_discovery",
+      "task_families": ["database", "async_session", "transaction", "migration", "multi_engine"],
+      "snapshot": {"pushed_at": "2026-08-03", "stars": 43, "closed_issues": 18},
+      "evidence_urls": ["https://github.com/nonebot/plugin-orm", "https://nonebot.dev/docs/best-practice/database/"]
+    },
+    {
+      "full_name": "noneplugin/nonebot-plugin-chatrecorder",
+      "evidence_kind": ["best_practice_database_example"],
+      "decision": "active_discovery",
+      "task_families": ["business_persistence", "message_record", "schema_migration", "time_semantics", "cross_adapter_fields"],
+      "snapshot": {"pushed_at": "2026-07-06", "stars": 73, "closed_issues": 20},
+      "evidence_urls": ["https://github.com/noneplugin/nonebot-plugin-chatrecorder", "https://nonebot.dev/docs/best-practice/database/user"]
+    },
+    {
+      "full_name": "he0119/nonebot-plugin-wordcloud",
+      "evidence_kind": ["best_practice_database_primary_example"],
+      "decision": "active_discovery",
+      "task_families": ["end_user_feature", "aggregation", "permission", "scheduled_delivery", "image_generation", "cross_plugin_dependency"],
+      "snapshot": {"pushed_at": "2026-08-05", "stars": 110, "closed_issues": 36},
+      "evidence_urls": ["https://github.com/he0119/nonebot-plugin-wordcloud", "https://nonebot.dev/docs/best-practice/database/user"]
+    },
+    {
+      "full_name": "MountainDash/nonebot-plugin-send-anything-anywhere",
+      "canonical_note": "官方文档中的 felinae98 路径当前重定向到此仓库。",
+      "evidence_kind": ["best_practice_direct"],
+      "decision": "heldout_evaluation",
+      "decision_rationale": "30 个关闭 Issue 足够形成跨适配器消息验证集，但与 plugin-alconna 的消息抽象任务高度重叠。",
+      "snapshot": {"pushed_at": "2026-07-30", "stars": 123, "closed_issues": 30},
+      "evidence_urls": ["https://github.com/MountainDash/nonebot-plugin-send-anything-anywhere", "https://nonebot.dev/docs/best-practice/multi-adapter"]
+    },
+    {
+      "full_name": "ArcletProject/Alconna",
+      "evidence_kind": ["best_practice_upstream_direct"],
+      "decision": "heldout_evaluation",
+      "decision_rationale": "上游解析库适合检验责任路由和跨仓库根因判断，不与 NoneBot 插件训练样本混用。",
+      "snapshot": {"pushed_at": "2026-07-27", "stars": 90, "closed_issues": 50},
+      "evidence_urls": ["https://github.com/ArcletProject/Alconna", "https://nonebot.dev/docs/best-practice/alconna/command"]
+    },
+    {
+      "full_name": "nonebot/adapter-telegram",
+      "evidence_kind": ["official_owned"],
+      "decision": "heldout_evaluation",
+      "decision_rationale": "保留作另一种外部平台、长轮询和文件发送语义的跨平台验证。",
+      "snapshot": {"pushed_at": "2026-08-03", "stars": 74, "closed_issues": 42},
+      "evidence_urls": ["https://github.com/nonebot/adapter-telegram"]
+    },
+    {
+      "full_name": "nonebot/adapter-discord",
+      "evidence_kind": ["official_owned", "best_practice_compatibility_link"],
+      "decision": "heldout_evaluation",
+      "snapshot": {"pushed_at": "2026-08-03", "stars": 25, "closed_issues": 34},
+      "evidence_urls": ["https://github.com/nonebot/adapter-discord", "https://nonebot.dev/docs/best-practice/alconna/"]
+    },
+    {
+      "full_name": "nonebot/adapter-satori",
+      "evidence_kind": ["official_owned", "best_practice_compatibility_link"],
+      "decision": "heldout_evaluation",
+      "snapshot": {"pushed_at": "2026-03-03", "stars": 92, "closed_issues": 34},
+      "evidence_urls": ["https://github.com/nonebot/adapter-satori", "https://nonebot.dev/docs/best-practice/alconna/"]
+    },
+    {
+      "full_name": "nonebot/adapter-feishu",
+      "evidence_kind": ["official_owned"],
+      "decision": "heldout_evaluation",
+      "decision_rationale": "Issue 中已有 chatrecorder 与 uninfo 的真实跨库故障，适合留作未见平台验证。",
+      "snapshot": {"pushed_at": "2026-08-04", "stars": 35, "closed_issues": 26},
+      "evidence_urls": ["https://github.com/nonebot/adapter-feishu"]
+    },
+    {
+      "full_name": "he0119/nonebot-plugin-user",
+      "evidence_kind": ["best_practice_database_example"],
+      "decision": "heldout_evaluation",
+      "decision_rationale": "可验证 PostgreSQL 迁移、并发和用户域，但关闭 Issue 只有 6 个，先作为业务依赖留出集。",
+      "snapshot": {"pushed_at": "2026-08-03", "stars": 16, "closed_issues": 6},
+      "evidence_urls": ["https://github.com/he0119/nonebot-plugin-user", "https://nonebot.dev/docs/best-practice/database/user"]
+    },
+    {
+      "full_name": "nonebot/plugin-localstore",
+      "evidence_kind": ["official_owned", "best_practice_direct"],
+      "decision": "watch",
+      "decision_rationale": "本地持久化和跨系统路径很重要，但只有 6 个关闭 Issue，且部分历史 Issue 与项目不相关。",
+      "snapshot": {"pushed_at": "2026-08-04", "stars": 37, "closed_issues": 6},
+      "evidence_urls": ["https://github.com/nonebot/plugin-localstore", "https://nonebot.dev/docs/best-practice/data-storing"]
+    },
+    {
+      "full_name": "nonebot/nonebug",
+      "evidence_kind": ["official_owned", "best_practice_direct"],
+      "decision": "watch",
+      "decision_rationale": "测试框架与 Oracle 设计高度相关，但只有 6 个关闭 Issue，优先作为 Runner 依赖。",
+      "snapshot": {"pushed_at": "2026-08-04", "stars": 30, "closed_issues": 6},
+      "evidence_urls": ["https://github.com/nonebot/nonebug", "https://nonebot.dev/docs/best-practice/testing/"]
+    },
+    {
+      "full_name": "nonebot/cli-plugin-webui",
+      "evidence_kind": ["official_owned"],
+      "decision": "watch",
+      "decision_rationale": "10 个关闭 Issue 覆盖配置、文件系统和 UI 工作流，但会把首批范围扩到前端。",
+      "snapshot": {"pushed_at": "2026-08-03", "stars": 55, "closed_issues": 10},
+      "evidence_urls": ["https://github.com/nonebot/cli-plugin-webui"]
+    },
+    {
+      "full_name": "nonebot/plugin-status",
+      "evidence_kind": ["official_owned"],
+      "decision": "watch",
+      "snapshot": {"pushed_at": "2026-08-04", "stars": 44, "closed_issues": 7},
+      "evidence_urls": ["https://github.com/nonebot/plugin-status"]
+    },
+    {
+      "full_name": "nonebot/plugin-filehost",
+      "evidence_kind": ["official_owned"],
+      "decision": "watch",
+      "decision_rationale": "文件托管与 Sentry、OneBot 共存问题有价值，但关闭 Issue 只有 4 个。",
+      "snapshot": {"pushed_at": "2026-06-17", "stars": 24, "closed_issues": 4},
+      "evidence_urls": ["https://github.com/nonebot/plugin-filehost"]
+    },
+    {
+      "full_name": "nonebot/cli-plugin-docker",
+      "evidence_kind": ["official_owned", "best_practice_direct"],
+      "decision": "watch",
+      "decision_rationale": "部署任务有价值，但 4 个关闭 Issue 与 nb-cli 工具链已有覆盖重叠。",
+      "snapshot": {"pushed_at": "2026-08-04", "stars": 13, "closed_issues": 4},
+      "evidence_urls": ["https://github.com/nonebot/cli-plugin-docker", "https://nonebot.dev/docs/best-practice/deployment"]
+    },
+    {
+      "full_name": "noneplugin/nonebot-plugin-session",
+      "evidence_kind": ["best_practice_direct"],
+      "decision": "watch",
+      "snapshot": {"pushed_at": "2026-07-06", "stars": 32, "closed_issues": 2},
+      "evidence_urls": ["https://github.com/noneplugin/nonebot-plugin-session", "https://nonebot.dev/docs/best-practice/multi-adapter"]
+    },
+    {
+      "full_name": "noneplugin/nonebot-plugin-userinfo",
+      "evidence_kind": ["best_practice_direct"],
+      "decision": "watch",
+      "decision_rationale": "与 uninfo 的任务高度重叠，保留作实现差异对照。",
+      "snapshot": {"pushed_at": "2026-07-06", "stars": 33, "closed_issues": 5},
+      "evidence_urls": ["https://github.com/noneplugin/nonebot-plugin-userinfo", "https://nonebot.dev/docs/best-practice/multi-adapter"]
+    },
+    {
+      "full_name": "nonepkg/plugin-all4one",
+      "canonical_note": "官方文档中的 nonebot-plugin-all4one 路径当前重定向到此仓库。",
+      "evidence_kind": ["best_practice_direct"],
+      "decision": "watch",
+      "snapshot": {"pushed_at": "2026-08-03", "stars": 47, "closed_issues": 3},
+      "evidence_urls": ["https://github.com/nonepkg/plugin-all4one", "https://nonebot.dev/docs/best-practice/multi-adapter"]
+    },
+    {
+      "full_name": "nonebot/plugin-sentry",
+      "evidence_kind": ["official_owned", "best_practice_direct"],
+      "decision": "watch",
+      "decision_rationale": "生产可观测性价值明确，但只有 1 个关闭 Issue且运行依赖外部 Sentry 项目。",
+      "snapshot": {"pushed_at": "2026-08-04", "stars": 7, "closed_issues": 1},
+      "evidence_urls": ["https://github.com/nonebot/plugin-sentry", "https://nonebot.dev/docs/best-practice/error-tracking"]
+    },
+    {
+      "full_name": "nonebot/plugin-htmlkit",
+      "evidence_kind": ["official_owned", "best_practice_direct"],
+      "decision": "watch",
+      "decision_rationale": "渲染、原生 wheel 和跨平台架构有价值，但当前没有关闭 Issue。",
+      "snapshot": {"pushed_at": "2026-01-31", "stars": 32, "closed_issues": 0},
+      "evidence_urls": ["https://github.com/nonebot/plugin-htmlkit", "https://nonebot.dev/docs/best-practice/htmlkit-render"]
+    },
+    {
+      "full_name": "RF-Tar-Railt/nonebot-plugin-waiter",
+      "evidence_kind": ["best_practice_direct_dependency"],
+      "decision": "watch",
+      "decision_rationale": "交互等待和会话生命周期适合作为能力参考，但当前没有关闭 Issue。",
+      "snapshot": {"pushed_at": "2026-06-22", "stars": 43, "closed_issues": 0},
+      "evidence_urls": ["https://github.com/RF-Tar-Railt/nonebot-plugin-waiter", "https://nonebot.dev/docs/best-practice/alconna/matcher"]
+    },
+    {
+      "full_name": "noneplugin/nonebot-plugin-session-orm",
+      "evidence_kind": ["best_practice_database_example"],
+      "decision": "watch",
+      "snapshot": {"pushed_at": "2025-01-06", "stars": 4, "closed_issues": 0},
+      "evidence_urls": ["https://github.com/noneplugin/nonebot-plugin-session-orm", "https://nonebot.dev/docs/best-practice/database/user"]
+    },
+    {
+      "full_name": "nonebot/noneflow",
+      "evidence_kind": ["official_owned"],
+      "decision": "reference_only",
+      "decision_rationale": "36 个关闭 Issue 覆盖插件审核和 GitHub 工作流，是 NoneBot Triage Agent 的近邻产品与对照系统，不混入首批库支持数据。",
+      "snapshot": {"pushed_at": "2026-08-07", "stars": 20, "closed_issues": 36},
+      "evidence_urls": ["https://github.com/nonebot/noneflow"]
+    },
+    {
+      "full_name": "nonebot/adapter-console",
+      "evidence_kind": ["official_owned", "best_practice_compatibility_link"],
+      "decision": "reference_only",
+      "snapshot": {"pushed_at": "2026-08-04", "stars": 41, "closed_issues": 5},
+      "evidence_urls": ["https://github.com/nonebot/adapter-console", "https://nonebot.dev/docs/best-practice/alconna/"]
+    },
+    {
+      "full_name": "nonebot/adapter-dodo",
+      "evidence_kind": ["official_owned", "best_practice_compatibility_link"],
+      "decision": "reference_only",
+      "snapshot": {"pushed_at": "2026-08-03", "stars": 8, "closed_issues": 3},
+      "evidence_urls": ["https://github.com/nonebot/adapter-dodo", "https://nonebot.dev/docs/best-practice/alconna/"]
+    },
+    {
+      "full_name": "nonebot/adapter-milky",
+      "evidence_kind": ["official_owned", "best_practice_compatibility_link"],
+      "decision": "reference_only",
+      "snapshot": {"pushed_at": "2026-04-07", "stars": 23, "closed_issues": 6},
+      "evidence_urls": ["https://github.com/nonebot/adapter-milky", "https://nonebot.dev/docs/best-practice/alconna/"]
+    },
+    {
+      "full_name": "nonebot/adapter-red",
+      "evidence_kind": ["official_owned", "best_practice_compatibility_link"],
+      "decision": "reference_only",
+      "snapshot": {"pushed_at": "2024-02-15", "stars": 126, "closed_issues": 21},
+      "evidence_urls": ["https://github.com/nonebot/adapter-red", "https://nonebot.dev/docs/best-practice/alconna/"]
+    },
+    {
+      "full_name": "nonebot/adapter-github",
+      "evidence_kind": ["official_owned"],
+      "decision": "reference_only",
+      "snapshot": {"pushed_at": "2026-08-04", "stars": 12, "closed_issues": 1},
+      "evidence_urls": ["https://github.com/nonebot/adapter-github"]
+    },
+    {
+      "full_name": "nonebot/adapter-mirai",
+      "evidence_kind": ["official_owned"],
+      "decision": "reference_only",
+      "snapshot": {"pushed_at": "2024-08-31", "stars": 6, "closed_issues": 1},
+      "evidence_urls": ["https://github.com/nonebot/adapter-mirai"]
+    },
+    {
+      "full_name": "nonebot/adapter-ding",
+      "evidence_kind": ["official_owned"],
+      "decision": "reference_only",
+      "snapshot": {"pushed_at": "2024-03-04", "stars": 1, "closed_issues": 0},
+      "evidence_urls": ["https://github.com/nonebot/adapter-ding"]
+    },
+    {
+      "full_name": "nonebot/adapter-wxwork",
+      "evidence_kind": ["official_owned"],
+      "decision": "reference_only",
+      "snapshot": {"pushed_at": "2026-04-12", "stars": 3, "closed_issues": 0},
+      "evidence_urls": ["https://github.com/nonebot/adapter-wxwork"]
+    },
+    {
+      "full_name": "nonebot/nb-autodoc",
+      "evidence_kind": ["official_owned"],
+      "decision": "reference_only",
+      "snapshot": {"pushed_at": "2026-06-22", "stars": 12, "closed_issues": 1},
+      "evidence_urls": ["https://github.com/nonebot/nb-autodoc"]
+    },
+    {
+      "full_name": "nonebot/noneprompt",
+      "evidence_kind": ["official_owned"],
+      "decision": "reference_only",
+      "snapshot": {"pushed_at": "2026-08-04", "stars": 35, "closed_issues": 2},
+      "evidence_urls": ["https://github.com/nonebot/noneprompt"]
+    },
+    {
+      "full_name": "nonebot/nonestorage",
+      "evidence_kind": ["official_owned"],
+      "decision": "reference_only",
+      "snapshot": {"pushed_at": "2026-06-20", "stars": 2, "closed_issues": 0},
+      "evidence_urls": ["https://github.com/nonebot/nonestorage"]
+    },
+    {
+      "full_name": "nonebot/adapter-kritor",
+      "evidence_kind": ["official_owned", "best_practice_compatibility_link"],
+      "decision": "excluded",
+      "decision_rationale": "仓库已归档；只保留为历史兼容证据。",
+      "snapshot": {"pushed_at": "2025-05-16", "stars": 9, "archived": true},
+      "evidence_urls": ["https://github.com/nonebot/adapter-kritor", "https://nonebot.dev/docs/best-practice/alconna/"]
+    }
+  ],
+  "compatibility_mentions_not_promoted": [
+    "17TheWord/nonebot-adapter-minecraft",
+    "eya46/nonebot-adapter-tailchat",
+    "JustUndertaker/adapter-ntchat",
+    "lclbm/adapter-heybox",
+    "mobyw/nonebot-adapter-mail",
+    "molanp/nonebot_adapter_efchat",
+    "onebot-walle/nonebot_adapter_walleq",
+    "YangRucheng/nonebot-adapter-wxmp"
+  ],
+  "excluded_families": [
+    {
+      "family": "NoneBot1 and compatibility-era repositories",
+      "examples": ["nonebot/nonebot", "nonebot/aiocqhttp", "nonebot/nonetrip"],
+      "reason": "不属于当前 NoneBot2 主线支持面。"
+    },
+    {
+      "family": "documentation, registry, website and organization automation",
+      "examples": ["nonebot/registry", "nonebot/homepage", "nonebot/assets", "nonebot/auto-changelog"],
+      "reason": "不直接提供当前插件运行、业务或协议支持案例。"
+    }
+  ]
+}

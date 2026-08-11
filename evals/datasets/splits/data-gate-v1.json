@@ -1,0 +1,300 @@
+{
+  "schema_version": 1,
+  "split_id": "data-gate-v1",
+  "created_at": "2026-08-08T19:45:00+08:00",
+  "qualified_case_count": 36,
+  "policy": {
+    "primary_axis": "issue_opened_at",
+    "train_window": "opened before 2025-01-01T00:00:00Z",
+    "validation_window": "opened from 2025-01-01T00:00:00Z through 2025-12-31T23:59:59Z",
+    "heldout_window": "opened from 2026-01-01T00:00:00Z through the 2026-08-08 collection boundary",
+    "group_key": "root_cause_cluster",
+    "group_rule": "Every root-cause cluster, duplicate, backport, shared fixing PR, or identical buggy/fixed Oracle pair must remain in one split. A group crossing a time boundary moves wholly to the newest member's split.",
+    "input_boundary": "Only information visible at each Issue's opened_at is evaluation input; later comments, PRs and commits remain Gold.",
+    "excluded_policy": "Cases without an established defect or supported contract are retained as exclusions and are not assigned to evaluation splits."
+  },
+  "splits": {
+    "train": [
+      {
+        "case_id": "gh-noneplugin-nonebot-plugin-chatrecorder-4",
+        "opened_at": "2022-07-07T03:21:39Z",
+        "repository": "noneplugin/nonebot-plugin-chatrecorder",
+        "root_cause_cluster": "event-unix-timestamp-converted-through-host-local-timezone",
+        "execution_mode": "contract_exec"
+      },
+      {
+        "case_id": "gh-noneplugin-nonebot-plugin-chatrecorder-11",
+        "opened_at": "2023-01-24T23:55:24Z",
+        "repository": "noneplugin/nonebot-plugin-chatrecorder",
+        "root_cause_cluster": "chatrecorder-migration-mutates-table-before-config-validation",
+        "execution_mode": "sandbox_exec"
+      },
+      {
+        "case_id": "gh-nonebot-adapter-onebot-63",
+        "opened_at": "2023-04-16T01:58:06Z",
+        "repository": "nonebot/adapter-onebot",
+        "root_cause_cluster": "onebot-event-loguru-tag-escaping",
+        "execution_mode": "sandbox_exec"
+      },
+      {
+        "case_id": "gh-nonebot-plugin-apscheduler-28",
+        "opened_at": "2023-06-28T15:20:19Z",
+        "repository": "nonebot/plugin-apscheduler",
+        "root_cause_cluster": "fastapi-version-prevents-nonebot-startup-hook-execution",
+        "execution_mode": "sandbox_exec"
+      },
+      {
+        "case_id": "gh-nonebot-plugin-apscheduler-29",
+        "opened_at": "2023-07-08T06:53:16Z",
+        "repository": "nonebot/plugin-apscheduler",
+        "root_cause_cluster": "nonebot-core-version-not-actually-upgraded-with-plugin-set",
+        "execution_mode": "diagnose_only"
+      },
+      {
+        "case_id": "gh-noneplugin-nonebot-plugin-chatrecorder-20",
+        "opened_at": "2023-07-30T11:09:01Z",
+        "repository": "noneplugin/nonebot-plugin-chatrecorder",
+        "root_cause_cluster": "sqlite-concurrent-writer-lock-during-chat-record-commit",
+        "execution_mode": "diagnose_only"
+      },
+      {
+        "case_id": "gh-nonebot-plugin-orm-10",
+        "opened_at": "2023-12-08T07:08:16Z",
+        "repository": "nonebot/plugin-orm",
+        "root_cause_cluster": "orm-migration-event-loop-and-generated-script-failures-not-yet-unified",
+        "execution_mode": "diagnose_only"
+      },
+      {
+        "case_id": "gh-nonebot-adapter-onebot-83",
+        "opened_at": "2023-12-29T08:48:12Z",
+        "repository": "nonebot/adapter-onebot",
+        "root_cause_cluster": "protocol-implementation-emits-group-ban-event-without-duration-zero",
+        "execution_mode": "escalate"
+      },
+      {
+        "case_id": "gh-nonebot-plugin-orm-12",
+        "opened_at": "2024-02-11T11:38:36Z",
+        "repository": "nonebot/plugin-orm",
+        "root_cause_cluster": "multidb-alembic-template-runs-and-awaits-the-same-coroutine",
+        "execution_mode": "contract_exec"
+      },
+      {
+        "case_id": "gh-nonebot-plugin-alconna-43",
+        "opened_at": "2024-03-31T00:57:24Z",
+        "repository": "nonebot/plugin-alconna",
+        "root_cause_cluster": "alconna-multi-header-command-start-contract-unclear",
+        "execution_mode": "diagnose_only"
+      },
+      {
+        "case_id": "gh-nonebot-nb-cli-122",
+        "opened_at": "2024-04-01T05:06:46Z",
+        "repository": "nonebot/nb-cli",
+        "root_cause_cluster": "reload-exclude-relative-path-not-resolved",
+        "execution_mode": "sandbox_exec"
+      },
+      {
+        "case_id": "gh-he0119-nonebot-plugin-wordcloud-281",
+        "opened_at": "2024-04-21T14:02:57Z",
+        "repository": "he0119/nonebot-plugin-wordcloud",
+        "root_cause_cluster": "scheduled-batch-send-lacks-per-target-failure-isolation",
+        "execution_mode": "nonebug_exec"
+      },
+      {
+        "case_id": "gh-nonebot-plugin-orm-15",
+        "opened_at": "2024-05-05T00:24:23Z",
+        "repository": "nonebot/plugin-orm",
+        "root_cause_cluster": "python310-collections-abc-generic-alias-breaks-orm-dependency-parser",
+        "execution_mode": "contract_exec"
+      },
+      {
+        "case_id": "gh-nonebot-adapter-onebot-108",
+        "opened_at": "2024-07-04T15:16:37Z",
+        "repository": "nonebot/adapter-onebot",
+        "root_cause_cluster": "reply-preprocessor-removes-non-replied-user-at-segment",
+        "execution_mode": "nonebug_exec"
+      },
+      {
+        "case_id": "gh-he0119-nonebot-plugin-wordcloud-323",
+        "opened_at": "2024-08-13T11:06:46Z",
+        "repository": "he0119/nonebot-plugin-wordcloud",
+        "root_cause_cluster": "alconna-minecraft-builder-joins-null-message-component",
+        "execution_mode": "escalate"
+      },
+      {
+        "case_id": "gh-nonebot-adapter-qq-121",
+        "opened_at": "2024-08-14T13:56:57Z",
+        "repository": "nonebot/adapter-qq",
+        "root_cause_cluster": "qq-gateway-sporadic-websocket-disconnect-without-close-evidence",
+        "execution_mode": "diagnose_only"
+      },
+      {
+        "case_id": "gh-nonebot-plugin-alconna-75",
+        "opened_at": "2024-10-10T16:52:45Z",
+        "repository": "nonebot/plugin-alconna",
+        "root_cause_cluster": "discord-custom-emoji-exported-as-invalid-onebot-face",
+        "execution_mode": "contract_exec"
+      },
+      {
+        "case_id": "gh-noneplugin-nonebot-plugin-chatrecorder-57",
+        "opened_at": "2024-10-11T04:15:43Z",
+        "repository": "noneplugin/nonebot-plugin-chatrecorder",
+        "root_cause_cluster": "qq-message-id-exceeds-chatrecorder-varchar64-schema",
+        "execution_mode": "contract_exec"
+      },
+      {
+        "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-8",
+        "opened_at": "2024-10-24T15:26:09Z",
+        "repository": "RF-Tar-Railt/nonebot-plugin-uninfo",
+        "root_cause_cluster": "satori-direct-scene-id-replaced-by-self-user-id",
+        "execution_mode": "contract_exec"
+      },
+      {
+        "case_id": "gh-nonebot-plugin-apscheduler-56",
+        "opened_at": "2024-11-18T06:33:54Z",
+        "repository": "nonebot/plugin-apscheduler",
+        "root_cause_cluster": "dependent-plugin-imports-apscheduler-without-nonebot-require",
+        "execution_mode": "diagnose_only"
+      },
+      {
+        "case_id": "gh-nonebot-plugin-alconna-79",
+        "opened_at": "2024-11-23T12:38:19Z",
+        "repository": "nonebot/plugin-alconna",
+        "root_cause_cluster": "telegram-file-builder-reads-obsolete-file-id-key",
+        "execution_mode": "contract_exec"
+      }
+    ],
+    "validation": [
+      {
+        "case_id": "gh-he0119-nonebot-plugin-wordcloud-342",
+        "opened_at": "2025-01-13T16:44:31Z",
+        "repository": "he0119/nonebot-plugin-wordcloud",
+        "root_cause_cluster": "wordcloud-chatrecorder-cesaa-version-contract-mismatch",
+        "execution_mode": "diagnose_only"
+      },
+      {
+        "case_id": "gh-nonebot-adapter-qq-146",
+        "opened_at": "2025-01-22T17:44:37Z",
+        "repository": "nonebot/adapter-qq",
+        "root_cause_cluster": "qq-message-reference-model-not-serialized-before-http-json",
+        "execution_mode": "contract_exec"
+      },
+      {
+        "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-16",
+        "opened_at": "2025-03-14T19:10:36Z",
+        "repository": "RF-Tar-Railt/nonebot-plugin-uninfo",
+        "root_cause_cluster": "qq-guild-direct-message-mapped-as-channel-text",
+        "execution_mode": "contract_exec"
+      },
+      {
+        "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-18",
+        "opened_at": "2025-03-16T08:56:59Z",
+        "repository": "RF-Tar-Railt/nonebot-plugin-uninfo",
+        "root_cause_cluster": "feishu-sender-id-object-and-response-schema-mismatch",
+        "execution_mode": "diagnose_only"
+      },
+      {
+        "case_id": "gh-nonebot-adapter-onebot-129",
+        "opened_at": "2025-03-31T20:10:59Z",
+        "repository": "nonebot/adapter-onebot",
+        "root_cause_cluster": "onebot-v11-v12-protocol-selection-mismatch",
+        "execution_mode": "diagnose_only"
+      },
+      {
+        "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-19",
+        "opened_at": "2025-04-24T15:17:14Z",
+        "repository": "RF-Tar-Railt/nonebot-plugin-uninfo",
+        "root_cause_cluster": "local-telegram-avatar-path-forced-into-cloud-api-url",
+        "execution_mode": "contract_exec"
+      },
+      {
+        "case_id": "gh-nonebot-plugin-alconna-99",
+        "opened_at": "2025-05-10T07:41:45Z",
+        "repository": "nonebot/plugin-alconna",
+        "root_cause_cluster": "onebot-message-sent-generic-event-breaks-uniseg-message-provider",
+        "execution_mode": "diagnose_only"
+      },
+      {
+        "case_id": "gh-nonebot-nb-cli-148",
+        "opened_at": "2025-06-08T07:02:29Z",
+        "repository": "nonebot/nb-cli",
+        "root_cause_cluster": "windows-python-app-execution-alias-and-path-conflict",
+        "execution_mode": "diagnose_only"
+      },
+      {
+        "case_id": "gh-nonebot-plugin-apscheduler-66",
+        "opened_at": "2025-07-20T03:09:10Z",
+        "repository": "nonebot/plugin-apscheduler",
+        "root_cause_cluster": "package-upgrade-run-outside-project-virtualenv",
+        "execution_mode": "diagnose_only"
+      },
+      {
+        "case_id": "gh-nonebot-nb-cli-180",
+        "opened_at": "2025-12-18T03:44:58Z",
+        "repository": "nonebot/nb-cli",
+        "root_cause_cluster": "nb-cli-hardcoded-pip-install-in-uv-managed-project",
+        "execution_mode": "sandbox_exec"
+      },
+      {
+        "case_id": "gh-he0119-nonebot-plugin-wordcloud-355",
+        "opened_at": "2025-12-25T03:11:09Z",
+        "repository": "he0119/nonebot-plugin-wordcloud",
+        "root_cause_cluster": "postgresql-wordcloud-query-returns-insufficient-visible-records-after-migration",
+        "execution_mode": "diagnose_only"
+      }
+    ],
+    "heldout": [
+      {
+        "case_id": "gh-nonebot-plugin-orm-33",
+        "opened_at": "2026-01-01T06:19:33Z",
+        "repository": "nonebot/plugin-orm",
+        "root_cause_cluster": "orm-cli-aiosqlite-engine-not-disposed-on-exit",
+        "execution_mode": "sandbox_exec"
+      },
+      {
+        "case_id": "gh-nonebot-nb-cli-204",
+        "opened_at": "2026-05-11T17:12:27Z",
+        "repository": "nonebot/nb-cli",
+        "root_cause_cluster": "nb-cli-project-interpreter-selection-by-design",
+        "execution_mode": "diagnose_only"
+      },
+      {
+        "case_id": "gh-nonebot-adapter-qq-202",
+        "opened_at": "2026-06-01T15:02:21Z",
+        "repository": "nonebot/adapter-qq",
+        "root_cause_cluster": "qq-resumed-dispatch-unpacks-string-data-as-event-fields",
+        "execution_mode": "contract_exec"
+      },
+      {
+        "case_id": "gh-nonebot-adapter-qq-217",
+        "opened_at": "2026-07-15T10:30:21Z",
+        "repository": "nonebot/adapter-qq",
+        "root_cause_cluster": "qq-forwarded-quote-content-element-misclassified-as-reply",
+        "execution_mode": "contract_exec"
+      }
+    ]
+  },
+  "excluded": [
+    "gh-nonebot-adapter-onebot-71",
+    "gh-nonebot-plugin-alconna-76"
+  ],
+  "audit": {
+    "split_counts": {
+      "train": 21,
+      "validation": 11,
+      "heldout": 4
+    },
+    "execution_ready_counts": {
+      "train": 13,
+      "validation": 4,
+      "heldout": 3
+    },
+    "non_executable_ready_counts": {
+      "train": 8,
+      "validation": 7,
+      "heldout": 1
+    },
+    "duplicate_case_ids": 0,
+    "root_cause_clusters_crossing_splits": 0,
+    "oracle_ref_pairs_crossing_splits": 0
+  }
+}

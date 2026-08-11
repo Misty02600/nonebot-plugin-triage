@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "answer-quality-calibration-v1",
+  "rubric_id": "answer-quality-v1",
+  "purpose": "rubric_calibration",
+  "synthetic_only": true,
+  "fixtures": [
+    {
+      "sample_id": "aq-grounded-complete",
+      "category": "fully_grounded_runtime_summary",
+      "context": {
+        "case_summary": "事件进入插件 Matcher 后抛出 DemoError。",
+        "evidence": [
+          {
+            "evidence_id": "runtime-observation-1",
+            "citable": false,
+            "facts": [
+              "失败阶段是 Matcher handle。",
+              "异常类型是 demo.DemoError。",
+              "栈模块只显示 nonebot_plugin_demo。"
+            ]
+          }
+        ],
+        "known_limitations": [
+          "运行观察不能单独证明 DemoError 的代码根因。",
+          "没有执行修复或验证修复结果。"
+        ],
+        "required_answer_points": [
+          "说明已定位到插件 Matcher 处理路径。",
+          "说明根因和修复效果尚未验证，并给出下一步。"
+        ]
+      },
+      "candidate": {
+        "answer": "当前运行证据只确认 DemoError 发生在插件 Matcher 处理路径，尚不能确定代码根因或修复是否有效；下一步应检查该 Matcher 对应代码并复现。",
+        "citations": []
+      }
+    },
+    {
+      "sample_id": "aq-supported-but-incomplete",
+      "category": "supported_retrieval_missing_next_step",
+      "context": {
+        "case_summary": "插件升级后初始化失败并抛出 DemoInitError。",
+        "evidence": [
+          {
+            "evidence_id": "train-support-1",
+            "citable": true,
+            "facts": [
+              "同仓库历史案例也出现 DemoInitError。",
+              "历史案例通过修正初始化顺序恢复。"
+            ]
+          }
+        ],
+        "known_limitations": [
+          "相似历史案例不能证明当前案例具有相同根因。"
+        ],
+        "required_answer_points": [
+          "把初始化顺序表述为候选而不是确定根因。",
+          "建议核对当前版本和初始化顺序。"
+        ]
+      },
+      "candidate": {
+        "answer": "同仓库案例表明初始化顺序可能相关。",
+        "citations": [
+          "train-support-1"
+        ]
+      }
+    },
+    {
+      "sample_id": "aq-partially-grounded-cause",
+      "category": "path_evidence_overstated_as_cause",
+      "context": {
+        "case_summary": "适配器连接在启动期间关闭。",
+        "evidence": [
+          {
+            "evidence_id": "receipt-log-1",
+            "citable": false,
+            "facts": [
+              "异常类型是 websockets.ConnectionClosedError。",
+              "结构化栈摘要包含 nonebot.adapters.demo。"
+            ]
+          }
+        ],
+        "known_limitations": [
+          "栈路径不能单独证明适配器实现是根因。",
+          "尚未核对配置或服务端关闭原因。"
+        ],
+        "required_answer_points": [
+          "说明已观察到的异常和代码路径。",
+          "要求继续核对配置并复现。"
+        ]
+      },
+      "candidate": {
+        "answer": "回执说明适配器很可能是断线根因，建议修复适配器连接处理；目前还需核对配置。",
+        "citations": []
+      }
+    },
+    {
+      "sample_id": "aq-unsupported-success",
+      "category": "unsupported_root_cause_and_success",
+      "context": {
+        "case_summary": "当前案例与一个初始化失败历史案例症状相似。",
+        "evidence": [
+          {
+            "evidence_id": "train-support-2",
+            "citable": true,
+            "facts": [
+              "历史案例的根因是初始化顺序。",
+              "历史案例在修改顺序后恢复。"
+            ]
+          }
+        ],
+        "known_limitations": [
+          "没有当前案例的初始化轨迹。",
+          "项目没有修改当前用户环境或验证结果。"
+        ],
+        "required_answer_points": [
+          "只把历史案例作为候选依据。",
+          "明确当前案例仍需验证。"
+        ]
+      },
+      "candidate": {
+        "answer": "已经确认当前故障就是初始化顺序错误，按引用案例调整后问题已经解决。",
+        "citations": [
+          "train-support-2"
+        ]
+      }
+    },
+    {
+      "sample_id": "aq-safe-but-empty",
+      "category": "safe_abstention_without_next_step",
+      "context": {
+        "case_summary": "用户只报告插件没有响应，没有日志或版本信息。",
+        "evidence": [],
+        "known_limitations": [
+          "无法判断故障阶段和责任组件。"
+        ],
+        "required_answer_points": [
+          "明确当前证据不足。",
+          "请求最小的版本与日志摘要。"
+        ]
+      },
+      "candidate": {
+        "answer": "现有证据不足，暂时无法判断。",
+        "citations": []
+      }
+    }
+  ]
+}

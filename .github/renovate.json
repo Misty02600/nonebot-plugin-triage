@@ -1,0 +1,34 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    ":enablePreCommit",
+    ":semanticCommits",
+    ":dependencyDashboard"
+  ],
+  "onboarding": false,
+  "timezone": "Asia/Shanghai",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 3,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on the first monday of the month"]
+  },
+  "packageRules": [
+    {
+      "description": "Keep NoneBot runtime integrations reviewable as one group",
+      "matchPackageNames": [
+        "nonebot2",
+        "nonebot-adapter-onebot",
+        "nonebot-plugin-alconna"
+      ],
+      "groupName": "NoneBot integrations"
+    },
+    {
+      "description": "Do not automerge runtime, Actions, or release dependencies",
+      "matchDepTypes": ["dependencies", "optionalDependencies", "action"],
+      "automerge": false
+    }
+  ]
+}

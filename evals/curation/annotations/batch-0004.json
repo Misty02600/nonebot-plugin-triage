@@ -1,0 +1,847 @@
+{
+  "schema_version": 1,
+  "batch_id": "batch-0004-business-and-modern-adapter",
+  "annotations": [
+    {
+      "case_id": "gh-nonebot-plugin-orm-33",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.3703330207", "gold.commit.251867dbc51947f5c9bcdf59470aa3769697e882"],
+          "execution_mode": ["source.body", "gold.commit.251867dbc51947f5c9bcdf59470aa3769697e882", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.comment.3703330207", "gold.commit.251867dbc51947f5c9bcdf59470aa3769697e882"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.comment.3703330207"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body", "gold.comment.3703330207"],
+          "expected_behavior": ["source.body", "gold.commit.251867dbc51947f5c9bcdf59470aa3769697e882"],
+          "reproduction_steps": ["source.body", "gold.comment.3703330207", "gold.commit.251867dbc51947f5c9bcdf59470aa3769697e882"],
+          "fault_phase": ["source.body", "gold.commit.251867dbc51947f5c9bcdf59470aa3769697e882"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.commit.251867dbc51947f5c9bcdf59470aa3769697e882"],
+          "oracle.buggy_ref": ["gold.commit.251867dbc51947f5c9bcdf59470aa3769697e882.first_parent"],
+          "oracle.fixed_ref": ["gold.commit.251867dbc51947f5c9bcdf59470aa3769697e882"],
+          "oracle.failure_signature": ["source.body", "gold.comment.3703330207"],
+          "oracle.success_assertion": ["gold.commit.251867dbc51947f5c9bcdf59470aa3769697e882"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "sandbox_exec",
+        "root_cause_cluster": "orm-cli-aiosqlite-engine-not-disposed-on-exit",
+        "environment": {
+          "os": "Ubuntu Linux",
+          "database": "SQLite through aiosqlite",
+          "command": "nb orm upgrade"
+        },
+        "versions": {
+          "python": "3.10.16 CPython",
+          "nonebot": "2.4.4",
+          "nonebot-plugin-orm": "0.8.2",
+          "aiosqlite_buggy": ">0.21.0, reproduced with 0.22.1",
+          "aiosqlite_control": "0.21.0 exits normally",
+          "buggy_commit": "e25e449cc85c8759ea100590c4125ed7e69057f0",
+          "fixed_commit": "251867dbc51947f5c9bcdf59470aa3769697e882"
+        },
+        "deployment_topology": "The NoneBot ORM CLI opens an asynchronous SQLite engine, executes Alembic migrations, and then returns control to the command-line process.",
+        "observed_behavior": "The migration reaches its completed state but the Python process remains alive because an aiosqlite worker thread and engine resources are not disposed.",
+        "expected_behavior": "After a successful upgrade the CLI disposes every asynchronous engine and exits with status 0 within a bounded time.",
+        "reproduction_steps": [
+          "Create a temporary SQLite project with one pending ORM migration and install the reported aiosqlite version.",
+          "Run nb orm upgrade at the buggy commit under a process timeout and verify the migration completes but the process remains alive.",
+          "Run the same fixture at the fixed commit and verify exit status 0, timely process termination, and the upgraded schema."
+        ],
+        "fault_phase": "shutdown",
+        "symptoms": ["timeout_or_disconnect", "resource_problem"],
+        "candidate_owners": ["plugin"],
+        "oracle": {
+          "buggy_ref": "e25e449cc85c8759ea100590c4125ed7e69057f0",
+          "fixed_ref": "251867dbc51947f5c9bcdf59470aa3769697e882",
+          "failure_signature": "the migration finishes but nb orm upgrade does not terminate before the timeout and an aiosqlite worker remains alive",
+          "success_assertion": "the identical migration completes, all created engines are disposed, and the CLI exits with status 0 before the timeout"
+        }
+      }
+    },
+    {
+      "case_id": "gh-nonebot-plugin-orm-15",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.2124014948"],
+          "execution_mode": ["source.body", "gold.comment.2124014948", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.comment.2124014948"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.comment.2124014948"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body", "gold.comment.2124014948"],
+          "reproduction_steps": ["source.body", "gold.comment.2124014948"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.comment.2124014948"],
+          "oracle.buggy_ref": ["gold.comment.2124014948", "curator.inference"],
+          "oracle.fixed_ref": ["gold.comment.2124014948"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["source.body", "gold.comment.2124014948"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "contract_exec",
+        "root_cause_cluster": "python310-collections-abc-generic-alias-breaks-orm-dependency-parser",
+        "environment": {
+          "os": "not supplied",
+          "runtime": "Python 3.10",
+          "integration": "NoneBot handler dependency annotation with nonebot-plugin-orm loaded"
+        },
+        "versions": {
+          "python": "3.10",
+          "buggy_commit": "4be2fb622364c36ecf6a53f48bd1ef3eb80b6588",
+          "fixed_commit": "ad3c8659ce9d87fe023b33a985860e832c11058b"
+        },
+        "deployment_topology": "A NoneBot application loads nonebot-plugin-orm and registers a matcher whose handler uses a Pydantic or Alconna custom-model annotation.",
+        "observed_behavior": "On Python 3.10 plugin loading reaches the ORM dependency parser and raises TypeError('issubclass() arg 1 must be a class') before the bot starts.",
+        "expected_behavior": "Loading ORM must not reinterpret Python 3.10 collections.abc generic aliases through the Python 3.11-only branch, and supported custom-model injection continues to load.",
+        "reproduction_steps": [
+          "On Python 3.10 register the reported Alconna CustomModel handler and require nonebot_plugin_orm.",
+          "Load plugins at the buggy commit and capture the issubclass TypeError from the dependency parser.",
+          "Repeat at the fixed commit and assert plugin loading completes and the custom-model handler remains registered."
+        ],
+        "fault_phase": "boot",
+        "symptoms": ["exception"],
+        "candidate_owners": ["plugin"],
+        "oracle": {
+          "buggy_ref": "4be2fb622364c36ecf6a53f48bd1ef3eb80b6588",
+          "fixed_ref": "ad3c8659ce9d87fe023b33a985860e832c11058b",
+          "failure_signature": "loading the reported annotated handler on Python 3.10 raises TypeError: issubclass() arg 1 must be a class",
+          "success_assertion": "the identical Python 3.10 handler and ORM plugin load without that TypeError and the supported dependency remains registered"
+        }
+      }
+    },
+    {
+      "case_id": "gh-nonebot-plugin-orm-12",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.commit.acb105ae6e64eb5c4bff9d07c94b0d831344e492"],
+          "execution_mode": ["source.body", "gold.commit.acb105ae6e64eb5c4bff9d07c94b0d831344e492", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.commit.acb105ae6e64eb5c4bff9d07c94b0d831344e492"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.commit.acb105ae6e64eb5c4bff9d07c94b0d831344e492"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body", "gold.commit.acb105ae6e64eb5c4bff9d07c94b0d831344e492"],
+          "reproduction_steps": ["source.body", "gold.commit.acb105ae6e64eb5c4bff9d07c94b0d831344e492"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.commit.acb105ae6e64eb5c4bff9d07c94b0d831344e492"],
+          "oracle.buggy_ref": ["gold.commit.acb105ae6e64eb5c4bff9d07c94b0d831344e492.first_parent"],
+          "oracle.fixed_ref": ["gold.commit.acb105ae6e64eb5c4bff9d07c94b0d831344e492"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["gold.commit.acb105ae6e64eb5c4bff9d07c94b0d831344e492"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "contract_exec",
+        "root_cause_cluster": "multidb-alembic-template-runs-and-awaits-the-same-coroutine",
+        "environment": {
+          "os": "not supplied",
+          "database": "asynchronous SQLAlchemy engine",
+          "template": "multi-database Alembic environment"
+        },
+        "versions": {
+          "nonebot-plugin-orm_buggy_commit": "ef116c4e33a9d7299c1a12340aa79313acea3780",
+          "nonebot-plugin-orm_fixed_commit": "acb105ae6e64eb5c4bff9d07c94b0d831344e492"
+        },
+        "deployment_topology": "The generated multi-database Alembic template dispatches an asynchronous migration coroutine from either a normal synchronous entry point or SQLAlchemy's greenlet bridge.",
+        "observed_behavior": "The template suppresses RuntimeError around asyncio.run and then unconditionally calls await_only on the same coroutine, producing MissingGreenlet or invalid coroutine reuse while the generic template works.",
+        "expected_behavior": "The template chooses exactly one execution path: asyncio.run without an active loop, or await_only only when asyncio.run raises for the bridged context.",
+        "reproduction_steps": [
+          "Generate the multi-database Alembic environment at the buggy commit with a stub migration coroutine that records each await.",
+          "Exercise both the no-running-loop entry point and the greenlet-bridge fallback and capture the duplicate or invalid await behavior.",
+          "Repeat at the fixed commit and assert each path awaits the coroutine exactly once and completes."
+        ],
+        "fault_phase": "boot",
+        "symptoms": ["exception"],
+        "candidate_owners": ["plugin"],
+        "oracle": {
+          "buggy_ref": "ef116c4e33a9d7299c1a12340aa79313acea3780",
+          "fixed_ref": "acb105ae6e64eb5c4bff9d07c94b0d831344e492",
+          "failure_signature": "the multi-database template reaches await_only after asyncio.run already consumed the coroutine, or raises MissingGreenlet in the bridged path",
+          "success_assertion": "each execution context selects one coroutine runner, awaits the migration once, and completes without MissingGreenlet or coroutine-reuse errors"
+        }
+      }
+    },
+    {
+      "case_id": "gh-nonebot-plugin-orm-10",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.1898031042", "gold.comment.2053872622"],
+          "execution_mode": ["gold.comment.1898031042", "gold.comment.2053872622", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.comment.1898031042", "gold.comment.2053872622"],
+          "environment": ["source.body", "gold.comment.2053872622"],
+          "versions": ["source.body", "gold.comment.1898031042", "gold.comment.2053872622"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body", "gold.comment.2053872622"],
+          "expected_behavior": ["source.body", "gold.comment.1898031042"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body", "gold.comment.2053872622"],
+          "candidate_owners": ["gold.comment.1898031042", "curator.inference"],
+          "required_evidence_gaps": ["gold.comment.1898031042", "gold.comment.2053872622", "curator.inference"],
+          "unknowns": ["gold.comment.1898031042", "gold.comment.2053872622", "curator.inference"]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "orm-migration-event-loop-and-generated-script-failures-not-yet-unified",
+        "environment": {
+          "os": "Windows",
+          "command": "nb orm upgrade",
+          "database": "not supplied"
+        },
+        "versions": {
+          "python_original": "3.10",
+          "attempted_fix_release": "nonebot-plugin-orm 0.6.3",
+          "python_later_report": "3.12.3"
+        },
+        "deployment_topology": "A local Windows project invokes the ORM Alembic upgrade command against project-generated migration scripts.",
+        "observed_behavior": "The original report raises RuntimeError because the main thread has no current event loop; the maintainer could not reproduce and attempted a release fix, while a much later comment reports a different migration-function signature TypeError.",
+        "expected_behavior": "A generated migration upgrades deterministically on supported Python versions without depending on an implicitly created event loop or calling a revision function with the wrong signature.",
+        "fault_phase": "boot",
+        "symptoms": ["exception"],
+        "candidate_owners": ["plugin", "environment", "toolchain"],
+        "required_evidence_gaps": [
+          "A minimal migration project and database snapshot that reproduces the original Python 3.10 event-loop failure at a named plugin commit.",
+          "A retest of the same original fixture on release 0.6.3 or its fixing commit.",
+          "A separate fixture for the later upgrade(name) signature failure, including its generated revision file and plugin version."
+        ],
+        "ruled_out": [
+          "The later Python 3.12 upgrade(name) error is automatically the same defect as the original missing event loop; the trace signatures and dates differ."
+        ],
+        "unknowns": [
+          "Whether release 0.6.3 actually fixed the original reporter's environment.",
+          "Whether the later failure comes from stale generated migration code, an API compatibility change, or another plugin regression."
+        ]
+      }
+    },
+    {
+      "case_id": "gh-noneplugin-nonebot-plugin-chatrecorder-57",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.pr.58"],
+          "execution_mode": ["source.body", "gold.pr.58", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.pr.58"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.pr.58"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body", "gold.pr.58"],
+          "reproduction_steps": ["source.body", "gold.pr.58"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.pr.58"],
+          "oracle.buggy_ref": ["gold.pr.58.first_parent"],
+          "oracle.fixed_ref": ["gold.pr.58.fixed_head"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["gold.pr.58"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "contract_exec",
+        "root_cause_cluster": "qq-message-id-exceeds-chatrecorder-varchar64-schema",
+        "environment": {
+          "os": "not supplied",
+          "database": "PostgreSQL through asyncpg",
+          "adapter": "QQ official adapter"
+        },
+        "versions": {
+          "python": "3.12",
+          "buggy_commit": "a3428fb291a1508458ef39e05264d22e88a1321c",
+          "fixed_commit": "dca9b1c5d9f8d31c79c4061c1bd40cb7af7f7ae7"
+        },
+        "deployment_topology": "A QQ MessageEvent is normalized by chatrecorder and persisted as a MessageRecord in PostgreSQL during an event postprocessor.",
+        "observed_behavior": "A platform message identifier longer than 64 characters is inserted into VARCHAR(64), causing asyncpg StringDataRightTruncation and rolling back the record.",
+        "expected_behavior": "The schema and migration accept current QQ message identifiers up to the revised 255-character contract without truncation.",
+        "reproduction_steps": [
+          "Execute the MessageRecord model body at the buggy revision and compare its message_id String length with the exact 117-character QQ identifier from the report.",
+          "Verify the buggy model exposes a 64-character contract that cannot contain that identifier.",
+          "Repeat at the fixed revision and execute the added migration's upgrade body, asserting both the model and the 64-to-255 migration target can contain the reported identifier."
+        ],
+        "fault_phase": "handle",
+        "symptoms": ["exception"],
+        "candidate_owners": ["plugin"],
+        "oracle": {
+          "buggy_ref": "a3428fb291a1508458ef39e05264d22e88a1321c",
+          "fixed_ref": "dca9b1c5d9f8d31c79c4061c1bd40cb7af7f7ae7",
+          "failure_signature": "the reported 117-character QQ message id exceeds the buggy model's character varying(64) contract, matching the source asyncpg StringDataRightTruncation",
+          "success_assertion": "the fixed model declares length 255 and its migration changes message_id from 64 to 255, so the identical 117-character identifier satisfies the persisted schema contract"
+        }
+      }
+    },
+    {
+      "case_id": "gh-noneplugin-nonebot-plugin-chatrecorder-20",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.1657118192"],
+          "execution_mode": ["source.body", "gold.comment.1657118192", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.comment.1657118192"],
+          "environment": ["source.body"],
+          "versions": ["source.body"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.comment.1657118192", "curator.inference"],
+          "required_evidence_gaps": ["gold.comment.1657118192", "curator.inference"],
+          "unknowns": ["gold.comment.1657118192", "curator.inference"]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "sqlite-concurrent-writer-lock-during-chat-record-commit",
+        "environment": {
+          "os": "Windows",
+          "database": "SQLite",
+          "adapter": "OneBot V11"
+        },
+        "versions": {
+          "python": "not supplied",
+          "nonebot-plugin-chatrecorder": "not supplied",
+          "nonebot-plugin-datastore": "not supplied"
+        },
+        "deployment_topology": "A OneBot V11 event is recorded in an SQLite database from a NoneBot event postprocessor while other application or datastore work may share the file.",
+        "observed_behavior": "Committing a MessageRecord intermittently raises sqlite3.OperationalError('database is locked').",
+        "expected_behavior": "Normal message ingestion either serializes writes or uses documented SQLite settings so a transient competing writer does not lose the record.",
+        "fault_phase": "handle",
+        "symptoms": ["exception", "resource_problem"],
+        "candidate_owners": ["plugin", "environment"],
+        "required_evidence_gaps": [
+          "A concurrency trace identifying every process and connection holding a write transaction when the failure occurs.",
+          "The SQLite timeout, journal_mode, datastore configuration, and exact plugin versions.",
+          "A deterministic two-writer fixture showing whether chatrecorder retains a transaction longer than the datastore contract allows."
+        ],
+        "ruled_out": [
+          "A field-schema incompatibility; the traceback reaches transaction commit and reports SQLite locking instead."
+        ],
+        "unknowns": [
+          "Whether the lock is caused by chatrecorder transaction scope, another plugin, a second process, or operational SQLite configuration.",
+          "Whether switching database backends merely avoids the symptom or is the intended supported deployment for this load."
+        ]
+      }
+    },
+    {
+      "case_id": "gh-noneplugin-nonebot-plugin-chatrecorder-11",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.1412273031"],
+          "execution_mode": ["source.body", "gold.comment.1403052343", "gold.comment.1412273031", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.comment.1412273031"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.comment.1412273031"],
+          "deployment_topology": ["source.body", "gold.comment.1412233088"],
+          "observed_behavior": ["source.body", "gold.comment.1403052343"],
+          "expected_behavior": ["gold.comment.1412273031"],
+          "reproduction_steps": ["source.body", "gold.comment.1403052343", "gold.comment.1412273031"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.comment.1412273031"],
+          "oracle.buggy_ref": ["gold.comment.1412273031", "curator.inference"],
+          "oracle.fixed_ref": ["gold.comment.1412273031"],
+          "oracle.failure_signature": ["source.body", "gold.comment.1403052343"],
+          "oracle.success_assertion": ["gold.comment.1412273031"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "sandbox_exec",
+        "root_cause_cluster": "chatrecorder-migration-mutates-table-before-config-validation",
+        "environment": {
+          "os": "not supplied",
+          "database": "SQLite",
+          "command": "datastore migration during plugin startup or upgrade"
+        },
+        "versions": {
+          "buggy_commit": "056d40b85fa8c276caec04d9f80e4cfbc1ff3b0b",
+          "fixed_commit": "674b5266395d8c1d47fb566fe96278292ab7157e"
+        },
+        "deployment_topology": "An existing SQLite chatrecorder database is upgraded by an Alembic batch migration that also needs a valid bot-id configuration to transform historical rows.",
+        "observed_behavior": "Configuration validation fails after batch table alteration has begun, leaving _alembic_tmp_nonebot_plugin_chatrecorder_messagerecord; the next upgrade then fails because that temporary table already exists.",
+        "expected_behavior": "The migration validates required configuration before destructive schema work and can upgrade the reflected old schema without leaving an Alembic temporary table on validation failure.",
+        "reproduction_steps": [
+          "Create a temporary SQLite database with the pre-migration MessageRecord schema and omit or invalidate the required bot-id configuration.",
+          "Run the buggy migration, capture the validation failure, and verify the Alembic temporary table remains and blocks a second run.",
+          "Reset the old-schema fixture, run the fixed migration, and verify validation occurs before batch alteration; then supply valid configuration and verify the upgrade completes without residue."
+        ],
+        "fault_phase": "boot",
+        "symptoms": ["exception", "resource_problem"],
+        "candidate_owners": ["plugin"],
+        "oracle": {
+          "buggy_ref": "056d40b85fa8c276caec04d9f80e4cfbc1ff3b0b",
+          "fixed_ref": "674b5266395d8c1d47fb566fe96278292ab7157e",
+          "failure_signature": "a failed upgrade leaves _alembic_tmp_nonebot_plugin_chatrecorder_messagerecord and the retry raises table already exists",
+          "success_assertion": "invalid configuration is rejected before schema mutation, while valid configuration upgrades the old schema and leaves no Alembic temporary table"
+        }
+      }
+    },
+    {
+      "case_id": "gh-noneplugin-nonebot-plugin-chatrecorder-4",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.pr.5"],
+          "execution_mode": ["source.body", "gold.pr.5", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.pr.5"],
+          "environment": ["source.body"],
+          "versions": ["gold.pr.5"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body", "gold.pr.5"],
+          "expected_behavior": ["source.body", "gold.pr.5"],
+          "reproduction_steps": ["source.body", "gold.pr.5"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.pr.5"],
+          "oracle.buggy_ref": ["gold.pr.5.first_parent"],
+          "oracle.fixed_ref": ["gold.pr.5.fixed_head"],
+          "oracle.failure_signature": ["source.body", "gold.pr.5"],
+          "oracle.success_assertion": ["gold.pr.5"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "contract_exec",
+        "root_cause_cluster": "event-unix-timestamp-converted-through-host-local-timezone",
+        "environment": {
+          "os": "any host with a non-UTC local timezone",
+          "database": "chatrecorder MessageRecord",
+          "input": "OneBot event Unix timestamp"
+        },
+        "versions": {
+          "buggy_commit": "0e041359b3a3bdad16dab927dabfe49d0116cc73",
+          "fixed_commit": "8552192114641d6765ef39c2a1925757e99e280e",
+          "fix_commit": "1450b6b22d0b1fad339f8245ff736c5fce32b351"
+        },
+        "deployment_topology": "A received event's timezone-independent Unix timestamp is converted to a naive datetime and stored in chatrecorder's database.",
+        "observed_behavior": "datetime.fromtimestamp interprets the timestamp in the host's local timezone, so the stored value changes with server timezone and is not UTC.",
+        "expected_behavior": "The stored naive datetime is the UTC representation of the event timestamp and is invariant across host timezones.",
+        "reproduction_steps": [
+          "Set the test process to a known non-UTC timezone and create an event with a fixed Unix timestamp.",
+          "Build the MessageRecord at the buggy commit and compare its time with datetime.utcfromtimestamp for that value.",
+          "Repeat at the fixed commit and in a second host timezone, asserting the stored datetime is the same UTC value."
+        ],
+        "fault_phase": "handle",
+        "symptoms": ["wrong_action"],
+        "candidate_owners": ["plugin"],
+        "oracle": {
+          "buggy_ref": "0e041359b3a3bdad16dab927dabfe49d0116cc73",
+          "fixed_ref": "8552192114641d6765ef39c2a1925757e99e280e",
+          "failure_signature": "for a non-UTC host the stored naive datetime equals local time and differs from datetime.utcfromtimestamp(event.time)",
+          "success_assertion": "the identical timestamp stores datetime.utcfromtimestamp(event.time) and remains invariant when the host timezone changes"
+        }
+      }
+    },
+    {
+      "case_id": "gh-he0119-nonebot-plugin-wordcloud-342",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.2588923475", "gold.comment.2589023032"],
+          "execution_mode": ["gold.comment.2588410114", "gold.comment.2588923475", "gold.comment.2589023032", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.comment.2588410114", "gold.comment.2588923475"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.comment.2588410114", "gold.comment.2588923475", "gold.comment.2588935131"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body", "gold.comment.2588935131", "gold.comment.2589023032"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body", "gold.comment.2588923475"],
+          "candidate_owners": ["gold.comment.2588410114", "gold.comment.2588923475"],
+          "required_evidence_gaps": ["gold.comment.2588815621", "gold.comment.2589023032", "curator.inference"],
+          "unknowns": ["gold.comment.2588410114", "gold.comment.2588923475", "curator.inference"]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "wordcloud-chatrecorder-cesaa-version-contract-mismatch",
+        "environment": {
+          "os": "Windows",
+          "database": "SQLite with Alembic migrations",
+          "command": "/今日词云"
+        },
+        "versions": {
+          "python": "3.13",
+          "nonebot-plugin-wordcloud": "0.8.2",
+          "nonebot-plugin-chatrecorder": "0.7.0",
+          "nonebot-plugin-send-anything-anywhere": "0.7.1",
+          "nonebot-plugin-alconna": "0.54.2",
+          "compatible_cesaa_claim": ">=0.4.2,<0.5.0",
+          "suggested_wordcloud": "0.9.0"
+        },
+        "deployment_topology": "Wordcloud handles a user command and queries chatrecorder through a cross-plugin filter_statement API in a project whose lockfile selected newer companion plugins.",
+        "observed_behavior": "The command raises TypeError because filter_statement receives an unexpected id_type argument; attempted dependency changes later also expose a missing Alembic revision in the local database.",
+        "expected_behavior": "A documented compatible dependency set executes the query and generates the word cloud without API-signature or migration-graph errors.",
+        "fault_phase": "handle",
+        "symptoms": ["dependency_error", "exception"],
+        "candidate_owners": ["plugin", "toolchain", "environment"],
+        "required_evidence_gaps": [
+          "The complete resolved lockfile before the first failure and after the successful upgrade to wordcloud 0.9.0.",
+          "A clean database fixture separating the filter_statement incompatibility from the later missing Alembic revision.",
+          "The exact release or commit where wordcloud adopted chatrecorder 0.7.0's API."
+        ],
+        "ruled_out": [
+          "The initial TypeError is caused only by insufficient chat records; it is an unexpected keyword argument at an integration boundary."
+        ],
+        "unknowns": [
+          "Which individual dependency mismatch first introduced the id_type signature failure.",
+          "Whether the later migration error was created by downgrade attempts rather than the original defect."
+        ]
+      }
+    },
+    {
+      "case_id": "gh-he0119-nonebot-plugin-wordcloud-323",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.2286471757", "gold.comment.2287696414"],
+          "execution_mode": ["source.body", "gold.comment.2286471757", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.comment.2286471757"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.comment.2286471757"],
+          "deployment_topology": ["source.body", "gold.comment.2286150678"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body", "gold.comment.2287696414"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["source.body", "gold.comment.2286471757"],
+          "escalation_target": ["gold.comment.2286471757"],
+          "safety_or_scope_reason": ["source.body", "gold.comment.2286471757", "curator.inference"]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "escalate",
+        "root_cause_cluster": "alconna-minecraft-builder-joins-null-message-component",
+        "environment": {
+          "os": "Windows",
+          "protocol_source": "Minecraft or MCQQ event",
+          "integration": "Wordcloud command matching through Alconna UniSeg"
+        },
+        "versions": {
+          "python": "3.12",
+          "nonebot-plugin-wordcloud": "0.7.3",
+          "nonebot-plugin-chatrecorder": "0.6.0",
+          "nonebot-plugin-send-anything-anywhere": "0.6.1",
+          "nonebot-plugin-alconna_buggy": "0.51.2",
+          "nonebot-plugin-alconna_fixed_release": "0.51.4"
+        },
+        "deployment_topology": "An MCQQ-originated event passes through Alconna's Minecraft UniSeg builder before wordcloud's command handler or business query can run.",
+        "observed_behavior": "The upstream Minecraft builder attempts to join a sequence containing None and raises TypeError before wordcloud logic executes.",
+        "expected_behavior": "The event is normalized or safely ignored without an Alconna conversion exception, after which wordcloud can apply its own matching rules.",
+        "fault_phase": "match",
+        "symptoms": ["exception"],
+        "candidate_owners": ["plugin"],
+        "escalation_target": "nonebot/plugin-alconna",
+        "safety_or_scope_reason": "The traceback fails inside Alconna's Minecraft UniSeg builder before wordcloud is entered, and an Alconna maintainer prescribed version 0.51.4, which the reporter confirmed resolves the issue; changing wordcloud would target the wrong ownership boundary."
+      }
+    },
+    {
+      "case_id": "gh-he0119-nonebot-plugin-wordcloud-281",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.pr.282", "gold.commit.25bd6f692c5f9f229b102e5c05bd80210659756e"],
+          "execution_mode": ["source.body", "gold.pr.282", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.commit.25bd6f692c5f9f229b102e5c05bd80210659756e"],
+          "environment": ["source.body"],
+          "versions": ["gold.pr.282", "gold.commit.25bd6f692c5f9f229b102e5c05bd80210659756e"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body", "gold.comment.2068070101"],
+          "expected_behavior": ["source.body", "gold.comment.2068072770", "gold.commit.25bd6f692c5f9f229b102e5c05bd80210659756e"],
+          "reproduction_steps": ["source.body", "gold.pr.282"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.commit.25bd6f692c5f9f229b102e5c05bd80210659756e"],
+          "oracle.buggy_ref": ["gold.commit.25bd6f692c5f9f229b102e5c05bd80210659756e.first_parent"],
+          "oracle.fixed_ref": ["gold.commit.25bd6f692c5f9f229b102e5c05bd80210659756e"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["gold.pr.282", "gold.commit.25bd6f692c5f9f229b102e5c05bd80210659756e"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "nonebug_exec",
+        "root_cause_cluster": "scheduled-batch-send-lacks-per-target-failure-isolation",
+        "environment": {
+          "scheduler": "multiple groups share one scheduled wordcloud job",
+          "platform_state": "one configured group is inaccessible or the bot is banned",
+          "delivery": "send-anything-anywhere target.send_to"
+        },
+        "versions": {
+          "buggy_commit": "b092eafe5da52018b8608348130e644b1ea722b6",
+          "fixed_commit": "25bd6f692c5f9f229b102e5c05bd80210659756e"
+        },
+        "deployment_topology": "One scheduler callback generates a word cloud and iterates over several configured group targets, invoking an external send operation for each.",
+        "observed_behavior": "An exception from the first inaccessible group escapes the loop and prevents every later healthy group from receiving its scheduled word cloud.",
+        "expected_behavior": "Delivery failure is isolated per target: the failed target is logged while subsequent targets are still attempted.",
+        "reproduction_steps": [
+          "Configure two scheduled targets and stub the first target's send_to to raise the reported delivery exception.",
+          "Run the scheduler callback at the buggy commit and verify the exception aborts before the second send.",
+          "Repeat at the fixed commit and assert the failure is logged and the second target receives exactly one send attempt."
+        ],
+        "fault_phase": "call_api",
+        "symptoms": ["exception", "wrong_action"],
+        "candidate_owners": ["plugin", "external_service"],
+        "oracle": {
+          "buggy_ref": "b092eafe5da52018b8608348130e644b1ea722b6",
+          "fixed_ref": "25bd6f692c5f9f229b102e5c05bd80210659756e",
+          "failure_signature": "the first target's send exception escapes the scheduled loop and the second target is never attempted",
+          "success_assertion": "the first failure is logged without escaping its iteration and the second target's send_to is called exactly once"
+        }
+      }
+    },
+    {
+      "case_id": "gh-he0119-nonebot-plugin-wordcloud-355",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.3691585363"],
+          "execution_mode": ["source.body", "gold.comment.3691585363", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.comment.3690997755", "gold.comment.3691585363"],
+          "environment": ["source.body"],
+          "versions": ["source.body"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body", "gold.comment.3690997755"],
+          "expected_behavior": ["source.body"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["source.body", "gold.comment.3691585363", "curator.inference"],
+          "required_evidence_gaps": ["gold.comment.3690826994", "gold.comment.3690997755", "gold.comment.3691585363", "curator.inference"],
+          "unknowns": ["source.body", "gold.comment.3691585363", "curator.inference"]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "postgresql-wordcloud-query-returns-insufficient-visible-records-after-migration",
+        "environment": {
+          "database": "PostgreSQL migrated from SQLite",
+          "command": "/今日词云",
+          "integration": "wordcloud querying chatrecorder"
+        },
+        "versions": {
+          "nonebot-plugin-wordcloud": "0.9.0",
+          "nonebot-plugin-chatrecorder": "0.7.0",
+          "nonebot-plugin-send-anything-anywhere": "0.7.1",
+          "nonebot-plugin-alconna": "0.60.3"
+        },
+        "deployment_topology": "A migrated PostgreSQL deployment receives new chat records and wordcloud queries those records with group, time, bot, and message filters.",
+        "observed_behavior": "The database contains at least two newly reported rows, but the command responds that data is insufficient; the maintainer cannot reproduce with existing tests.",
+        "expected_behavior": "When enough records satisfy the documented filters, the command generates a word cloud; otherwise its insufficient-data result must be explainable from visible filter counts.",
+        "fault_phase": "handle",
+        "symptoms": ["wrong_action"],
+        "candidate_owners": ["plugin", "environment"],
+        "required_evidence_gaps": [
+          "Redacted contents of the reported rows including platform, detail_type, time, bot_id, user_id and group_id, not only the total count.",
+          "The generated SQL, bound database URL/schema, query time window and per-filter row counts for the failing command.",
+          "A documented minimum-data threshold and a fixture with enough qualifying records in PostgreSQL."
+        ],
+        "ruled_out": [
+          "No records are written at all; the reporter confirms two records exist in the target table.",
+          "A generally reproducible PostgreSQL incompatibility; the maintainer reports PostgreSQL unit coverage and cannot reproduce."
+        ],
+        "unknowns": [
+          "Whether two records are below the intended generation threshold.",
+          "Whether migrated connection configuration points writes and reads at different databases or schemas.",
+          "Which query filter excludes the reported records."
+        ]
+      }
+    },
+    {
+      "case_id": "gh-nonebot-adapter-qq-202",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.pr.204"],
+          "execution_mode": ["source.body", "gold.pr.204", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.comment.4603952566", "gold.pr.204"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.pr.204"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body", "gold.comment.4603952566"],
+          "expected_behavior": ["source.body", "gold.pr.204"],
+          "reproduction_steps": ["source.body", "gold.pr.204"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.pr.204"],
+          "oracle.buggy_ref": ["gold.pr.204.first_parent"],
+          "oracle.fixed_ref": ["gold.pr.204.fixed_head"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["gold.pr.204"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "contract_exec",
+        "root_cause_cluster": "qq-resumed-dispatch-unpacks-string-data-as-event-fields",
+        "environment": {
+          "os": "Windows",
+          "platform": "QQ official gateway",
+          "event": "Dispatch RESUMED after WebSocket reconnect"
+        },
+        "versions": {
+          "python": "3.11.9",
+          "nonebot-adapter-qq": "1.7.1",
+          "buggy_commit": "1947170acf07d2e12f98e7226754798bfe654e66",
+          "fixed_commit": "69ce78fa22f2449501d8fb48c148f7f3b96014ab"
+        },
+        "deployment_topology": "The QQ gateway reconnects and delivers a RESUMED Dispatch whose data field is an empty string; the adapter converts it into a typed event.",
+        "observed_behavior": "Although the Dispatch model permits dict or str data, payload_to_event still evaluates **payload.data and raises TypeError because the value is a string.",
+        "expected_behavior": "Non-dictionary data on lifecycle dispatches is normalized to an empty mapping and the RESUMED event is constructed without an unpacking error.",
+        "reproduction_steps": [
+          "Construct the reported Dispatch with type RESUMED and data equal to an empty string.",
+          "Call payload_to_event at the buggy commit and capture the mapping-unpack TypeError.",
+          "Repeat at the fixed commit and assert a RESUMED event is returned with no fields unpacked from the string."
+        ],
+        "fault_phase": "receive",
+        "symptoms": ["exception"],
+        "candidate_owners": ["adapter", "platform"],
+        "oracle": {
+          "buggy_ref": "1947170acf07d2e12f98e7226754798bfe654e66",
+          "fixed_ref": "69ce78fa22f2449501d8fb48c148f7f3b96014ab",
+          "failure_signature": "payload_to_event raises TypeError when it applies ** to Dispatch(type=RESUMED, data='').data",
+          "success_assertion": "the identical Dispatch produces a valid RESUMED event and no string value is unpacked as keyword fields"
+        }
+      }
+    },
+    {
+      "case_id": "gh-nonebot-adapter-qq-146",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.pr.147"],
+          "execution_mode": ["source.body", "gold.pr.147", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.pr.147"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.pr.147"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body", "gold.pr.147"],
+          "reproduction_steps": ["source.body", "gold.pr.147"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.pr.147"],
+          "oracle.buggy_ref": ["gold.pr.147.first_parent"],
+          "oracle.fixed_ref": ["gold.pr.147.fixed_head"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["gold.pr.147"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "contract_exec",
+        "root_cause_cluster": "qq-message-reference-model-not-serialized-before-http-json",
+        "environment": {
+          "os": "not supplied",
+          "platform": "QQ official C2C and group message APIs",
+          "integration": "nonebot-plugin-send-anything-anywhere reply"
+        },
+        "versions": {
+          "python": "3.12",
+          "buggy_commit": "60e18499f2417b19e9b0cce1a10e151290130e8d",
+          "fixed_commit": "0915104ab7fe3a0ae29b75a56418db6dcb5142a8"
+        },
+        "deployment_topology": "SAA constructs a reply through the QQ adapter, whose C2C or group endpoint assembles an HTTP JSON body containing MessageReference.",
+        "observed_behavior": "The endpoint places the Pydantic MessageReference object directly in the JSON payload and HTTPX raises TypeError because it is not JSON serializable.",
+        "expected_behavior": "The endpoint converts MessageReference to a plain dictionary with null fields excluded before passing the body to the HTTP client.",
+        "reproduction_steps": [
+          "Construct a MessageReference and invoke the C2C endpoint with an HTTP request stub that captures the json argument.",
+          "At the buggy commit verify json.dumps of the captured body raises for the BaseModel value.",
+          "Repeat for C2C and group endpoints at the fixed commit and assert message_reference is a JSON-serializable dictionary with no null fields."
+        ],
+        "fault_phase": "call_api",
+        "symptoms": ["exception"],
+        "candidate_owners": ["adapter"],
+        "oracle": {
+          "buggy_ref": "60e18499f2417b19e9b0cce1a10e151290130e8d",
+          "fixed_ref": "0915104ab7fe3a0ae29b75a56418db6dcb5142a8",
+          "failure_signature": "the outbound json body contains a MessageReference BaseModel and standard JSON serialization raises TypeError",
+          "success_assertion": "both C2C and group request bodies contain message_reference as a plain exclude-none dictionary and json.dumps succeeds"
+        }
+      }
+    },
+    {
+      "case_id": "gh-nonebot-adapter-qq-217",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.pr.219"],
+          "execution_mode": ["source.body", "gold.pr.219", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.pr.219"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.pr.219"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body", "gold.pr.219"],
+          "reproduction_steps": ["source.body", "gold.pr.219"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.pr.219"],
+          "oracle.buggy_ref": ["gold.pr.219.first_parent"],
+          "oracle.fixed_ref": ["gold.pr.219.fixed_head"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["gold.pr.219"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "contract_exec",
+        "root_cause_cluster": "qq-forwarded-quote-content-element-misclassified-as-reply",
+        "environment": {
+          "platform": "QQ official group messages",
+          "message_shape": "forwarded full message with quote and content-only first msg_element",
+          "pydantic": "reproduced on major versions 1 and 2"
+        },
+        "versions": {
+          "python": "3.11",
+          "nonebot": "2.5.0",
+          "nonebot-adapter-qq": "1.7.1",
+          "buggy_commit": "1cdc342babde46570711eea93f8c6c41ae1bfb4f",
+          "fixed_commit": "36df7740e05c95f1ff5f1238b1701d782286c565",
+          "functional_fix_commit": "b431cfc563365fda68e9ca64909e92b88abbc9b2"
+        },
+        "deployment_topology": "The adapter receives a QQ group event containing forwarded full-message elements and runs reply detection on the first element before exposing the event to matchers.",
+        "observed_behavior": "Reply detection treats the first content-only element as a reply even though it lacks reply metadata such as message_type and msg_idx, leading to validation or attribute errors.",
+        "expected_behavior": "Only an element that explicitly declares type='reply' is parsed as reply metadata; content-only forwarded elements remain normal message content.",
+        "reproduction_steps": [
+          "Construct the minimal reported group event whose first msg_element contains content but no type or reply metadata.",
+          "Run the adapter reply-check path at the buggy commit and capture the validation or missing-field failure.",
+          "Repeat at the fixed commit and assert the event completes parsing with no reply object; add a true reply element control that still populates reply."
+        ],
+        "fault_phase": "receive",
+        "symptoms": ["exception"],
+        "candidate_owners": ["adapter"],
+        "oracle": {
+          "buggy_ref": "1cdc342babde46570711eea93f8c6c41ae1bfb4f",
+          "fixed_ref": "36df7740e05c95f1ff5f1238b1701d782286c565",
+          "failure_signature": "a content-only first msg_element is treated as reply metadata and parsing fails on absent reply fields",
+          "success_assertion": "the content-only fixture parses without a reply object, while an explicit type='reply' control still produces reply metadata"
+        }
+      }
+    },
+    {
+      "case_id": "gh-nonebot-adapter-qq-121",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.2288889024", "gold.comment.2342712474"],
+          "execution_mode": ["source.body", "gold.comment.2288889024", "gold.comment.2342712474", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.comment.2288889024", "gold.comment.2342712474"],
+          "environment": ["source.body"],
+          "versions": ["source.body"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body", "gold.comment.2342712474"],
+          "expected_behavior": ["source.body"],
+          "fault_phase": ["source.body", "gold.comment.2288889024"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["gold.comment.2288889024", "gold.comment.2342712474"],
+          "required_evidence_gaps": ["gold.comment.2288889024", "gold.comment.2342712474", "curator.inference"],
+          "unknowns": ["gold.comment.2288889024", "gold.comment.2342712474", "curator.inference"]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "qq-gateway-sporadic-websocket-disconnect-without-close-evidence",
+        "environment": {
+          "os": "Windows",
+          "platform": "QQ official bot under review",
+          "network": "local connection; proxy status not supplied"
+        },
+        "versions": {
+          "python": "not supplied",
+          "nonebot-adapter-qq": "not supplied"
+        },
+        "deployment_topology": "A locally hosted adapter maintains a long-lived WebSocket session to the QQ official gateway and experiences sporadic daytime and overnight disconnects.",
+        "observed_behavior": "The connection closes intermittently, but the report provides only screenshots and no raw close code, reason, adapter version, proxy trace, or repeatable trigger; a maintainer observed a possibly different server-side 4009 timeout elsewhere.",
+        "expected_behavior": "The adapter either keeps a healthy session or records enough close and reconnect evidence to attribute an intentional platform timeout, local network failure, or adapter state-machine defect.",
+        "fault_phase": "connect",
+        "symptoms": ["timeout_or_disconnect"],
+        "candidate_owners": ["platform", "environment", "adapter"],
+        "required_evidence_gaps": [
+          "Raw WebSocket close code and reason plus timestamped adapter reconnect logs for the reporter's exact disconnect.",
+          "Adapter version, gateway sequence/session state, heartbeat timing, proxy configuration, and a simultaneous network capture.",
+          "Evidence that the reporter's error is the same 4009 session timeout independently observed by the maintainer."
+        ],
+        "ruled_out": [
+          "The screenshot alone proves an adapter implementation bug; maintainers identify both server disconnect and proxy/network causes as plausible.",
+          "The separately observed 4009 timeout is confirmed as the reporter's error; the maintainer explicitly says it appears different."
+        ],
+        "unknowns": [
+          "Whether the platform, a local proxy/network path, or the adapter initiated the close.",
+          "Whether the adapter recovered automatically and whether message delivery was lost after reconnect."
+        ]
+      }
+    }
+  ]
+}

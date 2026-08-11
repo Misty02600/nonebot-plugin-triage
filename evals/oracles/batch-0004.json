@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "batch_id": "batch-0004-business-and-modern-adapter",
+  "executed_at": "2026-08-08T19:38:34+08:00",
+  "runner": {
+    "platform": "Windows",
+    "isolation_level": "disposable_git_worktree_and_uv_isolated_process_or_source_extracted_contract_process",
+    "containerized": false,
+    "scope": "Reviewed adapter-qq commits were installed from detached worktrees. Chatrecorder and wordcloud probes compiled only the target function, model, or migration body from each detached worktree with controlled in-memory collaborators.",
+    "credential_policy": "GitHub and model API token environment variables were removed from every package probe process; extracted contract probes do not access the network.",
+    "limitations": "The chatrecorder schema probe validates the reported identifier against model and migration capacities but does not claim a live PostgreSQL round-trip. The wordcloud probe validates per-target control flow without contacting QQ."
+  },
+  "results": [
+    {
+      "case_id": "gh-nonebot-adapter-qq-202",
+      "status": "validated",
+      "probe_id": "adapter-qq-resumed-string-data-v1",
+      "probe_source": "scripts/oracle_probes/adapter_qq_resumed_string_data.py",
+      "buggy_ref": "1947170acf07d2e12f98e7226754798bfe654e66",
+      "fixed_ref": "69ce78fa22f2449501d8fb48c148f7f3b96014ab",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "payload_to_event on Dispatch(type='RESUMED', data='') raised TypeError: 'str' object is not a mapping.",
+      "fixed_observation": "The identical Dispatch returned ResumedEvent without unpacking the string.",
+      "environment": "Windows, CPython 3.11, detached adapter-qq worktrees, uv isolated environment"
+    },
+    {
+      "case_id": "gh-nonebot-adapter-qq-146",
+      "status": "validated",
+      "probe_id": "adapter-qq-message-reference-json-v1",
+      "probe_source": "scripts/oracle_probes/adapter_qq_message_reference_json.py",
+      "buggy_ref": "60e18499f2417b19e9b0cce1a10e151290130e8d",
+      "fixed_ref": "0915104ab7fe3a0ae29b75a56418db6dcb5142a8",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "Both C2C and group JSON bodies retained MessageReference objects and json.dumps raised Object of type MessageReference is not JSON serializable.",
+      "fixed_observation": "Both bodies contained {'message_id': 'quoted-id'} dictionaries and serialized successfully.",
+      "environment": "Windows, CPython 3.12, detached adapter-qq worktrees, stub HTTP request capture"
+    },
+    {
+      "case_id": "gh-nonebot-adapter-qq-217",
+      "status": "validated",
+      "probe_id": "adapter-qq-forwarded-reply-guard-v1",
+      "probe_source": "scripts/oracle_probes/adapter_qq_forwarded_reply_guard.py",
+      "buggy_ref": "1cdc342babde46570711eea93f8c6c41ae1bfb4f",
+      "fixed_ref": "36df7740e05c95f1ff5f1238b1701d782286c565",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "A content-only first msg_element was assigned as reply and _check_reply raised AttributeError for missing author.",
+      "fixed_observation": "The content-only element was ignored without an exception, while an explicit type='reply' control still assigned reply and set to_me.",
+      "environment": "Windows, CPython 3.11, detached adapter-qq worktrees, in-memory event collaborators"
+    },
+    {
+      "case_id": "gh-noneplugin-nonebot-plugin-chatrecorder-4",
+      "status": "validated",
+      "probe_id": "chatrecorder-utc-timestamp-v1",
+      "probe_source": "scripts/oracle_probes/chatrecorder_utc_timestamp.py",
+      "probe_kind": "source_extracted_function_contract",
+      "buggy_ref": "0e041359b3a3bdad16dab927dabfe49d0116cc73",
+      "fixed_ref": "8552192114641d6765ef39c2a1925757e99e280e",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "The actual record_recv_msg body called datetime.fromtimestamp(1000000) and stored the host-local probe value.",
+      "fixed_observation": "The actual function body called datetime.utcfromtimestamp(1000000) and stored the UTC probe value.",
+      "environment": "Windows, CPython 3.12, target function compiled from detached worktree, in-memory record/session collaborators"
+    },
+    {
+      "case_id": "gh-noneplugin-nonebot-plugin-chatrecorder-57",
+      "status": "validated",
+      "probe_id": "chatrecorder-message-id-schema-v1",
+      "probe_source": "scripts/oracle_probes/chatrecorder_message_id_schema.py",
+      "probe_kind": "source_extracted_model_and_migration_contract",
+      "buggy_ref": "a3428fb291a1508458ef39e05264d22e88a1321c",
+      "fixed_ref": "dca9b1c5d9f8d31c79c4061c1bd40cb7af7f7ae7",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "The actual model body declared message_id length 64, which cannot contain the report's 117-character QQ identifier; no widening migration existed.",
+      "fixed_observation": "The actual model body declared length 255 and the added upgrade body altered message_id from 64 to 255, which contains the same identifier.",
+      "environment": "Windows, CPython 3.12, model and migration bodies compiled from detached worktrees, no live PostgreSQL service"
+    },
+    {
+      "case_id": "gh-he0119-nonebot-plugin-wordcloud-281",
+      "status": "validated",
+      "probe_id": "wordcloud-batch-send-isolation-v1",
+      "probe_source": "scripts/oracle_probes/wordcloud_batch_send_isolation.py",
+      "probe_kind": "source_extracted_async_function_contract",
+      "buggy_ref": "b092eafe5da52018b8608348130e644b1ea722b6",
+      "fixed_ref": "25bd6f692c5f9f229b102e5c05bd80210659756e",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "The actual run_task body let the first target RuntimeError escape after only bad-group was attempted.",
+      "fixed_observation": "The actual function body logged bad-group's failure, returned normally, and attempted good-group afterward.",
+      "environment": "Windows, CPython 3.12, target async function compiled from detached worktree, in-memory scheduler and platform collaborators"
+    }
+  ]
+}

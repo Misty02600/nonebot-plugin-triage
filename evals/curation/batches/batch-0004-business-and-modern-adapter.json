@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "batch_id": "batch-0004-business-and-modern-adapter",
+  "selection_note": "从 ORM、聊天记录、词云和 QQ 官方适配器候选中各取 4 条，覆盖数据库基础设施、业务数据模型、面向用户的产品流程和现代平台协议。主动去掉同根因的 WebHook/RESUMED 重复 Issue；执行模式仍为待 Gold 核验假设。",
+  "candidates": [
+    {
+      "source_url": "https://github.com/nonebot/plugin-orm/issues/33",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "sandbox_exec",
+      "research_note": "AIOSQLITE 场景下 CLI 无法退出，检查异步资源关闭、线程或连接生命周期和双版本进程退出 Oracle。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/plugin-orm/issues/15",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "Python 3.10 下 BaseModel 依赖注入导致启动失败，检查注解解析、Pydantic 和 Python 版本边界。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/plugin-orm/issues/12",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "异步 ORM 出现 MissingGreenlet，检查 Session 作用域、懒加载和事件处理生命周期。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/plugin-orm/issues/10",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "sandbox_exec",
+      "research_note": "迁移升级失败，检查 Alembic 分支、生成脚本和数据库状态的可冻结 Oracle。"
+    },
+    {
+      "source_url": "https://github.com/noneplugin/nonebot-plugin-chatrecorder/issues/57",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "QQ 消息 ID 超出数据库字段长度，覆盖平台字段演进到业务 schema 的跨层故障。"
+    },
+    {
+      "source_url": "https://github.com/noneplugin/nonebot-plugin-chatrecorder/issues/20",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "sandbox_exec",
+      "research_note": "SQLite Database is locked，检查并发写入、事务和连接管理。"
+    },
+    {
+      "source_url": "https://github.com/noneplugin/nonebot-plugin-chatrecorder/issues/11",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "sandbox_exec",
+      "research_note": "迁移中断后数据库错误，检查迁移原子性、恢复路径和状态一致性。"
+    },
+    {
+      "source_url": "https://github.com/noneplugin/nonebot-plugin-chatrecorder/issues/4",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "消息记录时区错误，检查时间存储、时区转换和显示契约。"
+    },
+    {
+      "source_url": "https://github.com/he0119/nonebot-plugin-wordcloud/issues/342",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "跨插件 filter_statement 参数变更导致 TypeError，检查依赖版本和公开接口兼容。"
+    },
+    {
+      "source_url": "https://github.com/he0119/nonebot-plugin-wordcloud/issues/323",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "nonebug_exec",
+      "research_note": "错误处理 MCQQ 消息，检查业务规则、事件来源过滤和跨适配器行为。"
+    },
+    {
+      "source_url": "https://github.com/he0119/nonebot-plugin-wordcloud/issues/281",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "nonebug_exec",
+      "research_note": "多个群定时发送时单群失败拖垮整批，检查批处理故障隔离和部分成功语义。"
+    },
+    {
+      "source_url": "https://github.com/he0119/nonebot-plugin-wordcloud/issues/355",
+      "provisional_support_level": "s2_diagnose",
+      "provisional_execution_mode": "diagnose_only",
+      "research_note": "数据不足时生成失败，检查业务前置条件、用户提示和可恢复性，而非强行归为代码回归。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/adapter-qq/issues/202",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "RESUMED 事件 data 为空字符串导致解析失败，检查外部 payload 容错和序列恢复。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/adapter-qq/issues/146",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "MessageReference 无法 JSON 序列化，检查消息段模型到 API payload 的转换契约。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/adapter-qq/issues/217",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "引用转发消息时事件解析失败，覆盖嵌套消息结构和可空字段。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/adapter-qq/issues/121",
+      "provisional_support_level": "s2_diagnose",
+      "provisional_execution_mode": "diagnose_only",
+      "research_note": "WebSocket 异常断开，先判断能否建立确定性连接状态机 Oracle，否则保留为补证与升级案例。"
+    }
+  ]
+}

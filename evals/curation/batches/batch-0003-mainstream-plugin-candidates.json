@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "batch_id": "batch-0003-mainstream-plugin-candidates",
+  "selection_note": "从新增的 Alconna 与 uninfo 候选中选择正文证据较完整、能覆盖插件级命令/消息/会话语义的案例；弱证据的 uninfo #40 与偏分发故障的 #7 不晋级。执行模式仍为待 Gold 核验假设。",
+  "candidates": [
+    {
+      "source_url": "https://github.com/nonebot/plugin-alconna/issues/76",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "nonebug_exec",
+      "research_note": "同一 handler 被 assign 到不同 path 后不响应，优先检查纯 Matcher/路由契约与双提交 Oracle。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/plugin-alconna/issues/43",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "命令前缀配置未生效，检查配置读取、默认值和回归测试边界。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/plugin-alconna/issues/99",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "nonebug_exec",
+      "research_note": "上报自身消息时规则检测进入死循环，检查事件去重或递归路径和可确定性 Oracle。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/plugin-alconna/issues/75",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "Discord 自定义 emoji 转 OneBot V11 失败，检查跨适配器消息段转换契约。"
+    },
+    {
+      "source_url": "https://github.com/nonebot/plugin-alconna/issues/79",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "Telegram 文件消息解析 KeyError，检查消息段字段兼容和固定输入 Oracle。"
+    },
+    {
+      "source_url": "https://github.com/RF-Tar-Railt/nonebot-plugin-uninfo/issues/16",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "QQ 频道私聊被错误建模，检查 SceneType 身份语义与事件映射契约。"
+    },
+    {
+      "source_url": "https://github.com/RF-Tar-Railt/nonebot-plugin-uninfo/issues/18",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "飞书 UserId 逻辑错误，检查用户身份字段映射与修复版本。"
+    },
+    {
+      "source_url": "https://github.com/RF-Tar-Railt/nonebot-plugin-uninfo/issues/19",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "自建 Telegram Bot API 的头像 URL 错误，检查 endpoint 组合和回归断言。"
+    },
+    {
+      "source_url": "https://github.com/RF-Tar-Railt/nonebot-plugin-uninfo/issues/8",
+      "provisional_support_level": "s1_verify",
+      "provisional_execution_mode": "contract_exec",
+      "research_note": "Satori 自身消息返回错误 scene id，检查发送者与会话场景身份边界。"
+    }
+  ]
+}

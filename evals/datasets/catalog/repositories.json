@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "repositories": [
+    {
+      "owner": "nonebot",
+      "repository": "nb-cli",
+      "selection_role": "official_toolchain",
+      "selection_rationale": "覆盖项目创建、插件安装、依赖解析和 CLI 环境边界。",
+      "evidence_urls": [
+        "https://github.com/nonebot/nb-cli",
+        "https://cli.nonebot.dev/"
+      ]
+    },
+    {
+      "owner": "nonebot",
+      "repository": "plugin-apscheduler",
+      "selection_role": "official_plugin_lifecycle",
+      "selection_rationale": "覆盖插件加载、生命周期、调度器配置和框架版本兼容。",
+      "evidence_urls": [
+        "https://github.com/nonebot/plugin-apscheduler",
+        "https://nonebot.dev/docs/best-practice/scheduler"
+      ]
+    },
+    {
+      "owner": "nonebot",
+      "repository": "adapter-onebot",
+      "selection_role": "official_adapter_protocol",
+      "selection_rationale": "覆盖适配器、协议事件、连接和跨版本兼容边界。",
+      "evidence_urls": [
+        "https://github.com/nonebot/adapter-onebot"
+      ]
+    },
+    {
+      "owner": "nonebot",
+      "repository": "nonebot2",
+      "selection_role": "official_framework_core",
+      "selection_rationale": "覆盖框架核心、依赖注入、Matcher 和插件系统的责任边界。",
+      "evidence_urls": [
+        "https://github.com/nonebot/nonebot2",
+        "https://nonebot.dev/"
+      ]
+    },
+    {
+      "owner": "nonebot",
+      "repository": "plugin-alconna",
+      "selection_role": "mainstream_plugin_command_and_message_semantics",
+      "selection_rationale": "覆盖复杂命令解析、跨适配器消息抽象和插件级公开契约。",
+      "evidence_urls": [
+        "https://github.com/nonebot/plugin-alconna",
+        "https://nonebot.dev/docs/best-practice/alconna/",
+        "https://nonebot.dev/docs/best-practice/multi-adapter"
+      ]
+    },
+    {
+      "owner": "RF-Tar-Railt",
+      "repository": "nonebot-plugin-uninfo",
+      "selection_role": "mainstream_plugin_cross_adapter_identity",
+      "selection_rationale": "覆盖跨适配器会话、用户、群组、频道和权限语义。",
+      "evidence_urls": [
+        "https://github.com/RF-Tar-Railt/nonebot-plugin-uninfo",
+        "https://nonebot.dev/docs/best-practice/multi-adapter"
+      ]
+    },
+    {
+      "owner": "nonebot",
+      "repository": "plugin-orm",
+      "selection_role": "official_database_infrastructure",
+      "selection_rationale": "覆盖多数据库连接、异步 Session、事务、模型注册、Alembic 迁移和 CLI 生命周期。",
+      "evidence_urls": [
+        "https://github.com/nonebot/plugin-orm",
+        "https://nonebot.dev/docs/best-practice/database/"
+      ]
+    },
+    {
+      "owner": "noneplugin",
+      "repository": "nonebot-plugin-chatrecorder",
+      "selection_role": "mainstream_plugin_business_persistence",
+      "selection_rationale": "覆盖聊天记录业务模型、跨适配器字段、时间语义、数据库迁移和数据查询边界。",
+      "evidence_urls": [
+        "https://github.com/noneplugin/nonebot-plugin-chatrecorder",
+        "https://nonebot.dev/docs/best-practice/database/user"
+      ]
+    },
+    {
+      "owner": "he0119",
+      "repository": "nonebot-plugin-wordcloud",
+      "selection_role": "mainstream_plugin_end_user_product_workflow",
+      "selection_rationale": "覆盖用户与群组聚合、权限、定时任务、图片生成、数据库依赖和跨插件兼容。",
+      "evidence_urls": [
+        "https://github.com/he0119/nonebot-plugin-wordcloud",
+        "https://nonebot.dev/docs/best-practice/database/user"
+      ]
+    },
+    {
+      "owner": "nonebot",
+      "repository": "adapter-qq",
+      "selection_role": "official_modern_platform_adapter",
+      "selection_rationale": "覆盖 QQ 官方 API 的事件模型、WebSocket 会话、媒体上传、消息段和平台字段演进。",
+      "evidence_urls": [
+        "https://github.com/nonebot/adapter-qq",
+        "https://nonebot.dev/docs/best-practice/alconna/"
+      ]
+    }
+  ]
+}

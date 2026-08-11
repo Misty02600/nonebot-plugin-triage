@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "batch_id": "batch-0001",
+  "executed_at": "2026-08-08T17:35:58+08:00",
+  "runner": {
+    "platform": "Windows",
+    "isolation_level": "disposable_git_worktree_and_uv_isolated_process",
+    "containerized": false,
+    "scope": "Only official NoneBot repositories were executed; no arbitrary store plugin code was run.",
+    "limitations": "The process boundary does not provide container-grade host isolation. Linux-only cases remain blocked."
+  },
+  "results": [
+    {
+      "case_id": "gh-nonebot-nb-cli-122",
+      "status": "validated",
+      "probe_id": "nb-cli-relative-reload-exclude-v1",
+      "probe_source": "scripts/oracle_probes/nb_cli_relative_reload_exclude.py",
+      "buggy_ref": "aa7fefa7b1b22bd3daa68c28886d8788c3c5d3a0",
+      "fixed_ref": "b78d702b1e50fe31a7dad6586cc1041fa36f7818",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "FileFilter accepted an absolute file below the relative packages/ exclusion and would reload.",
+      "fixed_observation": "The same absolute file was rejected after the exclusion and change paths were resolved.",
+      "environment": "Windows, CPython 3.10, uv isolated environment"
+    },
+    {
+      "case_id": "gh-nonebot-adapter-onebot-63",
+      "status": "validated",
+      "probe_id": "adapter-onebot-loguru-tag-escape-v1",
+      "probe_source": "scripts/oracle_probes/adapter_onebot_loguru_tag_escape.py",
+      "buggy_ref": "fda084df178e553e24503adbbb67fa41ccf08dfa",
+      "fixed_ref": "66de8fa59e2e92cad292d17263c9ec9f44085bc2",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "Logging the identical OneBot message containing <t\\nag> raised a Loguru ValueError for an unknown color tag.",
+      "fixed_observation": "The identical event description was escaped, logged, and returned without an exception.",
+      "environment": "Windows, CPython 3.10, nonebot2 2.0.0, uv isolated environment"
+    },
+    {
+      "case_id": "gh-nonebot-adapter-onebot-108",
+      "status": "validated",
+      "probe_id": "adapter-onebot-reply-at-preservation-v1",
+      "probe_source": "scripts/oracle_probes/adapter_onebot_reply_at_preservation.py",
+      "buggy_ref": "5c38f757e27dfe0c79b513f3dddd157da3caa3cb",
+      "fixed_ref": "001f3f5b83ea81af50c36aec6b9da233278a8cbc",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "Reply preprocessing removed an explicit at for bot 42 even though the replied sender was user 7, leaving to_me false.",
+      "fixed_observation": "The explicit bot at remained through reply preprocessing and set to_me true; the automatic at for replied user 7 was still removed.",
+      "environment": "Windows, CPython 3.10, nonebot2 2.3.1, uv isolated environment"
+    },
+    {
+      "case_id": "gh-nonebot-nb-cli-180",
+      "status": "validated",
+      "probe_id": "nb-cli-uv-manager-install-v1",
+      "probe_source": "scripts/oracle_probes/nb_cli_uv_manager_install.py",
+      "buggy_ref": "19adbc44809a223b996c80410de87d118dda0232",
+      "fixed_ref": "bde2d9a63c6f5acc7ed4ac93b0b15abb804b69af",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "The pip-only installation path raised PipError against an uv-created project environment with no pip module.",
+      "fixed_observation": "The same uv.lock project selected UvEnvironmentExecutor and uv add completed without requiring pip in the project environment.",
+      "environment": "Windows, outer CPython 3.10, project CPython 3.10 without pip, uv isolated environment"
+    },
+    {
+      "case_id": "gh-nonebot-plugin-apscheduler-28",
+      "status": "blocked",
+      "probe_id": "apscheduler-fastapi-startup-linux-v1",
+      "buggy_ref": "environment:fastapi==0.89.0",
+      "fixed_ref": "environment:fastapi==0.98.0",
+      "blocking_reason": "The source report is Linux-specific and explicitly reports Windows as working, but this host has no Docker runtime or installed WSL distribution.",
+      "required_runner": "Disposable Linux runner with the frozen Python, NoneBot, plugin, and FastAPI matrix"
+    }
+  ]
+}

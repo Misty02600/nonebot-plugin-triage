@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "b3-evidence-receipts-v1",
+  "synthetic_only": true,
+  "fixtures": [
+    {
+      "fixture_id": "valid-python-version",
+      "category": "valid_slot",
+      "expected_decision": "accepted",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "python_version"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-python", "session_id": "session-1",
+        "case_id": "case-1", "slot": "python_version", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "byte_count": 32, "facts": {"version": "3.12.7", "implementation": "CPython"}
+      }
+    },
+    {
+      "fixture_id": "valid-component-versions",
+      "category": "valid_slot",
+      "expected_decision": "accepted",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "component_versions"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-versions", "session_id": "session-1",
+        "case_id": "case-1", "slot": "component_versions", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "byte_count": 64, "facts": {"versions": ["nonebot2==2.4.0", "nonebot-adapter-onebot==2.4.6"]}
+      }
+    },
+    {
+      "fixture_id": "valid-operating-system",
+      "category": "valid_slot",
+      "expected_decision": "accepted",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "operating_system"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-os", "session_id": "session-1",
+        "case_id": "case-1", "slot": "operating_system", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "byte_count": 48, "facts": {"name": "Windows", "release": "11", "runtime": "venv"}
+      }
+    },
+    {
+      "fixture_id": "valid-logs",
+      "category": "valid_slot",
+      "expected_decision": "accepted",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "logs"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-logs", "session_id": "session-1",
+        "case_id": "case-1", "slot": "logs", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+        "byte_count": 4096,
+        "facts": {"exception_type": "builtins.TypeError", "stack_modules": ["plugin.handlers:on_message"], "line_count": 42}
+      }
+    },
+    {
+      "fixture_id": "valid-reproduction-steps",
+      "category": "valid_slot",
+      "expected_decision": "accepted",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "reproduction_steps"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-repro", "session_id": "session-1",
+        "case_id": "case-1", "slot": "reproduction_steps", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        "byte_count": 256, "facts": {"steps": ["Create a clean environment", "Trigger one message"]}
+      }
+    },
+    {
+      "fixture_id": "valid-expected-behavior",
+      "category": "valid_slot",
+      "expected_decision": "accepted",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "expected_behavior"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-behavior", "session_id": "session-1",
+        "case_id": "case-1", "slot": "expected_behavior", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "byte_count": 128, "facts": {"expected": "One reply is sent.", "observed": "No reply is sent."}
+      }
+    },
+    {
+      "fixture_id": "valid-configuration",
+      "category": "valid_slot",
+      "expected_decision": "accepted",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "configuration"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-config", "session_id": "session-1",
+        "case_id": "case-1", "slot": "configuration", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+        "byte_count": 96, "facts": {"keys": ["driver", "host", "plugin_settings.timeout"], "values_redacted": true}
+      }
+    },
+    {
+      "fixture_id": "valid-deployment-topology",
+      "category": "valid_slot",
+      "expected_decision": "accepted",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "deployment_topology"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-topology", "session_id": "session-1",
+        "case_id": "case-1", "slot": "deployment_topology", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+        "byte_count": 112, "facts": {"components": ["nonebot", "onebot"], "connections": ["nonebot->onebot"]}
+      }
+    },
+    {
+      "fixture_id": "valid-raw-close-evidence",
+      "category": "valid_slot",
+      "expected_decision": "accepted",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "raw_close_evidence"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-close", "session_id": "session-1",
+        "case_id": "case-1", "slot": "raw_close_evidence", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+        "byte_count": 80, "facts": {"close_code": 1006, "reason_category": "abnormal closure", "reconnect_observed": true}
+      }
+    },
+    {
+      "fixture_id": "reject-unredacted",
+      "category": "redaction",
+      "expected_decision": "rejected",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "logs"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-unredacted", "session_id": "session-1",
+        "case_id": "case-1", "slot": "logs", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": false,
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "byte_count": 100, "facts": {"exception_type": "builtins.TypeError", "stack_modules": ["plugin.handler"], "line_count": 10}
+      }
+    },
+    {
+      "fixture_id": "reject-suspected-secret",
+      "category": "suspected_secret",
+      "expected_decision": "rejected",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "reproduction_steps"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-secret", "session_id": "session-1",
+        "case_id": "case-1", "slot": "reproduction_steps", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "byte_count": 100, "facts": {"steps": ["Create an environment", "Set password=synthetic-secret-value"]}
+      }
+    },
+    {
+      "fixture_id": "reject-raw-body",
+      "category": "schema",
+      "expected_decision": "rejected",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "logs"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-raw", "session_id": "session-1",
+        "case_id": "case-1", "slot": "logs", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "byte_count": 100, "raw_body": "synthetic raw log must not persist",
+        "facts": {"exception_type": "builtins.TypeError", "stack_modules": ["plugin.handler"], "line_count": 10}
+      }
+    },
+    {
+      "fixture_id": "reject-missing-log-field",
+      "category": "schema",
+      "expected_decision": "rejected",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "logs"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-incomplete", "session_id": "session-1",
+        "case_id": "case-1", "slot": "logs", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "byte_count": 100, "facts": {"exception_type": "builtins.TypeError", "line_count": 10}
+      }
+    },
+    {
+      "fixture_id": "reject-session-mismatch",
+      "category": "binding",
+      "expected_decision": "rejected",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "python_version"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-wrong-session", "session_id": "session-2",
+        "case_id": "case-1", "slot": "python_version", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "byte_count": 32, "facts": {"version": "3.12.7"}
+      }
+    },
+    {
+      "fixture_id": "reject-slot-mismatch",
+      "category": "binding",
+      "expected_decision": "rejected",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "python_version"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-wrong-slot", "session_id": "session-1",
+        "case_id": "case-1", "slot": "operating_system", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "byte_count": 32, "facts": {"name": "Linux", "runtime": "container"}
+      }
+    },
+    {
+      "fixture_id": "reject-config-values",
+      "category": "redaction",
+      "expected_decision": "rejected",
+      "request": {"session_id": "session-1", "case_id": "case-1", "slot": "configuration"},
+      "receipt": {
+        "schema_version": 1, "receipt_id": "receipt-config-values", "session_id": "session-1",
+        "case_id": "case-1", "slot": "configuration", "submitted_by": "maintainer",
+        "collected_at": "2026-08-08T12:00:00+00:00", "redacted": true,
+        "content_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "byte_count": 32, "facts": {"keys": ["driver"], "values_redacted": false}
+      }
+    }
+  ]
+}

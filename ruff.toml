@@ -1,0 +1,28 @@
+target-version = "py311"
+line-length = 100
+src = ["src", "tests", "scripts"]
+
+[format]
+line-ending = "lf"
+
+[lint]
+select = [
+    "B",
+    "C4",
+    "E",
+    "F",
+    "I",
+    "RUF",
+    "SIM",
+    "UP",
+    "W",
+]
+ignore = [
+    "E501",
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[lint.isort]
+extra-standard-library = ["typing_extensions"]

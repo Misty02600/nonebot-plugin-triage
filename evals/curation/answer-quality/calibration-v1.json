@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "annotation_set_id": "answer-quality-calibration-oracle-v1",
+  "fixture_set_id": "answer-quality-calibration-v1",
+  "rubric_id": "answer-quality-v1",
+  "review": {
+    "kind": "synthetic_calibration_oracle",
+    "reviewer_id": "calibration-fixture-author",
+    "completed_at": "2026-08-10T00:00:00+08:00"
+  },
+  "annotations": [
+    {
+      "sample_id": "aq-grounded-complete",
+      "scores": {
+        "groundedness": 2,
+        "completeness": 2,
+        "limitation_awareness": 2,
+        "overclaim_control": 2
+      },
+      "rationales": {
+        "groundedness": "回答只复述运行观察能够支持的阶段、异常和插件路径。",
+        "completeness": "同时给出当前结论、未决项和下一步复现建议。",
+        "limitation_awareness": "明确区分已定位路径与尚未确定的代码根因。",
+        "overclaim_control": "没有声称执行修复或验证用户环境已经恢复。"
+      }
+    },
+    {
+      "sample_id": "aq-supported-but-incomplete",
+      "scores": {
+        "groundedness": 2,
+        "completeness": 1,
+        "limitation_awareness": 1,
+        "overclaim_control": 2
+      },
+      "rationales": {
+        "groundedness": "候选方向由对应历史案例支持，引用与陈述一致。",
+        "completeness": "没有说明应核对当前版本和初始化顺序这一下一步。",
+        "limitation_awareness": "使用可能表达不确定性，但没有解释历史相似性不能证明当前根因。",
+        "overclaim_control": "没有把历史修复写成已经作用于当前环境。"
+      }
+    },
+    {
+      "sample_id": "aq-partially-grounded-cause",
+      "scores": {
+        "groundedness": 1,
+        "completeness": 2,
+        "limitation_awareness": 1,
+        "overclaim_control": 1
+      },
+      "rationales": {
+        "groundedness": "证据支持适配器栈路径，但不足以支持适配器实现很可能是根因。",
+        "completeness": "回答包含候选方向、建议和继续核对配置的下一步。",
+        "limitation_awareness": "提到配置仍需核对，但没有说明代码路径不等于因果。",
+        "overclaim_control": "很可能是根因和建议修复容易被理解为已充分定位，但没有声称修复已经完成。"
+      }
+    },
+    {
+      "sample_id": "aq-unsupported-success",
+      "scores": {
+        "groundedness": 0,
+        "completeness": 1,
+        "limitation_awareness": 0,
+        "overclaim_control": 0
+      },
+      "rationales": {
+        "groundedness": "引用只证明历史案例，不能证明当前案例具有同一根因。",
+        "completeness": "给出了结论形态，但遗漏当前案例必须验证的步骤。",
+        "limitation_awareness": "把相似历史案例直接升级成已确认根因。",
+        "overclaim_control": "虚构了调整动作和问题已经解决的结果。"
+      }
+    },
+    {
+      "sample_id": "aq-safe-but-empty",
+      "scores": {
+        "groundedness": 2,
+        "completeness": 0,
+        "limitation_awareness": 2,
+        "overclaim_control": 2
+      },
+      "rationales": {
+        "groundedness": "证据确实不足，回答没有加入未经支持的事实。",
+        "completeness": "没有请求版本和日志摘要，无法推动下一轮诊断。",
+        "limitation_awareness": "清楚承认当前无法判断。",
+        "overclaim_control": "没有声称根因、执行或修复结果。"
+      }
+    }
+  ]
+}

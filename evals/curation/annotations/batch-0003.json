@@ -1,0 +1,456 @@
+{
+  "schema_version": 1,
+  "batch_id": "batch-0003",
+  "annotations": [
+    {
+      "case_id": "gh-nonebot-plugin-alconna-76",
+      "curation": {
+        "field_provenance": {
+          "exclusion_reason": [
+            "gold.comment.2439269546",
+            "gold.comment.2439379280",
+            "gold.comment.2439383906"
+          ]
+        },
+        "exclusion_reason": "Maintainer stated that since Alconna 0.52.0 reusing one handler for multiple assign paths is intentionally discouraged and suggested a shared handle() plus Arparma branch; the reporter accepted that supported alternative, so no defect or fix pair was established."
+      }
+    },
+    {
+      "case_id": "gh-nonebot-plugin-alconna-43",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.2028629808"],
+          "execution_mode": ["gold.comment.2028574639", "gold.comment.2028629808", "curator.inference"],
+          "root_cause_cluster": ["gold.comment.2028629808", "curator.inference"],
+          "environment": ["source.body"],
+          "versions": ["source.body"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["gold.comment.2028629808"],
+          "expected_behavior": ["source.body", "gold.comment.2028629808"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["source.body"],
+          "required_evidence_gaps": ["gold.comment.2028574639", "gold.comment.2028629808", "curator.inference"],
+          "unknowns": ["gold.comment.2028629808", "curator.inference"]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "alconna-multi-header-command-start-contract-unclear",
+        "environment": {
+          "os": "not supplied",
+          "protocol": "OneBot V11",
+          "configuration": "command_start contains slash and hash; alconna_use_command_start is true"
+        },
+        "versions": {
+          "python": "3.10.10 CPython",
+          "nonebot": "2.2.1",
+          "nonebot-plugin-alconna": "0.41.0"
+        },
+        "deployment_topology": "A local NoneBot project constructs an Alconna command and lets the plugin apply global command prefixes before matcher evaluation.",
+        "observed_behavior": "The corrected single-header fixture accepts slash, hash, and empty prefixes; the reported failure remains only when Alconna receives a list containing two command headers, where slash and hash no longer match.",
+        "expected_behavior": "If list-valued command headers are supported with global command_start, every header should receive the configured prefixes consistently.",
+        "fault_phase": "match",
+        "symptoms": ["no_match"],
+        "candidate_owners": ["plugin"],
+        "required_evidence_gaps": [
+          "An authoritative contract for list-valued Alconna command headers combined with alconna_use_command_start at the reported version.",
+          "A maintainer diagnosis or fixing commit that distinguishes unsupported construction from a prefix application defect.",
+          "An isolated fixture without unrelated project matchers that demonstrates the remaining multi-header behavior."
+        ],
+        "ruled_out": [
+          "The original claim that alconna_use_command_start fails for a single string header; the reporter's corrected fixture says that form works."
+        ],
+        "unknowns": [
+          "Whether the list-valued header form was a supported public contract in Alconna 0.41.0.",
+          "Why the reporter closed the issue without a linked fix or maintainer resolution."
+        ]
+      }
+    },
+    {
+      "case_id": "gh-nonebot-plugin-alconna-99",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.2868648448", "gold.comment.2868702677"],
+          "execution_mode": ["gold.commit.7738b5bce1090fc66e5d158ff7d40cd88f3984e1", "gold.comment.2868702677", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.commit.7738b5bce1090fc66e5d158ff7d40cd88f3984e1", "gold.comment.2868702677"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.commit.7738b5bce1090fc66e5d158ff7d40cd88f3984e1"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body", "gold.comment.2868702677"],
+          "expected_behavior": ["source.body", "curator.inference"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body", "gold.comment.2868702677"],
+          "candidate_owners": ["source.body", "gold.commit.7738b5bce1090fc66e5d158ff7d40cd88f3984e1"],
+          "required_evidence_gaps": ["gold.comment.2868702677", "curator.inference"],
+          "unknowns": ["source.body", "gold.comment.2868702677", "curator.inference"]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "onebot-message-sent-generic-event-breaks-uniseg-message-provider",
+        "environment": {
+          "os": "Linux",
+          "protocol_implementation": "NapCat with self-message reporting enabled",
+          "transport": "reverse WebSocket"
+        },
+        "versions": {
+          "python": "3.11.2",
+          "nonebot": "2.4.2",
+          "adapter-onebot": "2.4.6",
+          "nonebot-plugin-alconna": "0.57.4",
+          "partial_fix_commit": "7738b5bce1090fc66e5d158ff7d40cd88f3984e1"
+        },
+        "deployment_topology": "NapCat reports the bot's own OneBot V11 message_sent event to a NoneBot process containing multiple Alconna matchers.",
+        "observed_behavior": "The generic OneBot Event initially fails an isinstance(MessageEvent) assertion; after the closing commit accepts its message_id, the reporter still observes repeated rule-check failures because event.get_message() raises ValueError('Event has no message!').",
+        "expected_behavior": "A self-message report is either normalized or ignored without repeated Alconna rule exceptions, while normal message events remain matchable.",
+        "fault_phase": "match",
+        "symptoms": ["exception", "wrong_action"],
+        "candidate_owners": ["plugin", "adapter", "protocol_implementation"],
+        "required_evidence_gaps": [
+          "The commit or released version that handles the second Event has no message failure after the closing commit.",
+          "A deterministic message_sent event fixture proving that all Alconna matchers terminate without repeated rule exceptions.",
+          "Evidence separating a true event feedback loop from many independent matchers logging the same unsupported event."
+        ],
+        "ruled_out": [
+          "message_id is absent; the reporter confirmed getattr(event, 'message_id') returns a value.",
+          "The closing commit alone fully resolves the reported behavior; a later comment shows a different exception in the same path."
+        ],
+        "unknowns": [
+          "Whether the complete behavior was fixed in a later unlinked commit or release.",
+          "Whether NapCat's generic message_sent event shape is guaranteed by the supported adapter contract."
+        ]
+      }
+    },
+    {
+      "case_id": "gh-nonebot-plugin-alconna-75",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.commit.23696689d731161b088e54ec36a129c95670aa77"],
+          "execution_mode": ["source.body", "gold.commit.23696689d731161b088e54ec36a129c95670aa77", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.commit.23696689d731161b088e54ec36a129c95670aa77"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.commit.23696689d731161b088e54ec36a129c95670aa77"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body", "gold.comment.2414247528", "gold.commit.23696689d731161b088e54ec36a129c95670aa77"],
+          "reproduction_steps": ["source.body"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["source.body", "gold.commit.23696689d731161b088e54ec36a129c95670aa77"],
+          "oracle.buggy_ref": ["gold.commit.23696689d731161b088e54ec36a129c95670aa77.first_parent"],
+          "oracle.fixed_ref": ["gold.commit.23696689d731161b088e54ec36a129c95670aa77"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["gold.commit.23696689d731161b088e54ec36a129c95670aa77"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "contract_exec",
+        "root_cause_cluster": "discord-custom-emoji-exported-as-invalid-onebot-face",
+        "environment": {
+          "os": "Linux",
+          "source_adapter": "Discord",
+          "target_adapter": "OneBot V11",
+          "protocol_implementation": "NapCat 2.6.24"
+        },
+        "versions": {
+          "python": "3.11.9",
+          "nonebot": "2.3.3",
+          "nonebot-plugin-alconna": "0.53.0",
+          "buggy_commit": "e70f145a8e78913aa72bfda2b86151f30262d1b4",
+          "fixed_commit": "23696689d731161b088e54ec36a129c95670aa77"
+        },
+        "deployment_topology": "UniMessage converts a Discord custom emoji and exports it through a OneBot V11 bot for cross-platform relay.",
+        "observed_behavior": "The Discord custom emoji becomes a OneBot face segment whose Discord snowflake ID is invalid for OneBot, and NapCat rejects send_msg with ActionFailed retcode 1200.",
+        "expected_behavior": "The custom emoji becomes an image backed by its Discord CDN URL and exports without an invalid OneBot face segment.",
+        "reproduction_steps": [
+          "At the buggy commit, construct the reported Discord CustomEmojiSegment with a fixed id, name and animated flag.",
+          "Generate a UniMessage and export it through a stub OneBot V11 bot without contacting Discord or NapCat.",
+          "Repeat the identical conversion at the fixed commit and compare the universal and exported segment types."
+        ],
+        "fault_phase": "call_api",
+        "symptoms": ["exception"],
+        "candidate_owners": ["plugin"],
+        "oracle": {
+          "buggy_ref": "e70f145a8e78913aa72bfda2b86151f30262d1b4",
+          "fixed_ref": "23696689d731161b088e54ec36a129c95670aa77",
+          "failure_signature": "the custom emoji is converted to Emoji/OneBot face with the Discord id, producing an invalid face payload",
+          "success_assertion": "the same custom emoji is converted to Image with the expected cdn.discordapp.com/emojis URL and no OneBot face segment is emitted"
+        }
+      }
+    },
+    {
+      "case_id": "gh-nonebot-plugin-alconna-79",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.commit.0eb61d174f1628c22567e35ae7bc71f3ec7b79ba"],
+          "execution_mode": ["source.body", "gold.commit.0eb61d174f1628c22567e35ae7bc71f3ec7b79ba", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.commit.0eb61d174f1628c22567e35ae7bc71f3ec7b79ba"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.commit.0eb61d174f1628c22567e35ae7bc71f3ec7b79ba"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body", "gold.commit.0eb61d174f1628c22567e35ae7bc71f3ec7b79ba"],
+          "reproduction_steps": ["source.body"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["source.body", "gold.commit.0eb61d174f1628c22567e35ae7bc71f3ec7b79ba"],
+          "oracle.buggy_ref": ["gold.commit.0eb61d174f1628c22567e35ae7bc71f3ec7b79ba.first_parent"],
+          "oracle.fixed_ref": ["gold.commit.0eb61d174f1628c22567e35ae7bc71f3ec7b79ba"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["gold.commit.0eb61d174f1628c22567e35ae7bc71f3ec7b79ba"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "contract_exec",
+        "root_cause_cluster": "telegram-file-builder-reads-obsolete-file-id-key",
+        "environment": {
+          "os": "Windows",
+          "adapter": "Telegram beta",
+          "input": "Telegram video, animation, voice, audio, document, sticker or video_note segment"
+        },
+        "versions": {
+          "python": "3.12.7",
+          "nonebot": "2.4.0",
+          "adapter-telegram": "0.1.0b19",
+          "nonebot-plugin-alconna_buggy": "0.54.0",
+          "nonebot-plugin-alconna_fixed": "0.54.1",
+          "buggy_commit": "2c46c4da4170a99e180ad20349851bafe6d21c19",
+          "fixed_commit": "0eb61d174f1628c22567e35ae7bc71f3ec7b79ba"
+        },
+        "deployment_topology": "A Telegram MessageEvent is converted to UniMessage while solving the UniMsg dependency for a local matcher.",
+        "observed_behavior": "The Telegram builder reads seg.data['file_id'] although the adapter supplies seg.data['file'], causing KeyError before the handler runs.",
+        "expected_behavior": "Supported Telegram file segments read the adapter's file field and convert to the corresponding universal File, Video, Voice, Audio or Image segment.",
+        "reproduction_steps": [
+          "At the buggy commit, construct a Telegram animation segment with the reported file and thumbnail data.",
+          "Pass it through the Telegram UniMessage builder and record the KeyError for file_id.",
+          "Repeat at the fixed commit and assert the universal segment preserves the file identifier; cover the other changed file segment types as parameterized cases."
+        ],
+        "fault_phase": "handle",
+        "symptoms": ["exception"],
+        "candidate_owners": ["plugin"],
+        "oracle": {
+          "buggy_ref": "2c46c4da4170a99e180ad20349851bafe6d21c19",
+          "fixed_ref": "0eb61d174f1628c22567e35ae7bc71f3ec7b79ba",
+          "failure_signature": "Telegram file conversion raises KeyError: 'file_id' before the matcher handler executes",
+          "success_assertion": "the identical segment converts without KeyError and the resulting universal segment carries seg.data['file'] as its id"
+        }
+      }
+    },
+    {
+      "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-16",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.pr.17", "gold.commit.13b33888e419332b3138f7de5433bcba8356ae22"],
+          "execution_mode": ["source.body", "gold.commit.13b33888e419332b3138f7de5433bcba8356ae22", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.commit.13b33888e419332b3138f7de5433bcba8356ae22"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.commit.13b33888e419332b3138f7de5433bcba8356ae22"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body", "gold.commit.13b33888e419332b3138f7de5433bcba8356ae22"],
+          "reproduction_steps": ["source.body"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["source.body", "gold.commit.13b33888e419332b3138f7de5433bcba8356ae22"],
+          "oracle.buggy_ref": ["gold.commit.13b33888e419332b3138f7de5433bcba8356ae22.first_parent"],
+          "oracle.fixed_ref": ["gold.commit.13b33888e419332b3138f7de5433bcba8356ae22"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["gold.commit.13b33888e419332b3138f7de5433bcba8356ae22"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "contract_exec",
+        "root_cause_cluster": "qq-guild-direct-message-mapped-as-channel-text",
+        "environment": {
+          "platform": "QQ official API",
+          "event": "DirectMessageCreateEvent in a guild direct-message channel",
+          "permission": "nonebot_plugin_uninfo.PRIVATE"
+        },
+        "versions": {
+          "python": "3.11",
+          "nonebot": "2.4.2",
+          "nonebot-plugin-uninfo": "0.6.10",
+          "buggy_commit": "1c1a0c21e038732c33cf99d870262ce8893807d3",
+          "fixed_commit": "13b33888e419332b3138f7de5433bcba8356ae22"
+        },
+        "deployment_topology": "A QQ guild direct-message event is converted into a Uninfo Session and then evaluated by the PRIVATE permission dependency.",
+        "observed_behavior": "The direct-message event inherits the channel's normal type and produces SceneType.CHANNEL_TEXT, so PRIVATE evaluates false.",
+        "expected_behavior": "QQ DirectMessageCreateEvent and DirectMessageDeleteEvent produce SceneType.PRIVATE and PRIVATE evaluates true without changing public guild channel events.",
+        "reproduction_steps": [
+          "At the buggy commit, construct the minimal QQ guild DirectMessageCreateEvent data required by the adapter fetcher.",
+          "Build the Session and evaluate the PRIVATE permission result.",
+          "Repeat at the fixed commit; additionally assert an ordinary ChannelEvent remains CHANNEL_TEXT."
+        ],
+        "fault_phase": "match",
+        "symptoms": ["no_match", "wrong_action"],
+        "candidate_owners": ["plugin"],
+        "oracle": {
+          "buggy_ref": "1c1a0c21e038732c33cf99d870262ce8893807d3",
+          "fixed_ref": "13b33888e419332b3138f7de5433bcba8356ae22",
+          "failure_signature": "a QQ guild direct-message Session has SceneType.CHANNEL_TEXT and PRIVATE is false",
+          "success_assertion": "the identical direct-message fixture has SceneType.PRIVATE and PRIVATE is true, while an ordinary guild channel fixture remains non-private"
+        }
+      }
+    },
+    {
+      "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-18",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.comment.2731948071"],
+          "execution_mode": ["gold.commit.7db770ac7533ee9bff7c3bf6936e37b882ef7a87", "gold.comment.2731948071", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.commit.7db770ac7533ee9bff7c3bf6936e37b882ef7a87", "gold.comment.2731948071"],
+          "environment": ["source.body", "https://github.com/nonebot/adapter-feishu/issues/116"],
+          "versions": ["source.body", "gold.commit.7db770ac7533ee9bff7c3bf6936e37b882ef7a87", "https://github.com/nonebot/adapter-feishu/issues/116#issuecomment-2735279527"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body", "https://github.com/nonebot/adapter-feishu/issues/116#issuecomment-2730397440"],
+          "expected_behavior": ["source.body"],
+          "fault_phase": ["source.body", "https://github.com/nonebot/adapter-feishu/issues/116#issuecomment-2730397440"],
+          "symptoms": ["source.body", "https://github.com/nonebot/adapter-feishu/issues/116#issuecomment-2730397440"],
+          "candidate_owners": ["source.body", "https://github.com/nonebot/adapter-feishu/issues/116"],
+          "required_evidence_gaps": ["gold.comment.2731948071", "https://github.com/nonebot/adapter-feishu/issues/116#issuecomment-2735279527", "curator.inference"],
+          "unknowns": ["https://github.com/nonebot/adapter-feishu/issues/116#issuecomment-2730397440", "https://github.com/nonebot/adapter-feishu/issues/116#issuecomment-2735279527", "curator.inference"]
+        },
+        "support_level": "s2_diagnose",
+        "execution_mode": "diagnose_only",
+        "root_cause_cluster": "feishu-sender-id-object-and-response-schema-mismatch",
+        "environment": {
+          "os": "Linux in the linked adapter report",
+          "platform": "Feishu or Lark",
+          "input": "MessageEvent injected through nonebot-plugin-uninfo"
+        },
+        "versions": {
+          "python": "3.12",
+          "nonebot": "2.4.2",
+          "nonebot-plugin-uninfo_buggy": "0.6.10",
+          "partial_fix_commit": "7db770ac7533ee9bff7c3bf6936e37b882ef7a87",
+          "later_claimed_fixed_release": "0.7.0"
+        },
+        "deployment_topology": "Uninfo extracts a Feishu MessageEvent sender, calls the contact API using open_id and compares returned owner identity fields.",
+        "observed_behavior": "The original code passes the complete UserId model where an open_id string is required; the closing commit corrects that input, but a linked follow-up still raises KeyError when a later API response lacks open_id.",
+        "expected_behavior": "Session extraction selects the correct Feishu identifier and tolerates response variants without an exception.",
+        "fault_phase": "handle",
+        "symptoms": ["exception", "wrong_action"],
+        "candidate_owners": ["plugin", "adapter", "platform"],
+        "required_evidence_gaps": [
+          "The exact commit in or before release 0.7.0 that resolves the follow-up missing open_id response.",
+          "A fixture covering both the original sender_id model and the later owner-response schema variant.",
+          "A success assertion showing Session extraction completes, not merely that the first contact API receives a scalar open_id."
+        ],
+        "ruled_out": [
+          "The original contact request should stringify the complete UserId model; the closing diff explicitly switches it to sender_id.open_id.",
+          "The closing commit by itself proves the issue's no-error expectation; the linked follow-up reports another failure."
+        ],
+        "unknowns": [
+          "Which later commit corresponds to the maintainer's release 0.7.0 fix claim.",
+          "Whether the remaining response shape depends on Feishu versus Lark tenant behavior."
+        ]
+      }
+    },
+    {
+      "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-19",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.commit.814e3d57403c13aebac07355fdc166f81f622aa7"],
+          "execution_mode": ["source.body", "gold.commit.814e3d57403c13aebac07355fdc166f81f622aa7", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.commit.814e3d57403c13aebac07355fdc166f81f622aa7"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.commit.814e3d57403c13aebac07355fdc166f81f622aa7"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body", "gold.commit.814e3d57403c13aebac07355fdc166f81f622aa7"],
+          "reproduction_steps": ["source.body"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["source.body", "gold.commit.814e3d57403c13aebac07355fdc166f81f622aa7"],
+          "oracle.buggy_ref": ["gold.commit.814e3d57403c13aebac07355fdc166f81f622aa7.first_parent"],
+          "oracle.fixed_ref": ["gold.commit.814e3d57403c13aebac07355fdc166f81f622aa7"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["gold.commit.814e3d57403c13aebac07355fdc166f81f622aa7"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "contract_exec",
+        "root_cause_cluster": "local-telegram-avatar-path-forced-into-cloud-api-url",
+        "environment": {
+          "os": "local filesystem environment",
+          "platform": "self-hosted Telegram Bot API with --local",
+          "adapter_api_server": "custom local HTTP endpoint"
+        },
+        "versions": {
+          "python": "3.13.3",
+          "nonebot": "2.4.2",
+          "nonebot-plugin-uninfo": "0.7.3",
+          "buggy_commit": "9ab5819e7600eaa5429045dc45d65ca3d471a975",
+          "fixed_commit": "814e3d57403c13aebac07355fdc166f81f622aa7"
+        },
+        "deployment_topology": "A self-hosted Telegram Bot API returns a local avatar file_path to Uninfo's Telegram user-data supplier.",
+        "observed_behavior": "Uninfo always prefixes the returned local path with api.telegram.org/file/botTOKEN, producing a malformed HTTPS URL that embeds the server filesystem path.",
+        "expected_behavior": "An existing local avatar path becomes a file URI; a non-local Telegram file path continues to use the cloud Bot API download URL.",
+        "reproduction_steps": [
+          "At the buggy commit, stub get_user_profile_photos and get_file so file_path points to a temporary existing avatar file.",
+          "Call the Telegram user-data supplier and record the generated avatar value.",
+          "Repeat at the fixed commit, then run a second fixture with a non-existing remote file path to verify the cloud URL fallback."
+        ],
+        "fault_phase": "handle",
+        "symptoms": ["wrong_action"],
+        "candidate_owners": ["plugin"],
+        "oracle": {
+          "buggy_ref": "9ab5819e7600eaa5429045dc45d65ca3d471a975",
+          "fixed_ref": "814e3d57403c13aebac07355fdc166f81f622aa7",
+          "failure_signature": "an existing absolute local file_path is embedded in an https://api.telegram.org/file/bot... URL",
+          "success_assertion": "the same existing path becomes Path(file_path).as_uri(), while a non-existing remote path still produces the Telegram cloud download URL"
+        }
+      }
+    },
+    {
+      "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-8",
+      "curation": {
+        "field_provenance": {
+          "support_level": ["source.body", "gold.pr.9"],
+          "execution_mode": ["source.body", "gold.pr.9", "curator.inference"],
+          "root_cause_cluster": ["source.body", "gold.pr.9"],
+          "environment": ["source.body"],
+          "versions": ["source.body", "gold.pr.9"],
+          "deployment_topology": ["source.body"],
+          "observed_behavior": ["source.body"],
+          "expected_behavior": ["source.body", "gold.pr.9"],
+          "reproduction_steps": ["source.body"],
+          "fault_phase": ["source.body"],
+          "symptoms": ["source.body"],
+          "candidate_owners": ["source.body", "gold.pr.9"],
+          "oracle.buggy_ref": ["gold.pr.9.first_parent"],
+          "oracle.fixed_ref": ["gold.pr.9.fixed_head"],
+          "oracle.failure_signature": ["source.body"],
+          "oracle.success_assertion": ["source.body", "gold.pr.9"]
+        },
+        "support_level": "s1_verify",
+        "execution_mode": "contract_exec",
+        "root_cause_cluster": "satori-direct-scene-id-replaced-by-self-user-id",
+        "environment": {
+          "adapter": "Satori",
+          "event": "bot-authored message in a private channel",
+          "comparison": "nonebot-plugin-session reports the peer as id2"
+        },
+        "versions": {
+          "python": "3.12.6",
+          "nonebot": "2.3.3",
+          "nonebot-plugin-uninfo": "0.5.0",
+          "buggy_commit": "d4a29608c2f6b4f7db1c52bec941e2f41164d83b",
+          "fixed_commit": "e59a1a939c42566cc156e5deb96299753a0b23bd"
+        },
+        "deployment_topology": "The Satori adapter supplies a private Channel on a self-authored event and Uninfo extracts the conversation Scene.",
+        "observed_behavior": "The direct-channel branch deletes the extracted channel scene_id, allowing fallback identity logic to use the bot's own user id.",
+        "expected_behavior": "The private Session preserves event.channel.id as the peer conversation scene id for both peer-authored and self-authored messages.",
+        "reproduction_steps": [
+          "At the buggy commit, construct a minimal Satori event with a DIRECT channel, bot-authored user identity and a known peer channel id.",
+          "Run the Satori fetcher and inspect Session.scene.id.",
+          "Repeat at the fixed PR head and also verify a non-direct channel retains its existing scene mapping."
+        ],
+        "fault_phase": "handle",
+        "symptoms": ["wrong_action"],
+        "candidate_owners": ["plugin"],
+        "oracle": {
+          "buggy_ref": "d4a29608c2f6b4f7db1c52bec941e2f41164d83b",
+          "fixed_ref": "e59a1a939c42566cc156e5deb96299753a0b23bd",
+          "failure_signature": "a bot-authored Satori private event produces Session.scene.id equal to the bot's own user id instead of the direct channel id",
+          "success_assertion": "the identical event preserves the peer direct channel id as Session.scene.id, and a non-direct channel fixture keeps its prior scene mapping"
+        }
+      }
+    }
+  ]
+}

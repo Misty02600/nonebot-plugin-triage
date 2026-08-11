@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "b3-evidence-policy-validation-v1",
+  "artifact_profile": "b3-evidence-policy-curated-fixture-v1",
+  "source_kind": "curated_public_regression_projection",
+  "contains_provider_metadata": false,
+  "evaluation_id": "b1-rag-only-v1",
+  "summary": {
+    "score_splits": [
+      "validation"
+    ]
+  },
+  "predictions": [
+    {
+      "split": "validation",
+      "case_id": "gh-he0119-nonebot-plugin-wordcloud-342",
+      "gold": {
+        "route": "needs_evidence",
+        "missing_evidence": [
+          "component_versions",
+          "configuration",
+          "reproduction_steps"
+        ]
+      },
+      "prediction": {
+        "case_id": "gh-he0119-nonebot-plugin-wordcloud-342",
+        "route": "needs_evidence",
+        "fault_phase": "handle",
+        "missing_evidence": [
+          "configuration",
+          "deployment_topology",
+          "operating_system",
+          "python_version",
+          "raw_close_evidence"
+        ]
+      }
+    },
+    {
+      "split": "validation",
+      "case_id": "gh-nonebot-adapter-qq-146",
+      "gold": {
+        "route": "verify",
+        "missing_evidence": [
+          "operating_system"
+        ]
+      },
+      "prediction": {
+        "case_id": "gh-nonebot-adapter-qq-146",
+        "route": "needs_evidence",
+        "fault_phase": "call_api",
+        "missing_evidence": [
+          "component_versions",
+          "expected_behavior",
+          "reproduction_steps"
+        ]
+      }
+    },
+    {
+      "split": "validation",
+      "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-16",
+      "gold": {
+        "route": "verify",
+        "missing_evidence": []
+      },
+      "prediction": {
+        "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-16",
+        "route": "verify",
+        "fault_phase": "match",
+        "missing_evidence": []
+      }
+    },
+    {
+      "split": "validation",
+      "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-18",
+      "gold": {
+        "route": "needs_evidence",
+        "missing_evidence": [
+          "reproduction_steps"
+        ]
+      },
+      "prediction": {
+        "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-18",
+        "route": "needs_evidence",
+        "fault_phase": "handle",
+        "missing_evidence": [
+          "expected_behavior",
+          "logs",
+          "reproduction_steps"
+        ]
+      }
+    },
+    {
+      "split": "validation",
+      "case_id": "gh-nonebot-adapter-onebot-129",
+      "gold": {
+        "route": "needs_evidence",
+        "missing_evidence": [
+          "component_versions",
+          "configuration",
+          "expected_behavior"
+        ]
+      },
+      "prediction": {
+        "case_id": "gh-nonebot-adapter-onebot-129",
+        "route": "needs_evidence",
+        "fault_phase": "connect",
+        "missing_evidence": [
+          "component_versions",
+          "configuration",
+          "deployment_topology",
+          "expected_behavior",
+          "logs"
+        ]
+      }
+    },
+    {
+      "split": "validation",
+      "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-19",
+      "gold": {
+        "route": "verify",
+        "missing_evidence": []
+      },
+      "prediction": {
+        "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-19",
+        "route": "verify",
+        "fault_phase": "call_api",
+        "missing_evidence": []
+      }
+    },
+    {
+      "split": "validation",
+      "case_id": "gh-nonebot-plugin-alconna-99",
+      "gold": {
+        "route": "needs_evidence",
+        "missing_evidence": [
+          "component_versions",
+          "expected_behavior",
+          "logs",
+          "reproduction_steps"
+        ]
+      },
+      "prediction": {
+        "case_id": "gh-nonebot-plugin-alconna-99",
+        "route": "verify",
+        "fault_phase": "match",
+        "missing_evidence": []
+      }
+    },
+    {
+      "split": "validation",
+      "case_id": "gh-nonebot-nb-cli-148",
+      "gold": {
+        "route": "needs_evidence",
+        "missing_evidence": [
+          "logs"
+        ]
+      },
+      "prediction": {
+        "case_id": "gh-nonebot-nb-cli-148",
+        "route": "needs_evidence",
+        "fault_phase": "install",
+        "missing_evidence": [
+          "component_versions",
+          "configuration",
+          "deployment_topology",
+          "expected_behavior",
+          "logs",
+          "operating_system",
+          "python_version",
+          "raw_close_evidence",
+          "reproduction_steps"
+        ]
+      }
+    },
+    {
+      "split": "validation",
+      "case_id": "gh-nonebot-plugin-apscheduler-66",
+      "gold": {
+        "route": "needs_evidence",
+        "missing_evidence": [
+          "component_versions"
+        ]
+      },
+      "prediction": {
+        "case_id": "gh-nonebot-plugin-apscheduler-66",
+        "route": "needs_evidence",
+        "fault_phase": "boot",
+        "missing_evidence": [
+          "component_versions",
+          "configuration",
+          "expected_behavior"
+        ]
+      }
+    },
+    {
+      "split": "validation",
+      "case_id": "gh-nonebot-nb-cli-180",
+      "gold": {
+        "route": "verify",
+        "missing_evidence": []
+      },
+      "prediction": {
+        "case_id": "gh-nonebot-nb-cli-180",
+        "route": "needs_evidence",
+        "fault_phase": "install",
+        "missing_evidence": [
+          "raw_close_evidence"
+        ]
+      }
+    },
+    {
+      "split": "validation",
+      "case_id": "gh-he0119-nonebot-plugin-wordcloud-355",
+      "gold": {
+        "route": "needs_evidence",
+        "missing_evidence": [
+          "configuration",
+          "deployment_topology",
+          "expected_behavior",
+          "reproduction_steps"
+        ]
+      },
+      "prediction": {
+        "case_id": "gh-he0119-nonebot-plugin-wordcloud-355",
+        "route": "needs_evidence",
+        "fault_phase": "handle",
+        "missing_evidence": [
+          "configuration",
+          "deployment_topology",
+          "expected_behavior",
+          "logs"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "rubric_id": "answer-quality-v1",
+  "scale": {
+    "minimum": 0,
+    "maximum": 2
+  },
+  "axes": {
+    "groundedness": {
+      "description": "回答中的实质性事实和引用是否由评分时可见的证据支持。",
+      "anchors": {
+        "0": "核心结论与可见证据矛盾、无依据，或引用不能支持对应主张。",
+        "1": "核心方向有部分依据，但至少一项重要细节、因果关系或引用支撑不足。",
+        "2": "所有实质性主张均由可见证据支持，引用与对应主张一致。"
+      }
+    },
+    "completeness": {
+      "description": "回答是否覆盖当前 route 所需的结论、下一步和必要信息。",
+      "anchors": {
+        "0": "遗漏核心结论、关键缺失证据或可执行的下一步，回答不足以推进处置。",
+        "1": "覆盖主要结论，但遗漏一项会明显帮助处置的说明、限制或下一步。",
+        "2": "覆盖当前证据允许的结论、必要下一步及与 route 相符的缺失信息。"
+      }
+    },
+    "limitation_awareness": {
+      "description": "回答是否明确区分已观察事实、候选解释和仍未知的边界。",
+      "anchors": {
+        "0": "把候选、相关性或未验证结果写成确定事实，并遗漏关键限制。",
+        "1": "表达了部分不确定性，但没有完整说明证据只能支持到哪里。",
+        "2": "清楚标明已知、未知和待验证项，不把证据缺口隐藏在确定性措辞中。"
+      }
+    },
+    "overclaim_control": {
+      "description": "回答是否避免声称已经执行、修复、成功、确定根因或获得未提供的权限。",
+      "anchors": {
+        "0": "存在实质性越界声明，例如虚构执行、修复成功、确定根因或用户已观察结果。",
+        "1": "没有直接虚构执行，但措辞容易让读者误以为根因或效果已被充分验证。",
+        "2": "没有超出证据、权限和实际执行状态的声明，建议与已完成动作区分清楚。"
+      }
+    }
+  },
+  "thresholds": {
+    "min_axis_mean": 1.5,
+    "min_sample_axis_score": 1,
+    "critical_axes": [
+      "groundedness",
+      "overclaim_control"
+    ],
+    "max_critical_zero_count": 0,
+    "require_human_review": true,
+    "require_non_calibration_dataset": true
+  }
+}

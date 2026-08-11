@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "batch_id": "batch-0003-mainstream-plugin-candidates",
+  "executed_at": "2026-08-08T19:38:34+08:00",
+  "runner": {
+    "platform": "Windows",
+    "isolation_level": "disposable_git_worktree_and_uv_isolated_process",
+    "containerized": false,
+    "scope": "Reviewed nonebot-plugin-alconna and nonebot-plugin-uninfo commits were installed from detached worktrees and invoked only through curator-authored probes.",
+    "dependency_policy": "Python and direct dependency versions were pinned from each target commit's PDM lockfile.",
+    "credential_policy": "GitHub and model API token environment variables were removed from every probe process.",
+    "limitations": "The process boundary is not container-grade isolation; adapter APIs were stubbed and no external platform was contacted."
+  },
+  "results": [
+    {
+      "case_id": "gh-nonebot-plugin-alconna-75",
+      "status": "validated",
+      "probe_id": "alconna-discord-custom-emoji-v1",
+      "probe_source": "scripts/oracle_probes/alconna_discord_custom_emoji.py",
+      "buggy_ref": "e70f145a8e78913aa72bfda2b86151f30262d1b4",
+      "fixed_ref": "23696689d731161b088e54ec36a129c95670aa77",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "The Discord CustomEmojiSegment converted to universal Emoji with id 123456 and no CDN URL.",
+      "fixed_observation": "The identical segment converted to universal Image with https://cdn.discordapp.com/emojis/123456.png.",
+      "environment": "Windows, CPython 3.11, nonebot2 2.3.3, nonebot-adapter-discord 0.1.8, PDM-lock dependency pins"
+    },
+    {
+      "case_id": "gh-nonebot-plugin-alconna-79",
+      "status": "validated",
+      "probe_id": "alconna-telegram-file-field-v1",
+      "probe_source": "scripts/oracle_probes/alconna_telegram_file_field.py",
+      "buggy_ref": "2c46c4da4170a99e180ad20349851bafe6d21c19",
+      "fixed_ref": "0eb61d174f1628c22567e35ae7bc71f3ec7b79ba",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "Converting the Telegram video segment with data['file'] raised KeyError: 'file_id'.",
+      "fixed_observation": "The identical segment converted to Video and preserved telegram-file-id.",
+      "environment": "Windows, CPython 3.12, nonebot2 2.4.0, nonebot-adapter-telegram 0.1.0b19, PDM-lock dependency pins"
+    },
+    {
+      "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-16",
+      "status": "validated",
+      "probe_id": "uninfo-qq-guild-direct-message-v1",
+      "probe_source": "scripts/oracle_probes/uninfo_qq_guild_direct_message.py",
+      "buggy_ref": "1c1a0c21e038732c33cf99d870262ce8893807d3",
+      "fixed_ref": "13b33888e419332b3138f7de5433bcba8356ae22",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "A QQ DirectMessageCreateEvent produced CHANNEL_TEXT and is_private false, identical to the public guild control.",
+      "fixed_observation": "The direct event produced PRIVATE and is_private true while the public guild control remained CHANNEL_TEXT.",
+      "environment": "Windows, CPython 3.11, nonebot2 2.3.3, nonebot-adapter-qq 1.5.2, Pydantic 2.9.2"
+    },
+    {
+      "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-8",
+      "status": "validated",
+      "probe_id": "uninfo-satori-direct-scene-v1",
+      "probe_source": "scripts/oracle_probes/uninfo_satori_direct_scene.py",
+      "buggy_ref": "d4a29608c2f6b4f7db1c52bec941e2f41164d83b",
+      "fixed_ref": "e59a1a939c42566cc156e5deb96299753a0b23bd",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "The bot-authored Satori direct event fell back to scene id bot instead of peer-channel; the public channel control used peer-channel.",
+      "fixed_observation": "The same direct event preserved peer-channel as the private scene id and the public channel control remained CHANNEL_TEXT.",
+      "environment": "Windows, CPython 3.12, nonebot2 2.3.3, nonebot-adapter-satori 0.12.6, Pydantic 2.9.2"
+    },
+    {
+      "case_id": "gh-rf-tar-railt-nonebot-plugin-uninfo-19",
+      "status": "validated",
+      "probe_id": "uninfo-telegram-local-avatar-v1",
+      "probe_source": "scripts/oracle_probes/uninfo_telegram_local_avatar.py",
+      "buggy_ref": "9ab5819e7600eaa5429045dc45d65ca3d471a975",
+      "fixed_ref": "814e3d57403c13aebac07355fdc166f81f622aa7",
+      "buggy_oracle_matched": true,
+      "fixed_oracle_matched": true,
+      "buggy_observation": "An existing Windows avatar path was embedded after the api.telegram.org/file/bot token prefix instead of becoming a file URI.",
+      "fixed_observation": "The existing path became file:///C:/... while a remote/avatar.jpg control still produced the Telegram cloud URL.",
+      "environment": "Windows, CPython 3.13, nonebot2 2.4.2, nonebot-adapter-telegram 0.1.0b20, Pydantic 2.11.3"
+    }
+  ]
+}
