@@ -72,6 +72,11 @@ test = [
 [tool.nonebot.plugins]
 nonebot-plugin-triage = ["nonebot_plugin_triage"]
 
+[tool.nonebot.adapters]
+nonebot-adapter-onebot = [
+    { name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11" },
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/nbtriage", "src/nonebot_plugin_triage"]
 
