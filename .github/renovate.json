@@ -7,14 +7,12 @@
     ":semanticCommits",
     ":dependencyDashboard"
   ],
+  "automergeStrategy": "rebase",
+  "platformAutomerge": false,
   "onboarding": false,
   "timezone": "Asia/Shanghai",
   "schedule": ["before 6am on monday"],
   "prConcurrentLimit": 3,
-  "lockFileMaintenance": {
-    "enabled": true,
-    "schedule": ["before 6am on the first monday of the month"]
-  },
   "packageRules": [
     {
       "description": "Keep NoneBot runtime integrations reviewable as one group",
@@ -29,6 +27,19 @@
       "description": "Do not automerge runtime, Actions, or release dependencies",
       "matchDepTypes": ["dependencies", "optionalDependencies", "action"],
       "automerge": false
+    },
+    {
+      "description": "Keep uv patch updates separate from compatibility migrations",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["astral-sh/uv"],
+      "separateMinorPatch": true
+    },
+    {
+      "description": "Automerge uv patch updates after CI passes",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["astral-sh/uv"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
     }
   ]
 }
