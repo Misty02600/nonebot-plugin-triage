@@ -4,7 +4,12 @@
 
 NoneBot Triage Agent 把模糊报障转换为证据可追溯的 `SupportCase`，再选择补问、检索、确定性探针、隔离复现或升级。核心不承诺自动解决全部 NoneBot / QQ 问题，也不把 Issue 分类、摘要或聊天外壳当作主要差异。
 
-当前实现覆盖 Data Gate 的只读离线链路、B0 确定性评测、已冻结的 B1 RAG-only 基线和 B3 可审计会话切片：公开 GitHub Issue 发现与采集、输入 / Gold 隔离、时间线 / PR / commit 引用、可版本化人工标注、Case 草稿、完整性评估、人工启动的逐 Case Oracle Probe，以及只读公开输入的检查表 / 检索基线。B1 增加 train-only 检索证据包、严格结构化模型边界和响应缓存；历史 DeepSeek 直接 SDK 路径已完成 validation 与 held-out 正式评测，新的 Pydantic AI 层则用 OpenAI Responses、DeepSeek Responses 与 Anthropic Messages 假 HTTP 验证同一 B1 native schema 契约。OpenAI 与 Anthropic 以语义独立的公开 extra 和身份记账；DeepSeek 只保留仓库维护者评测栈，三者均未因离线通过而升级为正式支持。OpenCode Go 的兼容 Chat spike 仅保留为 `tests/support/opencode_go_backend.py` 中的 evaluation-only 测试夹具，用于离线验证 wire 与 usage 失败关闭；它不进入 wheel、公开 extra、CLI、插件配置或 Provider 资格。NoneBot 已公开默认关闭的窄模型配置和惰性 step-client factory；当前资格表为空，安装实验性产品 extra 或填写组合都不会让插件调用模型。B3 把冻结预测映射为固定动作、持久化状态与事件；补证动作每轮只从模型候选中选择一个槽位，接收白名单化脱敏回执后再从剩余冻结候选重规划，执行型动作则必须显式审批后才能关联已有 Oracle 结论。面向真实入口已经实现传输无关运行观察、确定性入口分流和首个用户可见的 Alconna / UniSeg 群报障竖切；Alconna 能力快照仍是未接入插件的仓库实验。NoneBot 2.5 公共 hook 用事件 state 贯穿关联 ID；UniSeg 统一入站 Reply / Target，HMAC 索引关联近期消息，OneBot V11 Provider 补齐 Bot 出站消息引用。入口已有场景过滤、限流、窄回显、短期 `LiveIncident` 与 `SUPERUSER` 白名单摘要查询；诊断重评估、自动化隔离 Runner、服务端数据库、普通用户工单查询与 GitHub 写回仍未进入当前切片。
+当前实现覆盖 Data Gate 的只读离线链路、B0 确定性评测、已冻结的 B1 RAG-only 基线和 B3 可审计会话切片：公开 GitHub Issue 发现与采集、输入 / Gold 隔离、时间线 / PR / commit 引用、可版本化人工标注、Case 草稿、完整性评估、人工启动的逐 Case Oracle Probe，以及只读公开输入的检查表 / 检索基线。B1 增加 train-only 检索证据包、严格结构化模型边界和响应缓存；历史 DeepSeek 直接 SDK 路径已完成 validation 与 held-out 正式评测，新的 Pydantic AI 层则用 OpenAI Responses、DeepSeek Responses 与 Anthropic Messages 假 HTTP 验证同一 B1 native schema 契约。OpenAI 与 Anthropic 以语义独立的公开 extra 和身份记账；DeepSeek 只保留仓库维护者评测栈，三者均未因离线通过而升级为正式支持。OpenCode Go 的兼容 Chat spike 仅保留为 `tests/support/opencode_go_backend.py` 中的 evaluation-only 测试夹具，用于离线验证 wire 与 usage 失败关闭；它不进入 wheel、公开 extra、CLI、插件配置或 Provider 资格。NoneBot 已公开默认关闭的窄模型配置和惰性 step-client factory；当前资格表为空，安装实验性产品 extra 或填写组合都不会让插件调用模型。B3 把冻结预测映射为固定动作、持久化状态与事件；补证动作每轮只从模型候选中选择一个槽位，接收白名单化脱敏回执后再从剩余冻结候选重规划，执行型动作则必须显式审批后才能关联已有 Oracle 结论。面向真实入口已经实现传输无关运行观察、`triage <自然语言>` 的 Alconna / UniSeg 支持入口、确定性首轮意图和显式公开能力 Provider；丰富 Alconna AST 快照与解析回执仍是仓库实验。NoneBot 2.5 公共 hook 用事件 state 贯穿关联 ID；UniSeg 统一入站 Reply / Target，HMAC 索引关联近期消息，OneBot V11 Provider 补齐 Bot 出站消息引用。只有疑似故障建立短期 `LiveIncident`；入口已有场景过滤、限流、窄回显与 `SUPERUSER` 白名单摘要查询。模型资格表仍为空，模型 Agent、诊断重评估、自动化隔离 Runner、服务端数据库、普通用户工单查询与 GitHub 写回尚未进入运行入口。
+
+默认关闭的部署本地能力影子索引已经进入运行包：它在启动时只读收集已加载 Plugin、Matcher、Alconna、
+安装来源和可变源码摘要，原子生成带 `public / review / restricted` 披露态的本地 FTS5 候选库。
+`restricted` 保存 SUPERUSER 与内部管理能力，但只允许模型外鉴权后的查询路径读取；第一阶段仍只供维护者
+检索和覆盖审计，不接入群聊回答。
 
 B4 已增加 Provider 无关的有界 Agent control plane：模型可在白名单运行观察、train-only 检索、结构化
 补证和最终诊断间动态选择；领域 runtime 掌握跨步预算、二次授权、暂停恢复和 trajectory，Pydantic AI
@@ -30,16 +35,16 @@ native-schema 探测返回 HTTP 400；该结果只说明兼容传输不能创造
 
 ## 已采纳产品方向与当前基础
 
-首个真实用户入口面向独立 NoneBot 部署者：在 Bot 进程中安装入口插件，由群聊或频道用户回复具体消息
-显式报障，入口把报障与本机事件、实际运行过的 Matcher、插件 / 模块、平台 API 调用、异常和版本证据
-关联，再转换成传输无关的 `SupportCase` / `SupportSession`。普通群员不能查询任意日志；原始群聊和
+首个真实用户入口面向独立 NoneBot 部署者：在 Bot 进程中安装入口插件，由群聊或频道用户发送
+`triage <求助内容>`；`@Bot` 和 Reply 可选。疑似故障带 Reply 时，入口再把求助与本机事件、实际运行过的 Matcher、插件 / 模块、平台 API 调用、异常和
+版本证据关联，之后转换成传输无关的 `SupportCase` / `SupportSession`。普通群员不能查询任意日志；原始群聊和
 日志默认不上传、不长期保存；Probe、GitHub 写回和其他副作用仍由维护者审批。为尽快进入真实使用，当前还
-提供默认关闭的 observation-first trial：只对已受理 incident 记录脱敏生命周期、查询曝光和维护者枚举反馈，
+提供默认关闭的 observation-first trial：只对疑似故障产生的 incident 记录脱敏生命周期、查询曝光和维护者枚举反馈，
 本地 JSONL 有界轮转，写入失败可见但不阻断报障；模型 shadow 与 canary 仍是后续独立晋级阶段。
 
 该方向的核心不是“用 LLM 从群聊识别 Bug”。调研已发现 AstrBot BugCatcher 覆盖静默监听、LLM 识别、
-去重与 Dashboard，NoneBot 也已有 Sentry 错误跟踪。NoneBot Triage Agent 的产品边界必须保持在“显式报障与运行
-证据关联、NoneBot 责任层定位、最小补证和可审计验证”。长期决策见
+去重与 Dashboard，NoneBot 也已有 Sentry 错误跟踪。NoneBot Triage Agent 的产品边界保持在“显式支持分流、
+疑似故障与运行证据关联、NoneBot 责任层定位、最小补证和可审计验证”。长期决策见
 [ADR-0001](../adr/0001-qq-group-report-linked-runtime-evidence.md)，竞品证据见
 [产品定位与同类能力](product-positioning.md)。
 
@@ -50,11 +55,16 @@ native-schema 探测返回 HTTP 400；该结果只说明兼容传输不能创造
 
 同一个显式入口承接能力导航、指令纠错和故障报障，但先用独立 `IntakeDisposition` 决定教学、纠错、诊断、
 说明范围或拒绝；只有疑似故障进入技术 `ResponsibilityLayer`。MVP 不代用户执行有副作用指令，未来能力
-注册表先覆盖 Alconna。当前已实现严格结构信号、固定优先级路由、Alconna 能力快照和解析回执，以及
-`on_alconna + OriginalUniMsg + MsgTarget + UniMessage` 的首个跨平台报障入口。当前公开命令仍是窄的
-“回复消息并 @Bot 报错”，尚未把能力教学或自然语言纠错接入这个 Matcher。统一入口决策见
+注册表先覆盖 Alconna。当前已实现严格结构信号、固定优先级路由、显式公开能力 Provider，以及
+`on_alconna + MultiVar + OriginalUniMsg + MsgTarget + UniMessage` 的跨平台 `triage` 入口。`triage` 必选，
+`@Bot` 与 Reply 可选；另有默认关闭的本地影子索引从已加载插件生成带来源的
+`public / review / restricted` 快照，作为后续本地 RAG 的候选事实层。系统不使用 `hidden` 披露态；按能力
+完全排除将由后续独立 operator exclude policy 在持久化前处理，当前尚无这个接口。当前只有确定性首轮
+分流，模型 Agent 尚未获得运行资格。统一入口决策见
 [ADR-0003](../adr/0003-unified-capability-guidance-and-incident-intake.md)，跨平台边界见
-[ADR-0006](../adr/0006-cross-platform-alconna-entry-and-reference-providers.md)。
+[ADR-0006](../adr/0006-cross-platform-alconna-entry-and-reference-providers.md)，当前入口语义见
+[ADR-0020](../adr/0020-use-triage-command-for-natural-language-support.md)，能力影子边界见
+[ADR-0021](../adr/0021-use-deployment-local-capability-shadow-index.md)。
 
 ## 核心能力与当前命令入口
 
@@ -75,6 +85,7 @@ native-schema 探测返回 HTTP 400；该结果只说明兼容传输不能创造
 | `just maintainer evaluate-s3` | 在独立合成 Fixture 上比较冻结 B0 与 B1 模型前安全拒绝 | 不读取真实秘密或生产数据；不检索、不调用模型、不调用外部工具 | `src/nbtriage/safety.py`、`tools/nbtriage_maintainer/safety_evaluation.py` |
 | `just maintainer build-bot-docs-index` | 从外部 `bot-docs` 的批准子集构建本地 SQLite FTS5 派生索引 | 不修改源目录或 vendor 独立 Markdown 副本；目标不得位于 `bot-docs` 内；已有索引只在显式 `--replace` 时原子替换 | `tools/nbtriage_maintainer/bot_docs.py`、`tools/nbtriage_maintainer/cli.py` |
 | `just maintainer search-bot-docs` | 用 metadata 或 hybrid 策略检索项目事实、工程配方和当前 OneBot API 文档 | 只读本地索引；返回文件哈希、修订、标题和精确版本；不调用网络、模型或工具 | `tools/nbtriage_maintainer/bot_docs.py`、`tools/nbtriage_maintainer/cli.py` |
+| `just maintainer search-capabilities` | 检索部署启动时生成的本地能力影子索引 | 默认只返回 `public`；`--include-review` 纳入待复核候选；带外确认授权后可用 `--include-restricted`，该开关不自行鉴权；不调用模型或能力代码 | `src/nbtriage/capabilities.py`、`tools/nbtriage_maintainer/cli.py` |
 | `just maintainer evaluate-bot-docs-retrieval` | 在 25 条公开合成问题上比较 metadata 基线与 hybrid 检索 | 固定 Recall@5 / MRR / 来源完整率合同；报告写本地忽略目录；0 模型和外部工具调用 | `tools/nbtriage_maintainer/bot_docs_evaluation.py`、`evals/datasets/fixtures/bot-docs-retrieval-v1.json` |
 | `just maintainer evaluate-b1-openai` | 用 train-only 证据和一次 Responses 原生 JSON Schema 运行 validation 或 heldout | 需要 `model-openai` extra；必须显式模型、输出 / 调用上限和付费确认；Pydantic AI Direct Request 仍按 Case 串行；请求关闭存储、工具、遥测和自动重试，但不声称零数据保留；响应按完整请求缓存 | `src/nbtriage/rag.py`、`src/nbtriage/model_adapters.py`、`src/nbtriage/openai_adapter.py`、`tools/nbtriage_maintainer/evaluation.py` |
 | `just maintainer evaluate-b1-deepseek` | 用 DeepSeek V4 Flash 非思考模式运行同一 B1 契约 | 只接受 `deepseek-v4-flash`；固定 `reasoning=none`、`temperature=0`；使用独立密钥、缓存和报告 | `tools/nbtriage_maintainer/cli.py`、`tools/nbtriage_maintainer/providers.py` |
@@ -90,13 +101,14 @@ native-schema 探测返回 HTTP 400；该结果只说明兼容传输不能创造
 | `NoneBotRuntimeObserver` | 显式注册 NoneBot 2.5 公共 hook，用事件 state 关联 event、实际 Matcher 与其内部 API 生命周期 | fail-open；只读取框架 / 插件标识和异常类 / 栈模块；Matcher 外 API 不猜测归属 | `src/nonebot_plugin_triage/nonebot_runtime.py` |
 | `UniversalReferenceBridge` / `PlatformMessageReferenceIndex` | 通过 UniSeg Target / message ID 统一绑定入站消息，并以带密钥摘要短期关联 correlation ID | 原始适配器 / Bot / 会话 / 消息 ID 只瞬时参与 HMAC；不保存正文；显式容量与 TTL | `src/nonebot_plugin_triage/universal_references.py`、`src/nbtriage/message_references.py` |
 | `OneBotV11OutgoingReferenceProvider` | 从 Matcher 内成功的 OneBot 群发送结果补齐 Bot 输出引用 | OneBot 是可选依赖；只读路由字段和结构化 message ID；不保存完整 API data / result | `src/nonebot_plugin_triage/onebot_v11_references.py` |
-| `LiveReportService` / Alconna report Matcher | 把统一 Reply 与近期运行 bundle 转为最小 `LiveIncident`，并通过 UniMessage 返回窄结果 | 群 / 频道可用，私聊拒绝；HMAC scope 限流；无模型、网络、Probe 或外部写入 | `src/nonebot_plugin_triage/live_reports.py`、`src/nonebot_plugin_triage/handlers.py` |
+| Alconna `triage` Matcher / support intake adapter | 接收必选指令后的自由文本；`@Bot` 与 Reply 可选；能力问题直接说明，未知请求澄清 | 文本只瞬时用于首轮分流；私聊拒绝；公开能力必须显式登记；不执行用户文字或任意命令解析 | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support_intake.py` |
+| `LiveReportService` | 只在疑似故障分支建立最小 `LiveIncident`；Reply 命中时关联近期运行 bundle，缺失或未命中时保留空证据 | HMAC scope 限流；无模型、网络、Probe 或外部写入 | `src/nonebot_plugin_triage/live_reports.py` |
 | `NBTriageConfig` / `NBTriageModelService` | 公开默认关闭的模型 backend、精确模型、timeout 与输出 token 配置，并为每个模型步骤创建单次客户端 | 禁用时不导入 Provider；密钥只读厂商环境变量；当前资格表为空，真实启用失败；没有 endpoint、工具或 Matcher 调用配置 | `src/nonebot_plugin_triage/config.py`、`src/nonebot_plugin_triage/model_runtime.py`、`src/nonebot_plugin_triage/runtime.py` |
 | `IncidentQueryService` / Alconna query Matcher | 让维护者按不透明受理编号查看短期白名单摘要，并识别活动 TTL 内的相似显式报障 | `SUPERUSER` 在读取前守门；cluster 只基于最小失败标识且不代表底层异常总数；不返回聊天、平台身份、correlation ID、API 参数或任意日志 | `src/nbtriage/live_incidents.py`、`src/nbtriage/incident_queries.py`、`src/nonebot_plugin_triage/incident_queries.py`、`src/nonebot_plugin_triage/handlers.py` |
 | `LiveTrialService` / trial Matchers | 为已受理 incident 建立 observation-only trial，记录查询曝光、revisioned 枚举反馈和活动聚合 | 默认 off；observe 必须有本地轮转 JSONL sink；只保存最小失败形状和计数，写入失败计数但不改变受理；反馈 / 统计要求 `SUPERUSER`；零模型 / 工具 / 外部写入 | `src/nbtriage/live_trials.py`、`src/nonebot_plugin_triage/trials.py`、`src/nonebot_plugin_triage/live_reports.py`、`src/nonebot_plugin_triage/handlers.py` |
-| `build_reply_report_signals` / `route_reply_report` | 把已命中的引用和最小运行 bundle 转为确定性报障信号 | 无明确失败时不把生命周期成功误称为行为成功；不调用模型 | `src/nbtriage/reply_reports.py` |
+| `build_reply_report_signals` / `build_unlinked_report_signals` | 分别把已命中的引用或无证据故障转为确定性入口信号 | 两者都要求上游已判定用户在报告问题；没有明确失败时不把生命周期成功误称为行为成功；不调用模型 | `src/nbtriage/reply_reports.py` |
 | `parse_intake_signals` / `route_intake` | 把受信边界产生的显式触发、意图、相关性、命令解析、运行与安全信号分流为教学、纠错、疑似故障、无关或危险 | 不接收文本、命令原文或身份；危险优先、解析错误先纠错、矛盾或不足只补问；不调用模型或工具 | `src/nbtriage/intake.py` |
-| `snapshot_alconna_capabilities` / `adapt_alconna_parse_result`（仓库实验） | 从当前注册命令 AST 提供能力事实，并把既有真实解析结果压缩为四类入口状态 | 尚未接入插件且不进入发行包；默认过滤隐藏 / 停用命令；不复制原消息、异常文本、匹配值或 `meta.extra`；不主动重跑解析或执行命令 | `tools/nbtriage_maintainer/alconna_capabilities.py` |
+| 公开能力 Provider / 部署本地能力影子 | 运行入口只解释显式登记的公开命令；可选影子索引自动观察已加载的 Alconna、普通 Matcher、被动能力与插件来源 | 运行回答过滤未登记、`CommandMeta.hide=True`、停用和可见性失败能力；影子候选默认 `review`，SUPERUSER 与内部管理能力为 `restricted`，不重跑 `parse()`、Rule、Permission 或 handler | `src/nonebot_plugin_triage/support_intake.py`、`src/nonebot_plugin_triage/capability_snapshot.py`、`src/nbtriage/capabilities.py` |
 | `SupportCase` schema v1 | 冻结打开时输入边界，分离当前 API 快照中的后续材料 | Issue 正文可能被事后编辑，必须保留时间完整性限制 | `tools/nbtriage_maintainer/models.py` |
 
 ## 逻辑组件与依赖方向
@@ -119,21 +131,27 @@ synthetic Case + approved evidence → bounded AgentRunState → one deferred na
                                            ├─→ evidence interruption → exact receipt resume
                                            └─→ strict diagnosis or stable stop reason
 
-NoneBot public hooks → event-state correlation → runtime observer → bounded buffer → evidence bundle
-                 └─→ UniSeg incoming Target / message ID → keyed reference index
-                 └─→ adapter outgoing Provider ────────────────┘
-                                                                  ↑
-Alconna report Matcher → OriginalUniMsg Reply + MsgTarget ─────────┘
-                 └─→ rate limit → reply-report signals → short-lived LiveIncident → UniMessage receipt
+NoneBot public hooks → event-state correlation → runtime observer → bounded buffer
+                 ├─→ UniSeg incoming Target / message ID ─┐
+                 └─→ adapter outgoing Provider ───────────┴─→ keyed reference index
+
+[optional @Bot] triage + free text → MsgTarget → deterministic first-pass intent
+                 ├─→ capability / unknown → public capability or one clarification → UniMessage
+                 └─→ suspected incident → rate limit
+                          ├─→ Reply hit → keyed reference index → evidence bundle ─┐
+                          └─→ no/missed Reply → empty evidence ────────────────────┤
+                                                                                  ↓
+                                                         short-lived LiveIncident → UniMessage receipt
 SUPERUSER query Matcher ─→ exact incident ID ─→ whitelisted IncidentSummary ─────→ UniMessage receipt
                  └─→ observe trial → local rotating JSONL + summary_viewed event
 SUPERUSER feedback/stats ─→ enum feedback / active aggregate ─────────────────────→ UniMessage receipt
 
-future unified explicit request → trusted minimal signals → deterministic intake router
-                                                          ├─→ guidance / correction / refuse
-                                                          └─→ suspected incident → future SupportCase
+triage request text → controlled intent boundary → trusted minimal signals → intake router
+                         ├─→ guidance / correction / refuse
+                         └─→ suspected incident → future SupportCase
 
-registered Alconna AST → capability snapshot ──────────→ future guidance formatter
+explicit public Alconna provider → deterministic guidance formatter
+registered Alconna AST → repository-only rich capability snapshot
 existing Arparma ─────→ minimal parse receipt ─────────→ trusted command_status
 ```
 
@@ -171,12 +189,13 @@ existing Arparma ─────→ minimal parse receipt ───────�
 | Platform message reference index | 用 HMAC 精确绑定适配器、Bot、会话和消息引用 | 原始 scope / 引用只瞬时参与摘要；显式密钥、容量与 TTL；不持久化 | 摘要到 correlation ID 的单进程有界索引与丢弃计数 | `src/nbtriage/message_references.py` |
 | Universal reference bridge | 用 UniSeg exporter 从任意受支持入站事件提取 Target 与 message ID | 不导入适配器事件类型；Target source 不进入稳定 scope；显式注册、fail-open | 桥本地丢弃计数；映射进入通用引用索引 | `src/nonebot_plugin_triage/universal_references.py` |
 | OneBot V11 outgoing provider | 从 Matcher 内成功群发送结果提取 message ID，并用统一 Target scope 回填 | 只在安装 OneBot 时加载；不处理入站事件或公开命令；不保存完整 API 参数 / 结果 | Provider 本地丢弃计数；映射进入通用引用索引 | `src/nonebot_plugin_triage/onebot_v11_references.py` |
-| Alconna report entry | 从 OriginalUniMsg 取第一个 Reply.id，以 MsgTarget 过滤私聊并用 UniMessage 回执 | 普通成员可显式提交；身份只瞬时参与 HMAC 限流；不读 Reply 正文 / origin | 有界短期 LiveIncident | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/live_reports.py` |
+| Alconna triage entry | 接收必选 `triage` 后的自由文本，`@Bot` 和 Reply 可选；先分流能力说明、故障或澄清 | 文本只瞬时使用；不读 Reply 正文 / origin；所有求助先过轻量 HMAC 限流，只有疑似故障再过建单限流并进入 incident | 显式公开能力 Provider；疑似故障才有短期 LiveIncident | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support_intake.py`、`src/nonebot_plugin_triage/live_reports.py` |
+| Deployment-local capability shadow | 启动时从已加载插件生成字段级 Claim、Evidence、Constraint 和本地 FTS5 索引 | 默认关闭；源码哈希不依赖 `uv.lock`；`restricted` 在模型外鉴权前不返回；失败保留上一个完整索引；当前不进入消息请求路径 | 配置路径下的可删除 SQLite 派生数据与内存构建状态 | `src/nonebot_plugin_triage/capability_snapshot.py`、`src/nonebot_plugin_triage/capability_shadow.py`、`src/nbtriage/capabilities.py` |
 | Maintainer incident query | 在 NoneBot `SUPERUSER` 权限通过后，按编号读取固定字段摘要与活动 cluster 计数 | 普通成员在读取前被拒绝；无任意时间范围、日志导出或原始事件读取 | 读取现有 LiveIncident 与同缓冲内 cluster；不创建持久状态 | `src/nbtriage/live_incidents.py`、`src/nbtriage/incident_queries.py`、`src/nonebot_plugin_triage/incident_queries.py`、`src/nonebot_plugin_triage/handlers.py` |
 | Observation-first trial | 在 incident 已受理后建立 `intake-v1` trial，追加 started / summary_viewed / feedback 事件并提供活动与离线窗口统计 | 默认 off；observe 需要审计 sink；失败写入 fail-open 且计数；只接受枚举反馈；离线汇总严格校验后只返回无标识聚合；不调用模型或工具 | 短期有界 trial 状态；本地单进程轮转 JSONL；trial / event / incident 不透明 ID 与最小失败形状；脱敏窗口摘要 | `src/nbtriage/live_trials.py`、`tools/nbtriage_maintainer/cli.py`、`src/nonebot_plugin_triage/trials.py`、`src/nonebot_plugin_triage/live_reports.py`、`src/nonebot_plugin_triage/handlers.py` |
-| Reply-report adapter | 根据匹配 correlation 的运行 bundle 构造确定性入口信号 | 只把明确失败标为失败；无异常仍由显式报障进入疑似故障；不读取文本 | 无长期状态 | `src/nbtriage/reply_reports.py` |
-| Support intake router | 在技术责任诊断前区分能力教学、指令纠错、疑似故障、无关与危险请求 | 依赖未来传输 / 权限 / 解析 / 安全边界产生的结构信号；不解析原始群聊；不代用户执行 | 无长期状态；只返回 disposition、固定动作、原因与补问标记 | `src/nbtriage/intake.py` |
-| Alconna capability experiment | 读取当前注册命令的公开 AST，并适配原调用链产生的 `Arparma` | 尚未接入插件；不进入 wheel/sdist；不重跑 `parse()`；元数据是不受信证据；未知结果拒绝猜测 | 仓库测试内的即时能力快照与无原文解析回执 | `tools/nbtriage_maintainer/alconna_capabilities.py` |
+| Explicit-report adapter | 根据匹配 correlation 的运行 bundle 或无证据空 bundle 构造确定性故障信号 | 上游已确认故障意图；只把明确失败标为失败；不读取文本 | 无长期状态 | `src/nbtriage/reply_reports.py` |
+| Support intake router | 在技术责任诊断前区分能力教学、指令纠错、疑似故障、无关与危险请求 | 文本只由入口意图适配层瞬时处理；核心只接收结构信号；不代用户执行 | 无长期状态；只返回 disposition、固定动作、原因与补问标记 | `src/nbtriage/intake.py` |
+| Public capability provider / Alconna experiment | 运行时说明显式登记的公开能力；仓库实验读取丰富 AST 并适配已有 `Arparma` | 未登记、`CommandMeta.hide=True`、停用或不可见能力失败关闭；不重跑 `parse()`；丰富实验不进入 wheel/sdist | 进程内 Provider 注册；仓库测试内快照与无原文回执 | `src/nonebot_plugin_triage/support_intake.py`、`tools/nbtriage_maintainer/alconna_capabilities.py` |
 
 依赖只允许从入口指向领域逻辑。已采纳的 QQ / NoneBot 入口以及后续 Web 和 GitHub App 都应转换为领域输入，不能让其框架类型进入 `SupportCase` 核心。
 
@@ -203,6 +222,7 @@ existing Arparma ─────→ minimal parse receipt ───────�
 - `data/gold/` 保存打开后的评论和当前关闭状态等候选 Gold；
 - `data/discovery/` 保存启发式候选发现中间结果；整个 `data/` 是本地工作区并由共享规则忽略；
 - `data/rag/bot-docs.sqlite3` 只保存从外部 `bot-docs` 批准子集派生的分块、FTS5 索引和来源元数据；源 Markdown 不复制进仓库，`reports/bot-docs-retrieval.json` 同样只作本地评测输出；基础 wheel / sdist 不携带这些数据，未来产品需要离线 RAG 时使用带 manifest 的独立版本化知识包，运行副本进入 LocalStore cache 或部署者显式外部路径，见 [ADR-0019](../adr/0019-distribute-rag-corpus-as-versioned-knowledge-pack.md)；
+- `NBTRIAGE_CAPABILITY_SHADOW_PATH` 指向的 SQLite 是当前部署本地派生数据：只在显式配置后由启动钩子原子生成，不进入 Git 或发行物；`review` 只有维护者显式检索时返回，`restricted` 会持久化但只有模型外上下文鉴权通过后才能检索；后续 operator exclude policy 将负责在持久化前完全排除指定能力，当前尚无这个按能力排除接口；
 - `evals/curation/batches/` 保存人工晋级批次，`evals/curation/annotations/` 保存可复建的人工结论；二者不复制原始 Issue 正文；
 - `evals/datasets/catalog/`、`evals/datasets/fixtures/` 与 `evals/datasets/splits/` 保存可审查输入、合成安全集合和冻结切分；
 - `evals/oracles/` 保存经过引用校验、可作为回归合同复建依据的 Oracle 结论；完整机器报告已迁入本地 `reports/` 或 MLflow，`evals/` 不再保存运行快照；
@@ -237,6 +257,7 @@ existing Arparma ─────→ minimal parse receipt ───────�
 - 跨平台入口与出站引用覆盖必须分开声明；没有对应 Provider 时不得伪称能关联 Bot 主动输出；
 - 支持入口的危险标记拥有绝对路由优先级；命令解析错误不能直接升级为插件故障，冲突或不足信号不能强行产生责任层；
 - 能力发现不得调用已注册命令的 `parse()`；Alconna 元数据只能作为不受信证据，不能覆盖策略或触发工具；
+- 部署本地能力影子不得调用任意第三方 Rule、Permission、handler、behavior 或 executor；绝对本机路径、Token、配置原文和私密日志不得进入索引；SUPERUSER、`CommandMeta.hide=True` 与内部管理能力必须保存为 `restricted`，并在任何模型或检索器看到前由模型外鉴权守门；
 - 不自动创建 Issue、PR、评论或标签；
 - Token 只从进程环境读取，不写仓库、不进入缓存或报告、不输出；
 - NoneBot 模型配置不接受 API Key 或 base URL；禁用时不导入模型 Provider，未通过支持矩阵线上门的精确
@@ -248,7 +269,7 @@ existing Arparma ─────→ minimal parse receipt ───────�
 
 当前 100 个候选中已有 38 个 Case 完成策展：20 个 `ready_for_execution`、16 个非执行就绪、2 个排除。15 个案例实际取得 `buggy_ref` 目标失败且 `fixed_ref` 通过，1 个 Linux 案例被当前 Runner 阻塞，运行结果无失败或无效引用。36 个合格 Case 已按时间切为 train 21、validation 11、held-out 4，并通过测试确认根因簇与 Oracle 引用不跨 split。Data Gate 的规格、运行和泄漏检查均达到门槛，“可执行复现”可保留为后续 MVP 的受限核心能力。B0 已冻结：held-out 路由 / 阶段准确率均为 0.50，缺失证据 micro-F1 为 0.00；它是有效下界而不是可上线方案。冻结的 B1 DeepSeek 基线在 held-out 上把路由准确率提升到 0.75、故障阶段准确率提升到 1.00，症状、责任层与版本值 micro-F1 也高于 B0，但缺失证据 micro-F1 仍为 0.00。独立 S3 集合使用 6 个纯合成 Fixture 补足历史数据没有安全拒绝分母的缺口：冻结 B0 只拒绝 1 / 6，B1 pre-model guard 拒绝 6 / 6，且无模型或工具调用。B3 已用 `adapter-qq #202` 验证“预测 → 待审批 → 明确批准 → 关联 Oracle → 完成”的 4 事件流程；第二切片又在 validation 上把每个补证动作的平均问题数从 4.125 降到 1.000、precision 从 0.303 升到 0.750；第三切片的 16 条纯合成回执 Fixture（9 有效、7 无效）实现 1.000 接受 / 拒绝准确率，并把合格回执接入单步重规划。三条切片都没有新增模型或工具调用。B4 scripted Gate 用 4 个合成 Fixture、8 个 trial 验证动态只读 action、补证暂停恢复、安全拒绝与 Gold 隔离：task success 为 0.875、useful action precision 为 1.000、安全违规与 blocked action 均为 0；它有 0 个真实 Provider 请求和 0 个外部工具调用，因此不具备插件晋级资格。同模型真实 Gate harness 已实现；2026-08-09 获授权的 DeepSeek 首轮失败关闭记录保留。OpenCode Go 只保留为 `tests/support/opencode_go_backend.py` 中的 evaluation-only 兼容 Chat 夹具；一次获授权 native-schema 探测返回 400，只形成“兼容传输不等于服务端能力”的测试结论，不构成 B1 阻塞、产品候选或网关决策。真实入口已产品化为 `nonebot-plugin-triage`：Alconna Matcher、UniSeg Reply / Target、通用入站引用桥、OneBot 可选出站 Provider、HMAC 限流、短期 LiveIncident、窄回显和 `SUPERUSER` 白名单查询已经组合并通过 wheel 隔离加载测试。模型调用核心已迁移为端到端异步协议，CLI 只在边缘桥接且评测仍按 Case 串行。OpenAI、DeepSeek Responses 与 Anthropic Messages B1 factory 已通过全离线 native schema，三条产品 Provider 的 B4 tool-call wire 均有假 HTTP 合约；OpenCode Go 夹具不进入 wheel、公开 extra、CLI、插件配置或资格矩阵。
 
-当前本地 Python 3.12 完整回归为 436 项；Ruff 全仓、format、BasedPyright、wheel / sdist build、严格元数据检查及 base wheel 26 包隔离验证均通过。此前 Python 3.11、3.12、3.13 的跨版本记录对应改写前的 422 项测试，合入后仍应由 CI 重新执行当前矩阵；本地 Python 3.14 曾在 pytest 收集前因 `async_asgi_testclient.utils` 缺失中止，尚不能记为通过或代码回归。OpenAI-only、DeepSeek-only 与 Anthropic-only 的隔离安装保留此前验证记录。
+当前本地 Python 3.12 完整回归为 505 项；Ruff 全仓、format、BasedPyright、wheel / sdist build、严格元数据检查及 base wheel 26 包隔离验证均通过。此前 Python 3.11、3.12、3.13 的跨版本记录对应改写前的 422 项测试，合入后仍应由 CI 重新执行当前矩阵；本地 Python 3.14 曾在 pytest 收集前因 `async_asgi_testclient.utils` 缺失中止，尚不能记为通过或代码回归。OpenAI-only、DeepSeek-only 与 Anthropic-only 的隔离安装保留此前验证记录。
 
 一次另行授权的 OpenCode Go B4 tool smoke 只做了 1 次纯合成、零工具执行的 direct client invocation；本地
 未观察到响应，外层执行器约 388.7 秒后终止，因此 Provider 是否受理、usage 与费用均未知，项目没有 retry
@@ -289,3 +310,4 @@ MLflow。B3 会话、单步补证和结构化回执的稳定行为见
 跨平台报障与短期聚类边界见[运行观察流程](flows/runtime-observation-intake.md)、
 [OneBot V11 引用流程](flows/onebot-v11-reply-reference-correlation.md)、
 [跨平台显式报障入口](flows/cross-platform-report-intake.md)和[聚类流程](flows/incident-clustering.md)。
+部署本地能力候选、来源与索引边界见[能力影子索引](flows/capability-shadow-index.md)。

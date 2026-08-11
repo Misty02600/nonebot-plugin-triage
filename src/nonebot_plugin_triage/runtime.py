@@ -12,6 +12,10 @@ from nbtriage.live_trials import LiveTrialService
 from nbtriage.message_references import PlatformMessageReferenceIndex
 from nbtriage.rate_limits import KeyedRateLimiter
 from nbtriage.runtime_observations import RuntimeObservationBuffer
+from nonebot_plugin_triage.capability_shadow import (
+    CapabilityShadowService,
+    register_capability_shadow,
+)
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.live_reports import LiveReportService
 from nonebot_plugin_triage.model_runtime import NBTriageModelService, create_model_service
@@ -52,6 +56,7 @@ class NBTriagePluginRuntime:
     incidents: LiveIncidentBuffer
     trials: LiveTrialService
     model_service: NBTriageModelService | None
+    capability_shadow: CapabilityShadowService | None
 
 
 def create_plugin_runtime(
@@ -103,6 +108,7 @@ def create_plugin_runtime(
     outgoing_reference_providers = _create_outgoing_reference_providers(reference_bridge)
     for provider in outgoing_reference_providers:
         provider.register()
+    capability_shadow = register_capability_shadow(config)
     return NBTriagePluginRuntime(
         observer=observer,
         reference_bridge=reference_bridge,
@@ -113,6 +119,7 @@ def create_plugin_runtime(
         incidents=incident_buffer,
         trials=trial_service,
         model_service=model_service,
+        capability_shadow=capability_shadow,
     )
 
 

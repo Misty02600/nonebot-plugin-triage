@@ -1,0 +1,62 @@
+# 流程：部署本地能力影子索引
+
+## 这条流程保证什么
+
+影子索引用来回答“当前 Bot 有哪些可供后续检索的能力证据”，不回答“这个用户现在一定能执行什么”。它
+默认关闭，也尚未接入 `triage` 回复。
+
+## 外部参与者和触发条件
+
+部署者显式配置本地 SQLite 路径后，插件在 NoneBot 启动完成时读取已经加载的 Plugin、Matcher 和 Alconna
+对象。采集器不会为了补全目录再导入插件，也不会调用命令解析、权限、规则或 handler。
+
+```text
+已加载 Plugin / Matcher / Alconna
+        + distribution 版本或 VCS commit
+        + 可变源码内容摘要
+        + PluginMetadata
+        + 可选 HelpPluginSource / operator claim
+                         ↓
+              字段级 Claim + Evidence
+              结构化 / opaque Constraint
+                         ↓
+       public / review / restricted 影子快照
+                         ↓
+          原子构建本地 SQLite FTS5 索引
+                         ↓
+   默认 public / 显式 review / 鉴权后 restricted
+```
+
+## 稳定的状态变化
+
+- PyPI 安装优先记录 distribution 名称与版本；VCS 安装在可用时记录 resolved commit；本地、editable、无
+  版本或无 Git 的来源使用排序相对路径与文件内容计算摘要。
+- `.env*`、日志、数据库、缓存、运行数据和上传目录不参与源码摘要。索引不保存原始配置值。
+- Alconna 结构和普通 `CommandRule` 是运行时观察；PluginMetadata、README、注释和帮助图文字是带来源的
+  说明。相同字段可以有不同证据性质，不能给整个文件一个统一“真值分数”。
+- 自定义 Permission、Rule、限流器和 handler 判断只记录存在性与来源，`evaluability=opaque`。
+- 披露态只有 `public / review / restricted`。普通用户可检索的声明为 `public`；未确认的自动发现能力为
+  `review`；代表部署开发 / 维护者的 `SUPERUSER`、`CommandMeta.hide=True` 和明确内部管理能力为
+  `restricted`。
+- 三种能力都可以写入 SQLite。默认检索只返回 `public`；维护者可显式纳入 `review` 检查候选；
+  `restricted` 只有在模型外根据当前上下文完成鉴权后才会进入候选集，不能先交给模型再让模型决定是否隐藏。
+- Token、`.env` 原文和私密日志不是能力，采集器从源头排除。需要完全不保存某项真实能力时，由独立的
+  operator exclude policy 在生成记录前排除；系统没有 `hidden` 披露态。这个按能力排除接口尚未实现，
+  当前不能用 `restricted` 代替它。
+- 新索引在临时文件中完整写入并通过完整性检查后替换目标；生成失败时不破坏旧文件。
+
+## 失败时的语义
+
+- 某来源失败时快照标记 `partial` 并记录稳定错误码，不能把缺失结果解释为“该插件没有能力”。
+- 版本、源码或运行时结构变化后，旧 generation 只能视为历史派生数据；初版通过重启重新生成，不承诺热
+  加载自动刷新。
+- `review`、`restricted`、`opaque`、文档声明或过去回执都不能升级为当前执行授权。未来若接入用户回复，
+  必须先在模型上下文之外完成披露过滤与 `restricted` 鉴权，再对少量候选做独立的上下文执行资格判断。
+- 当前群聊尚未读取影子索引，因此 `SUPERUSER` 也暂时不能通过 `triage` 查询 `restricted` 帮助；持久化只为
+  后续受控接入保留证据，不表示已经开放。
+
+## 相关决定
+
+- [ADR-0021：用部署本地影子索引整理 Bot 能力证据](../../adr/0021-use-deployment-local-capability-shadow-index.md)
+- [ADR-0019：将 RAG 语料作为独立版本化知识包分发](../../adr/0019-distribute-rag-corpus-as-versioned-knowledge-pack.md)
+- [可选帮助数据源与复用边界](../help-source-adapters.md)

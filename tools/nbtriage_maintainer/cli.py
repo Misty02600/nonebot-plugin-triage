@@ -13,6 +13,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from nbtriage.capabilities import CapabilityIndexError, search_capability_index
 from nbtriage.evidence_receipts import EvidenceReceiptError, load_evidence_receipt
 from nbtriage.live_trials import LiveTrialError, summarize_trial_logs
 from nbtriage.model_contracts import B1ProviderError
@@ -220,6 +221,24 @@ def build_parser() -> argparse.ArgumentParser:
     bot_docs_search_parser.add_argument("--limit", type=_positive_int, default=5)
     bot_docs_search_parser.add_argument(
         "--strategy", choices=("hybrid", "metadata"), default="hybrid"
+    )
+
+    capability_search_parser = subparsers.add_parser(
+        "search-capabilities",
+        help="Search an opt-in deployment-local capability shadow index.",
+    )
+    capability_search_parser.add_argument("query")
+    capability_search_parser.add_argument("--index", type=Path, required=True)
+    capability_search_parser.add_argument("--limit", type=_positive_int, default=5)
+    capability_search_parser.add_argument(
+        "--include-review",
+        action="store_true",
+        help="Include unverified review candidates.",
+    )
+    capability_search_parser.add_argument(
+        "--include-restricted",
+        action="store_true",
+        help="Include restricted capabilities after out-of-band authorization.",
     )
 
     bot_docs_evaluation_parser = subparsers.add_parser(
@@ -571,6 +590,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_build_bot_docs_index(args)
     if args.command == "search-bot-docs":
         return _run_search_bot_docs(args)
+    if args.command == "search-capabilities":
+        return _run_search_capabilities(args)
     if args.command == "evaluate-bot-docs-retrieval":
         return _run_evaluate_bot_docs_retrieval(args)
     if args.command == "evaluate-b0":
@@ -606,6 +627,52 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "session-show":
         return _run_session_show(args)
     raise AssertionError(f"unhandled command: {args.command}")
+
+
+def _run_search_capabilities(args: argparse.Namespace) -> int:
+    try:
+        hits = search_capability_index(
+            args.index,
+            args.query,
+            include_review=args.include_review,
+            include_restricted=args.include_restricted,
+            limit=args.limit,
+        )
+    except CapabilityIndexError as error:
+        print(f"capability search failed: {error}", file=sys.stderr)
+        return 1
+    payload = {
+        "result_count": len(hits),
+        "results": [
+            {
+                "capability_id": hit.record.capability_id,
+                "owner": hit.record.owner,
+                "kind": hit.record.kind,
+                "disclosure": hit.record.disclosure.value,
+                "state": hit.record.state.value,
+                "score": hit.score,
+                "claims": [
+                    {
+                        "field": claim.field,
+                        "basis": claim.basis.value,
+                        "value": claim.value,
+                    }
+                    for claim in hit.record.claims
+                ],
+                "constraints": [
+                    {
+                        "kind": constraint.kind,
+                        "operation": constraint.operation,
+                        "evaluability": constraint.evaluability.value,
+                    }
+                    for constraint in hit.record.constraints
+                ],
+            }
+            for hit in hits
+        ],
+    }
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return 0
 
 
 def _run_publish_evaluation_mlflow(args: argparse.Namespace) -> int:
