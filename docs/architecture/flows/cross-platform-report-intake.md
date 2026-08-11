@@ -1,74 +1,69 @@
-# 跨平台显式报障入口
+# 跨平台 triage 支持入口
 
 ## 当前可运行流程
 
 ```text
 任意 UniSeg 支持的消息事件
-    │
-    ├─ NoneBot event pre-hook ─→ correlation ID ─→ Matcher / API 最小运行观察
-    │
-    └─ UniSeg get_target + get_message_id ─→ HMAC 引用索引
+    ├─ NoneBot event pre-hook → correlation ID → Matcher / API 最小运行观察
+    └─ UniSeg target + message ID → HMAC 引用索引
 
-用户回复消息并 @Bot 报错
+[可选 @Bot] triage <自然语言> [可选 Reply]
     │
-    └─ on_alconna
+    └─ on_alconna + MultiVar(str, "*")
+         ├─ MsgTarget → 入口 HMAC 限流 → 拒绝私聊
          ├─ OriginalUniMsg → 只取第一个 Reply.id
-         ├─ MsgTarget → 拒绝私聊，生成稳定会话 scope
-         ├─ Event.get_user_id → 只瞬时参与 HMAC 限流
-         └─ 引用索引命中 correlation ID
-                └─ capture 最小运行证据
-                     └─ 确定性 reply-report 路由
-                          └─ 短期 LiveIncident
-                               ├─ 明确失败 → 活动 TTL 内稳定 cluster 聚合
-                               ├─ observe trial → 本地轮转 JSONL + 维护者反馈
-                               └─ UniMessage 窄回执
+         └─ 当前确定性首轮意图边界
+              ├─ 功能 / 用法 → 公开能力说明或澄清 → UniMessage
+              ├─ 不确定     → 单次澄清 → UniMessage
+              └─ 疑似故障
+                   ├─ Reply 命中 → capture 最小运行证据
+                   └─ 无 Reply / 未命中 → 空证据，不猜测消息
+                                      ↓
+                              LiveIncident + 窄回执
+                                  ├─ 明确失败 → 活动 cluster
+                                  └─ observe trial → 本地轮转 JSONL
 ```
 
-被回复消息如果是用户或其他入站事件，通用入站桥已经登记其引用。如果消息是 Bot 在 Matcher 内主动发送的
-输出，则需要该适配器的出站 Provider 从发送结果中回填消息引用。当前只实现并集成测试 OneBot V11 群发送
-Provider；其他适配器没有 Provider 时不会按时间猜测，而是返回近期记录不可用。
+`@Bot` 由 NoneBot / 适配器预处理，入口本身不要求 `to_me()`。`triage` 指令始终必选，所以插件不会把普通
+群聊或发给其他插件的消息交给意图层。
 
-## 支持矩阵语义
+被回复消息如果是入站事件，通用引用桥已经登记其引用。Bot 主动输出则需要适配器出站 Provider 回填消息
+引用；当前只实现 OneBot V11 群发送 Provider。其他适配器引用失败时仍处理求助，只明确说明没有关联证据。
 
-| 能力 | UniSeg 支持的适配器 | OneBot V11 | QQ 官方及其他适配器 |
-|---|---|---|---|
-| Alconna 命令匹配 | 由 Alconna exporter 支持 | 已做加载与结构映射测试 | 入口代码无专属依赖；尚未逐平台端到端测试 |
-| 结构化 Reply / Target | 由 `OriginalUniMsg` / `MsgTarget` 提供 | 已用真实事件模型测试 | 取决于对应 exporter 与平台事件 |
-| 回复入站消息并关联 | 通用 `get_target` / `get_message_id` | 支持 | exporter 可提供两者时支持 |
-| 回复 Bot 输出并关联 | 需要适配器出站 Provider | 当前支持群发送 | 当前未实现，不宣称支持 |
-| 公开结果发送 | `UniMessage` | 支持 | 由对应 exporter 转换 |
+## 支持矩阵
 
-“插件入口跨平台”不等于“每个平台的 Bot 出站引用都已完成”。发布说明和后续测试必须始终区分这两层。
+| 能力 | OneBot V11 | QQ 官方及其他 UniSeg 适配器 |
+|---|---|---|
+| `triage <自由文本>`，无 `@Bot` | 已做 Matcher 与服务测试 | 入口无专属类型；尚未逐平台端到端测试 |
+| `@Bot triage <自由文本>` | 依赖 NoneBot 标准 `to_me` 预处理 | 依赖对应适配器标准预处理 |
+| Reply / Target | 已用真实事件模型测试 | 取决于对应 exporter 与平台事件 |
+| 回复入站消息并关联 | 支持 | exporter 可提供 target 与 message ID 时支持 |
+| 回复 Bot 输出并关联 | 当前支持群发送 | 尚未实现出站 Provider |
+| 公开结果发送 | `UniMessage` 支持 | 由对应 exporter 转换 |
 
 ## 数据边界
 
-- 不读取或保存 Reply 的 `msg` / `origin`，只读取结构化 `id`；
-- Target 的事件 `source` 不进入稳定会话 scope；adapter、Bot、Target、actor 和 message 标识只瞬时参与 HMAC；
-- 引用索引只保存摘要、correlation ID 和时间，`LiveIncident` 不保存平台身份或聊天正文；
-- 失败聚类只使用已白名单化的 lifecycle / subject / exception / stack module 标识，不使用 observation /
-  correlation ID、时间或异常消息；cluster 只统计显式报障，不代表底层异常总数；
-- 私聊、无 Reply、跨 scope、过期、未知引用和内部错误都有固定窄结果；
-- trial 默认关闭；observe 只记录已受理 incident 的脱敏生命周期，写入失败不改变公开回执；
-- 当前链路不调用 DeepSeek，不运行 Probe，不创建 Issue，不修改配置，也不重启 Bot。
+- 当前请求文字只用于本次意图判断和回答，不写入 `LiveIncident`、trial 或运行证据；
+- Reply 只读结构化 `id`，不读取或保存 `msg` / `origin`；
+- adapter、Bot、Target、actor 和 message 标识只瞬时参与 HMAC；
+- 失败聚类只使用白名单化的 lifecycle / subject / exception / stack module 标识；
+- trial 默认关闭；能力问答和澄清不进入 trial；
+- 所有求助有轻量入口限流；疑似故障另有限制建单频率的独立限流；
+- 当前链路不运行用户文字中的命令，不创建 Issue，不修改配置，也不重启 Bot。
 
 ## 代码映射
 
 | 边界 | 实现 |
 |---|---|
-| Alconna Matcher 与依赖注入 | `src/nonebot_plugin_triage/handlers.py` |
-| 通用入站引用与稳定 Target scope | `src/nonebot_plugin_triage/universal_references.py` |
+| `triage` Matcher、自然语言首轮分流与公开能力 | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support_intake.py` |
+| 通用入站引用与 Target scope | `src/nonebot_plugin_triage/universal_references.py` |
 | OneBot V11 出站 Provider | `src/nonebot_plugin_triage/onebot_v11_references.py` |
 | HMAC 引用索引 | `src/nbtriage/message_references.py` |
-| 限流、报障组合与窄回显 | `src/nbtriage/rate_limits.py`、`src/nonebot_plugin_triage/live_reports.py` |
-| 短期事件记录 | `src/nbtriage/live_incidents.py` |
-| observation-first trial 与轮转日志 | `src/nbtriage/live_trials.py`、`src/nonebot_plugin_triage/trials.py` |
+| 故障组合与窄回显 | `src/nonebot_plugin_triage/live_reports.py` |
+| incident、cluster 与 trial | `src/nbtriage/live_incidents.py`、`src/nbtriage/live_trials.py` |
 
-稳定失败签名、活动 cluster 的 TTL / 容量与查询语义见
-[短期显式报障聚类](incident-clustering.md)。
-生产试运行的任务成功标准、日志边界、SUPERUSER 反馈与 observe → shadow → canary 顺序见
-[观察型生产 trial](observation-first-trials.md)。
-
-## 决策与实施记录
+## 相关决定
 
 - [ADR-0006：跨平台 Alconna 入口与引用 Provider](../../adr/0006-cross-platform-alconna-entry-and-reference-providers.md)
 - [ADR-0014：观察型生产 trial](../../adr/0014-use-observation-first-production-trials.md)
+- [ADR-0020：triage 自然语言入口与可选 Reply](../../adr/0020-use-triage-command-for-natural-language-support.md)

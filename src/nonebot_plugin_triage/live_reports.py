@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from nonebot_plugin_alconna import Target
 
-from nbtriage.intake import RuntimeStatus
+from nbtriage.intake import RuntimeStatus, route_intake
 from nbtriage.live_incidents import (
     LIVE_INCIDENT_SCHEMA_VERSION,
     LiveIncident,
@@ -18,18 +18,21 @@ from nbtriage.live_incidents import (
 )
 from nbtriage.live_trials import LiveTrialService
 from nbtriage.rate_limits import KeyedRateLimiter
-from nbtriage.reply_reports import build_reply_report_signals, route_reply_report
+from nbtriage.reply_reports import (
+    build_reply_report_signals,
+    build_unlinked_report_signals,
+    route_reply_report,
+)
 from nbtriage.runtime_observations import RuntimeObservationBuffer
 from nonebot_plugin_triage.universal_references import UniversalReferenceBridge, conversation_scope
 
 
 class PublicReportStatus(StrEnum):
     SCENE_UNSUPPORTED = "scene_unsupported"
-    REPLY_REQUIRED = "reply_required"
     RATE_LIMITED = "rate_limited"
-    REFERENCE_UNAVAILABLE = "reference_unavailable"
     ACCEPTED_WITH_FAILURE = "accepted_with_failure"
     ACCEPTED_WITHOUT_FAILURE = "accepted_without_failure"
+    ACCEPTED_WITHOUT_REFERENCE = "accepted_without_reference"
     INTERNAL_UNAVAILABLE = "internal_unavailable"
 
 
@@ -60,7 +63,6 @@ class LiveReportService:
         incident_buffer: LiveIncidentBuffer,
         rate_limiter: KeyedRateLimiter,
         evidence_retention_seconds: int,
-        report_command: str,
         trial_service: LiveTrialService | None = None,
         clock: Callable[[], datetime] | None = None,
         timer_ns: Callable[[], int] | None = None,
@@ -71,7 +73,6 @@ class LiveReportService:
         self.incident_buffer = incident_buffer
         self.rate_limiter = rate_limiter
         self.evidence_retention_seconds = evidence_retention_seconds
-        self.report_command = report_command
         self.trial_service = trial_service
         self._clock = clock or _utc_now
         self._timer_ns = timer_ns or perf_counter_ns
@@ -87,12 +88,7 @@ class LiveReportService:
         if request.target.private:
             return PublicReportResult(
                 status=PublicReportStatus.SCENE_UNSUPPORTED,
-                message="当前仅支持群聊或频道内报障。",
-            )
-        if request.reply_reference is None:
-            return PublicReportResult(
-                status=PublicReportStatus.REPLY_REQUIRED,
-                message=(f"请回复需要报障的那条消息，再 @我 发送“{self.report_command}”。"),
+                message="当前仅支持群聊或频道内求助。",
             )
         now = self._clock()
         try:
@@ -105,29 +101,50 @@ class LiveReportService:
             ):
                 return PublicReportResult(
                     status=PublicReportStatus.RATE_LIMITED,
-                    message="报障请求过于频繁，请稍后再试。",
-                )
-            correlation_id = self.reference_bridge.resolve_reply(
-                adapter_name=request.adapter_name,
-                bot_scope=request.bot_scope,
-                target=request.target,
-                message_reference=request.reply_reference,
-            )
-            if correlation_id is None:
-                return PublicReportResult(
-                    status=PublicReportStatus.REFERENCE_UNAVAILABLE,
-                    message="未找到这条消息的近期运行记录，请回复最近的消息后重试。",
+                    message="求助请求过于频繁，请稍后再试。",
                 )
             incident_id = f"incident-{self._id_factory()}"
-            evidence = self.runtime_buffer.capture(correlation_id, generated_at=now)
-            signals = build_reply_report_signals(
-                intake_id=incident_id,
-                occurred_at=now,
-                correlation_id=correlation_id,
-                runtime_evidence=evidence,
-                unsafe_detected=False,
-            )
-            decision = route_reply_report(signals)
+            reference_unavailable = False
+            if request.reply_reference is None:
+                correlation_id = f"report-{self._id_factory()}"
+                evidence = self.runtime_buffer.capture(correlation_id, generated_at=now)
+                signals = build_unlinked_report_signals(
+                    intake_id=incident_id,
+                    occurred_at=now,
+                    correlation_id=correlation_id,
+                    runtime_evidence=evidence,
+                    unsafe_detected=False,
+                )
+                decision = route_intake(signals)
+            else:
+                correlation_id = self.reference_bridge.resolve_reply(
+                    adapter_name=request.adapter_name,
+                    bot_scope=request.bot_scope,
+                    target=request.target,
+                    message_reference=request.reply_reference,
+                )
+                if correlation_id is None:
+                    reference_unavailable = True
+                    correlation_id = f"report-{self._id_factory()}"
+                    evidence = self.runtime_buffer.capture(correlation_id, generated_at=now)
+                    signals = build_unlinked_report_signals(
+                        intake_id=incident_id,
+                        occurred_at=now,
+                        correlation_id=correlation_id,
+                        runtime_evidence=evidence,
+                        unsafe_detected=False,
+                    )
+                    decision = route_intake(signals)
+                else:
+                    evidence = self.runtime_buffer.capture(correlation_id, generated_at=now)
+                    signals = build_reply_report_signals(
+                        intake_id=incident_id,
+                        occurred_at=now,
+                        correlation_id=correlation_id,
+                        runtime_evidence=evidence,
+                        unsafe_detected=False,
+                    )
+                    decision = route_reply_report(signals)
             incident = LiveIncident(
                 schema_version=LIVE_INCIDENT_SCHEMA_VERSION,
                 incident_id=incident_id,
@@ -142,6 +159,17 @@ class LiveReportService:
                 intake_latency_ms=max(0, (self._timer_ns() - started_ns) // 1_000_000),
                 now=now,
             )
+            if request.reply_reference is None or reference_unavailable:
+                evidence_note = (
+                    "未找到所回复消息的近期运行记录，本次只按疑似故障受理。"
+                    if reference_unavailable
+                    else "本次没有关联具体消息或运行记录。"
+                )
+                return PublicReportResult(
+                    status=PublicReportStatus.ACCEPTED_WITHOUT_REFERENCE,
+                    incident_id=incident_id,
+                    message=f"已受理，编号 {incident_id}；{evidence_note}",
+                )
             minutes = max(1, self.evidence_retention_seconds // 60)
             if signals.runtime_status is RuntimeStatus.FAILED:
                 status = PublicReportStatus.ACCEPTED_WITH_FAILURE
@@ -161,7 +189,7 @@ class LiveReportService:
         except Exception:
             return PublicReportResult(
                 status=PublicReportStatus.INTERNAL_UNAVAILABLE,
-                message="报障记录暂时不可用，请稍后重试或联系维护者。",
+                message="求助记录暂时不可用，请稍后重试或联系维护者。",
             )
 
     def _observe_trial(

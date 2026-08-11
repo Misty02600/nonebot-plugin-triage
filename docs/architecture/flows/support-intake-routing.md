@@ -1,70 +1,51 @@
-# 流程：显式支持入口的确定性分流
+# 流程：triage 自然语言支持入口
 
-## 这条流程保证什么
+## 当前入口
 
-未来 NoneBot 插件从用户主动 `@Bot` 或回复消息开始支持流程，但用户文本不能直接决定是否调用诊断工具。
-传输、权限、解析和模型前安全边界先产生不含原文与身份的 `IntakeSignals`；领域路由器再按固定优先级选择
-教学、纠错、疑似故障、说明范围、拒绝或单步补问。当前已有 Alconna 能力快照和真实解析结果的纯适配器，
-但仍不读取真实群聊，也不注册 NoneBot / QQ 钩子。
-
-## 外部参与者与输入边界
-
-- 用户必须使用 `mention` 或 `reply_report` 显式触发；静默监听不是合法 trigger；
-- 未来传输边界负责权限、限流与最小上下文提取，只有不透明 `intake_id` / `correlation_id` 进入核心；
-- 意图理解边界只能提交 `discover_capability`、`report_problem` 或 `unknown`；
-- 命令解析边界提交真实的未知命令、前缀、参数、权限、场景、停用或解析成功状态；
-- 模型前安全策略提交 `unsafe_detected`，该字段不是让 LLM 自行决定的普通分类标签；
-- 消息正文、命令原文、用户 / 群 ID、Prompt 或任意额外字段被 schema 拒绝。
-
-## 稳定分流顺序
+普通用户发送 `triage <求助内容>`，也可以写成 `@Bot triage <求助内容>`。`triage` 必须出现；插件不处理
+其他普通消息。Reply 可选，只提供关联消息和运行证据，不决定用户意图。
 
 ```text
-trusted boundaries → strict IntakeSignals
-                           ↓
-unsafe? ── yes ─────────→ unsafe / refuse
-  │ no
-  ↓
-signals conflict? ─ yes → no disposition / ask_one_question
-  │ no
-  ↓
-explicitly unrelated? ─→ out_of_scope / explain_scope
-  │ no
-  ↓
-command rejected? ─────→ usage_error / explain_command_error / wait for retry
-  │ no
-  ↓
-runtime failed or user reported a problem?
-  ├─ yes ──────────────→ suspected_incident / start_diagnosis
-  └─ no
-      ↓
-capability requested? ─→ capability_guidance / show_capability
-  │ no
-  └────────────────────→ no disposition / ask_one_question
+triage + request text + optional Reply
+                 ↓
+场景、长度、入口限流和最小上下文边界
+                 ↓
+目标意图边界 → strict IntakeSignals
+   ├─ capability_guidance → 已登记公开能力 → 说明用法；不建 incident
+   ├─ usage_error         → 解释错误或追问；不建 incident
+   ├─ suspected_incident  → 可选 Reply 关联 → LiveIncident + 窄回执
+   ├─ out_of_scope        → 说明范围；不建 incident
+   ├─ unsafe              → 拒绝；不调用工具
+   └─ 不确定              → 只追问一个关键问题
 ```
 
-`unsafe` 优先级不可被能力询问、解析错误或运行失败覆盖。命令解析错误先于故障诊断，避免把少写参数、权限
-不足或插件停用误报给插件维护者。`runtime_status=succeeded` 与 `report_problem`，或明确无关却携带命令 / 运行
-结果等矛盾组合只触发一次补问，不强行选择责任层。
+当前已接入 `triage` 自由文本参数、确定性首轮意图和公开能力说明。首轮实现只可靠区分
+`capability_guidance`、`suspected_incident` 和“不确定”；上图中的 `usage_error`、`out_of_scope` 与
+`unsafe` 是统一 Agent 入口的目标分流，尚未接入当前 Matcher。模型资格表仍为空，因此尚未启用模型 Agent；
+不明确、否定或假设性请求会得到一次澄清，而不是被强行记成故障。
 
-## 输出与后续边界
+## 输入与数据边界
 
-`IntakeDecision` 只保存 disposition、固定动作、固定原因码和是否需要用户继续回复。它不生成自然语言，
-不调用模型或工具，也不修改现有 `ResponsibilityLayer`。只有 `suspected_incident` 可以在后续把关联运行证据
-转换为 `SupportCase` 并进入技术责任诊断。
+- 当前请求文字只在入口和意图适配层瞬时使用；`IntakeSignals`、`LiveIncident`、trial 和运行证据不保存原文；
+- 文字、插件元数据和 Reply 都是不可信证据，不能直接变成命令执行、工具调用或维护动作；
+- Reply 只读取第一个结构化 `id`，不读取 `msg` / `origin`；
+- Reply 缺失或引用过期不妨碍求助；疑似故障会明确标记为未关联运行证据，不猜测其他消息；
+- 所有求助先经过不保存平台身份的轻量 HMAC 限流；疑似故障再经过独立的建单限流；
+- 能力说明采用显式公开 Provider。未登记、`CommandMeta.hide=True` 或停用的 Alconna 命令不展示，命令 `parse()`、behavior、
+  executor 和 handler 不会为回答问题而重新执行；
+- 私聊当前拒绝；普通用户不能读取 incident 摘要，查询、反馈和统计仍由 `SUPERUSER` 权限保护。
 
-`capability_guidance` 与 `usage_error` 已有当前注册命令的结构化 Alconna 能力事实和最小解析回执可用，但
-权限 / 场景过滤、群内解释文案和逐项补参尚未实现；MVP 即使以后生成可复制指令，也不能自动代用户执行
-有副作用能力。
+## 领域分流顺序
 
-## 失败语义
+`route_intake` 继续按固定优先级处理严格信号：安全拒绝优先，其次是冲突补问、无关请求、命令错误、运行
+失败或显式故障、能力请求，最后才是信息不足补问。`runtime_status=succeeded` 不能证明用户观察到的行为正确；
+命令少参数或权限不足也不能直接升级成插件故障。
 
-- schema 版本、时间、枚举、ID、布尔值、缺失字段或额外字段不合法时拒绝整份信号；
-- 手工构造并篡改的 `IntakeSignals` 在路由前重新校验，不能绕过严格 schema；
-- 信息不足不等于 `out_of_scope`，信号冲突不等于 `suspected_incident`；二者都停在单步补问；
-- 路由器不验证上游安全、意图、解析与运行信号的真实性；真实适配器必须分别提供可审计来源。
+只有 `suspected_incident` 后续进入技术责任层。能力说明和用法纠错不会污染 incident、trial 或失败聚类。
 
 ## 相关决定
 
 - [ADR-0003：统一能力导航与故障入口](../../adr/0003-unified-capability-guidance-and-incident-intake.md)
+- [ADR-0020：triage 自然语言入口与可选 Reply](../../adr/0020-use-triage-command-for-natural-language-support.md)
 - [Alconna 能力与解析回执](alconna-capability-and-parse-receipts.md)
 - [运行观察入口](runtime-observation-intake.md)

@@ -2,10 +2,17 @@ from datetime import UTC, datetime
 
 import pytest
 
-from nbtriage.intake import IntakeDisposition, RuntimeStatus
+from nbtriage.intake import (
+    IntakeAction,
+    IntakeDisposition,
+    IntakeTrigger,
+    RuntimeStatus,
+    route_intake,
+)
 from nbtriage.reply_reports import (
     ReplyReportError,
     build_reply_report_signals,
+    build_unlinked_report_signals,
     route_reply_report,
 )
 from nbtriage.runtime_observations import (
@@ -34,6 +41,11 @@ def evidence_bundle(*, failed: bool = False, correlation_id: str = "corr-report"
         "stack_modules": ["plugin.example"] if failed else [],
     }
     buffer.add(parse_runtime_observation(payload), now=NOW)
+    return buffer.capture(correlation_id, generated_at=NOW)
+
+
+def empty_evidence_bundle(*, correlation_id: str = "support-request"):
+    buffer = RuntimeObservationBuffer(max_entries=4, retention_seconds=60)
     return buffer.capture(correlation_id, generated_at=NOW)
 
 
@@ -84,5 +96,32 @@ def test_reply_report_rejects_mismatched_runtime_bundle() -> None:
             occurred_at=NOW,
             correlation_id="corr-other",
             runtime_evidence=evidence_bundle(),
+            unsafe_detected=False,
+        )
+
+
+def test_unlinked_report_preserves_problem_intent() -> None:
+    signals = build_unlinked_report_signals(
+        intake_id="intake-support",
+        occurred_at=NOW,
+        correlation_id="support-request",
+        runtime_evidence=empty_evidence_bundle(),
+        unsafe_detected=False,
+    )
+    decision = route_intake(signals)
+
+    assert signals.trigger is IntakeTrigger.SUPPORT_COMMAND
+    assert signals.runtime_status is RuntimeStatus.NOT_OBSERVED
+    assert decision.disposition is IntakeDisposition.SUSPECTED_INCIDENT
+    assert decision.action is IntakeAction.START_DIAGNOSIS
+
+
+def test_unlinked_report_rejects_runtime_observations() -> None:
+    with pytest.raises(ReplyReportError, match="must not include observations"):
+        build_unlinked_report_signals(
+            intake_id="intake-support",
+            occurred_at=NOW,
+            correlation_id="support-request",
+            runtime_evidence=evidence_bundle(correlation_id="support-request"),
             unsafe_detected=False,
         )

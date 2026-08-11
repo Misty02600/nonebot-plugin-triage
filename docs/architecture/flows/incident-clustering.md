@@ -3,7 +3,7 @@
 ## 当前流程
 
 ```text
-用户显式回复报障
+已分流为 suspected_incident 且关联运行证据的 triage 求助
     │
     └─ RuntimeEvidenceBundle
          ├─ 没有 failed observation ──────────────→ LiveIncident，无 cluster
@@ -17,7 +17,8 @@
                                   └─ SUPERUSER 按 incident ID 查询白名单摘要
 ```
 
-聚类发生在用户已经显式报障之后。运行 hook 产生 observation 时不会自动创建 incident、调用模型或发送消息；
+聚类发生在 `triage` 请求已经分流为疑似故障之后。能力说明、用法纠错和澄清不会创建 incident 或 cluster；
+运行 hook 产生 observation 时也不会自动创建 incident、调用模型或发送消息；
 同一个 cluster 中的每次报障仍有独立 incident ID，因此公开受理回执、限流和精确查询权限不变。
 
 ## 签名边界

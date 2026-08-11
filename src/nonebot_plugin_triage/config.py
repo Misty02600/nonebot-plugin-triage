@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import PurePath
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
@@ -20,14 +21,24 @@ TrialModeName = Literal["off", "observe"]
 class NBTriageConfig(BaseModel):
     model_config = ConfigDict(hide_input_in_errors=True)
 
-    nbtriage_report_command: CommandName = "报错"
+    nbtriage_command: CommandName = "triage"
     nbtriage_query_command: CommandName = "报错查询"
     nbtriage_feedback_command: CommandName = "报错反馈"
     nbtriage_trial_stats_command: CommandName = "报错统计"
-    nbtriage_report_priority: int = Field(default=10, ge=1, le=100)
+    nbtriage_priority: int = Field(default=10, ge=1, le=100)
     nbtriage_query_priority: int = Field(default=10, ge=1, le=100)
+    nbtriage_request_max_chars: int = Field(default=2_000, ge=1, le=8_000)
+    nbtriage_support_cooldown_seconds: int = Field(default=2, ge=1, le=86_400)
     nbtriage_report_cooldown_seconds: int = Field(default=30, ge=1, le=86_400)
     nbtriage_rate_limit_max_scopes: int = Field(default=4_096, ge=1, le=1_000_000)
+    nbtriage_capability_visibility_timeout_seconds: float = Field(default=0.25, gt=0, le=5)
+    nbtriage_capability_shadow_path: (
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=1_024),
+        ]
+        | None
+    ) = None
     nbtriage_observation_max_entries: int = Field(default=10_000, ge=1, le=1_000_000)
     nbtriage_observation_retention_seconds: int = Field(
         default=900,
@@ -80,15 +91,25 @@ class NBTriageConfig(BaseModel):
     @model_validator(mode="after")
     def validate_distinct_commands(self) -> NBTriageConfig:
         commands = {
-            self.nbtriage_report_command,
+            self.nbtriage_command,
             self.nbtriage_query_command,
             self.nbtriage_feedback_command,
             self.nbtriage_trial_stats_command,
         }
         if len(commands) != 4:
-            raise ValueError("report, query, feedback and trial stats commands must be different")
+            raise ValueError("triage, query, feedback and trial stats commands must be different")
         if self.nbtriage_trial_log_path.startswith(("\\\\", "//")):
             raise ValueError("trial log path must be local, not a UNC path")
+        if self.nbtriage_capability_shadow_path is not None and (
+            self.nbtriage_capability_shadow_path.startswith(("\\\\", "//"))
+        ):
+            raise ValueError("capability shadow path must be local, not a UNC path")
+        if self.nbtriage_capability_shadow_path is not None:
+            shadow_path = PurePath(self.nbtriage_capability_shadow_path)
+            if shadow_path.suffix.casefold() != ".sqlite3":
+                raise ValueError("capability shadow path must end with .sqlite3")
+            if shadow_path.name.casefold().startswith(".env"):
+                raise ValueError("capability shadow path must not target an environment file")
         if self.nbtriage_model_enabled:
             if self.nbtriage_model_backend is None:
                 raise ValueError("model backend is required when model support is enabled")

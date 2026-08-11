@@ -5,7 +5,8 @@ from datetime import UTC, datetime
 
 from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
-from nbtriage.incident_queries import IncidentQueryService
+from nbtriage.incident_queries import EvidenceStatus, IncidentQueryService
+from nbtriage.intake import IntakeAction, IntakeTrigger
 from nbtriage.live_incidents import LiveIncidentBuffer
 from nbtriage.live_trials import LiveTrialService, TrialAuditEvent, TrialMode
 from nbtriage.message_references import PlatformMessageReferenceIndex
@@ -103,7 +104,6 @@ def make_service(
             cooldown_seconds=30,
         ),
         evidence_retention_seconds=900,
-        report_command="报错",
         trial_service=trial_service,
         clock=lambda: NOW,
         timer_ns=timer_ns,
@@ -126,34 +126,58 @@ def test_cross_platform_report_accepts_structured_reply_without_identity_leak() 
     assert "message-secret" not in result.message
 
 
-def test_private_scene_and_missing_reply_are_rejected_before_rate_limit() -> None:
+def test_private_scene_is_rejected() -> None:
     service, _, _ = make_service()
 
     assert service.handle(make_request(private=True)).status is PublicReportStatus.SCENE_UNSUPPORTED
-    assert (
-        service.handle(make_request(reply_reference=None)).status
-        is PublicReportStatus.REPLY_REQUIRED
-    )
 
 
-def test_missing_reply_prompt_uses_configured_command() -> None:
-    service, _, _ = make_service()
-    service.report_command = "求助"
+def test_missing_reply_creates_unlinked_incident() -> None:
+    service, _, incidents = make_service()
 
     result = service.handle(make_request(reply_reference=None))
 
-    assert result.status is PublicReportStatus.REPLY_REQUIRED
-    assert "求助" in result.message
+    assert result.status is PublicReportStatus.ACCEPTED_WITHOUT_REFERENCE
+    assert result.incident_id == "incident-fixed"
+    assert "没有关联具体消息或运行记录" in result.message
     assert "报错" not in result.message
+    assert "report-fixed" not in result.message
+    incident = incidents.get("incident-fixed", now=NOW)
+    assert incident is not None
+    assert incident.signals.trigger is IntakeTrigger.SUPPORT_COMMAND
+    assert incident.decision.disposition is not None
+    assert incident.decision.action is IntakeAction.START_DIAGNOSIS
+    assert incident.runtime_evidence.observations == ()
+    summary = IncidentQueryService(incidents).query("incident-fixed", now=NOW).summary
+    assert summary is not None
+    assert summary.evidence_status is EvidenceStatus.NO_OBSERVATIONS
 
 
-def test_reference_miss_is_not_guessed() -> None:
+def test_repeated_unlinked_report_is_rate_limited() -> None:
+    service, _, incidents = make_service()
+
+    assert (
+        service.handle(make_request(reply_reference=None)).status
+        is PublicReportStatus.ACCEPTED_WITHOUT_REFERENCE
+    )
+    assert (
+        service.handle(make_request(reply_reference=None)).status is PublicReportStatus.RATE_LIMITED
+    )
+    assert len(incidents) == 1
+
+
+def test_reference_miss_keeps_report_without_guessing_evidence() -> None:
     service, _, incidents = make_service()
 
     result = service.handle(make_request(reply_reference="unknown-message"))
 
-    assert result.status is PublicReportStatus.REFERENCE_UNAVAILABLE
-    assert len(incidents) == 0
+    assert result.status is PublicReportStatus.ACCEPTED_WITHOUT_REFERENCE
+    assert result.incident_id == "incident-fixed"
+    assert "未找到所回复消息的近期运行记录" in result.message
+    assert len(incidents) == 1
+    incident = incidents.get("incident-fixed", now=NOW)
+    assert incident is not None
+    assert incident.runtime_evidence.observations == ()
 
 
 def test_repeated_report_is_rate_limited() -> None:
@@ -208,6 +232,34 @@ def test_accepted_report_starts_observation_trial_with_intake_latency() -> None:
     assert trials.summary(now=NOW).active_trial_count == 1
     assert events[0].intake_latency_ms == 7
     assert events[0].cluster_id is not None
+
+
+def test_unlinked_incident_starts_trial_without_failure_or_cluster() -> None:
+    events: list[TrialAuditEvent] = []
+
+    class Sink:
+        def emit(self, event: TrialAuditEvent) -> None:
+            events.append(event)
+
+    identifiers = iter(("trial", "event"))
+    trials = LiveTrialService(
+        mode=TrialMode.OBSERVE,
+        max_entries=8,
+        retention_seconds=900,
+        sink=Sink(),
+        clock=lambda: NOW,
+        id_factory=lambda: next(identifiers),
+    )
+    service, _, _ = make_service(trial_service=trials)
+
+    result = service.handle(make_request(reply_reference=None))
+
+    assert result.status is PublicReportStatus.ACCEPTED_WITHOUT_REFERENCE
+    assert trials.summary(now=NOW).active_trial_count == 1
+    assert trials.summary(now=NOW).runtime_failure_count == 0
+    assert events[0].disposition == "suspected_incident"
+    assert events[0].observation_count == 0
+    assert events[0].cluster_id is None
 
 
 def test_trial_observer_failure_does_not_change_accepted_report() -> None:

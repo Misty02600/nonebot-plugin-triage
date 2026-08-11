@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳
+已采纳；入口与 trial 门槛部分被 [ADR-0020](0020-use-triage-command-for-natural-language-support.md) 替代
 
 ## 日期
 

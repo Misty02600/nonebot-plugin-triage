@@ -4,10 +4,17 @@
 
 ```mermaid
 flowchart TD
-    A["普通用户精确回复报障"] --> B{"场景、Reply、限流、近期引用通过？"}
-    B -- "否" --> C["稳定拒绝或补正；零 trial、零模型"]
-    B -- "是" --> D["建立 LiveIncident 与活动失败 cluster"]
-    D --> E{"trial mode"}
+    A["triage + 自然语言"] --> B{"分流为疑似故障？"}
+    B -- "否" --> C["功能说明、纠错或澄清；零 incident、零 trial"]
+    B -- "是" --> R{"带 Reply 且近期引用命中？"}
+    R -- "是" --> D["建立有关联证据的 LiveIncident"]
+    R -- "否" --> U["建立无运行证据的 LiveIncident"]
+    D --> CL{"有明确失败？"}
+    CL -- "是" --> X["进入活动 cluster"]
+    CL -- "否" --> E
+    X --> E
+    U --> E
+    E{"trial mode"}
     E -- "off" --> F["只返回现有受理回执"]
     E -- "observe" --> G["建立 intake-v1 trial"]
     G --> H["轮转 JSONL：started + 最小失败形状 + 延迟"]
@@ -17,15 +24,15 @@ flowchart TD
     M["SUPERUSER 报错反馈"] --> N{"有用 / 不完整 / 不正确"}
     N --> O["revisioned feedback 事件"]
     P["SUPERUSER 报错统计"] --> Q["活动 trial、失败、查询、聚类、反馈与 drop 计数"]
-    R["离线 summarize-trials"] --> S["轮转窗口计数、覆盖率、入口延迟、时间范围、策略版本"]
+    T["离线 summarize-trials"] --> S["轮转窗口计数、覆盖率、入口延迟、时间范围、策略版本"]
 ```
 
-trial 不是后台错误抓取器。只有用户已经显式提交且被精确关联的报障才进入闭环；远端控制台中的重复异常、
-定时任务错误或其他未报告事件不会自动产生用户工单，也不会绕过限流和权限。
+trial 不是后台错误抓取器，也不是一般问答统计。只有 `triage` 请求被分流为 `suspected_incident` 后才进入
+闭环；能力说明、用法纠错和澄清不进入。Reply 只决定能否补充运行证据。
 
 ## 任务与成功标准
 
-当前 `intake-v1` 只回答一个问题：精确报障入口能否在不泄露原始对话和日志的前提下，持续形成维护者可查看、
+当前 `intake-v1` 只回答一个问题：故障分支能否在不泄露原始对话和日志的前提下，持续形成维护者可查看、
 可反馈、可聚合的真实 incident 样本。当前成功信号是：
 
 - incident 已受理且取得不透明 trial ID；
@@ -66,7 +73,7 @@ NBTRIAGE_TRIAL_LOG_MAX_BYTES=10485760
 NBTRIAGE_TRIAL_LOG_BACKUP_COUNT=5
 ```
 
-- 普通用户：`@Bot 报错`，仍必须回复近期消息；
+- 普通用户：`triage <求助内容>`，`@Bot` 可选；只有故障分支进入 trial；
 - 维护者查询：`@Bot 报错查询 <incident_id>`；
 - 维护者反馈：`@Bot 报错反馈 <incident_id> <有用|不完整|不正确>`；
 - 维护者统计：`@Bot 报错统计`。
@@ -82,7 +89,8 @@ NBTRIAGE_TRIAL_LOG_BACKUP_COUNT=5
 - 磁盘至少容纳 `max_bytes × (backup_count + 1)`，默认有界窗口约 60 MiB；
 - 日志不得上传、提交、公开或用于训练，除非另行完成来源、隐私和许可证复核。
 
-上线 smoke 依次验证：普通成员回复近期 Bot 消息发送精确命令 `报错`；`SUPERUSER` 查询该 incident、记录
+上线 smoke 依次验证：`triage 某个功能怎么使用` 得到说明且不产生 incident；`triage 刚才执行后报错了`
+得到受理编号；再回复近期 Bot 消息验证证据关联。`SUPERUSER` 查询对应 incident、记录
 一次枚举反馈并查看统计；非 `SUPERUSER` 无法读取后三个入口；日志只出现当前 JSONL 与有界编号备份，且
 不含消息正文、平台身份、correlation ID、异常消息或 Provider 凭据。
 
@@ -98,7 +106,7 @@ just maintainer summarize-trials `
 与策略版本。损坏、截断、超长、冲突重复或未知版本行计入 `corrupt_line_count`；相同轮转重复行计入
 `duplicate_event_count`。单次汇总最多接受 1 GiB 和 250,000 个不同 event，超过上限失败关闭。
 
-把 `NBTRIAGE_TRIAL_MODE` 改回 `off` 并按宿主流程重启，即停止新 trial 和日志写入；精确报障、incident
+把 `NBTRIAGE_TRIAL_MODE` 改回 `off` 并按宿主流程重启，即停止新 trial 和日志写入；triage 故障分流、incident
 查询、限流与引用关联仍继续工作。日志写入失败时公开报障保持可用并增加 drop；corrupt 增长时检查多进程
 共用路径、外部截断和版本不一致；发生隐私或权限事故时立即切回 `off`、隔离日志并停止共享。不要直接编辑
 现有 JSONL，调查应在副本上进行。
@@ -130,4 +138,5 @@ observe，不用模型填补证据缺口。
 
 - [ADR-0014：先用观察型生产 trial 建立可评测闭环](../../adr/0014-use-observation-first-production-trials.md)
 - [ADR-0006：跨平台 Alconna 入口与引用 Provider](../../adr/0006-cross-platform-alconna-entry-and-reference-providers.md)
+- [ADR-0020：triage 自然语言入口与可选 Reply](../../adr/0020-use-triage-command-for-natural-language-support.md)
 - [ADR-0010：用有界证据获取循环验证 Agent 能力](../../adr/0010-use-bounded-evidence-seeking-agent-loop.md)

@@ -33,6 +33,7 @@ class IntakeError(ValueError):
 
 class IntakeTrigger(StrEnum):
     MENTION = "mention"
+    SUPPORT_COMMAND = "support_command"
     REPLY_REPORT = "reply_report"
 
 

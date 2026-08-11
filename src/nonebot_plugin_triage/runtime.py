@@ -46,6 +46,7 @@ class NBTriagePluginRuntime:
     observer: NoneBotRuntimeObserver
     reference_bridge: UniversalReferenceBridge
     outgoing_reference_providers: tuple[OutgoingReferenceProvider, ...]
+    support_rate_limiter: KeyedRateLimiter
     report_service: LiveReportService
     query_service: IncidentQueryService
     incidents: LiveIncidentBuffer
@@ -77,7 +78,12 @@ def create_plugin_runtime(
         retention_seconds=config.nbtriage_incident_retention_seconds,
     )
     trial_service = trial_service_factory(config)
-    rate_limiter = KeyedRateLimiter(
+    support_rate_limiter = KeyedRateLimiter(
+        secret_key=secrets.token_bytes(32),
+        max_scopes=config.nbtriage_rate_limit_max_scopes,
+        cooldown_seconds=config.nbtriage_support_cooldown_seconds,
+    )
+    report_rate_limiter = KeyedRateLimiter(
         secret_key=secrets.token_bytes(32),
         max_scopes=config.nbtriage_rate_limit_max_scopes,
         cooldown_seconds=config.nbtriage_report_cooldown_seconds,
@@ -86,9 +92,8 @@ def create_plugin_runtime(
         reference_bridge=reference_bridge,
         runtime_buffer=runtime_buffer,
         incident_buffer=incident_buffer,
-        rate_limiter=rate_limiter,
+        rate_limiter=report_rate_limiter,
         evidence_retention_seconds=config.nbtriage_observation_retention_seconds,
-        report_command=config.nbtriage_report_command,
         trial_service=trial_service,
     )
     query_service = IncidentQueryService(incident_buffer)
@@ -102,6 +107,7 @@ def create_plugin_runtime(
         observer=observer,
         reference_bridge=reference_bridge,
         outgoing_reference_providers=outgoing_reference_providers,
+        support_rate_limiter=support_rate_limiter,
         report_service=report_service,
         query_service=query_service,
         incidents=incident_buffer,

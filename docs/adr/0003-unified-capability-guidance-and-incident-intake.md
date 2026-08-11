@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-08 |
+| 已采纳；入口触发细节被 [ADR-0020](0020-use-triage-command-for-natural-language-support.md) 替代，显式 Provider 唯一接入策略被 [ADR-0021](0021-use-deployment-local-capability-shadow-index.md) 部分替代 | 2026-08-08 |
 
 ## 当时遇到了什么
 
@@ -20,6 +20,9 @@
 
 NoneBot Triage Agent 使用同一个**显式支持入口**承接能力导航和故障报障。首版仍由用户 `@Bot` 或回复具体消息
 主动触发，不静默分析普通群聊，也不把每次未匹配消息都视为报障。
+
+> 后续修订：ADR-0020 将触发方式收敛为必选 `triage` 指令，`@Bot` 与 Reply 均改为可选；本 ADR 的五类
+> disposition 与统一入口目标继续有效。
 
 入口先产生独立于技术责任层的 `IntakeDisposition`：
 
@@ -118,10 +121,15 @@ README 可能过期、缺少当前启用状态与权限信息，也难以可靠�
   反射和 README 猜出一个看似完整但不可验证的注册表。
 - 确认结果：已确认；普通 Matcher 后续通过显式能力提供协议接入。
 
+> 后续修订：ADR-0021 保留显式 Provider 作为披露和可见性声明，同时允许普通 Matcher、运行时结构、源码
+> 与可选帮助数据进入部署本地的 `review` 影子索引；影子候选不因此获得执行资格。
+
 ## 落实与确认
 
-- 实施情况：确定性领域分流契约已完成；真实群聊入口、Alconna 能力注册表和意图理解边界尚未实现。
-- 实施证据：[支持入口流程](../architecture/flows/support-intake-routing.md)。
+- 实施情况：确定性领域分流契约、`triage <自然语言>` 群聊入口和窄的显式公开 Alconna Provider 已完成。
+  当前 Matcher 只可靠区分能力问法、疑似故障与待澄清请求；完整五类意图和模型 Agent 尚未接入。
+- 实施证据：[支持入口流程](../architecture/flows/support-intake-routing.md)、
+  [ADR-0020](0020-use-triage-command-for-natural-language-support.md)。
 
 ## 相关文档
 
