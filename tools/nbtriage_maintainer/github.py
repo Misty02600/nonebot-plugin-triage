@@ -5,20 +5,66 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, OpenerDirector, Request, build_opener
 
 from tools.nbtriage_maintainer.models import IssueRef, PullRequestRef
 
 API_VERSION = "2026-03-10"
 DEFAULT_USER_AGENT = "nonebot-plugin-triage-data-gate/0.1"
 _LINK_PATTERN = re.compile(r'<([^>]+)>;\s*rel="([^"]+)"')
+_GITHUB_API_HOST = "api.github.com"
 
 
 class GitHubApiError(RuntimeError):
     pass
+
+
+class _GitHubApiRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> Request | None:
+        _validate_api_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class _UrlOpener(Protocol):
+    def open(
+        self,
+        fullurl: str | Request,
+        data: bytes | None = None,
+        timeout: float | None = None,
+    ) -> Any: ...
+
+
+def _build_api_opener() -> OpenerDirector:
+    return build_opener(_GitHubApiRedirectHandler())
+
+
+def _validate_api_url(url: str) -> str:
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except (TypeError, ValueError) as error:
+        raise GitHubApiError("GitHub API URL is invalid") from error
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != _GITHUB_API_HOST
+        or port not in {None, 443}
+        or (":" in parsed.netloc and not parsed.netloc.endswith(":443"))
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise GitHubApiError("GitHub API URL must use the allowed HTTPS origin")
+    return url
 
 
 def parse_issue_url(value: str) -> IssueRef:
@@ -55,8 +101,13 @@ def parse_link_header(value: str | None) -> dict[str, str]:
     return {relation: url for url, relation in _LINK_PATTERN.findall(value)}
 
 
+def _next_link(headers: dict[str, str]) -> str | None:
+    next_url = parse_link_header(headers.get("link")).get("next")
+    return _validate_api_url(next_url) if next_url is not None else None
+
+
 def _with_page_size(url: str) -> str:
-    parsed = urlsplit(url)
+    parsed = urlsplit(_validate_api_url(url))
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
     query["per_page"] = "100"
     return urlunsplit(
@@ -147,6 +198,7 @@ class GitHubClient:
     token: str | None = None
     timeout_seconds: float = 20.0
     user_agent: str = DEFAULT_USER_AGENT
+    opener: _UrlOpener | None = None
 
     def list_repository_issues(
         self,
@@ -195,7 +247,7 @@ class GitHubClient:
                 for item in page
                 if isinstance(item, dict) and "pull_request" not in item
             )
-            next_url = parse_link_header(headers.get("link")).get("next")
+            next_url = _next_link(headers)
             pages_read += 1
         return issues
 
@@ -242,7 +294,7 @@ class GitHubClient:
             if not isinstance(page, list):
                 raise GitHubApiError(f"unexpected comments response for {issue_ref.source_url}")
             comments.extend(_normalize_comment(item) for item in page if isinstance(item, dict))
-            next_url = parse_link_header(headers.get("link")).get("next")
+            next_url = _next_link(headers)
 
         return {
             "schema_version": 1,
@@ -276,7 +328,7 @@ class GitHubClient:
             for item in page:
                 if isinstance(item, dict) and (event := _normalize_timeline_event(item)):
                     events.append(event)
-            next_url = parse_link_header(headers.get("link")).get("next")
+            next_url = _next_link(headers)
         return events
 
     def get_connected_pull_request_urls(self, issue_ref: IssueRef) -> list[str]:
@@ -423,7 +475,7 @@ class GitHubClient:
                         else [],
                     }
                 )
-            next_url = parse_link_header(headers.get("link")).get("next")
+            next_url = _next_link(headers)
         return commits
 
     def get_commit_reference(self, owner: str, repository: str, commit_sha: str) -> dict[str, Any]:
@@ -452,6 +504,7 @@ class GitHubClient:
         }
 
     def _get_json(self, url: str) -> tuple[Any, dict[str, str]]:
+        validated_url = _validate_api_url(url)
         headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": self.user_agent,
@@ -459,22 +512,26 @@ class GitHubClient:
         }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        request = Request(url, headers=headers, method="GET")
+        request = Request(validated_url, headers=headers, method="GET")
+        opener = self.opener or _build_api_opener()
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+            with opener.open(request, timeout=self.timeout_seconds) as response:
                 body = response.read()
                 response_headers = {key.lower(): value for key, value in response.headers.items()}
         except HTTPError as error:
-            raise GitHubApiError(self._format_http_error(error, url)) from error
+            raise GitHubApiError(self._format_http_error(error, validated_url)) from error
         except URLError as error:
-            raise GitHubApiError(f"GitHub request failed for {url}: {error.reason}") from error
+            raise GitHubApiError(
+                f"GitHub request failed for {validated_url}: {error.reason}"
+            ) from error
 
         try:
             return json.loads(body), response_headers
         except json.JSONDecodeError as error:
-            raise GitHubApiError(f"GitHub returned invalid JSON for {url}") from error
+            raise GitHubApiError(f"GitHub returned invalid JSON for {validated_url}") from error
 
     def _post_json(self, url: str, payload: dict[str, Any]) -> Any:
+        validated_url = _validate_api_url(url)
         headers = {
             "Accept": "application/vnd.github+json",
             "Content-Type": "application/json",
@@ -484,23 +541,26 @@ class GitHubClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         request = Request(
-            url,
+            validated_url,
             data=json.dumps(payload).encode("utf-8"),
             headers=headers,
             method="POST",
         )
+        opener = self.opener or _build_api_opener()
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+            with opener.open(request, timeout=self.timeout_seconds) as response:
                 body = response.read()
         except HTTPError as error:
-            raise GitHubApiError(self._format_http_error(error, url)) from error
+            raise GitHubApiError(self._format_http_error(error, validated_url)) from error
         except URLError as error:
-            raise GitHubApiError(f"GitHub request failed for {url}: {error.reason}") from error
+            raise GitHubApiError(
+                f"GitHub request failed for {validated_url}: {error.reason}"
+            ) from error
 
         try:
             return json.loads(body)
         except json.JSONDecodeError as error:
-            raise GitHubApiError(f"GitHub returned invalid JSON for {url}") from error
+            raise GitHubApiError(f"GitHub returned invalid JSON for {validated_url}") from error
 
     @staticmethod
     def _format_http_error(error: HTTPError, url: str) -> str:
