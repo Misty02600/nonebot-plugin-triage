@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from tools.nbtriage_maintainer.gate import assess_case, evaluate_cases
 from tools.nbtriage_maintainer.runtime_results import case_oracle_revision, probe_file_sha256
 
@@ -84,6 +85,26 @@ def runtime_result(case: dict[str, Any], probe_root: Path, status: str) -> dict[
             }
         )
     return result
+
+
+def write_executable_cases(cases_dir: Path, count: int) -> list[dict[str, Any]]:
+    cases = []
+    for index in range(count):
+        case = complete_case()
+        case["case_id"] = f"gh-owner-repo-{index + 1}"
+        (cases_dir / f"case-{index + 1:02}.json").write_text(
+            json.dumps(case),
+            encoding="utf-8",
+        )
+        cases.append(case)
+    return cases
+
+
+def write_runtime_batch(path: Path, results: list[dict[str, Any]]) -> None:
+    path.write_text(
+        json.dumps({"schema_version": 2, "results": results}),
+        encoding="utf-8",
+    )
 
 
 def test_executable_case_is_ready_only_with_full_oracle() -> None:
@@ -237,6 +258,110 @@ def test_missing_case_ids_are_assessed_independently(tmp_path: Path) -> None:
     assert report["summary"]["duplicate_case_ids"] == 0
     assert report["summary"]["case_load_errors"] == 0
     assert report["summary"]["needs_curation"] == 2
+
+
+@pytest.mark.parametrize("integrity_error", ["duplicate", "malformed", "invalid_field"])
+def test_executable_spec_gate_fails_closed_on_case_integrity_errors(
+    tmp_path: Path,
+    integrity_error: str,
+) -> None:
+    cases_dir = tmp_path / "cases"
+    cases_dir.mkdir()
+    cases = write_executable_cases(cases_dir, 16 if integrity_error == "duplicate" else 15)
+    if integrity_error == "duplicate":
+        (cases_dir / "duplicate.json").write_text(json.dumps(cases[0]), encoding="utf-8")
+    elif integrity_error == "malformed":
+        (cases_dir / "malformed.json").write_text("{", encoding="utf-8")
+    else:
+        invalid = complete_case()
+        invalid["case_id"] = "gh-owner-repo-invalid"
+        invalid["curation"]["candidate_owners"] = ["unknown-layer"]
+        (cases_dir / "invalid.json").write_text(json.dumps(invalid), encoding="utf-8")
+
+    report = evaluate_cases(cases_dir)
+
+    assert report["summary"]["ready_for_execution"] == 15
+    assert report["summary"]["case_load_errors"] > 0 or report["invalid_field_frequency"]
+    assert report["summary"]["executable_spec_gate_met"] is False
+
+
+def test_executable_spec_gate_allows_incomplete_case_after_ready_target(tmp_path: Path) -> None:
+    cases_dir = tmp_path / "cases"
+    cases_dir.mkdir()
+    write_executable_cases(cases_dir, 15)
+    incomplete = complete_case()
+    incomplete["case_id"] = "gh-owner-repo-incomplete"
+    incomplete["curation"]["execution_mode"] = None
+    (cases_dir / "incomplete.json").write_text(json.dumps(incomplete), encoding="utf-8")
+
+    report = evaluate_cases(cases_dir)
+
+    assert report["summary"]["ready_for_execution"] == 15
+    assert report["summary"]["needs_curation"] == 1
+    assert report["invalid_field_frequency"] == {}
+    assert report["summary"]["executable_spec_gate_met"] is True
+
+
+@pytest.mark.parametrize(
+    "integrity_error",
+    ["duplicate", "unknown", "malformed", "path_escape"],
+)
+def test_runtime_gate_fails_closed_on_runtime_integrity_errors(
+    tmp_path: Path,
+    integrity_error: str,
+) -> None:
+    cases_dir = tmp_path / "cases"
+    cases_dir.mkdir()
+    cases = write_executable_cases(cases_dir, 16 if integrity_error == "path_escape" else 15)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    results = [runtime_result(case, tmp_path, "validated") for case in cases]
+    write_runtime_batch(runtime_dir / "batch.json", results)
+    if integrity_error == "duplicate":
+        write_runtime_batch(runtime_dir / "invalid.json", [results[0]])
+    elif integrity_error == "unknown":
+        unknown_case = complete_case()
+        unknown_case["case_id"] = "gh-owner-repo-unknown"
+        write_runtime_batch(
+            runtime_dir / "invalid.json",
+            [runtime_result(unknown_case, tmp_path, "validated")],
+        )
+    elif integrity_error == "malformed":
+        (runtime_dir / "invalid.json").write_text("{", encoding="utf-8")
+    else:
+        escaped = runtime_result(cases[-1], tmp_path, "validated")
+        escaped["probe_source"] = "../probe.py"
+        write_runtime_batch(runtime_dir / "invalid.json", [escaped])
+
+    report = evaluate_cases(cases_dir, runtime_dir, probe_root=tmp_path)
+
+    assert report["summary"]["runtime_validated"] >= 15
+    assert report["summary"]["runtime_invalid"] > 0 or report["summary"]["runtime_load_errors"] > 0
+    assert report["summary"]["runtime_gate_met"] is False
+
+
+def test_runtime_gate_allows_blocked_result_after_validated_target(tmp_path: Path) -> None:
+    cases_dir = tmp_path / "cases"
+    cases_dir.mkdir()
+    cases = write_executable_cases(cases_dir, 16)
+    results = [runtime_result(case, tmp_path, "validated") for case in cases[:15]]
+    blocked = runtime_result(cases[15], tmp_path, "blocked")
+    blocked.update(
+        {
+            "blocking_reason": "Linux runner is unavailable",
+            "required_runner": "Linux container",
+        }
+    )
+    results.append(blocked)
+    runtime_file = tmp_path / "runtime.json"
+    write_runtime_batch(runtime_file, results)
+
+    report = evaluate_cases(cases_dir, runtime_file, probe_root=tmp_path)
+
+    assert report["summary"]["runtime_validated"] == 15
+    assert report["summary"]["runtime_blocked"] == 1
+    assert report["summary"]["runtime_invalid"] == 0
+    assert report["summary"]["runtime_gate_met"] is True
 
 
 def test_evaluate_cases_counts_matching_runtime_oracle(tmp_path: Path) -> None:

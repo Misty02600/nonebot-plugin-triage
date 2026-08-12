@@ -186,6 +186,17 @@ def evaluate_cases(
     runtime_decisions = Counter(item.decision for item in runtime_assessments)
     missing = Counter(field for item in assessments for field in item.missing_fields)
     invalid = Counter(field for item in assessments for field in item.invalid_fields)
+    executable_spec_gate_met = (
+        decisions["ready_for_execution"] >= 15
+        and not load_errors
+        and not duplicate_case_ids
+        and not invalid
+    )
+    runtime_gate_met = (
+        runtime_decisions["validated"] >= 15
+        and not runtime_load_errors
+        and runtime_decisions["invalid"] == 0
+    )
     return {
         "schema_version": 1,
         "summary": {
@@ -205,13 +216,13 @@ def evaluate_cases(
             "needs_curation": decisions["needs_curation"],
             "excluded": decisions["excluded"],
             "executable_spec_target": 15,
-            "executable_spec_gate_met": decisions["ready_for_execution"] >= 15,
+            "executable_spec_gate_met": executable_spec_gate_met,
             "runtime_validated": runtime_decisions["validated"],
             "runtime_failed": runtime_decisions["failed"],
             "runtime_blocked": runtime_decisions["blocked"],
             "runtime_invalid": runtime_decisions["invalid"],
             "runtime_target": 15,
-            "runtime_gate_met": runtime_decisions["validated"] >= 15,
+            "runtime_gate_met": runtime_gate_met,
         },
         "readiness_definition": (
             "ready_for_execution means the frozen candidate and Oracle specification are complete; "
