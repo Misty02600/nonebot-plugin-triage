@@ -19,6 +19,10 @@ from tools.nbtriage_maintainer.answer_quality_evaluation import (
     ANSWER_QUALITY_EVALUATION_ID,
     evaluate_answer_quality,
 )
+from tools.nbtriage_maintainer.bot_docs_evaluation import (
+    BOT_DOCS_EVALUATION_ID,
+    evaluate_bot_docs_retrieval,
+)
 from tools.nbtriage_maintainer.evidence_policy import B3_EVIDENCE_POLICY_ID
 from tools.nbtriage_maintainer.evidence_policy_evaluation import evaluate_b3_evidence_policy
 from tools.nbtriage_maintainer.evidence_receipt_evaluation import (
@@ -82,7 +86,7 @@ def publish_evaluation_to_mlflow(
     run_name: str | None = None,
     mlflow_module: Any | None = None,
 ) -> MLflowPublication:
-    """把既有评测工件发布到 MLflow，不修改或重新执行评测。
+    """把既有评测工件发布到 MLflow，并重放支持复建的正式离线评测。
 
     Args:
         report_path: 已经完整落盘的 JSON 评测报告或终态 partial audit。
@@ -221,6 +225,8 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
         _validate_b3_evidence_policy_reproducibility(payload)
     if evaluation_id == B3_EVIDENCE_RECEIPT_EVALUATION_ID:
         _validate_b3_evidence_receipt_reproducibility(payload)
+    if evaluation_id == BOT_DOCS_EVALUATION_ID:
+        _validate_bot_docs_reproducibility(payload)
 
     return _LoadedArtifact(
         path=path,
@@ -339,6 +345,26 @@ def _validate_b3_evidence_receipt_reproducibility(payload: dict[str, Any]) -> No
     except Exception as error:
         raise MLflowTrackingError("B3 evidence-receipt report is not reproducible") from error
     _require_reproduced_report(payload, reproduced, report_name="B3 evidence-receipt")
+
+
+def _validate_bot_docs_reproducibility(payload: dict[str, Any]) -> None:
+    fixture = payload.get("fixture")
+    index = payload.get("index")
+    fixture_path = fixture.get("path") if isinstance(fixture, dict) else None
+    index_path = index.get("index_path") if isinstance(index, dict) else None
+    if (
+        not isinstance(fixture_path, str)
+        or not fixture_path
+        or not isinstance(index_path, str)
+        or not index_path
+    ):
+        raise MLflowTrackingError("bot-docs retrieval report is not reproducible")
+
+    try:
+        reproduced = evaluate_bot_docs_retrieval(Path(index_path), Path(fixture_path))
+    except Exception as error:
+        raise MLflowTrackingError("bot-docs retrieval report is not reproducible") from error
+    _require_reproduced_report(payload, reproduced, report_name="bot-docs retrieval")
 
 
 def _require_reproduced_report(

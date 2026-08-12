@@ -194,6 +194,7 @@ def test_bot_docs_retrieval_evaluation_compares_metadata_and_hybrid(
     assert report["quality_gate"]["status"] == "unqualified"
     assert report["quality_gate"]["checks"]["official_fixture_contract"] is False
     assert report["fixture"]["official_case_count"] == 25
+    assert report["index"]["index_path"] == index_path.resolve().as_posix()
     assert len(report["fixture"]["sha256"]) == 64
     with pytest.raises(BotDocsEvaluationError, match="requires result limit 5"):
         evaluate_bot_docs_retrieval(index_path, fixture_path, limit=3)

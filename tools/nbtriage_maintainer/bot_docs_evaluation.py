@@ -129,6 +129,7 @@ def evaluate_bot_docs_retrieval(
             "official_case_count": BOT_DOCS_OFFICIAL_CASE_COUNT,
         },
         "index": {
+            "index_path": index.path.as_posix(),
             "schema_version": int(metadata["schema_version"]),
             "corpus_sha256": metadata["corpus_sha256"],
             "file_count": int(metadata["file_count"]),

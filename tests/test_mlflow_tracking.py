@@ -18,6 +18,11 @@ from tools.nbtriage_maintainer.answer_quality_evaluation import (
     evaluate_answer_quality,
 )
 from tools.nbtriage_maintainer.answer_review_export import build_b4_answer_quality_review
+from tools.nbtriage_maintainer.bot_docs import build_bot_docs_index
+from tools.nbtriage_maintainer.bot_docs_evaluation import (
+    DEFAULT_BOT_DOCS_FIXTURE_PATH,
+    evaluate_bot_docs_retrieval,
+)
 from tools.nbtriage_maintainer.evidence_policy_evaluation import evaluate_b3_evidence_policy
 from tools.nbtriage_maintainer.evidence_receipt_evaluation import evaluate_b3_evidence_receipts
 from tools.nbtriage_maintainer.mlflow_tracking import (
@@ -246,6 +251,28 @@ def _write_b3_evidence_receipt_report(tmp_path: Path) -> Path:
     path = tmp_path / "b3-evidence-receipt.json"
     _write_json(path, report)
     return path
+
+
+def _write_bot_docs_report(tmp_path: Path) -> tuple[Path, Path]:
+    source_root = tmp_path / "bot-docs"
+    (source_root / "notes/platforms").mkdir(parents=True)
+    (source_root / "notes/recipes").mkdir(parents=True)
+    adapter_root = source_root / "official/nonebot-onebot-adapter"
+    (adapter_root / "docs").mkdir(parents=True)
+    (source_root / "notes/platforms/fact.md").write_text(
+        "# 本地平台事实\n\n用于正式 Fixture 重放边界测试。\n",
+        encoding="utf-8",
+    )
+    (adapter_root / "uv.lock").write_text(
+        'version = 1\n\n[[package]]\nname = "nonebot-adapter-onebot"\nversion = "2.4.6"\n',
+        encoding="utf-8",
+    )
+    index_path = tmp_path / "indexes/bot-docs.sqlite3"
+    build_bot_docs_index(source_root, index_path)
+    report = evaluate_bot_docs_retrieval(index_path, DEFAULT_BOT_DOCS_FIXTURE_PATH)
+    report_path = tmp_path / "bot-docs-retrieval.json"
+    _write_json(report_path, report)
+    return report_path, index_path
 
 
 def _assert_mlflow_untouched(mlflow: _FakeMLflow) -> None:
@@ -648,6 +675,84 @@ def test_b3_evidence_receipt_official_report_rejects_custom_fixture_bytes_before
     _write_json(custom_fixtures, fixtures_payload)
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     payload["source"]["fixtures_path"] = custom_fixtures.as_posix()
+    _write_json(report_path, payload)
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+def test_bot_docs_report_publishes_only_after_offline_reproduction(tmp_path: Path) -> None:
+    report_path, _ = _write_bot_docs_report(tmp_path)
+    mlflow = _FakeMLflow()
+
+    publication = publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    assert publication.created is True
+    assert len(mlflow.runs) == 1
+
+
+def test_bot_docs_report_rejects_summary_tampering_before_mlflow_call(
+    tmp_path: Path,
+) -> None:
+    report_path, _ = _write_bot_docs_report(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["summary"]["case_count"] = 999
+    _write_json(report_path, payload)
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+def test_handwritten_official_bot_docs_report_is_rejected_before_mlflow_call(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "forged-bot-docs.json"
+    _write_json(
+        report_path,
+        {
+            "schema_version": 1,
+            "evaluation_id": "bot-docs-retrieval-v1",
+            "summary": {"case_count": 25},
+            "quality_gate": {"status": "passed"},
+        },
+    )
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+def test_bot_docs_report_rejects_missing_index_before_mlflow_call(tmp_path: Path) -> None:
+    report_path, _ = _write_bot_docs_report(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["index"]["index_path"] = (tmp_path / "missing.sqlite3").as_posix()
+    _write_json(report_path, payload)
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+def test_bot_docs_report_rejects_fixture_path_tampering_before_mlflow_call(
+    tmp_path: Path,
+) -> None:
+    report_path, _ = _write_bot_docs_report(tmp_path)
+    custom_fixture = tmp_path / "reencoded-bot-docs-fixture.json"
+    fixture_payload = json.loads(DEFAULT_BOT_DOCS_FIXTURE_PATH.read_text(encoding="utf-8"))
+    fixture_payload["description"] = "tampered fixture path target"
+    _write_json(custom_fixture, fixture_payload)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["fixture"]["path"] = custom_fixture.as_posix()
     _write_json(report_path, payload)
     mlflow = _FakeMLflow()
 
