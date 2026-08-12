@@ -424,7 +424,7 @@ def test_real_gate_compares_same_model_trials_and_accounts_for_authorization() -
     assert report["promotion_gate"]["checks"]["provider_response_model_identity_complete"] is True
     assert report["promotion_gate"]["checks"]["provider_response_model_consistent"] is True
     assert report["promotion_gate"]["checks"]["provider_response_model_matches_request"] is True
-    assert report["promotion_gate"]["decision"] == "eligible_for_PLAN_0019"
+    assert report["promotion_gate"]["decision"] == "eligible_for_offline_integration_design_review"
     assert all(row["candidate"] is not None for row in report["b1_trials"])
     assert all(
         row["candidate"] is not None for row in report["trials"] if row["status"] == "completed"

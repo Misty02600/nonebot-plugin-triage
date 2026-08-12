@@ -1264,7 +1264,7 @@ async def evaluate_b4_real_fixtures(
     )
     promotion_gate["passed"] = all(promotion_gate["checks"].values())
     promotion_gate["decision"] = (
-        "eligible_for_PLAN_0019"
+        "eligible_for_offline_integration_design_review"
         if promotion_gate["passed"]
         else "not_eligible_real_model_gate_failed"
     )
@@ -1847,7 +1847,7 @@ def _promotion_gate(
         "passed": passed,
         "checks": checks,
         "decision": (
-            "eligible_for_PLAN_0019"
+            "eligible_for_offline_integration_design_review"
             if passed
             else (
                 "not_eligible_real_model_gate_failed"
