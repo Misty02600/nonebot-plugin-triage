@@ -38,6 +38,18 @@ def test_policy_never_invents_or_accepts_invalid_candidates() -> None:
 def test_validation_policy_report_records_precision_tradeoff_without_calls() -> None:
     report = evaluate_b3_evidence_policy(VALIDATION_FIXTURE)
 
+    assert report["evaluation_qualification"] == "official_frozen_projection"
+    assert report["source"] == {
+        "prediction_report": VALIDATION_FIXTURE.as_posix(),
+        "prediction_report_sha256": (
+            "fff9505b1039e463b42f8f5928d44daac26f921a923d9dd59d9fbb504cac1a80"
+        ),
+        "official_prediction_report_sha256": (
+            "fff9505b1039e463b42f8f5928d44daac26f921a923d9dd59d9fbb504cac1a80"
+        ),
+        "official_case_count": 11,
+        "split": "validation",
+    }
     assert report["summary"] == {
         "case_count": 11,
         "policy_id": "b3-single-evidence-v1",
@@ -63,6 +75,18 @@ def test_validation_policy_report_records_precision_tradeoff_without_calls() -> 
         "b1_average_per_needs_evidence_action": 4.125,
         "b3_average_per_needs_evidence_action": 1.0,
     }
+
+
+def test_policy_evaluation_rejects_legal_content_replacement(tmp_path: Path) -> None:
+    payload = json.loads(VALIDATION_FIXTURE.read_text(encoding="utf-8"))
+    for row in payload["predictions"]:
+        row["prediction"]["route"] = row["gold"]["route"]
+        row["prediction"]["missing_evidence"] = list(row["gold"]["missing_evidence"])
+    replaced = tmp_path / "better-looking-projection.json"
+    replaced.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(EvidencePolicyEvaluationError, match="official frozen projection"):
+        evaluate_b3_evidence_policy(replaced)
 
 
 def test_policy_evaluation_rejects_consumed_heldout_report(tmp_path: Path) -> None:

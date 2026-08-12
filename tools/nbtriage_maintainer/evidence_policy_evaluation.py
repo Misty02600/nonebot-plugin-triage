@@ -30,6 +30,8 @@ _B3_FIXTURE_FIELDS = frozenset(
 _B3_FIXTURE_SET_ID = "b3-evidence-policy-validation-v1"
 _B3_ARTIFACT_PROFILE = "b3-evidence-policy-curated-fixture-v1"
 _B3_SOURCE_KIND = "curated_public_regression_projection"
+_B3_OFFICIAL_FIXTURE_SHA256 = "fff9505b1039e463b42f8f5928d44daac26f921a923d9dd59d9fbb504cac1a80"
+_B3_OFFICIAL_CASE_COUNT = 11
 _B3_ROW_FIELDS = frozenset({"split", "case_id", "gold", "prediction"})
 _B3_GOLD_FIELDS = frozenset({"route", "missing_evidence"})
 _B3_PREDICTION_FIELDS = frozenset({"case_id", "route", "fault_phase", "missing_evidence"})
@@ -156,13 +158,25 @@ def evaluate_b3_evidence_policy(prediction_report: Path) -> dict[str, Any]:
             }
         )
 
+    prediction_report_sha256 = hashlib.sha256(raw).hexdigest()
+    if (
+        prediction_report_sha256 != _B3_OFFICIAL_FIXTURE_SHA256
+        or len(rows) != _B3_OFFICIAL_CASE_COUNT
+    ):
+        raise EvidencePolicyEvaluationError(
+            "B3 evidence policy input does not match the official frozen projection"
+        )
+
     return {
         "schema_version": 1,
         "evaluation_id": B3_EVIDENCE_POLICY_ID,
+        "evaluation_qualification": "official_frozen_projection",
         "generated_at": datetime.now(UTC).isoformat(),
         "source": {
             "prediction_report": prediction_report.as_posix(),
-            "prediction_report_sha256": hashlib.sha256(raw).hexdigest(),
+            "prediction_report_sha256": prediction_report_sha256,
+            "official_prediction_report_sha256": _B3_OFFICIAL_FIXTURE_SHA256,
+            "official_case_count": _B3_OFFICIAL_CASE_COUNT,
             "split": "validation",
         },
         "summary": {
