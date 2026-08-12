@@ -28,11 +28,13 @@
                                   └─ observe trial → 本地轮转 JSONL
 ```
 
-OneBot V11 群聊另有一个窄续问入口：精确 Reply 到 Triage 已登记且未过期的回答时，可以省略 `triage`。
-它由独立 HMAC Thread 引用索引和轻量 adapter Provider 解析，作为同一 Thread 的新一轮处理；不读取被回复正文。
+续问仍通过同一个 Alconna `triage` 入口：用户发送 `triage <续问>` 并精确 Reply 到 Triage 已登记且未过期的
+最近回答时，独立 HMAC Thread 协调器原子消费该 Reply，并为同一 Thread 取得单个 active turn lease；不读取
+被回复正文。Alconna / UniSeg 负责提供统一 Reply / Target，Thread 协调器负责 Triage 特有的归属、作用域、
+TTL、latest-only 和并发判断。新回答成功发送后才登记新的续接点，处理或发送失败不会恢复旧 Reply。
 
-`@Bot` 由 NoneBot / 适配器预处理，首次入口本身不要求 `to_me()`。除上述已知 Triage 回答的精确 Reply
-外，`triage` 指令始终必选，所以插件不会把普通群聊或未知 Reply 交给意图层。
+`@Bot` 由 NoneBot / 适配器预处理，入口本身不要求 `to_me()`。`triage` 在每轮都必选，所以插件不会把普通
+群聊或任何只有 Reply 的消息交给意图层。Reply 未命中 Thread 时，显式请求仍按新的 `triage` 处理。
 
 被回复消息如果是入站事件，通用引用桥已经登记其引用。Bot 主动输出则需要适配器出站 Provider 回填消息
 引用；当前只实现 OneBot V11 群发送 Provider。其他适配器引用失败时仍处理求助，只明确说明没有关联证据。
@@ -57,7 +59,7 @@ ADR-0028 已经部分替代分类前统一拒绝私聊的入口边界：当前�
 | Reply / Target | 已用真实事件模型测试 | 取决于对应 exporter 与平台事件 |
 | 回复入站消息并关联 | 支持 | exporter 可提供 target 与 message ID 时支持 |
 | 回复 Bot 输出并关联 | 当前支持群发送 | 尚未实现出站 Provider |
-| 精确回复 Triage 回答后免指令续问 | 当前支持群聊；每轮重新限流 | 未提供轻量入站 Reply Provider，失败关闭 |
+| `triage` + 精确回复 Triage 回答续问 | 当前支持群聊；每轮重新限流 | 入口可用；是否续接取决于该 adapter 的出站 Provider |
 | 公开结果发送 | `UniMessage` 支持 | 由对应 exporter 转换 |
 
 ## 数据边界
@@ -77,7 +79,7 @@ ADR-0028 已经部分替代分类前统一拒绝私聊的入口边界：当前�
 | `triage` Matcher、自然语言首轮分流与公开能力 | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support_intake.py` |
 | SUPERUSER 鉴权后的影子候选检索 | `src/nonebot_plugin_triage/capability_shadow.py` |
 | 通用入站引用与 Target scope | `src/nonebot_plugin_triage/universal_references.py` |
-| OneBot V11 出站与轻量入站 Reply Provider | `src/nonebot_plugin_triage/onebot_v11_references.py` |
+| OneBot V11 出站引用 Provider | `src/nonebot_plugin_triage/onebot_v11_references.py` |
 | Thread 状态与精确回复引用 | `src/nbtriage/support_threads.py`、`src/nonebot_plugin_triage/thread_references.py` |
 | HMAC 引用索引 | `src/nbtriage/message_references.py` |
 | 故障组合与窄回显 | `src/nonebot_plugin_triage/live_reports.py` |
@@ -90,4 +92,6 @@ ADR-0028 已经部分替代分类前统一拒绝私聊的入口边界：当前�
 - [ADR-0020：triage 自然语言入口与可选 Reply](../../adr/0020-use-triage-command-for-natural-language-support.md)
 - [ADR-0022：只向 SUPERUSER 接入能力影子候选检索](../../adr/0022-limit-capability-shadow-guidance-to-superusers.md)
 - [ADR-0028：允许 triage 私聊并向 SUPERUSER 原会话返回行为解释](../../adr/0028-allow-private-triage-and-superuser-request-context-replies.md)
-- [ADR-0030：精确回复续接短期支持 Thread](../../adr/0030-continue-support-thread-by-exact-reply.md)
+- [ADR-0030：免命令精确回复续问（已替代）](../../adr/0030-continue-support-thread-by-exact-reply.md)
+- [ADR-0031：支持 Thread 续问仍要求显式 triage](../../adr/0031-require-triage-for-support-thread-continuation.md)
+- [ADR-0033：用一次性 Reply Claim 串行化支持 Thread 处理轮](../../adr/0033-serialize-support-thread-turns-with-single-use-reply-claims.md)

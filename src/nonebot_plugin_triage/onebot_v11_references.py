@@ -5,16 +5,17 @@ from typing import Any
 
 from nonebot.adapters import Bot as BaseBot
 from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
-from nonebot.adapters.onebot.v11 import GroupMessageEvent
 from nonebot.matcher import current_matcher
 from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
 from nonebot_plugin_triage.nonebot_runtime import NBTRIAGE_CORRELATION_STATE_KEY
 from nonebot_plugin_triage.thread_references import (
-    NBTRIAGE_THREAD_BINDING_STATE_KEY,
-    IncomingReplyReference,
+    InitialThreadBinding,
     OutgoingThreadBinding,
+    PendingContinuationBinding,
+    PreparedContinuationBinding,
     SupportThreadReferenceBridge,
+    pop_outgoing_thread_binding,
 )
 from nonebot_plugin_triage.universal_references import UniversalReferenceBridge
 
@@ -66,19 +67,34 @@ class OneBotV11OutgoingReferenceProvider:
     ) -> None:
         if not isinstance(bot, OneBotV11Bot) or api not in _GROUP_SEND_APIS:
             return
+        matcher = current_matcher.get(None)
+        if matcher is None:
+            return
+        thread_binding = (
+            pop_outgoing_thread_binding(matcher.state) if self.thread_bridge is not None else None
+        )
         if exception is not None:
+            self._fail_thread_binding(thread_binding)
+            if thread_binding is not None:
+                self._record_drop()
             return
         try:
             group_id = _outgoing_group_id(api, data)
             if group_id is None:
-                return
-            matcher = current_matcher.get(None)
-            if matcher is None:
+                self._fail_thread_binding(thread_binding)
+                if thread_binding is not None:
+                    self._record_drop()
                 return
             message_id = _result_message_id(result)
             target = _group_target(group_id, str(bot.self_id))
-            correlation_id = _optional_correlation_from_state(matcher.state)
-            if correlation_id is not None:
+        except Exception:
+            self._fail_thread_binding(thread_binding)
+            self._record_drop()
+            return
+
+        correlation_id = _optional_correlation_from_state(matcher.state)
+        if correlation_id is not None:
+            try:
                 self.bridge.bind_reference(
                     adapter_name=ONEBOT_V11_ADAPTER_NAME,
                     bot_scope=str(bot.self_id),
@@ -86,58 +102,54 @@ class OneBotV11OutgoingReferenceProvider:
                     message_reference=str(message_id),
                     correlation_id=correlation_id,
                 )
-            thread_binding = _optional_thread_binding_from_state(matcher.state)
-            if self.thread_bridge is not None and thread_binding is not None:
-                self.thread_bridge.bind_reference(
-                    adapter_name=ONEBOT_V11_ADAPTER_NAME,
-                    bot_scope=str(bot.self_id),
-                    target=target,
-                    actor_scope=thread_binding.actor_scope,
-                    message_reference=str(message_id),
-                    thread_id=thread_binding.thread_id,
-                )
-        except Exception:
+            except Exception:
+                self._record_drop()
+
+        if thread_binding is not None and not self._settle_thread_binding(
+            thread_binding,
+            bot_scope=str(bot.self_id),
+            target=target,
+            message_reference=str(message_id),
+        ):
             self._record_drop()
+
+    def _settle_thread_binding(
+        self,
+        binding: OutgoingThreadBinding,
+        *,
+        bot_scope: str,
+        target: Target,
+        message_reference: str,
+    ) -> bool:
+        bridge = self.thread_bridge
+        if bridge is None:
+            return False
+        if isinstance(binding, InitialThreadBinding):
+            return bridge.bind_initial(
+                binding,
+                adapter_name=ONEBOT_V11_ADAPTER_NAME,
+                bot_scope=bot_scope,
+                target=target,
+                message_reference=message_reference,
+            )
+        if isinstance(binding, PreparedContinuationBinding):
+            return bridge.complete_continuation(
+                binding,
+                adapter_name=ONEBOT_V11_ADAPTER_NAME,
+                bot_scope=bot_scope,
+                target=target,
+                message_reference=message_reference,
+            )
+        if isinstance(binding, PendingContinuationBinding):
+            bridge.fail_binding(binding)
+        return False
+
+    def _fail_thread_binding(self, binding: OutgoingThreadBinding | None) -> None:
+        if binding is not None and self.thread_bridge is not None:
+            self.thread_bridge.fail_binding(binding)
 
     def _record_drop(self) -> None:
         self._dropped_count += 1
-
-
-class OneBotV11IncomingReplyReferenceProvider:
-    """读取 OneBot V11 群聊的结构化 Reply ID，不触发额外平台查询。"""
-
-    def extract(
-        self,
-        bot: BaseBot,
-        event: Any,
-    ) -> IncomingReplyReference | None:
-        if not isinstance(bot, OneBotV11Bot) or not isinstance(event, GroupMessageEvent):
-            return None
-        message_reference = _incoming_reply_message_id(event)
-        if message_reference is None:
-            return None
-        return IncomingReplyReference(
-            adapter_name=ONEBOT_V11_ADAPTER_NAME,
-            bot_scope=str(bot.self_id),
-            target=_group_target(event.group_id, str(bot.self_id)),
-            actor_scope=str(event.user_id),
-            message_reference=str(message_reference),
-        )
-
-
-def _incoming_reply_message_id(event: GroupMessageEvent) -> int | str | None:
-    if event.reply is not None:
-        message_id = event.reply.message_id
-        if not isinstance(message_id, bool) and isinstance(message_id, (int, str)):
-            return message_id
-    for segment in event.original_message:
-        if segment.type != "reply":
-            continue
-        message_id = segment.data.get("id")
-        if not isinstance(message_id, bool) and isinstance(message_id, (int, str)):
-            return message_id
-        return None
-    return None
 
 
 def _outgoing_group_id(api: str, data: Mapping[str, Any]) -> int | str | None:
@@ -161,13 +173,6 @@ def _result_message_id(result: Any) -> int | str:
 def _optional_correlation_from_state(state: dict[str, Any]) -> str | None:
     value = state.get(NBTRIAGE_CORRELATION_STATE_KEY)
     return value if isinstance(value, str) else None
-
-
-def _optional_thread_binding_from_state(
-    state: dict[str, Any],
-) -> OutgoingThreadBinding | None:
-    value = state.get(NBTRIAGE_THREAD_BINDING_STATE_KEY)
-    return value if isinstance(value, OutgoingThreadBinding) else None
 
 
 def _group_target(group_id: int | str, self_id: str) -> Target:

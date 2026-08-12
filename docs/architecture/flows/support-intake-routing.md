@@ -2,10 +2,10 @@
 
 ## 当前入口与已采纳目标
 
-普通用户首次发送 `triage <求助内容>`，也可以写成 `@Bot triage <求助内容>`。根据 ADR-0030，OneBot V11
-群聊中还可精确 Reply 到 Triage 自己短期登记的上一条回答来续接同一 Thread，此时可以省略 `triage`；其他
-普通消息、未知 Reply 和回复非 Triage 消息都不会触发。首次请求中的可选 Reply 仍只提供关联消息和运行证据，
-不决定用户意图。当前实现已经允许私聊、群聊和频道请求进入首次入口，再由各意图分支执行自己的合同。
+普通用户每轮都发送 `triage <求助内容>`，也可以写成 `@Bot triage <求助内容>`。Reply 是可选的结构化
+上下文，不是独立触发器：只有 Reply、没有 `triage` 的消息不会进入本插件。显式请求精确回复 Triage 最近
+一次仍有效的回答时，插件尝试续接同一 Thread；未知、过期、旧回答或跨作用域 Reply 则按新请求处理。
+当前实现已经允许私聊、群聊和频道请求进入入口，再由各意图分支执行自己的合同。
 
 ```text
 triage + request text + optional Reply
@@ -27,14 +27,24 @@ triage + request text + optional Reply
 ```
 
 每轮正常回答后 handler 都结束，不使用 Waiter 悬挂协程。教学或澄清回答会建立不含正文的短期内存 Thread，
-OneBot V11 出站 Provider 将回答 message ID 通过 HMAC 索引绑定到 adapter、Bot、场景和 actor。下一条精确
-Reply 由高优先级常驻 Matcher 的轻量 Rule 解析，命中后作为同 Thread 的新处理轮重新限流；默认 idle 15 分钟、
-absolute 30 分钟且不跨重启。其他 adapter 在没有无外部读取副作用的入站 Reply Provider 时失败关闭。
+首次回答发送期间用短期 pending reservation 防止该 Thread 被 idle TTL 或容量淘汰，但不延长 absolute TTL；
+适配器出站 Provider 将回答
+message ID 通过 HMAC 索引绑定到 adapter、Bot、场景和 actor。下一条显式
+`triage` 由同一个 Alconna Matcher 接收；每轮先经过入口限流，随后由 UniSeg 提供结构化 Reply / Target，
+Thread 协调器再原子 Claim 仍可续接的上下文。Claim 会立即消费旧 Reply，并保证每个 Thread 同时只有一个
+active turn；并发续问返回“上一轮仍在处理”，不进入业务分支。默认 idle 15 分钟、
+absolute 30 分钟且
+不跨重启。当前只有 OneBot V11 群发送实现了 Bot 出站 Thread 引用 Provider，其他 adapter 未命中时按新请求
+处理，而不是监听其普通 Reply。
+
+Claim 内部异常与 `NOT_FOUND` 分开：异常只返回“上下文暂时不可用”并失败关闭，不把已部分处理的续问再次
+当作新请求。入口限流拒绝发生在 Claim 前，因此不会消费 Reply。
 
 澄清 Thread 只接受一次明确关联的续答；续答可转入教学。教学或澄清 Thread 中，用户明确请求受理故障时，
 会沿用现有报障服务建立一次 incident 并立即关闭 Thread。仍无法分类、空输入、超长输入或显式取消都会终止
-本次澄清，不进入第二次追问。教学 Thread 可在 TTL 内继续相关问答；每次成功发送新回答后，旧回答的引用
-立即失效，只保留最近一次回答作为续接点。续问转报障时不会把 Bot 的教学回答当作用户故障证据。
+本次澄清，不进入第二次追问。教学 Thread 可在 TTL 内继续相关问答；旧回答在处理轮 Claim 时立即失效，
+只有新回答成功发送并取得 message ID 后才建立新的续接点。发送、绑定或处理失败不会复活旧引用。续问转报障
+时不会把 Bot 的教学回答当作用户故障证据。
 
 当前已接入 `triage` 自由文本参数、确定性首轮意图和公开能力说明。首轮实现只可靠区分
 `capability_guidance`、`suspected_incident` 和“不确定”；上图中的 `usage_error`、
@@ -58,12 +68,16 @@ absolute 30 分钟且不跨重启。其他 adapter 在没有无外部读取副�
 
 - 当前请求文字只在入口和意图适配层瞬时使用；`IntakeSignals`、`LiveIncident`、trial 和运行证据不保存原文；
 - 文字、插件元数据和 Reply 都是不可信证据，不能直接变成命令执行、工具调用或维护动作；
-- Reply 只读取第一个结构化 `id`，不读取 `msg` / `origin`；
+- Alconna / UniSeg 负责提供第一个结构化 `Reply.id` 和 Target；入口不读取 `msg` / `origin`。Thread 索引另外
+  判断该 ID 是否属于 Triage、是否绑定当前 actor / Bot / 场景，以及 Thread 是否有效和指向最近回答；
 - Reply 缺失或引用过期不妨碍求助；疑似故障会明确标记为未关联运行证据，不猜测其他消息；
 - 所有求助先经过不保存平台身份的轻量 HMAC 限流；疑似故障再经过独立的建单限流；
+- 同一 Thread 的并发正确性由一次性 Reply Claim 和短期 turn lease 保证；它不替代入口限流，也不提供
+  跨进程或跨重启协调；
 - 普通用户能力说明优先采用显式公开 Provider，未命中时只检索当前 adapter 域内自动确定 `public` 的已加载
-  命令；`CommandMeta.hide=True`、停用、`review / restricted` 和其他 adapter 能力不进入普通用户回答。
-  SUPERUSER 在模型外鉴权通过后可检索影子的 `public / review / restricted`，但必须保留候选和执行资格未知提示；
+  命令；`CommandMeta.hide=True`、停用、带 blocking `analysis_issues`、`restricted` 和其他 adapter 能力不进入
+  普通用户回答。SUPERUSER 在模型外鉴权通过后可检索影子的完整受众、平台范围和具体问题，但必须保留
+  问题与执行资格未知提示；
   影子字段在回显前中和 mention 与 Unicode 控制字符；两条路径都不会为回答问题重新执行命令 `parse()`、
   behavior、executor、Rule、Permission 或 handler；
 - 当前实现允许私聊进入本地守门和意图分流。公开教学、用法纠错与
@@ -91,6 +105,9 @@ absolute 30 分钟且不跨重启。其他 adapter 在没有无外部读取副�
 - [ADR-0022：SUPERUSER 能力影子候选检索](../../adr/0022-limit-capability-shadow-guidance-to-superusers.md)
 - [ADR-0025：用多源部署证据解释插件行为](../../adr/0025-explain-plugin-behavior-from-deployment-evidence.md)
 - [ADR-0028：允许 triage 私聊并向 SUPERUSER 原会话返回行为解释](../../adr/0028-allow-private-triage-and-superuser-request-context-replies.md)
-- [ADR-0030：精确回复续接短期支持 Thread](../../adr/0030-continue-support-thread-by-exact-reply.md)
+- [ADR-0030：免命令精确回复续问（已替代）](../../adr/0030-continue-support-thread-by-exact-reply.md)
+- [ADR-0031：支持 Thread 续问仍要求显式 triage](../../adr/0031-require-triage-for-support-thread-continuation.md)
+- [ADR-0033：用一次性 Reply Claim 串行化支持 Thread 处理轮](../../adr/0033-serialize-support-thread-turns-with-single-use-reply-claims.md)
+- [ADR-0032：分离能力受众、平台范围与分析问题](../../adr/0032-separate-capability-audience-analysis-and-platform-status.md)
 - [Alconna 能力与解析回执](alconna-capability-and-parse-receipts.md)
 - [运行观察入口](runtime-observation-intake.md)

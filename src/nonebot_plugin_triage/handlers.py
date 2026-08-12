@@ -5,28 +5,34 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from arclet.alconna import Namespace, namespace
-from nonebot import logger, on_message
+from nonebot import logger
 from nonebot.adapters import Bot, Event
 from nonebot.matcher import Matcher
 from nonebot.permission import SUPERUSER
-from nonebot.rule import Rule, to_me
+from nonebot.rule import to_me
 from nonebot.typing import T_State
 from nonebot_plugin_alconna import (
     Alconna,
     Args,
     CommandMeta,
+    Extension,
     Match,
     MsgTarget,
     MultiVar,
     OriginalUniMsg,
     Reply,
     UniMessage,
-    UniMsg,
     on_alconna,
 )
 
 from nbtriage.capabilities import CapabilitySearchHit
-from nbtriage.support_threads import SupportThreadRecord, ThreadKind, ThreadStatus
+from nbtriage.support_threads import (
+    SupportThreadError,
+    SupportThreadRecord,
+    SupportTurnLease,
+    ThreadKind,
+    TurnClaimStatus,
+)
 from nonebot_plugin_triage import plugin_config
 from nonebot_plugin_triage.capability_shadow import (
     format_maintainer_capability_guidance,
@@ -45,7 +51,9 @@ from nonebot_plugin_triage.support_intake import (
 )
 from nonebot_plugin_triage.thread_references import (
     NBTRIAGE_THREAD_BINDING_STATE_KEY,
-    OutgoingThreadBinding,
+    InitialThreadBinding,
+    PendingContinuationBinding,
+    PreparedContinuationBinding,
 )
 from nonebot_plugin_triage.trials import (
     format_trial_feedback_result,
@@ -78,15 +86,63 @@ with namespace(
             example=f"{plugin_config.nbtriage_command} 某个功能怎么使用",
         ),
     )
+
+
+def _has_explicit_support_command(event: Event) -> bool:
+    """在 UniSeg 构造消息前用纯文本筛掉非 triage 消息。"""
+    try:
+        content = event.get_plaintext().lstrip()
+    except (NotImplementedError, ValueError):
+        return False
+    command = plugin_config.nbtriage_command
+    return content == command or (
+        content.startswith(command)
+        and len(content) > len(command)
+        and content[len(command)].isspace()
+    )
+
+
+class _SupportCommandMessageProvider(Extension):
+    """仅为显式求助命令提供不预取 Reply 的 UniSeg 消息。"""
+
+    @property
+    def priority(self) -> int:
+        return 1
+
+    @property
+    def id(self) -> str:
+        return "nonebot-plugin-triage:support-command-message"
+
+    async def message_provider(
+        self,
+        event: Event,
+        state: T_State,
+        bot: Bot,
+        use_origin: bool = False,
+    ) -> UniMessage | None:
+        del state, use_origin
+        if event.get_type() != "message":
+            return None
+        try:
+            message = event.get_message()
+        except (NotImplementedError, ValueError):
+            return None
+        command_message = UniMessage.of(message=message, bot=bot)
+        while command_message and isinstance(command_message[0], Reply):
+            command_message.pop(0)
+        return command_message
+
+
 support_matcher = on_alconna(
     support_command,
+    rule=_has_explicit_support_command,
+    extensions=[_SupportCommandMessageProvider()],
     use_cmd_start=False,
     priority=plugin_config.nbtriage_priority,
     block=True,
 )
 register_public_alconna_capability(support_command)
 
-_CONTINUATION_THREAD_STATE_KEY = "_nbtriage_continuation_thread"
 _TOPIC_LABEL_PREFIX = "label:"
 _MAX_TOPIC_REFS = 16
 _MAX_TOPIC_REF_LENGTH = 96
@@ -103,33 +159,6 @@ _THREAD_CLOSE_ACTIONS = frozenset(
         "解决了",
     }
 )
-
-
-def _continuation_priority() -> int:
-    return plugin_config.nbtriage_priority - 1
-
-
-async def _resolve_known_thread_reply(
-    bot: Bot,
-    event: Event,
-    state: T_State,
-) -> bool:
-    thread_id = plugin_runtime.thread_continuation_resolver.resolve(bot, event)
-    if thread_id is None:
-        return False
-    record = plugin_runtime.support_threads.get(thread_id)
-    if record is None or record.status is not ThreadStatus.CONTINUABLE:
-        return False
-    state[_CONTINUATION_THREAD_STATE_KEY] = record
-    return True
-
-
-continuation_matcher = on_message(
-    rule=Rule(_resolve_known_thread_reply),
-    priority=_continuation_priority(),
-    block=True,
-)
-
 query_matcher = on_alconna(
     Alconna(
         plugin_config.nbtriage_query_command,
@@ -183,6 +212,25 @@ def _report_request(
         target=target,
         reply_reference=replies[0].id if replies else None,
     )
+
+
+def _claim_continued_turn(
+    bot: Bot,
+    event: Event,
+    message: OriginalUniMsg,
+    target: MsgTarget,
+) -> tuple[TurnClaimStatus, SupportTurnLease | None]:
+    replies = message.get(Reply, 1)
+    if not replies:
+        return TurnClaimStatus.NOT_FOUND, None
+    result = plugin_runtime.thread_reference_bridge.claim_reply(
+        adapter_name=adapter_name(bot),
+        bot_scope=str(bot.self_id),
+        target=target,
+        actor_scope=event.get_user_id(),
+        message_reference=replies[0].id,
+    )
+    return result.status, result.lease
 
 
 def _support_request_allowed(bot: Bot, event: Event, target: MsgTarget) -> bool:
@@ -243,8 +291,8 @@ async def _capability_guidance(bot: Bot, event: Event, content: str) -> str:
     return (await _capability_guidance_result(bot, event, content)).message
 
 
-def _thread_binding(thread: SupportThreadRecord, event: Event) -> OutgoingThreadBinding:
-    return OutgoingThreadBinding(thread.thread_id, event.get_user_id())
+def _thread_binding(thread: SupportThreadRecord, event: Event) -> InitialThreadBinding:
+    return InitialThreadBinding(thread.thread_id, event.get_user_id())
 
 
 def _set_outgoing_thread(
@@ -255,17 +303,53 @@ def _set_outgoing_thread(
     matcher.state[NBTRIAGE_THREAD_BINDING_STATE_KEY] = _thread_binding(thread, event)
 
 
-def _create_support_thread(
+def _set_pending_continuation(
+    matcher: Matcher,
+    event: Event,
+    lease: SupportTurnLease,
+) -> None:
+    matcher.state[NBTRIAGE_THREAD_BINDING_STATE_KEY] = PendingContinuationBinding(
+        lease.token,
+        event.get_user_id(),
+    )
+
+
+def _prepare_continuation(
+    matcher: Matcher,
+    event: Event,
+    lease: SupportTurnLease,
+    *,
+    kind: ThreadKind,
+    topic_refs: tuple[str, ...],
+) -> None:
+    matcher.state[NBTRIAGE_THREAD_BINDING_STATE_KEY] = PreparedContinuationBinding(
+        lease.token,
+        event.get_user_id(),
+        kind,
+        topic_refs,
+    )
+
+
+def _close_continuation(matcher: Matcher, lease: SupportTurnLease) -> None:
+    matcher.state.pop(NBTRIAGE_THREAD_BINDING_STATE_KEY, None)
+    plugin_runtime.thread_reference_bridge.close_turn(lease.token)
+
+
+async def _create_support_thread(
     matcher: Matcher,
     event: Event,
     kind: ThreadKind,
     *,
     topic_refs: tuple[str, ...] = (),
 ) -> SupportThreadRecord:
-    thread = plugin_runtime.support_threads.create(
-        kind,
-        topic_refs=_encode_topic_labels(topic_refs),
-    )
+    try:
+        thread = plugin_runtime.support_turns.create_initial_thread(
+            kind,
+            topic_refs=_encode_topic_labels(topic_refs),
+        )
+    except SupportThreadError:
+        logger.warning("NoneBot Triage support thread context is unavailable")
+        await support_matcher.finish(UniMessage.text("求助上下文繁忙，请稍后重试。"))
     _set_outgoing_thread(matcher, event, thread)
     return thread
 
@@ -350,6 +434,17 @@ async def handle_support(
         await support_matcher.finish(UniMessage.text("求助入口暂时不可用，请稍后再试。"))
     if not allowed:
         await support_matcher.finish(UniMessage.text("求助请求过于频繁，请稍后再试。"))
+    claim_status, lease = _claim_continued_turn(bot, event, original, target)
+    if claim_status is TurnClaimStatus.BUSY:
+        await support_matcher.finish(UniMessage.text("上一轮仍在处理，请稍后重新发送 triage。"))
+    if claim_status is TurnClaimStatus.ERROR:
+        await support_matcher.finish(
+            UniMessage.text("求助上下文暂时不可用，请重新发送完整 triage。")
+        )
+    if lease is not None:
+        _set_pending_continuation(matcher, event, lease)
+        await _handle_continuation(matcher, bot, event, lease, content, target)
+        return
     if len(content) > plugin_config.nbtriage_request_max_chars:
         await support_matcher.finish(
             UniMessage.text(
@@ -358,11 +453,11 @@ async def handle_support(
         )
     request = classify_support_request(content)
     if request.intent is SupportIntent.EMPTY:
-        _create_support_thread(matcher, event, ThreadKind.CLARIFICATION)
+        await _create_support_thread(matcher, event, ThreadKind.CLARIFICATION)
         await support_matcher.finish(UniMessage.text(_empty_support_prompt()))
     if request.intent is SupportIntent.CAPABILITY_GUIDANCE:
         guidance = await _capability_guidance_result(bot, event, request.content)
-        _create_support_thread(
+        await _create_support_thread(
             matcher,
             event,
             ThreadKind.GUIDANCE,
@@ -372,7 +467,7 @@ async def handle_support(
     if request.intent is SupportIntent.REPORT_PROBLEM:
         result = plugin_runtime.report_service.handle(_report_request(bot, event, original, target))
         await support_matcher.finish(UniMessage.text(result.message))
-    _create_support_thread(matcher, event, ThreadKind.CLARIFICATION)
+    await _create_support_thread(matcher, event, ThreadKind.CLARIFICATION)
     await support_matcher.finish(
         UniMessage.text("我还不能确定你是想了解功能还是报告问题，请再具体一点。")
     )
@@ -390,51 +485,58 @@ def _continuation_query(thread: SupportThreadRecord, content: str) -> str:
     return content
 
 
-@continuation_matcher.handle()
-async def handle_continuation(
+async def _handle_continuation(
     matcher: Matcher,
     bot: Bot,
     event: Event,
-    state: T_State,
-    content: UniMsg,
+    lease: SupportTurnLease,
+    request_text: str,
     target: MsgTarget,
 ) -> None:
-    thread = state.get(_CONTINUATION_THREAD_STATE_KEY)
-    if not isinstance(thread, SupportThreadRecord):
-        return
-    try:
-        allowed = _support_request_allowed(bot, event, target)
-    except Exception:
-        logger.warning("NoneBot Triage continuation rate limiter is unavailable")
-        await continuation_matcher.finish("求助入口暂时不可用，请稍后再试。")
-    if not allowed:
-        await continuation_matcher.finish("求助请求过于频繁，请稍后再试。")
-    request_text = content.extract_plain_text().strip()
-    if not request_text:
-        if thread.kind is ThreadKind.CLARIFICATION:
-            plugin_runtime.support_threads.close(thread.thread_id)
-            await continuation_matcher.finish("本次澄清已结束，请重新发送 triage 和完整问题。")
-        _set_outgoing_thread(matcher, event, thread)
-        await continuation_matcher.finish("请在回复中写明想继续了解的内容。")
-    if _requests_thread_close(request_text):
-        plugin_runtime.support_threads.close(thread.thread_id)
-        await continuation_matcher.finish("已结束这次求助。")
+    thread = lease.thread
     if len(request_text) > plugin_config.nbtriage_request_max_chars:
         if thread.kind is ThreadKind.CLARIFICATION:
-            plugin_runtime.support_threads.close(thread.thread_id)
-            await continuation_matcher.finish(
-                "本次澄清已结束；请重新发送 triage 和缩短后的完整问题，"
-                f"内容需在 {plugin_config.nbtriage_request_max_chars} 字以内。"
+            _close_continuation(matcher, lease)
+            await support_matcher.finish(
+                UniMessage.text(
+                    "本次澄清已结束；请重新发送 triage 和缩短后的完整问题，"
+                    f"内容需在 {plugin_config.nbtriage_request_max_chars} 字以内。"
+                )
             )
-        _set_outgoing_thread(matcher, event, thread)
-        await continuation_matcher.finish(
-            f"求助内容过长，请缩短到 {plugin_config.nbtriage_request_max_chars} 字以内。"
+        _prepare_continuation(
+            matcher,
+            event,
+            lease,
+            kind=thread.kind,
+            topic_refs=thread.topic_refs,
         )
+        await support_matcher.finish(
+            UniMessage.text(
+                f"求助内容过长，请缩短到 {plugin_config.nbtriage_request_max_chars} 字以内。"
+            )
+        )
+    if not request_text:
+        if thread.kind is ThreadKind.CLARIFICATION:
+            _close_continuation(matcher, lease)
+            await support_matcher.finish(
+                UniMessage.text("本次澄清已结束，请重新发送 triage 和完整问题。")
+            )
+        _prepare_continuation(
+            matcher,
+            event,
+            lease,
+            kind=thread.kind,
+            topic_refs=thread.topic_refs,
+        )
+        await support_matcher.finish(UniMessage.text("请在回复中写明想继续了解的内容。"))
+    if _requests_thread_close(request_text):
+        _close_continuation(matcher, lease)
+        await support_matcher.finish(UniMessage.text("已结束这次求助。"))
 
     query = _continuation_query(thread, request_text)
     current_request = classify_support_request(request_text)
     if current_request.intent is SupportIntent.REPORT_PROBLEM:
-        plugin_runtime.support_threads.close(thread.thread_id)
+        _close_continuation(matcher, lease)
         report_request = LiveReportRequest(
             adapter_name=adapter_name(bot),
             bot_scope=str(bot.self_id),
@@ -443,29 +545,28 @@ async def handle_continuation(
             reply_reference=None,
         )
         result = plugin_runtime.report_service.handle(report_request)
-        await continuation_matcher.finish(result.message)
+        await support_matcher.finish(UniMessage.text(result.message))
 
     request = classify_support_request(query)
     if thread.kind is ThreadKind.GUIDANCE or request.intent is SupportIntent.CAPABILITY_GUIDANCE:
         guidance = await _capability_guidance_result(bot, event, query)
-        updated = plugin_runtime.support_threads.update_context(
-            thread.thread_id,
-            ThreadKind.GUIDANCE,
+        _prepare_continuation(
+            matcher,
+            event,
+            lease,
+            kind=ThreadKind.GUIDANCE,
             topic_refs=(
                 _encode_topic_labels(guidance.matched_headers)
                 if guidance.matched_headers
                 else thread.topic_refs
             ),
         )
-        if updated is None:
-            await continuation_matcher.finish(
-                "这次求助上下文已过期，请重新发送 triage 和完整问题。"
-            )
-        _set_outgoing_thread(matcher, event, updated)
-        await continuation_matcher.finish(guidance.message)
-    plugin_runtime.support_threads.close(thread.thread_id)
-    await continuation_matcher.finish(
-        "我仍无法确定你是想了解功能还是报告问题，本次不再追问；请重新发送 triage 和完整问题。"
+        await support_matcher.finish(UniMessage.text(guidance.message))
+    _close_continuation(matcher, lease)
+    await support_matcher.finish(
+        UniMessage.text(
+            "我仍无法确定你是想了解功能还是报告问题，本次不再追问；请重新发送 triage 和完整问题。"
+        )
     )
 
 
@@ -501,7 +602,6 @@ async def handle_trial_stats() -> None:
 
 
 __all__ = (
-    "continuation_matcher",
     "feedback_matcher",
     "plugin_runtime",
     "query_matcher",

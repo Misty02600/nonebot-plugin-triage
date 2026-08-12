@@ -15,6 +15,7 @@ from nbtriage.runtime_observations import RuntimeObservationBuffer
 from nbtriage.support_threads import (
     InMemorySupportThreadStore,
     OutboundThreadReferenceIndex,
+    SupportThreadTurnCoordinator,
 )
 from nonebot_plugin_triage.capability_shadow import (
     CapabilityShadowService,
@@ -26,8 +27,6 @@ from nonebot_plugin_triage.live_reports import LiveReportService
 from nonebot_plugin_triage.model_runtime import NBTriageModelService, create_model_service
 from nonebot_plugin_triage.nonebot_runtime import NoneBotRuntimeObserver
 from nonebot_plugin_triage.thread_references import (
-    IncomingReplyReferenceProvider,
-    SupportThreadContinuationResolver,
     SupportThreadReferenceBridge,
 )
 from nonebot_plugin_triage.trials import create_trial_service
@@ -61,8 +60,8 @@ class NBTriagePluginRuntime:
     observer: NoneBotRuntimeObserver
     reference_bridge: UniversalReferenceBridge
     thread_reference_bridge: SupportThreadReferenceBridge
-    thread_continuation_resolver: SupportThreadContinuationResolver
     support_threads: InMemorySupportThreadStore
+    support_turns: SupportThreadTurnCoordinator
     outgoing_reference_providers: tuple[OutgoingReferenceProvider, ...]
     support_rate_limiter: KeyedRateLimiter
     report_service: LiveReportService
@@ -103,22 +102,12 @@ def create_plugin_runtime(
         max_entries=config.nbtriage_thread_max_entries,
         retention_seconds=config.nbtriage_thread_absolute_seconds,
     )
-    thread_reference_bridge = SupportThreadReferenceBridge(thread_reference_index)
-    incoming_reply_providers: list[IncomingReplyReferenceProvider] = []
-    try:
-        onebot_available = find_spec("nonebot.adapters.onebot.v11") is not None
-    except ModuleNotFoundError:
-        onebot_available = False
-    if onebot_available:
-        from nonebot_plugin_triage.onebot_v11_references import (
-            OneBotV11IncomingReplyReferenceProvider,
-        )
-
-        incoming_reply_providers.append(OneBotV11IncomingReplyReferenceProvider())
-    thread_continuation_resolver = SupportThreadContinuationResolver(
-        thread_reference_bridge,
-        tuple(incoming_reply_providers),
+    support_turns = SupportThreadTurnCoordinator(
+        support_threads,
+        thread_reference_index,
+        secret_key=secrets.token_bytes(32),
     )
+    thread_reference_bridge = SupportThreadReferenceBridge(support_turns)
     incident_buffer = LiveIncidentBuffer(
         max_entries=config.nbtriage_incident_max_entries,
         retention_seconds=config.nbtriage_incident_retention_seconds,
@@ -147,6 +136,7 @@ def create_plugin_runtime(
     config_value_policy = ConfigValuePolicy.from_keys(config.nbtriage_restricted_config)
     observer.register()
     reference_bridge.register()
+    thread_reference_bridge.register()
     outgoing_reference_providers = _create_outgoing_reference_providers(
         reference_bridge,
         thread_reference_bridge,
@@ -158,8 +148,8 @@ def create_plugin_runtime(
         observer=observer,
         reference_bridge=reference_bridge,
         thread_reference_bridge=thread_reference_bridge,
-        thread_continuation_resolver=thread_continuation_resolver,
         support_threads=support_threads,
+        support_turns=support_turns,
         outgoing_reference_providers=outgoing_reference_providers,
         support_rate_limiter=support_rate_limiter,
         report_service=report_service,

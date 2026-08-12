@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-12 |
+| 已替代；由 ADR-0031 替代 | 2026-08-12 |
 
 ## 当时遇到了什么
 
@@ -51,6 +51,9 @@ Reply”时，这种 Matcher 才适合作为窄续问入口。不同适配器提
 
 ## 替代关系
 
+- 本 ADR 的免命令续问入口、常驻 `on_message` Matcher 和适配器专用入站 Reply Provider 已由
+  [ADR-0031](0031-require-triage-for-support-thread-continuation.md) 替代；Thread 生命周期、HMAC 作用域、
+  latest-only、每轮限流与不使用 Waiter 的决定继续有效。
 - 部分替代 [ADR-0020](0020-use-triage-command-for-natural-language-support.md) 的“每条支持消息都必须出现
   `triage`”触发细节；首次入口、自然语言不可信、Reply 作为故障证据以及只让疑似故障建单的边界不变。
 - 保留 [ADR-0006](0006-cross-platform-alconna-entry-and-reference-providers.md) 的 Provider 分层：入口覆盖、
@@ -59,6 +62,7 @@ Reply”时，这种 Matcher 才适合作为窄续问入口。不同适配器提
 
 ## 落实与确认
 
+- 2026-08-12：免命令续问实现随后由 ADR-0031 收回；以下条目保留为本 ADR 当时的落实记录。
 - `src/nbtriage/support_threads.py` 提供不保存正文或平台身份的有界 Thread store，以及 latest-only 的 HMAC
   出站引用索引；`src/nonebot_plugin_triage/thread_references.py` 负责适配层引用解析与失败关闭。
 - `src/nonebot_plugin_triage/handlers.py` 注册优先级为首次入口减一的常驻 `on_message` Matcher。Rule 只解析
