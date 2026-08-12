@@ -150,6 +150,38 @@ def test_evaluate_b0_cli_writes_report(tmp_path: Path) -> None:
     )
 
 
+def test_evaluate_b0_cli_does_not_overwrite_existing_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = tmp_path / "reports" / "b0.json"
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text('{"existing":true}\n', encoding="utf-8")
+
+    def unexpected_evaluation(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("B0 evaluation must not start for an existing report target")
+
+    monkeypatch.setattr(
+        "tools.nbtriage_maintainer.cli.evaluate_b0",
+        unexpected_evaluation,
+    )
+
+    exit_code = main(
+        [
+            "evaluate-b0",
+            "--cases-dir",
+            str(tmp_path / "cases"),
+            "--split",
+            str(tmp_path / "split.json"),
+            "--report",
+            str(report_path),
+        ]
+    )
+
+    assert exit_code == 1
+    assert report_path.read_text(encoding="utf-8") == '{"existing":true}\n'
+
+
 def test_evaluate_b0_rejects_missing_case(tmp_path: Path) -> None:
     split_path = tmp_path / "split.json"
     split_path.write_text(

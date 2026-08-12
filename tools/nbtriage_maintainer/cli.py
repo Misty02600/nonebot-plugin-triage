@@ -874,10 +874,16 @@ def _run_gate(args: argparse.Namespace) -> int:
     return 1 if summary["load_errors"] or summary["runtime_invalid"] else 0
 
 
+def _require_new_report_target(path: Path) -> None:
+    if path.exists():
+        raise FileExistsError("evaluation report target already exists")
+
+
 def _run_evaluate_b0(args: argparse.Namespace) -> int:
     try:
+        _require_new_report_target(args.report)
         report = evaluate_b0(args.cases_dir, args.split)
-        write_evaluation_report(args.report, report)
+        write_new_evaluation_report(args.report, report)
     except (EvaluationError, OSError) as error:
         print(f"B0 evaluation failed: {error}", file=sys.stderr)
         return 1
@@ -1349,6 +1355,7 @@ def _run_evaluate_b1_openai(args: argparse.Namespace) -> int:
         print("B1 evaluation failed: OPENAI_API_KEY is not set", file=sys.stderr)
         return 1
     try:
+        _require_new_report_target(args.report)
         create_client = _load_model_symbol(
             "nbtriage.openai_adapter",
             "create_openai_responses_b1_client",
@@ -1372,7 +1379,7 @@ def _run_evaluate_b1_openai(args: argparse.Namespace) -> int:
                 declared_budget_usd=args.declared_budget_usd,
             )
         )
-        write_evaluation_report(args.report, report)
+        write_new_evaluation_report(args.report, report)
     except (EvaluationError, B1Error, B1ProviderError, OSError) as error:
         print(f"B1 evaluation failed: {error}", file=sys.stderr)
         return 1
@@ -1413,6 +1420,7 @@ def _run_evaluate_b1_deepseek(args: argparse.Namespace) -> int:
         )
         return 1
     try:
+        _require_new_report_target(args.report)
         client_type = _load_model_symbol(
             "tools.nbtriage_maintainer.providers",
             "DeepSeekResponsesB1Client",
@@ -1440,7 +1448,7 @@ def _run_evaluate_b1_deepseek(args: argparse.Namespace) -> int:
                 declared_budget_usd=args.declared_budget_usd,
             )
         )
-        write_evaluation_report(args.report, report)
+        write_new_evaluation_report(args.report, report)
     except (EvaluationError, B1Error, B1ProviderError, OSError) as error:
         print(f"B1 evaluation failed: {error}", file=sys.stderr)
         return 1

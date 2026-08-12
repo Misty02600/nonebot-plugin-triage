@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -366,3 +367,60 @@ def test_deepseek_b1_cli_reports_missing_model_extra(monkeypatch, capsys) -> Non
 
     assert exit_code == 1
     assert "uv sync --group maintainer" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("command", "api_key_env", "model", "max_output_tokens", "max_model_calls"),
+    [
+        ("evaluate-b1-openai", "OPENAI_API_KEY", "fixture-model", "400", "36"),
+        (
+            "evaluate-b1-deepseek",
+            "DEEPSEEK_API_KEY",
+            "deepseek-v4-flash",
+            "1024",
+            "11",
+        ),
+    ],
+)
+def test_b1_cli_does_not_start_or_overwrite_existing_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    api_key_env: str,
+    model: str,
+    max_output_tokens: str,
+    max_model_calls: str,
+) -> None:
+    report_path = tmp_path / "existing-report.json"
+    report_path.write_text('{"existing":true}\n', encoding="utf-8")
+    monkeypatch.setenv(api_key_env, "isolation-test-key")
+
+    def unexpected_adapter_load(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("B1 adapter must not load for an existing report target")
+
+    monkeypatch.setattr(
+        "tools.nbtriage_maintainer.cli._load_model_symbol",
+        unexpected_adapter_load,
+    )
+
+    exit_code = main(
+        [
+            command,
+            "--model",
+            model,
+            "--max-output-tokens",
+            max_output_tokens,
+            "--max-model-calls",
+            max_model_calls,
+            "--declared-budget-usd",
+            "2",
+            "--score-split",
+            "validation",
+            "--report",
+            str(report_path),
+            "--confirm-paid-run",
+        ]
+    )
+
+    assert exit_code == 1
+    assert report_path.read_text(encoding="utf-8") == '{"existing":true}\n'
