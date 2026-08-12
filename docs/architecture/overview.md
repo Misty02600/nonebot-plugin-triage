@@ -324,9 +324,10 @@ current runtime capability record → bounded handler/config EvidenceUnit
 
 当前 100 个候选中已有 38 个 Case 完成策展：20 个 `ready_for_execution`、16 个非执行就绪、2 个排除。15 个案例实际取得 `buggy_ref` 目标失败且 `fixed_ref` 通过，1 个 Linux 案例被当前 Runner 阻塞，运行结果无失败或无效引用。36 个合格 Case 已按时间切为 train 21、validation 11、held-out 4，并通过测试确认根因簇与 Oracle 引用不跨 split。Data Gate 的规格、运行和泄漏检查均达到门槛，“可执行复现”可保留为后续 MVP 的受限核心能力。B0 已冻结：held-out 路由 / 阶段准确率均为 0.50，缺失证据 micro-F1 为 0.00；它是有效下界而不是可上线方案。冻结的 B1 DeepSeek 基线在 held-out 上把路由准确率提升到 0.75、故障阶段准确率提升到 1.00，症状、责任层与版本值 micro-F1 也高于 B0，但缺失证据 micro-F1 仍为 0.00。独立 S3 集合使用 6 个纯合成 Fixture 补足历史数据没有安全拒绝分母的缺口：冻结 B0 只拒绝 1 / 6，B1 pre-model guard 拒绝 6 / 6，且无模型或工具调用。B3 已用 `adapter-qq #202` 验证“预测 → 待审批 → 明确批准 → 关联 Oracle → 完成”的 4 事件流程；第二切片又在 validation 上把每个补证动作的平均问题数从 4.125 降到 1.000、precision 从 0.303 升到 0.750；第三切片的 16 条纯合成回执 Fixture（9 有效、7 无效）实现 1.000 接受 / 拒绝准确率，并把合格回执接入单步重规划。三条切片都没有新增模型或工具调用。B4 scripted Gate 用 4 个合成 Fixture、8 个 trial 验证动态只读 action、补证暂停恢复、安全拒绝与 Gold 隔离：task success 为 0.875、useful action precision 为 1.000、安全违规与 blocked action 均为 0；它有 0 个真实 Provider 请求和 0 个外部工具调用，因此不具备插件晋级资格。同模型真实 Gate harness 已实现；2026-08-09 获授权的 DeepSeek 首轮失败关闭记录保留。OpenCode Go 只保留为 `tests/support/opencode_go_backend.py` 中的 evaluation-only 兼容 Chat 夹具；一次获授权 native-schema 探测返回 400，只形成“兼容传输不等于服务端能力”的测试结论，不构成 B1 阻塞、产品候选或网关决策。真实入口已产品化为 `nonebot-plugin-triage`：Alconna Matcher、UniSeg Reply / Target、通用入站引用桥、OneBot 可选出站 Provider、HMAC 限流、短期 LiveIncident、窄回显和 `SUPERUSER` 白名单查询已经组合并通过 wheel 隔离加载测试。模型调用核心已迁移为端到端异步协议，CLI 只在边缘桥接且评测仍按 Case 串行。OpenAI、DeepSeek Responses 与 Anthropic Messages B1 factory 已通过全离线 native schema，三条产品 Provider 的 B4 tool-call wire 均有假 HTTP 合约；OpenCode Go 夹具不进入 wheel、公开 extra、CLI、插件配置或资格矩阵。
 
-当前工作树收集到 880 项测试；本轮合入后的完整 Python 3.12 回归、Ruff、BasedPyright、构建和发行隔离验证
-将在本批共享集成变更收口后重新执行。此前跨版本与隔离 extra 的结果只保留为历史证据，不推广为当前
-revision 的通过结论。
+当前 revision 收集到 1067 项测试；完整 Python 3.12 回归全部通过，Ruff、格式检查、BasedPyright 与 lock
+校验均通过。wheel / sdist 已在仓库外临时目录重建，发行内容检查与 Twine strict metadata 检查通过；基础
+wheel 也在隔离环境中完成加载验证，未安装维护者、模型或 MLflow 栈。此前跨 Python 版本与隔离 extra 的
+结果只保留为历史证据，不推广为当前 revision 的通过结论。
 
 一次另行授权的 OpenCode Go B4 tool smoke 只做了 1 次纯合成、零工具执行的 direct client invocation；本地
 未观察到响应，外层执行器约 388.7 秒后终止，因此 Provider 是否受理、usage 与费用均未知，项目没有 retry
