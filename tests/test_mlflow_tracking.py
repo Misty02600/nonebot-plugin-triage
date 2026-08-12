@@ -19,6 +19,7 @@ from tools.nbtriage_maintainer.answer_quality_evaluation import (
 )
 from tools.nbtriage_maintainer.answer_review_export import build_b4_answer_quality_review
 from tools.nbtriage_maintainer.evidence_policy_evaluation import evaluate_b3_evidence_policy
+from tools.nbtriage_maintainer.evidence_receipt_evaluation import evaluate_b3_evidence_receipts
 from tools.nbtriage_maintainer.mlflow_tracking import (
     MLflowPublication,
     MLflowTrackingError,
@@ -38,6 +39,7 @@ S3_FIXTURES = ROOT / "evals" / "datasets" / "fixtures" / "s3-adversarial-v1.json
 B3_POLICY_FIXTURES = (
     ROOT / "evals" / "datasets" / "fixtures" / "b3-evidence-policy-validation-v1.json"
 )
+B3_RECEIPT_FIXTURES = ROOT / "evals" / "datasets" / "fixtures" / "b3-evidence-receipts-v1.json"
 
 
 class _FakeRunContext:
@@ -235,6 +237,13 @@ def _write_s3_report(tmp_path: Path) -> Path:
 def _write_b3_evidence_policy_report(tmp_path: Path) -> Path:
     report = evaluate_b3_evidence_policy(B3_POLICY_FIXTURES)
     path = tmp_path / "b3-evidence-policy.json"
+    _write_json(path, report)
+    return path
+
+
+def _write_b3_evidence_receipt_report(tmp_path: Path) -> Path:
+    report = evaluate_b3_evidence_receipts(B3_RECEIPT_FIXTURES)
+    path = tmp_path / "b3-evidence-receipt.json"
     _write_json(path, report)
     return path
 
@@ -529,6 +538,64 @@ def test_offline_known_report_rejects_missing_source_before_mlflow_call(
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     source = payload["fixture"] if report_kind == "s3" else payload["source"]
     source["path" if report_kind == "s3" else "prediction_report"] = str(tmp_path / "missing.json")
+    _write_json(report_path, payload)
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+def test_b3_evidence_receipt_report_publishes_only_after_reproduction(tmp_path: Path) -> None:
+    report_path = _write_b3_evidence_receipt_report(tmp_path)
+    mlflow = _FakeMLflow()
+
+    publication = publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    assert publication.created is True
+    assert len(mlflow.runs) == 1
+
+
+def test_b3_evidence_receipt_report_rejects_tampering_before_mlflow_call(
+    tmp_path: Path,
+) -> None:
+    report_path = _write_b3_evidence_receipt_report(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["summary"]["case_count"] = 999
+    _write_json(report_path, payload)
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+def test_b3_evidence_receipt_report_rejects_missing_source_before_mlflow_call(
+    tmp_path: Path,
+) -> None:
+    report_path = _write_b3_evidence_receipt_report(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["source"]["fixtures_path"] = str(tmp_path / "missing.json")
+    _write_json(report_path, payload)
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+def test_b3_evidence_receipt_official_report_rejects_custom_fixture_bytes_before_mlflow_call(
+    tmp_path: Path,
+) -> None:
+    report_path = _write_b3_evidence_receipt_report(tmp_path)
+    custom_fixtures = tmp_path / "custom-reencoded-receipts.json"
+    fixtures_payload = json.loads(B3_RECEIPT_FIXTURES.read_text(encoding="utf-8"))
+    _write_json(custom_fixtures, fixtures_payload)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["source"]["fixtures_path"] = custom_fixtures.as_posix()
     _write_json(report_path, payload)
     mlflow = _FakeMLflow()
 

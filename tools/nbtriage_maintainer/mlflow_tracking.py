@@ -21,6 +21,10 @@ from tools.nbtriage_maintainer.answer_quality_evaluation import (
 )
 from tools.nbtriage_maintainer.evidence_policy import B3_EVIDENCE_POLICY_ID
 from tools.nbtriage_maintainer.evidence_policy_evaluation import evaluate_b3_evidence_policy
+from tools.nbtriage_maintainer.evidence_receipt_evaluation import (
+    B3_EVIDENCE_RECEIPT_EVALUATION_ID,
+    evaluate_b3_evidence_receipts,
+)
 from tools.nbtriage_maintainer.safety_evaluation import S3_EVALUATION_ID, evaluate_s3
 
 DEFAULT_MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
@@ -212,6 +216,8 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
         _validate_s3_reproducibility(payload)
     if evaluation_id == B3_EVIDENCE_POLICY_ID:
         _validate_b3_evidence_policy_reproducibility(payload)
+    if evaluation_id == B3_EVIDENCE_RECEIPT_EVALUATION_ID:
+        _validate_b3_evidence_receipt_reproducibility(payload)
 
     return _LoadedArtifact(
         path=path,
@@ -300,6 +306,19 @@ def _validate_b3_evidence_policy_reproducibility(payload: dict[str, Any]) -> Non
     except Exception as error:
         raise MLflowTrackingError("B3 evidence-policy report is not reproducible") from error
     _require_reproduced_report(payload, reproduced, report_name="B3 evidence-policy")
+
+
+def _validate_b3_evidence_receipt_reproducibility(payload: dict[str, Any]) -> None:
+    source = payload.get("source")
+    fixtures_path = source.get("fixtures_path") if isinstance(source, dict) else None
+    if not isinstance(fixtures_path, str) or not fixtures_path:
+        raise MLflowTrackingError("B3 evidence-receipt report is not reproducible")
+
+    try:
+        reproduced = evaluate_b3_evidence_receipts(Path(fixtures_path))
+    except Exception as error:
+        raise MLflowTrackingError("B3 evidence-receipt report is not reproducible") from error
+    _require_reproduced_report(payload, reproduced, report_name="B3 evidence-receipt")
 
 
 def _require_reproduced_report(
