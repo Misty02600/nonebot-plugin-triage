@@ -30,8 +30,8 @@
 
 Alconna 已接收 `triage` 后的任意数量文本参数，入口也已区分功能问法、明确故障和待澄清请求。能力说明
 优先读取插件显式登记的公开 Alconna 能力，未命中时还可读取当前 adapter 中自动确定为 `public` 的影子
-命令；`CommandMeta.hide=True`、停用、review 或 restricted 能力不会进入普通用户候选，也不会重新运行
-命令解析或 handler。
+能力；`CommandMeta.hide=True`、停用、带阻塞 `analysis_issues` 或 `restricted` 的能力不会进入普通用户候选，
+也不会重新运行命令解析或 handler。
 
 插件模型资格表当前仍为空，因此还没有启用模型 Agent。现阶段使用确定性首轮分流；无法判断的首次请求会
 建立不含正文的短期澄清 Thread，用户可发送带精确 Reply 的新 `triage` 请求来补充意图。该续答随后必须进入
@@ -40,9 +40,9 @@ Alconna 已接收 `triage` 后的任意数量文本参数，入口也已区分�
 原文直接控制工具。
 
 ADR-0021 已加入默认关闭的部署本地能力影子索引，自动收集已加载插件的候选证据。ADR-0024 后，普通用户
-还可查询当前 adapter 的自动 public 命令；`SUPERUSER` 在模型外完成当前 Bot / Event 鉴权后，可通过
-`triage` 检索带披露标签的 `public / review / restricted` 候选。两条影子路径只复述已有字段，不启用模型或
-运行第三方 Permission、Rule、handler。
+还可查询当前 adapter 的自动 `public` 能力；`SUPERUSER` 在模型外完成当前 Bot / Event 鉴权后，可通过
+`triage` 检索带具体 `analysis_issues` 的未解决能力和 `restricted` 能力。两条影子路径只复述已有字段，
+不启用模型或运行第三方 Permission、Rule、handler。
 
 ## 替代关系
 

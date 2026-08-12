@@ -19,8 +19,11 @@
 
 发送 `triage <求助内容>` 即可调用插件，`@Bot` 可选。`triage` 后可以直接写自然语言，例如询问功能用法，
 或明确请求受理一次故障。回复近期消息时，插件还会尝试关联这条消息在本机产生的运行记录。
-在 OneBot V11 群聊中，精确回复 Triage 自己上一条仍在有效期内的回答可以直接续问，不必重复 `triage`；
-回复其他消息和普通群聊不会触发该入口。
+续问同样需要发送 `triage <内容>`；若同时精确回复 Triage 最近一次仍有效的回答，插件会尝试续接原 Thread。
+只有 Reply、没有 `triage` 的消息不会触发该入口。当前只有 OneBot V11 群发送完成了 Bot 回答的精确引用关联；
+其他平台或未命中 Reply 会按一次新的 `triage` 请求处理。
+同一 Thread 的上一轮仍在处理时，新的续问不会排队或并行执行；请等待后重新发送 `triage`。Reply 一旦被
+当前处理轮接受就会失效，若处理或发送失败，也请重新发送完整请求。
 
 当前默认不调用模型：明确的用法问题会读取已登记的公开 Alconna 能力；只有全文匹配的显式受理动作（例如
 `请受理这个故障`）才会建立受理记录。症状描述、原因询问和复合诉求不会仅凭关键词建单，当前窄入口会
@@ -85,14 +88,17 @@ NBTRIAGE_RESTRICTED_CONFIG='["DISCORD_BOTS", "PLUGIN_COOKIE"]'
 | 指令                                              | 权限      | 说明                           |
 | ------------------------------------------------- | --------- | ------------------------------ |
 | `triage 某个功能怎么使用`                         | 所有人    | 说明当前平台确定公开的功能     |
-| `triage <能力问题>`（启用能力影子时）             | SUPERUSER | 检索带披露标签的本机能力候选   |
+| 回复 Triage 回答并发送 `triage <续问>`            | 所有人    | 有效 Reply 命中时续接短期 Thread |
+| `triage <公开能力问题>`（启用能力影子时）         | 所有人    | 检索当前平台可安全说明的能力   |
+| `triage <未解决或受限能力问题>`（启用能力影子时） | SUPERUSER | 检索维护者可见的本机能力候选   |
 | `triage 请受理这个故障`（可回复近期消息）         | 所有人    | 受理故障；Reply 用于关联记录   |
 | `@Bot 报错查询 <受理编号>`                        | SUPERUSER | 查看短期运行摘要               |
 | `@Bot 报错反馈 <受理编号> <有用\|不完整\|不正确>` | SUPERUSER | 为观察型试运行记录反馈         |
 | `@Bot 报错统计`                                   | SUPERUSER | 查看当前试运行统计             |
 
-跨平台入口由 Alconna / UniSeg 提供。当前只有 OneBot V11 实现了 Bot 出站消息的精确引用关联；其他适配器
-可以提交求助，但不保证能关联 Bot 主动发送的消息。
+跨平台命令、结构化 Reply / Target 与回复发送由 Alconna / UniSeg 提供；Thread 是否可续接仍由插件自己的
+HMAC 索引校验作用域、有效期和最近回答。当前只有 OneBot V11 实现了 Bot 出站消息的精确引用关联；其他
+适配器可以提交 `triage` 求助，但不保证能关联 Bot 主动发送的消息。
 
 ### 实验性能力影子索引
 
@@ -107,8 +113,11 @@ NBTRIAGE_CAPABILITY_SHADOW_PATH=data/nbtriage-capabilities.sqlite3
 `registered / not_observed / runtime_only` 协调，再从已加载的 Plugin、Matcher、Alconna 结构、插件元数据
 和本地源码摘要原子生成全文索引。同一轮 deployment 构建只枚举一次 distribution package map。它不调用
 第三方 Rule、Permission、handler 或命令解析，也不读取
-`.env`、日志和运行数据。确定命令入口、支持平台可判定且没有受限信号时会自动 `public`；动态、被动、
-冲突或证据不足的能力仍为 `review`。代表部署开发 / 维护者的 `SUPERUSER`、`CommandMeta.hide=True`
+`.env`、日志和运行数据。每条记录分别保存 `public / restricted` 受众、`all / explicit / unknown`
+平台范围、具体 `analysis_issues`、执行约束和记录状态。确定命令入口、当前 adapter 在范围内、没有分析问题、
+记录状态不是 `conflicted / stale`、快照明确完整且索引新鲜时才进入普通用户检索。动态、被动、冲突或证据
+不足的能力会保留对应 issue，不要求部署者逐命令审核。代表部署开发 / 维护者的 `SUPERUSER`、
+`CommandMeta.hide=True`
 或停用能力会以 `restricted` 写入本地索引，但普通检索不会返回。只有先在模型外确认
 当前调用者有权查看的路径，才能检索这部分能力。Token、配置原文和私密日志不是能力，始终从采集源排除；
 部署者以后也可以通过独立的 operator exclude policy 在持久化前完全排除某些能力。
@@ -118,16 +127,17 @@ NBTRIAGE_CAPABILITY_SHADOW_PATH=data/nbtriage-capabilities.sqlite3
 ```bash
 just maintainer search-capabilities "搜图怎么用" \
   --index data/nbtriage-capabilities.sqlite3 \
-  --include-review
+  --include-unresolved
 ```
 
 本地维护者已经在模型外确认自己有权查看当前部署的内部能力时，可以额外使用 `--include-restricted`。CLI
 开关只是声明带外授权，不自行检查身份；群聊中的 `triage <能力问题>` 则会在读取索引前执行 NoneBot
 `SUPERUSER` 检查。
 
-这条检索链不依赖模型、网络或向量服务。首次后台构建完成并使服务 ready 之前，普通用户继续回退显式
-Provider；ready 后才在当前 adapter 域内检索确定 `public` 的能力。
-SUPERUSER 还可以查看 `review` 和 `restricted`，但回复会明确标为未审核候选或维护者可见受限能力。索引缺少可靠用法或存在
+这条检索链不依赖模型、网络或向量服务。首次后台构建尚未发布可服务 generation 时，普通用户继续回退
+显式 Provider；发布后也只检索派生 ServingView 中符合上述条件的能力。
+SUPERUSER 还可以查看带具体 `analysis_issues` 的未解决能力和 `restricted` 能力；维护者回复报告实际 issue，
+不把它们笼统称为待审核候选。索引缺少可靠用法或存在
 不透明规则时不会补写参数，也不会把“发现到”宣称为“当前一定能执行”。启动刷新失败但仍有上一份成功构建
 索引时，维护者回复会明确标记快照陈旧；第三方说明中的 mention 和 Unicode 控制字符会在发送前中和。
 
