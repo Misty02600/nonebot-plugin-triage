@@ -64,9 +64,7 @@ def evaluate_b3_evidence_policy(prediction_report: Path) -> dict[str, Any]:
         raise EvidencePolicyEvaluationError(
             "B3 evidence policy v1 can only be tuned on a validation-only B1 report"
         )
-    rows = report.get("predictions")
-    if not isinstance(rows, list) or not rows:
-        raise EvidencePolicyEvaluationError("B1 report must contain predictions")
+    rows = _validated_prediction_rows(report.get("predictions"))
 
     b1_counts = _MultiLabelCounts()
     b3_counts = _MultiLabelCounts()
@@ -82,9 +80,16 @@ def evaluate_b3_evidence_policy(prediction_report: Path) -> dict[str, Any]:
         item = _object(row, "prediction row")
         if item.get("split") != "validation":
             raise EvidencePolicyEvaluationError("B3 policy report contains a non-validation row")
-        case_id = _required_string(item.get("case_id"), "case_id")
+        case_id = _required_normalized_string(item.get("case_id"), "case_id")
         gold = _object(item.get("gold"), "gold")
         prediction = _object(item.get("prediction"), "prediction")
+        prediction_case_id = _required_normalized_string(
+            prediction.get("case_id"), "prediction.case_id"
+        )
+        if prediction_case_id != case_id:
+            raise EvidencePolicyEvaluationError(
+                "prediction.case_id must match its report row case_id"
+            )
         gold_slots = set(_string_list(gold.get("missing_evidence"), "gold.missing_evidence"))
         b1_slots = _string_list(prediction.get("missing_evidence"), "prediction.missing_evidence")
         route = _required_string(prediction.get("route"), "prediction.route")
@@ -189,10 +194,45 @@ def _object(value: Any, field_name: str) -> dict[str, Any]:
     return value
 
 
+def _validated_prediction_rows(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value:
+        raise EvidencePolicyEvaluationError("B1 report must contain predictions")
+
+    rows: list[dict[str, Any]] = []
+    seen_case_ids: set[str] = set()
+    for value_row in value:
+        row = _object(value_row, "prediction row")
+        case_id = _required_normalized_string(row.get("case_id"), "case_id")
+        if case_id in seen_case_ids:
+            raise EvidencePolicyEvaluationError(
+                "B1 prediction report case_id values must be unique"
+            )
+        seen_case_ids.add(case_id)
+        prediction = _object(row.get("prediction"), "prediction")
+        prediction_case_id = _required_normalized_string(
+            prediction.get("case_id"), "prediction.case_id"
+        )
+        if prediction_case_id != case_id:
+            raise EvidencePolicyEvaluationError(
+                "prediction.case_id must match its report row case_id"
+            )
+        rows.append(row)
+    return rows
+
+
 def _required_string(value: Any, field_name: str) -> str:
     if not isinstance(value, str) or not value:
         raise EvidencePolicyEvaluationError(f"{field_name} must be a non-empty string")
     return value
+
+
+def _required_normalized_string(value: Any, field_name: str) -> str:
+    normalized = value.strip() if isinstance(value, str) else ""
+    if not normalized:
+        raise EvidencePolicyEvaluationError(f"{field_name} must be a non-empty string")
+    if value != normalized:
+        raise EvidencePolicyEvaluationError(f"{field_name} must be a normalized string")
+    return normalized
 
 
 def _string_list(value: Any, field_name: str) -> list[str]:

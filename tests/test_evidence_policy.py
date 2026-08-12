@@ -77,6 +77,45 @@ def test_policy_evaluation_rejects_consumed_heldout_report(tmp_path: Path) -> No
         evaluate_b3_evidence_policy(heldout_report)
 
 
+def test_policy_evaluation_rejects_duplicate_case_rows(tmp_path: Path) -> None:
+    payload = json.loads(VALIDATION_FIXTURE.read_text(encoding="utf-8"))
+    payload["predictions"].append(payload["predictions"][0])
+    duplicate_report = tmp_path / "duplicate.json"
+    duplicate_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(EvidencePolicyEvaluationError, match="case_id values must be unique"):
+        evaluate_b3_evidence_policy(duplicate_report)
+
+
+def test_policy_evaluation_rejects_mismatched_nested_case_id(tmp_path: Path) -> None:
+    payload = json.loads(VALIDATION_FIXTURE.read_text(encoding="utf-8"))
+    payload["predictions"][0]["prediction"]["case_id"] = "different-case"
+    mismatched_report = tmp_path / "mismatched.json"
+    mismatched_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(EvidencePolicyEvaluationError, match="must match its report row"):
+        evaluate_b3_evidence_policy(mismatched_report)
+
+
+@pytest.mark.parametrize("field_path", [("case_id",), ("prediction", "case_id")])
+def test_policy_evaluation_rejects_non_normalized_case_id(
+    tmp_path: Path,
+    field_path: tuple[str, ...],
+) -> None:
+    payload = json.loads(VALIDATION_FIXTURE.read_text(encoding="utf-8"))
+    target = payload["predictions"][0]
+    if len(field_path) == 1:
+        target[field_path[0]] = f" {target[field_path[0]]}"
+    else:
+        nested = target[field_path[0]]
+        nested[field_path[1]] = f" {nested[field_path[1]]}"
+    malformed_report = tmp_path / "non-normalized.json"
+    malformed_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(EvidencePolicyEvaluationError, match="must be a normalized string"):
+        evaluate_b3_evidence_policy(malformed_report)
+
+
 def test_policy_fixture_excludes_provider_and_free_text_output() -> None:
     payload = json.loads(VALIDATION_FIXTURE.read_text(encoding="utf-8"))
     serialized = json.dumps(payload)
