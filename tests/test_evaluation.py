@@ -244,6 +244,13 @@ def test_evaluate_b0_rejects_split_overlap_before_loading_cases(
         {"   ": []},
         {"custom": [{"case_id": ""}]},
         {"custom": [{"case_id": " padded-case-id "}]},
+        {"custom": [{"case_id": "../outside"}]},
+        {"custom": [{"case_id": "..\\outside"}]},
+        {"custom": [{"case_id": "/absolute"}]},
+        {"custom": [{"case_id": "C:/absolute"}]},
+        {"custom": [{"case_id": "."}]},
+        {"custom": [{"case_id": ".."}]},
+        {"custom": [{"case_id": "line\nbreak"}]},
     ],
 )
 def test_evaluate_b0_rejects_noncanonical_split_fields(
@@ -258,6 +265,35 @@ def test_evaluate_b0_rejects_noncanonical_split_fields(
 
     with pytest.raises(EvaluationError):
         evaluate_b0(tmp_path / "missing-cases", split_path)
+
+
+def test_evaluation_split_cannot_read_case_outside_cases_dir(tmp_path: Path) -> None:
+    cases_dir = tmp_path / "cases"
+    cases_dir.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text(
+        json.dumps(
+            {
+                "case_id": "../outside",
+                "source": {"title": "private", "body": "private", "labels": []},
+                "curation": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    split_path = tmp_path / "split.json"
+    split_path.write_text(
+        json.dumps(
+            {
+                "split_id": "path-traversal",
+                "splits": {"train": [{"case_id": "../outside"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(EvaluationError, match="invalid case_id"):
+        evaluate_b0(cases_dir, split_path)
 
 
 class FixtureB1Client:

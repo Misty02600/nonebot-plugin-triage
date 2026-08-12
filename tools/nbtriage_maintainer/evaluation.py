@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections import Counter
 from contextlib import suppress
 from dataclasses import dataclass
@@ -75,6 +76,7 @@ GAP_KEYWORDS = {
     ),
     "raw_close_evidence": ("close code", "close reason", "关闭码", "关闭原因"),
 }
+_CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
 
 
 class EvaluationError(ValueError):
@@ -545,8 +547,11 @@ def _load_cases(
 ) -> tuple[dict[str, dict[str, Any]], dict[str, bytes]]:
     cases = {}
     raw_by_id = {}
+    resolved_cases_dir = cases_dir.resolve()
     for case_id in needed_case_ids:
-        path = cases_dir / f"{case_id}.json"
+        path = (resolved_cases_dir / f"{case_id}.json").resolve()
+        if path.parent != resolved_cases_dir:
+            raise EvaluationError("split manifest contains an invalid case_id")
         if not path.is_file():
             raise EvaluationError(f"missing generated SupportCase: {path}")
         raw, payload = _load_object(path)
@@ -570,7 +575,7 @@ def _split_case_ids(entries: Any) -> list[str]:
         if not isinstance(entry, dict):
             raise EvaluationError("split manifest contains an invalid split entry")
         case_id = entry.get("case_id")
-        if not isinstance(case_id, str) or not case_id or case_id.strip() != case_id:
+        if not isinstance(case_id, str) or _CASE_ID_PATTERN.fullmatch(case_id) is None:
             raise EvaluationError("split manifest contains an invalid case_id")
         if case_id in seen_case_ids:
             raise EvaluationError("split manifest contains duplicate case_id within a split")
