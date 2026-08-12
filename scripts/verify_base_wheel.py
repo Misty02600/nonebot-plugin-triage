@@ -63,7 +63,10 @@ def verify() -> None:
     if "nbtriage" in console_scripts:
         raise RuntimeError("base wheel unexpectedly installs the nbtriage console script")
 
-    nonebot.init(driver="~none")
+    nonebot.init(
+        driver="~none",
+        _env_file=(".env.nonebot-plugin-triage-wheel-verification",),
+    )
     if nonebot.load_plugin("nonebot_plugin_triage") is None:
         raise RuntimeError("base wheel could not load nonebot_plugin_triage")
     import nonebot_plugin_triage
