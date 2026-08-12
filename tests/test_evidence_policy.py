@@ -158,6 +158,32 @@ def test_policy_evaluation_rejects_fields_outside_the_curated_projection(
         evaluate_b3_evidence_policy(malformed_report)
 
 
+@pytest.mark.parametrize(
+    ("target", "field", "value"),
+    [
+        ("gold", "route", "invented"),
+        ("gold", "missing_evidence", ["private_secret"]),
+        ("prediction", "route", "invented"),
+        ("prediction", "fault_phase", "invented"),
+        ("prediction", "missing_evidence", ["private_secret"]),
+        ("prediction", "missing_evidence", ["logs", "logs"]),
+    ],
+)
+def test_policy_evaluation_rejects_values_outside_frozen_enums(
+    tmp_path: Path,
+    target: str,
+    field: str,
+    value: object,
+) -> None:
+    payload = json.loads(VALIDATION_FIXTURE.read_text(encoding="utf-8"))
+    payload["predictions"][0][target][field] = value
+    malformed_report = tmp_path / "unknown-value.json"
+    malformed_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(EvidencePolicyEvaluationError, match="B3 fixture"):
+        evaluate_b3_evidence_policy(malformed_report)
+
+
 @pytest.mark.parametrize("field_path", [("case_id",), ("prediction", "case_id")])
 def test_policy_evaluation_rejects_non_normalized_case_id(
     tmp_path: Path,

@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from nbtriage.rag import ALLOWED_EVIDENCE_SLOTS, ALLOWED_PHASES, ALLOWED_ROUTES
 from tools.nbtriage_maintainer.evidence_policy import (
     B3_EVIDENCE_POLICY_ID,
     select_next_evidence,
@@ -117,6 +118,14 @@ def evaluate_b3_evidence_policy(prediction_report: Path) -> dict[str, Any]:
         b1_slots = _string_list(prediction.get("missing_evidence"), "prediction.missing_evidence")
         route = _required_string(prediction.get("route"), "prediction.route")
         phase = _required_string(prediction.get("fault_phase"), "prediction.fault_phase")
+        gold_route = _required_string(gold.get("route"), "gold.route")
+        _validate_label_values(
+            gold_route=gold_route,
+            prediction_route=route,
+            fault_phase=phase,
+            gold_slots=gold_slots,
+            prediction_slots=b1_slots,
+        )
         selected = None
         if route == "needs_evidence":
             needs_evidence_actions += 1
@@ -277,6 +286,32 @@ def _string_list(value: Any, field_name: str) -> list[str]:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise EvidencePolicyEvaluationError(f"{field_name} must be a string list")
     return list(value)
+
+
+def _validate_label_values(
+    *,
+    gold_route: str,
+    prediction_route: str,
+    fault_phase: str,
+    gold_slots: set[str],
+    prediction_slots: list[str],
+) -> None:
+    if gold_route not in ALLOWED_ROUTES or prediction_route not in ALLOWED_ROUTES:
+        raise EvidencePolicyEvaluationError("B3 fixture routes must use the frozen route enum")
+    if fault_phase not in ALLOWED_PHASES:
+        raise EvidencePolicyEvaluationError(
+            "B3 fixture fault phases must use the frozen phase enum"
+        )
+    if not gold_slots <= ALLOWED_EVIDENCE_SLOTS:
+        raise EvidencePolicyEvaluationError(
+            "B3 fixture Gold evidence must use the frozen evidence enum"
+        )
+    if len(prediction_slots) != len(set(prediction_slots)):
+        raise EvidencePolicyEvaluationError("B3 fixture predicted evidence values must be unique")
+    if not set(prediction_slots) <= ALLOWED_EVIDENCE_SLOTS:
+        raise EvidencePolicyEvaluationError(
+            "B3 fixture predicted evidence must use the frozen evidence enum"
+        )
 
 
 def _ratio(numerator: float, denominator: float) -> float:
