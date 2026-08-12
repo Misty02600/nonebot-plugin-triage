@@ -1,17 +1,72 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
-from nonebot.adapters.onebot.v11 import Message, MessageSegment
+from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
 from nonebot.adapters.onebot.v11.event import Reply as OneBotReply
 from nonebot.adapters.onebot.v11.event import Sender
 from nonebot_plugin_alconna.uniseg.fallback import FallbackMessage
 from nonebug import App
 from tests.units.fake import fake_group_message_event_v11, fake_private_message_event_v11
+
+
+def _triage_reply_event(
+    *,
+    message_id: int,
+    user_id: int,
+    reply_id: int,
+    content: str,
+    self_id: int = 1,
+    group_id: int = 87_654_321,
+) -> GroupMessageEvent:
+    sender = Sender(user_id=user_id, nickname="tester")
+    text = f"triage {content}" if content else "triage"
+    return fake_group_message_event_v11(
+        self_id=self_id,
+        group_id=group_id,
+        message_id=message_id,
+        user_id=user_id,
+        message=Message(text),
+        original_message=Message([MessageSegment.reply(reply_id), MessageSegment.text(f" {text}")]),
+        raw_message=f"[CQ:reply,id={reply_id}] {text}",
+        sender=sender,
+        reply=OneBotReply(
+            time=1,
+            message_type="group",
+            message_id=reply_id,
+            real_id=reply_id,
+            sender=sender,
+            message=Message("BOT_ANSWER_MUST_NOT_BE_READ"),
+        ),
+        to_me=False,
+    )
+
+
+def _onebot_test_bot(ctx: Any, *, self_id: str = "1") -> Any:
+    from nonebot import get_driver
+    from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
+    from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
+
+    return ctx.create_bot(
+        base=OneBotV11Bot,
+        adapter=OneBotV11Adapter(get_driver()),
+        self_id=self_id,
+        auto_connect=False,
+    )
+
+
+def _clean_subprocess_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["NBTRIAGE_TRIAL_LOG_PATH"] = ""
+    return environment
 
 
 def test_nonebot_plugin_loads_with_alconna_cross_platform_metadata() -> None:
@@ -32,8 +87,9 @@ import nonebot_plugin_triage as module
 from nonebot_plugin_triage import handlers, runtime
 
 assert issubclass(handlers.support_matcher, AlconnaMatcher)
-assert handlers.continuation_matcher.priority == handlers.support_matcher.priority - 1
-assert handlers.continuation_matcher.block
+assert handlers.support_matcher.priority == 10
+assert handlers.support_matcher.block
+assert not hasattr(handlers, "continuation_matcher")
 command = handlers.support_matcher._rule.command()
 assert command.parse("triage").matched
 assert command.parse("triage 某个功能怎么使用").matched
@@ -109,6 +165,7 @@ assert not asyncio.run(handlers.trial_stats_matcher.check_perm(bot, event_for(20
     result = subprocess.run(
         [sys.executable, "-c", script],
         cwd=project_root,
+        env=_clean_subprocess_environment(),
         check=False,
         capture_output=True,
         text=True,
@@ -122,6 +179,8 @@ def test_plugin_metadata_and_prompts_follow_custom_commands() -> None:
     project_root = Path(__file__).parents[2]
     script = """
 import nonebot
+import asyncio
+from types import SimpleNamespace
 nonebot.init(
     driver="~none",
     nbtriage_command="support",
@@ -144,11 +203,45 @@ assert "受理查询" in module.__plugin_meta__.usage
 assert "受理反馈" in module.__plugin_meta__.usage
 assert "试用统计" in module.__plugin_meta__.usage
 assert handlers._empty_support_prompt() == "请在 support 后描述想了解的功能或遇到的问题。"
+
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message
+from nonebot.adapters.onebot.v11.event import Sender
+
+sender = Sender(user_id=201, nickname="tester")
+event = GroupMessageEvent(
+    time=1,
+    self_id=1,
+    post_type="message",
+    sub_type="normal",
+    user_id=201,
+    message_type="group",
+    message_id=1,
+    message=Message("support 任意自然语言"),
+    original_message=Message("support 任意自然语言"),
+    raw_message="support 任意自然语言",
+    font=0,
+    sender=sender,
+    group_id=100,
+    to_me=False,
+)
+assert handlers._has_explicit_support_command(event)
+adapter = SimpleNamespace(
+    get_name=lambda: "OneBot V11",
+    config=nonebot.get_driver().config,
+)
+bot = Bot(adapter=adapter, self_id="1")
+assert asyncio.run(handlers.support_matcher.check_rule(bot, event, {}))
+event.message = Message("triage 任意自然语言")
+event.original_message = Message("triage 任意自然语言")
+event.raw_message = "triage 任意自然语言"
+assert not handlers._has_explicit_support_command(event)
+assert not asyncio.run(handlers.support_matcher.check_rule(bot, event, {}))
 """
 
     result = subprocess.run(
         [sys.executable, "-c", script],
         cwd=project_root,
+        env=_clean_subprocess_environment(),
         check=False,
         capture_output=True,
         text=True,
@@ -234,23 +327,14 @@ async def test_support_matcher_accepts_optional_at_without_creating_incident(
     assert len(plugin_runtime.incidents) == incident_count
 
 
-async def test_reply_to_registered_triage_answer_continues_without_command(
+async def test_explicit_triage_reply_to_registered_answer_continues_thread(
     app: App,
 ) -> None:
-    from nonebot import get_driver
-    from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
-    from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
     from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
     from nbtriage.support_threads import ThreadKind
-    from nonebot_plugin_triage.handlers import continuation_matcher, plugin_runtime
+    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
 
-    target = Target(
-        "87654321",
-        self_id="1",
-        scope=SupportScope.qq_client,
-        adapter=SupportAdapter.onebot11,
-    )
     thread = plugin_runtime.support_threads.create(
         ThreadKind.GUIDANCE,
         topic_refs=("label:dHJpYWdl",),
@@ -258,187 +342,234 @@ async def test_reply_to_registered_triage_answer_continues_without_command(
     plugin_runtime.thread_reference_bridge.bind_reference(
         adapter_name="OneBot V11",
         bot_scope="1",
-        target=target,
+        target=Target(
+            "87654321",
+            self_id="1",
+            scope=SupportScope.qq_client,
+            adapter=SupportAdapter.onebot11,
+        ),
         actor_scope="220",
         message_reference="900",
         thread_id=thread.thread_id,
     )
     sender = Sender(user_id=220, nickname="tester")
-    reply = OneBotReply(
-        time=1,
-        message_type="group",
-        message_id=900,
-        real_id=900,
-        sender=sender,
-        message=Message("BOT_ANSWER_MUST_NOT_BE_READ"),
-    )
     event = fake_group_message_event_v11(
         message_id=121,
         user_id=220,
-        group_id=87_654_321,
-        message=Message("具体怎么使用"),
-        original_message=Message("具体怎么使用"),
-        raw_message="具体怎么使用",
+        message=Message("triage 具体怎么使用"),
+        original_message=Message(
+            [MessageSegment.reply(900), MessageSegment.text(" triage 具体怎么使用")]
+        ),
+        raw_message="[CQ:reply,id=900] triage 具体怎么使用",
         sender=sender,
-        reply=reply,
+        reply=OneBotReply(
+            time=1,
+            message_type="group",
+            message_id=900,
+            real_id=900,
+            sender=sender,
+            message=Message("BOT_ANSWER_MUST_NOT_BE_READ"),
+        ),
         to_me=False,
     )
 
-    async with app.test_matcher(continuation_matcher) as ctx:
-        bot = ctx.create_bot(
-            base=OneBotV11Bot,
-            adapter=OneBotV11Adapter(get_driver()),
-            self_id="1",
-            auto_connect=False,
-        )
+    async with app.test_matcher(support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
         ctx.receive_event(bot, event)
         ctx.should_call_send(
             event,
-            "triage：说明功能用法、纠正指令或受理故障\n"
-            "用法：triage <求助内容>\n"
-            "示例：triage 某个功能怎么使用",
+            Message(
+                "triage：说明功能用法、纠正指令或受理故障\n"
+                "用法：triage <求助内容>\n"
+                "示例：triage 某个功能怎么使用"
+            ),
             result=None,
         )
-        ctx.should_finished(continuation_matcher)
+        ctx.should_finished(support_matcher)
 
 
-async def test_unknown_or_cross_actor_reply_does_not_pass_continuation_rule(
-    app: App,
-) -> None:
-    from nonebot import get_driver
-    from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
-    from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
-    from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
+async def test_reply_without_triage_is_ignored_by_support_matcher(app: App) -> None:
+    from nonebot_plugin_triage.handlers import support_matcher
 
-    from nbtriage.support_threads import ThreadKind
-    from nonebot_plugin_triage.handlers import continuation_matcher, plugin_runtime
-
-    bot = OneBotV11Bot(adapter=OneBotV11Adapter(get_driver()), self_id="1")
-    target = Target(
-        "87654321",
-        self_id="1",
-        scope=SupportScope.qq_client,
-        adapter=SupportAdapter.onebot11,
-    )
-    thread = plugin_runtime.support_threads.create(ThreadKind.CLARIFICATION)
-    plugin_runtime.thread_reference_bridge.bind_reference(
-        adapter_name="OneBot V11",
-        bot_scope="1",
-        target=target,
-        actor_scope="221",
-        message_reference="901",
-        thread_id=thread.thread_id,
-    )
-
-    for user_id, reply_id in ((222, 901), (221, 902)):
-        sender = Sender(user_id=user_id, nickname="tester")
-        event = fake_group_message_event_v11(
-            message_id=reply_id + 100,
-            user_id=user_id,
-            group_id=87_654_321,
-            message=Message("继续问"),
-            original_message=Message("继续问"),
-            raw_message="继续问",
+    sender = Sender(user_id=220, nickname="tester")
+    event = fake_group_message_event_v11(
+        message_id=122,
+        user_id=220,
+        message=Message("具体怎么使用"),
+        original_message=Message([MessageSegment.reply(900), MessageSegment.text(" 具体怎么使用")]),
+        raw_message="[CQ:reply,id=900] 具体怎么使用",
+        sender=sender,
+        reply=OneBotReply(
+            time=1,
+            message_type="group",
+            message_id=900,
+            real_id=900,
             sender=sender,
-            reply=OneBotReply(
-                time=1,
-                message_type="group",
-                message_id=reply_id,
-                real_id=reply_id,
-                sender=sender,
-                message=Message("MUST_NOT_BE_READ"),
-            ),
-            to_me=False,
-        )
-        assert not await continuation_matcher.check_rule(bot, event, {})
-
-    ordinary_event = fake_group_message_event_v11(
-        message_id=1_100,
-        user_id=221,
-        group_id=87_654_321,
-        message=Message("普通群聊消息"),
-        original_message=Message("普通群聊消息"),
-        raw_message="普通群聊消息",
-        sender=Sender(user_id=221, nickname="tester"),
-        reply=None,
+            message=Message("BOT_ANSWER_MUST_NOT_BE_READ"),
+        ),
         to_me=False,
     )
-    assert not await continuation_matcher.check_rule(bot, ordinary_event, {})
+    async with app.test_matcher(support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_not_pass_rule()
+
+
+async def test_explicit_triage_with_unknown_reply_starts_new_thread(app: App) -> None:
+    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
+
+    before = len(plugin_runtime.support_threads)
+    event = fake_group_message_event_v11(
+        message_id=123,
+        user_id=221,
+        message=Message("triage 搜图怎么用"),
+        original_message=Message(
+            [MessageSegment.reply(999_999), MessageSegment.text(" triage 搜图怎么用")]
+        ),
+        raw_message="[CQ:reply,id=999999] triage 搜图怎么用",
+        to_me=False,
+    )
+    async with app.test_matcher(support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message(
+                "我目前能说明这些 Alconna 功能：\n"
+                "- triage：说明功能用法、纠正指令或受理故障\n"
+                "告诉我具体功能名，我再给你用法。"
+            ),
+            result=None,
+        )
+        ctx.should_finished(support_matcher)
+    assert len(plugin_runtime.support_threads) == before + 1
 
 
 @pytest.mark.parametrize(
-    ("self_id", "group_id", "user_id", "reply_id"),
+    ("self_id", "group_id", "user_id"),
     [
-        ("2", 87_654_321, 228, 908),
-        ("1", 87_654_322, 230, 910),
+        (1, 87_654_321, 301),
+        (2, 87_654_321, 302),
+        (1, 87_654_322, 303),
     ],
 )
-async def test_cross_bot_or_group_reply_does_not_pass_continuation_rule(
+async def test_explicit_triage_reply_with_cross_scope_starts_new_thread(
     app: App,
-    self_id: str,
+    self_id: int,
     group_id: int,
     user_id: int,
-    reply_id: int,
 ) -> None:
-    from nonebot import get_driver
-    from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
-    from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
     from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
     from nbtriage.support_threads import ThreadKind
-    from nonebot_plugin_triage.handlers import continuation_matcher, plugin_runtime
+    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
 
-    target = Target(
-        "87654321",
-        self_id="1",
-        scope=SupportScope.qq_client,
-        adapter=SupportAdapter.onebot11,
-    )
-    thread = plugin_runtime.support_threads.create(ThreadKind.GUIDANCE)
+    original = plugin_runtime.support_threads.create(ThreadKind.CLARIFICATION)
     plugin_runtime.thread_reference_bridge.bind_reference(
         adapter_name="OneBot V11",
         bot_scope="1",
-        target=target,
-        actor_scope=str(user_id),
-        message_reference=str(reply_id),
-        thread_id=thread.thread_id,
-    )
-    sender = Sender(user_id=user_id, nickname="tester")
-    event = fake_group_message_event_v11(
-        self_id=int(self_id),
-        message_id=reply_id + 1_000,
-        user_id=user_id,
-        group_id=group_id,
-        message=Message("继续问"),
-        original_message=Message("继续问"),
-        raw_message="继续问",
-        sender=sender,
-        reply=OneBotReply(
-            time=1,
-            message_type="group",
-            message_id=reply_id,
-            real_id=reply_id,
-            sender=sender,
-            message=Message("MUST_NOT_BE_READ"),
+        target=Target(
+            "87654321",
+            self_id="1",
+            scope=SupportScope.qq_client,
+            adapter=SupportAdapter.onebot11,
         ),
-        to_me=False,
+        actor_scope="221" if user_id == 301 else str(user_id),
+        message_reference="901",
+        thread_id=original.thread_id,
     )
-    bot = OneBotV11Bot(
-        adapter=OneBotV11Adapter(get_driver()),
+    event = _triage_reply_event(
+        message_id=1_901 + self_id + group_id % 10 + user_id % 10,
         self_id=self_id,
+        group_id=group_id,
+        user_id=user_id,
+        reply_id=901,
+        content="今天天气不错",
     )
+    before = len(plugin_runtime.support_threads)
+    async with app.test_matcher(support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx, self_id=str(self_id))
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message("我还不能确定你是想了解功能还是报告问题，请再具体一点。"),
+            result=None,
+        )
+        ctx.should_finished(support_matcher)
+    assert len(plugin_runtime.support_threads) == before + 1
+    assert plugin_runtime.support_threads.get(original.thread_id) == original
 
-    assert not await continuation_matcher.check_rule(bot, event, {})
 
-
-async def test_closed_thread_reply_does_not_pass_continuation_rule(app: App) -> None:
-    from nonebot import get_driver
-    from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
-    from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
+@pytest.mark.parametrize("closed", [False, True])
+async def test_expired_or_closed_thread_reply_starts_new_thread(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+    closed: bool,
+) -> None:
     from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
-    from nbtriage.support_threads import ThreadKind
-    from nonebot_plugin_triage.handlers import continuation_matcher, plugin_runtime
+    from nbtriage.support_threads import InMemorySupportThreadStore, ThreadKind
+    from nonebot_plugin_triage import handlers
+
+    now = datetime(2026, 8, 12, tzinfo=UTC)
+    store = InMemorySupportThreadStore(
+        max_entries=16,
+        idle_timeout_seconds=10,
+        absolute_timeout_seconds=20,
+        clock=lambda: now,
+    )
+    thread = store.create(ThreadKind.CLARIFICATION)
+    if closed:
+        store.close(thread.thread_id)
+    else:
+        monkeypatch.setattr(store, "_clock", lambda: now.replace(second=20))
+    monkeypatch.setattr(handlers.plugin_runtime.support_turns, "store", store)
+    monkeypatch.setattr(handlers.plugin_runtime.support_turns, "_clock", store._clock)
+    monkeypatch.setattr(
+        handlers,
+        "plugin_runtime",
+        replace(handlers.plugin_runtime, support_threads=store),
+    )
+    handlers.plugin_runtime.thread_reference_bridge.bind_reference(
+        adapter_name="OneBot V11",
+        bot_scope="1",
+        target=Target(
+            "87654321",
+            self_id="1",
+            scope=SupportScope.qq_client,
+            adapter=SupportAdapter.onebot11,
+        ),
+        actor_scope=str(310 + int(closed)),
+        message_reference=str(903 + int(closed)),
+        thread_id=thread.thread_id,
+    )
+    event = _triage_reply_event(
+        message_id=1_903 + int(closed),
+        user_id=310 + int(closed),
+        reply_id=903 + int(closed),
+        content="今天天气不错",
+    )
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message("我还不能确定你是想了解功能还是报告问题，请再具体一点。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
+    assert len(store) == (2 if closed else 1)
+    assert any(item.thread_id != thread.thread_id for item in store._entries.values())
+
+
+async def test_only_latest_registered_answer_can_continue_thread(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
+
+    from nbtriage.support_threads import ThreadKind, ThreadStatus
+    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
 
     target = Target(
         "87654321",
@@ -447,40 +578,45 @@ async def test_closed_thread_reply_does_not_pass_continuation_rule(app: App) -> 
         adapter=SupportAdapter.onebot11,
     )
     thread = plugin_runtime.support_threads.create(ThreadKind.CLARIFICATION)
-    plugin_runtime.thread_reference_bridge.bind_reference(
-        adapter_name="OneBot V11",
-        bot_scope="1",
-        target=target,
-        actor_scope="229",
-        message_reference="909",
-        thread_id=thread.thread_id,
-    )
-    assert plugin_runtime.support_threads.close(thread.thread_id) is not None
-    sender = Sender(user_id=229, nickname="tester")
-    event = fake_group_message_event_v11(
-        message_id=1_909,
-        user_id=229,
-        group_id=87_654_321,
-        message=Message("继续问"),
-        original_message=Message("继续问"),
-        raw_message="继续问",
-        sender=sender,
-        reply=OneBotReply(
-            time=1,
-            message_type="group",
-            message_id=909,
-            real_id=909,
-            sender=sender,
-            message=Message("MUST_NOT_BE_READ"),
-        ),
-        to_me=False,
-    )
-    bot = OneBotV11Bot(
-        adapter=OneBotV11Adapter(get_driver()),
-        self_id="1",
-    )
+    for reply_id in (904, 905):
+        plugin_runtime.thread_reference_bridge.bind_reference(
+            adapter_name="OneBot V11",
+            bot_scope="1",
+            target=target,
+            actor_scope="320",
+            message_reference=str(reply_id),
+            thread_id=thread.thread_id,
+        )
 
-    assert not await continuation_matcher.check_rule(bot, event, {})
+    old_reply = _triage_reply_event(
+        message_id=1_904,
+        user_id=320,
+        reply_id=904,
+        content="取消",
+    )
+    async with app.test_matcher(support_matcher) as ctx:
+        monkeypatch.setattr(plugin_runtime.support_rate_limiter, "allow", lambda *_: True)
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, old_reply)
+        ctx.should_call_send(
+            old_reply,
+            Message("我还不能确定你是想了解功能还是报告问题，请再具体一点。"),
+            result=None,
+        )
+        ctx.should_finished(support_matcher)
+    assert plugin_runtime.support_threads.get(thread.thread_id).status is ThreadStatus.CONTINUABLE
+    latest_reply = _triage_reply_event(
+        message_id=1_905,
+        user_id=320,
+        reply_id=905,
+        content="取消",
+    )
+    async with app.test_matcher(support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, latest_reply)
+        ctx.should_call_send(latest_reply, Message("已结束这次求助。"), result=None)
+        ctx.should_finished(support_matcher)
+    assert plugin_runtime.support_threads.get(thread.thread_id).status is ThreadStatus.CLOSED
 
 
 def test_thread_topic_labels_are_bounded_and_restore_non_ascii_capability_names() -> None:
@@ -499,165 +635,71 @@ def test_thread_topic_labels_are_bounded_and_restore_non_ascii_capability_names(
     assert handlers._continuation_query(thread, "参数呢").startswith("能力0 能力1")
 
 
-async def test_clarification_thread_consumes_one_explicit_follow_up(app: App) -> None:
-    from nonebot import get_driver
-    from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
-    from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
-    from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
-
-    from nbtriage.support_threads import ThreadKind, ThreadStatus
-    from nonebot_plugin_triage.handlers import continuation_matcher, plugin_runtime
-
-    target = Target(
-        "87654321",
-        self_id="1",
-        scope=SupportScope.qq_client,
-        adapter=SupportAdapter.onebot11,
-    )
-    thread = plugin_runtime.support_threads.create(ThreadKind.CLARIFICATION)
-    plugin_runtime.thread_reference_bridge.bind_reference(
-        adapter_name="OneBot V11",
-        bot_scope="1",
-        target=target,
-        actor_scope="223",
-        message_reference="903",
-        thread_id=thread.thread_id,
-    )
-    sender = Sender(user_id=223, nickname="tester")
-    event = fake_group_message_event_v11(
-        message_id=1_103,
-        user_id=223,
-        group_id=87_654_321,
-        message=Message("还是说不清"),
-        original_message=Message("还是说不清"),
-        raw_message="还是说不清",
-        sender=sender,
-        reply=OneBotReply(
-            time=1,
-            message_type="group",
-            message_id=903,
-            real_id=903,
-            sender=sender,
-            message=Message("MUST_NOT_BE_READ"),
-        ),
-        to_me=False,
-    )
-
-    async with app.test_matcher(continuation_matcher) as ctx:
-        bot = ctx.create_bot(
-            base=OneBotV11Bot,
-            adapter=OneBotV11Adapter(get_driver()),
-            self_id="1",
-            auto_connect=False,
-        )
-        ctx.receive_event(bot, event)
-        ctx.should_call_send(
-            event,
-            "我仍无法确定你是想了解功能还是报告问题，本次不再追问；请重新发送 triage 和完整问题。",
-            result=None,
-        )
-        ctx.should_finished(continuation_matcher)
-
-    closed = plugin_runtime.support_threads.get(thread.thread_id)
-    assert closed is not None
-    assert closed.status is ThreadStatus.CLOSED
-
-
 @pytest.mark.parametrize(
-    ("user_id", "reply_id", "message", "expected"),
+    ("user_id", "content", "expected"),
     [
         (
-            224,
-            904,
-            "",
-            "本次澄清已结束，请重新发送 triage 和完整问题。",
+            330,
+            "还是说不清",
+            "我仍无法确定你是想了解功能还是报告问题，本次不再追问；请重新发送 triage 和完整问题。",
         ),
-        (225, 905, "取消", "已结束这次求助。"),
+        (331, "取消", "已结束这次求助。"),
+        (332, "", "本次澄清已结束，请重新发送 triage 和完整问题。"),
         (
-            226,
-            906,
+            333,
             "x" * 2_001,
             "本次澄清已结束；请重新发送 triage 和缩短后的完整问题，内容需在 2000 字以内。",
         ),
     ],
 )
-async def test_clarification_thread_closes_on_terminal_follow_up(
+async def test_clarification_thread_terminal_follow_ups(
     app: App,
     user_id: int,
-    reply_id: int,
-    message: str,
+    content: str,
     expected: str,
 ) -> None:
-    from nonebot import get_driver
-    from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
-    from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
     from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
     from nbtriage.support_threads import ThreadKind, ThreadStatus
-    from nonebot_plugin_triage.handlers import continuation_matcher, plugin_runtime
+    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
 
-    target = Target(
-        "87654321",
-        self_id="1",
-        scope=SupportScope.qq_client,
-        adapter=SupportAdapter.onebot11,
-    )
+    reply_id = 910 + len(content) % 20
     thread = plugin_runtime.support_threads.create(ThreadKind.CLARIFICATION)
     plugin_runtime.thread_reference_bridge.bind_reference(
         adapter_name="OneBot V11",
         bot_scope="1",
-        target=target,
+        target=Target(
+            "87654321",
+            self_id="1",
+            scope=SupportScope.qq_client,
+            adapter=SupportAdapter.onebot11,
+        ),
         actor_scope=str(user_id),
         message_reference=str(reply_id),
         thread_id=thread.thread_id,
     )
-    sender = Sender(user_id=user_id, nickname="tester")
-    event = fake_group_message_event_v11(
+    event = _triage_reply_event(
         message_id=reply_id + 1_000,
         user_id=user_id,
-        group_id=87_654_321,
-        message=Message(message),
-        original_message=Message(message),
-        raw_message=message,
-        sender=sender,
-        reply=OneBotReply(
-            time=1,
-            message_type="group",
-            message_id=reply_id,
-            real_id=reply_id,
-            sender=sender,
-            message=Message("MUST_NOT_BE_READ"),
-        ),
-        to_me=False,
+        reply_id=reply_id,
+        content=content,
     )
-
-    async with app.test_matcher(continuation_matcher) as ctx:
-        bot = ctx.create_bot(
-            base=OneBotV11Bot,
-            adapter=OneBotV11Adapter(get_driver()),
-            self_id="1",
-            auto_connect=False,
-        )
+    async with app.test_matcher(support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
         ctx.receive_event(bot, event)
-        ctx.should_call_send(event, expected, result=None)
-        ctx.should_finished(continuation_matcher)
-
-    closed = plugin_runtime.support_threads.get(thread.thread_id)
-    assert closed is not None
-    assert closed.status is ThreadStatus.CLOSED
+        ctx.should_call_send(event, Message(expected), result=None)
+        ctx.should_finished(support_matcher)
+    assert plugin_runtime.support_threads.get(thread.thread_id).status is ThreadStatus.CLOSED
 
 
-async def test_clarification_thread_can_end_in_explicit_incident(
+async def test_clarification_follow_up_can_become_incident_without_bot_reply_evidence(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nonebot import get_driver
-    from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
-    from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
     from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
     from nbtriage.support_threads import ThreadKind, ThreadStatus
-    from nonebot_plugin_triage.handlers import continuation_matcher, plugin_runtime
+    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
     from nonebot_plugin_triage.live_reports import (
         LiveReportRequest,
         PublicReportResult,
@@ -675,141 +717,88 @@ async def test_clarification_thread_can_end_in_explicit_incident(
         )
 
     monkeypatch.setattr(plugin_runtime.report_service, "handle", accept)
-    target = Target(
-        "87654321",
-        self_id="1",
-        scope=SupportScope.qq_client,
-        adapter=SupportAdapter.onebot11,
-    )
     thread = plugin_runtime.support_threads.create(ThreadKind.CLARIFICATION)
     plugin_runtime.thread_reference_bridge.bind_reference(
         adapter_name="OneBot V11",
         bot_scope="1",
-        target=target,
-        actor_scope="227",
-        message_reference="907",
+        target=Target(
+            "87654321",
+            self_id="1",
+            scope=SupportScope.qq_client,
+            adapter=SupportAdapter.onebot11,
+        ),
+        actor_scope="340",
+        message_reference="926",
         thread_id=thread.thread_id,
     )
-    sender = Sender(user_id=227, nickname="tester")
-    event = fake_group_message_event_v11(
-        message_id=1_907,
-        user_id=227,
-        group_id=87_654_321,
-        message=Message("请受理这个故障"),
-        original_message=Message("请受理这个故障"),
-        raw_message="请受理这个故障",
-        sender=sender,
-        reply=OneBotReply(
-            time=1,
-            message_type="group",
-            message_id=907,
-            real_id=907,
-            sender=sender,
-            message=Message("BOT_PROMPT_MUST_NOT_BECOME_REPORT_EVIDENCE"),
-        ),
-        to_me=False,
+    event = _triage_reply_event(
+        message_id=1_926,
+        user_id=340,
+        reply_id=926,
+        content="请受理这个故障",
     )
-
-    async with app.test_matcher(continuation_matcher) as ctx:
-        bot = ctx.create_bot(
-            base=OneBotV11Bot,
-            adapter=OneBotV11Adapter(get_driver()),
-            self_id="1",
-            auto_connect=False,
-        )
+    async with app.test_matcher(support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
         ctx.receive_event(bot, event)
-        ctx.should_call_send(event, "固定受理回执", result=None)
-        ctx.should_finished(continuation_matcher)
-
+        ctx.should_call_send(event, Message("固定受理回执"), result=None)
+        ctx.should_finished(support_matcher)
     assert len(captured) == 1
     assert captured[0].reply_reference is None
-    closed = plugin_runtime.support_threads.get(thread.thread_id)
-    assert closed is not None
-    assert closed.status is ThreadStatus.CLOSED
+    assert plugin_runtime.support_threads.get(thread.thread_id).status is ThreadStatus.CLOSED
 
 
-async def test_continuation_blocks_lower_priority_matcher_in_full_dispatch(
-    app: App,
-) -> None:
-    from nonebot import get_driver
-    from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
-    from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
-    from nonebot.matcher import Matcher
+async def test_continuation_turn_uses_same_entry_rate_limit(app: App) -> None:
     from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
     from nbtriage.support_threads import ThreadKind
-    from nonebot_plugin_triage.handlers import continuation_matcher, plugin_runtime
+    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
 
-    target = Target(
-        "87654321",
-        self_id="1",
-        scope=SupportScope.qq_client,
-        adapter=SupportAdapter.onebot11,
-    )
-    thread = plugin_runtime.support_threads.create(
-        ThreadKind.GUIDANCE,
-        topic_refs=("label:dHJpYWdl",),
-    )
+    thread = plugin_runtime.support_threads.create(ThreadKind.GUIDANCE)
     plugin_runtime.thread_reference_bridge.bind_reference(
         adapter_name="OneBot V11",
         bot_scope="1",
-        target=target,
-        actor_scope="231",
-        message_reference="911",
+        target=Target(
+            "87654321",
+            self_id="1",
+            scope=SupportScope.qq_client,
+            adapter=SupportAdapter.onebot11,
+        ),
+        actor_scope="350",
+        message_reference="927",
         thread_id=thread.thread_id,
     )
-    sender = Sender(user_id=231, nickname="tester")
-    event = fake_group_message_event_v11(
-        message_id=1_911,
-        user_id=231,
-        group_id=87_654_321,
-        message=Message("具体怎么使用"),
-        original_message=Message("具体怎么使用"),
-        raw_message="具体怎么使用",
-        sender=sender,
-        reply=OneBotReply(
-            time=1,
-            message_type="group",
-            message_id=911,
-            real_id=911,
-            sender=sender,
-            message=Message("MUST_NOT_BE_READ"),
-        ),
-        to_me=False,
+    first = _triage_reply_event(
+        message_id=1_927,
+        user_id=350,
+        reply_id=927,
+        content="参数怎么用",
     )
-
-    async def lower_priority_handler() -> None:
-        raise AssertionError("lower-priority matcher must be blocked")
-
-    lower = Matcher.new(
-        type_="message",
-        handlers=[lower_priority_handler],
-        priority=continuation_matcher.priority + 1,
+    second = _triage_reply_event(
+        message_id=1_928,
+        user_id=350,
+        reply_id=927,
+        content="还有示例吗",
     )
-    try:
-        async with app.test_matcher(
-            {
-                continuation_matcher.priority: [continuation_matcher],
-                lower.priority: [lower],
-            }
-        ) as ctx:
-            bot = ctx.create_bot(
-                base=OneBotV11Bot,
-                adapter=OneBotV11Adapter(get_driver()),
-                self_id="1",
-                auto_connect=False,
-            )
-            ctx.receive_event(bot, event)
-            ctx.should_call_send(
-                event,
-                "triage：说明功能用法、纠正指令或受理故障\n"
-                "用法：triage <求助内容>\n"
-                "示例：triage 某个功能怎么使用",
-                result=None,
-            )
-            ctx.should_finished(continuation_matcher)
-    finally:
-        lower.destroy()
+    async with app.test_matcher(support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, first)
+        ctx.should_call_send(
+            first,
+            Message(
+                "我目前能说明这些 Alconna 功能：\n"
+                "- triage：说明功能用法、纠正指令或受理故障\n"
+                "告诉我具体功能名，我再给你用法。"
+            ),
+            result=None,
+        )
+        ctx.should_finished(support_matcher)
+        ctx.receive_event(bot, second)
+        ctx.should_call_send(
+            second,
+            Message("求助请求过于频繁，请稍后再试。"),
+            result=None,
+        )
+        ctx.should_finished(support_matcher)
 
 
 @pytest.mark.parametrize(
@@ -871,6 +860,7 @@ async def test_shadow_capability_guidance_is_limited_to_superusers(
         Constraint,
         ConstraintEvaluability,
         Disclosure,
+        PlatformScope,
         RecordState,
     )
     from nonebot_plugin_triage import handlers
@@ -882,6 +872,7 @@ async def test_shadow_capability_guidance_is_limited_to_superusers(
         kind="command",
         disclosure=Disclosure.RESTRICTED,
         state=RecordState.CANDIDATE,
+        platform_scope=PlatformScope.all(),
         claims=(
             Claim("command.header", "搜图", ClaimBasis.OBSERVED),
             Claim("description", "搜索图片出处", ClaimBasis.DECLARED),
@@ -956,6 +947,7 @@ async def test_public_shadow_capability_guidance_is_available_to_regular_user(
         Claim,
         ClaimBasis,
         Disclosure,
+        PlatformScope,
         RecordState,
     )
     from nonebot_plugin_triage import handlers
@@ -967,6 +959,7 @@ async def test_public_shadow_capability_guidance_is_available_to_regular_user(
         kind="command",
         disclosure=Disclosure.PUBLIC,
         state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.explicit(("~onebot.v11",)),
         claims=(
             Claim("command.header", "搜图", ClaimBasis.OBSERVED),
             Claim("description", "搜索图片出处", ClaimBasis.DECLARED),
@@ -1032,6 +1025,138 @@ async def test_support_matcher_asks_one_question_for_incomplete_intent(
         ctx.should_call_send(event, FallbackMessage(expected), result=None)
         ctx.should_finished(support_matcher)
     assert len(plugin_runtime.incidents) == incident_count
+
+
+@pytest.mark.parametrize("occupied_state", ["pending", "active"])
+@pytest.mark.parametrize(
+    "text",
+    ["triage", "triage 有什么功能", "triage 今天天气不错"],
+    ids=["empty", "guidance", "unknown"],
+)
+async def test_support_matcher_fails_closed_when_thread_capacity_is_reserved(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+    occupied_state: str,
+    text: str,
+) -> None:
+    from nbtriage.support_threads import (
+        InMemorySupportThreadStore,
+        OutboundThreadReferenceIndex,
+        SupportThreadTurnCoordinator,
+        ThreadKind,
+        TurnClaimStatus,
+    )
+    from nonebot_plugin_triage import handlers
+    from nonebot_plugin_triage.thread_references import SupportThreadReferenceBridge
+
+    thread_ids = iter(("thread-occupied", "thread-attempt"))
+    store = InMemorySupportThreadStore(
+        max_entries=1,
+        idle_timeout_seconds=600,
+        absolute_timeout_seconds=1_200,
+        id_factory=lambda: next(thread_ids),
+    )
+    index = OutboundThreadReferenceIndex(
+        secret_key=b"r" * 32,
+        max_entries=1,
+        retention_seconds=1_200,
+    )
+    coordinator = SupportThreadTurnCoordinator(
+        store,
+        index,
+        secret_key=b"l" * 32,
+        lease_timeout_seconds=300,
+        token_factory=lambda: "lease-occupied",
+    )
+    thread = coordinator.create_initial_thread(ThreadKind.CLARIFICATION)
+    lease_token: str | None = None
+    if occupied_state == "active":
+        assert coordinator.bind_initial_reference(
+            adapter_name="OneBot V11",
+            bot_scope="1",
+            conversation_scope="group-87654321",
+            actor_scope="500",
+            message_reference="occupied-reference",
+            thread_id=thread.thread_id,
+        )
+        claim = coordinator.claim_reply(
+            adapter_name="OneBot V11",
+            bot_scope="1",
+            conversation_scope="group-87654321",
+            actor_scope="500",
+            message_reference="occupied-reference",
+        )
+        assert claim.status is TurnClaimStatus.ACQUIRED
+        assert claim.lease is not None
+        lease_token = claim.lease.token
+
+    bridge = SupportThreadReferenceBridge(coordinator)
+    monkeypatch.setattr(
+        handlers,
+        "plugin_runtime",
+        replace(
+            handlers.plugin_runtime,
+            support_threads=store,
+            support_turns=coordinator,
+            thread_reference_bridge=bridge,
+        ),
+    )
+    monkeypatch.setattr(
+        handlers.plugin_runtime.support_rate_limiter,
+        "allow",
+        lambda *_: True,
+    )
+
+    async def fixed_guidance(*_: object, **__: object) -> object:
+        return handlers._GuidanceResult("unused", ())
+
+    def forbidden_binding(*_: object, **__: object) -> None:
+        raise AssertionError("failed thread creation must not create an outgoing binding")
+
+    monkeypatch.setattr(handlers, "_capability_guidance_result", fixed_guidance)
+    monkeypatch.setattr(handlers, "_set_outgoing_thread", forbidden_binding)
+    thread_before = store.get(thread.thread_id)
+    assert thread_before is not None
+    pending_before = dict(coordinator._pending_initials)
+    leases_before = dict(coordinator._leases_by_thread)
+    references_before = dict(index._entries)
+    dropped_before = store.dropped_count
+
+    event = fake_group_message_event_v11(
+        message_id=600,
+        user_id=501,
+        message=Message(text),
+        original_message=Message(text),
+        raw_message=text,
+        to_me=False,
+    )
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message("求助上下文繁忙，请稍后重试。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
+
+    assert len(store) == 1
+    assert store.get(thread.thread_id) == thread_before
+    assert store.dropped_count == dropped_before
+    assert coordinator._pending_initials == pending_before
+    assert coordinator._leases_by_thread == leases_before
+    assert index._entries == references_before
+    if lease_token is None:
+        assert coordinator.bind_initial_reference(
+            adapter_name="OneBot V11",
+            bot_scope="1",
+            conversation_scope="group-87654321",
+            actor_scope="500",
+            message_reference="occupied-reference",
+            thread_id=thread.thread_id,
+        )
+    else:
+        assert coordinator.close_turn(lease_token)
 
 
 async def test_support_matcher_rate_limits_all_support_responses(app: App) -> None:
@@ -1136,6 +1261,199 @@ async def test_support_matcher_routes_suspected_incident_with_optional_reply(
         ctx.should_finished(support_matcher)
 
     assert [request.reply_reference for request in captured] == [reply_reference]
+
+
+async def test_busy_thread_turn_is_rejected_before_guidance_or_incident(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
+
+    from nbtriage.support_threads import ThreadKind, TurnClaimStatus
+    from nonebot_plugin_triage import handlers
+
+    target = Target(
+        "87654321",
+        self_id="1",
+        scope=SupportScope.qq_client,
+        adapter=SupportAdapter.onebot11,
+    )
+    thread = handlers.plugin_runtime.support_threads.create(ThreadKind.GUIDANCE)
+    handlers.plugin_runtime.thread_reference_bridge.bind_reference(
+        adapter_name="OneBot V11",
+        bot_scope="1",
+        target=target,
+        actor_scope="351",
+        message_reference="929",
+        thread_id=thread.thread_id,
+    )
+    first_claim = handlers.plugin_runtime.thread_reference_bridge.claim_reply(
+        adapter_name="OneBot V11",
+        bot_scope="1",
+        target=target,
+        actor_scope="351",
+        message_reference="929",
+    )
+    assert first_claim.status is TurnClaimStatus.ACQUIRED
+    assert first_claim.lease is not None
+    thread_count = len(handlers.plugin_runtime.support_threads)
+
+    async def forbidden_guidance(*_: object, **__: object) -> object:
+        raise AssertionError("BUSY turn must not enter capability guidance")
+
+    def forbidden_incident(*_: object, **__: object) -> object:
+        raise AssertionError("BUSY turn must not enter incident intake")
+
+    monkeypatch.setattr(handlers, "_capability_guidance_result", forbidden_guidance)
+    monkeypatch.setattr(handlers.plugin_runtime.report_service, "handle", forbidden_incident)
+    monkeypatch.setattr(
+        handlers.plugin_runtime.support_rate_limiter,
+        "allow",
+        lambda *_: True,
+    )
+    event = _triage_reply_event(
+        message_id=1_929,
+        user_id=351,
+        reply_id=929,
+        content="参数怎么用",
+    )
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message("上一轮仍在处理，请稍后重新发送 triage。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
+
+    current = handlers.plugin_runtime.support_threads.get(thread.thread_id)
+    assert current is not None
+    assert current.status.value == "continuable"
+    assert len(handlers.plugin_runtime.support_threads) == thread_count
+    assert handlers.plugin_runtime.thread_reference_bridge.close_turn(first_claim.lease.token)
+
+
+async def test_thread_claim_error_fails_closed_before_new_request(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nbtriage.support_threads import TurnClaimResult, TurnClaimStatus
+    from nonebot_plugin_triage import handlers
+
+    async def forbidden_guidance(*_: object, **__: object) -> object:
+        raise AssertionError("claim error must not enter capability guidance")
+
+    def forbidden_incident(*_: object, **__: object) -> object:
+        raise AssertionError("claim error must not enter incident intake")
+
+    monkeypatch.setattr(handlers, "_capability_guidance_result", forbidden_guidance)
+    monkeypatch.setattr(handlers.plugin_runtime.report_service, "handle", forbidden_incident)
+    monkeypatch.setattr(
+        handlers.plugin_runtime.support_rate_limiter,
+        "allow",
+        lambda *_: True,
+    )
+    monkeypatch.setattr(
+        handlers.plugin_runtime.thread_reference_bridge,
+        "claim_reply",
+        lambda **_: TurnClaimResult(TurnClaimStatus.ERROR),
+    )
+    thread_count = len(handlers.plugin_runtime.support_threads)
+    event = _triage_reply_event(
+        message_id=1_930,
+        user_id=351,
+        reply_id=930,
+        content="参数怎么用",
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message("求助上下文暂时不可用，请重新发送完整 triage。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
+
+    assert len(handlers.plugin_runtime.support_threads) == thread_count
+
+
+async def test_superuser_is_rechecked_on_every_guidance_turn(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
+
+    from nbtriage.support_threads import ThreadKind
+    from nonebot_plugin_triage import handlers
+
+    checks: list[int] = []
+
+    async def changing_permission(*_: object, **__: object) -> bool:
+        checks.append(len(checks))
+        return len(checks) == 1
+
+    class Shadow:
+        async def search_public(self, *_: object, **__: object) -> None:
+            return None
+
+        async def search_for_maintainer(self, *_: object, **__: object) -> object:
+            return SimpleNamespace(hits=(), partial=False, stale=False)
+
+    monkeypatch.setattr(handlers, "SUPERUSER", changing_permission)
+    monkeypatch.setattr(
+        handlers,
+        "plugin_runtime",
+        replace(handlers.plugin_runtime, capability_shadow=Shadow()),
+    )
+    thread = handlers.plugin_runtime.support_threads.create(ThreadKind.GUIDANCE)
+    handlers.plugin_runtime.thread_reference_bridge.bind_reference(
+        adapter_name="OneBot V11",
+        bot_scope="1",
+        target=Target(
+            "87654321",
+            self_id="1",
+            scope=SupportScope.qq_client,
+            adapter=SupportAdapter.onebot11,
+        ),
+        actor_scope="360",
+        message_reference="928",
+        thread_id=thread.thread_id,
+    )
+    first = _triage_reply_event(
+        message_id=1_929,
+        user_id=360,
+        reply_id=928,
+        content="参数怎么用",
+    )
+    second = _triage_reply_event(
+        message_id=1_930,
+        user_id=360,
+        reply_id=928,
+        content="示例怎么用",
+    )
+    monkeypatch.setattr(
+        handlers.plugin_runtime.support_rate_limiter,
+        "allow",
+        lambda *_: True,
+    )
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        for event in (first, second):
+            ctx.receive_event(bot, event)
+            ctx.should_call_send(
+                event,
+                Message(
+                    "我目前能说明这些 Alconna 功能：\n"
+                    "- triage：说明功能用法、纠正指令或受理故障\n"
+                    "告诉我具体功能名，我再给你用法。"
+                ),
+                result=None,
+            )
+            ctx.should_finished(handlers.support_matcher)
+    assert checks == [0, 1]
 
 
 @pytest.mark.parametrize(
