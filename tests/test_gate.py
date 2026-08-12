@@ -123,11 +123,106 @@ def test_evaluate_cases_summarizes_decisions(tmp_path: Path) -> None:
     report = evaluate_cases(cases_dir)
 
     assert report["summary"]["assessed_cases"] == 2
+    assert report["summary"]["unique_assessed_cases"] == 2
+    assert report["summary"]["duplicate_case_ids"] == 0
     assert report["summary"]["ready_for_execution"] == 1
     assert report["summary"]["needs_curation"] == 1
     assert report["summary"]["executable_spec_gate_met"] is False
     assert report["summary"]["runtime_validated"] == 0
     assert report["missing_field_frequency"]["curation.execution_mode"] == 1
+
+
+def test_duplicate_case_ids_cannot_meet_either_gate(tmp_path: Path) -> None:
+    cases_dir = tmp_path / "cases"
+    cases_dir.mkdir()
+    for index in range(15):
+        (cases_dir / f"case-{index:02d}.json").write_text(
+            json.dumps(complete_case()),
+            encoding="utf-8",
+        )
+    runtime_file = tmp_path / "runtime.json"
+    runtime_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "results": [
+                    {
+                        "case_id": "gh-owner-repo-1",
+                        "status": "validated",
+                        "probe_id": "probe-1",
+                        "buggy_ref": "v1.0.0",
+                        "fixed_ref": "v1.0.1",
+                        "buggy_oracle_matched": True,
+                        "fixed_oracle_matched": True,
+                        "buggy_observation": "TargetException was raised",
+                        "fixed_observation": "process exited with code 0",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = evaluate_cases(cases_dir, runtime_file)
+
+    assert report["summary"]["total_case_files"] == 15
+    assert report["summary"]["assessed_cases"] == 0
+    assert report["summary"]["unique_assessed_cases"] == 0
+    assert report["summary"]["duplicate_case_ids"] == 1
+    assert report["summary"]["case_load_errors"] == 15
+    assert report["summary"]["ready_for_execution"] == 0
+    assert report["summary"]["executable_spec_gate_met"] is False
+    assert report["summary"]["runtime_validated"] == 0
+    assert report["summary"]["runtime_invalid"] == 1
+    assert report["summary"]["runtime_gate_met"] is False
+    assert {item["error"] for item in report["load_errors"]} == {"duplicate case_id"}
+
+
+def test_mixed_duplicate_group_is_fully_rejected(tmp_path: Path) -> None:
+    cases_dir = tmp_path / "cases"
+    cases_dir.mkdir()
+    ready = complete_case()
+    incomplete = complete_case()
+    incomplete["case_id"] = "  gh-owner-repo-1  "
+    incomplete["curation"]["execution_mode"] = None
+    excluded = complete_case()
+    excluded["curation"]["exclusion_reason"] = "not reproducible"
+    for filename, payload in (
+        ("ready.json", ready),
+        ("incomplete.json", incomplete),
+        ("excluded.json", excluded),
+    ):
+        (cases_dir / filename).write_text(json.dumps(payload), encoding="utf-8")
+
+    report = evaluate_cases(cases_dir)
+
+    assert report["summary"]["assessed_cases"] == 0
+    assert report["summary"]["duplicate_case_ids"] == 1
+    assert report["summary"]["case_load_errors"] == 3
+    assert report["summary"]["ready_for_execution"] == 0
+    assert report["summary"]["needs_curation"] == 0
+    assert report["summary"]["excluded"] == 0
+    assert report["assessments"] == []
+
+
+def test_missing_case_ids_are_assessed_independently(tmp_path: Path) -> None:
+    cases_dir = tmp_path / "cases"
+    cases_dir.mkdir()
+    for index in range(2):
+        payload = complete_case()
+        payload.pop("case_id")
+        (cases_dir / f"missing-{index}.json").write_text(
+            json.dumps(payload),
+            encoding="utf-8",
+        )
+
+    report = evaluate_cases(cases_dir)
+
+    assert report["summary"]["assessed_cases"] == 2
+    assert report["summary"]["unique_assessed_cases"] == 0
+    assert report["summary"]["duplicate_case_ids"] == 0
+    assert report["summary"]["case_load_errors"] == 0
+    assert report["summary"]["needs_curation"] == 2
 
 
 def test_evaluate_cases_counts_matching_runtime_oracle(tmp_path: Path) -> None:

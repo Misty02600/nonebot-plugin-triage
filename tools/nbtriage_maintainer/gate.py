@@ -39,6 +39,14 @@ class CaseAssessment:
     exclusion_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class _LoadedCase:
+    path: Path
+    payload: dict[str, Any]
+    assessment: CaseAssessment
+    normalized_case_id: str | None
+
+
 def assess_case(payload: dict[str, Any]) -> CaseAssessment:
     case_id = _string_at(payload, "case_id") or "<missing-case-id>"
     source_url = _string_at(payload, "source", "issue_url")
@@ -131,20 +139,41 @@ def evaluate_cases(
     cases_dir: Path,
     runtime_results_path: Path | None = None,
 ) -> dict[str, Any]:
-    assessments = []
-    load_errors = []
-    cases_by_id: dict[str, dict[str, Any]] = {}
-    for path in sorted(cases_dir.glob("*.json")):
+    case_paths = sorted(cases_dir.glob("*.json"))
+    loaded_cases: list[_LoadedCase] = []
+    load_errors: list[dict[str, str]] = []
+    case_id_counts: Counter[str] = Counter()
+    for path in case_paths:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("top-level JSON value must be an object")
-            assessment = assess_case(payload)
-            assessments.append(assessment)
-            if assessment.decision == "ready_for_execution":
-                cases_by_id[assessment.case_id] = payload
+            normalized_case_id = _string_at(payload, "case_id")
+            loaded_cases.append(
+                _LoadedCase(
+                    path=path,
+                    payload=payload,
+                    assessment=assess_case(payload),
+                    normalized_case_id=normalized_case_id,
+                )
+            )
+            if normalized_case_id is not None:
+                case_id_counts[normalized_case_id] += 1
         except (OSError, ValueError, json.JSONDecodeError) as error:
             load_errors.append({"path": str(path), "error": str(error)})
+
+    duplicate_case_ids = {case_id for case_id, count in case_id_counts.items() if count > 1}
+    assessments: list[CaseAssessment] = []
+    cases_by_id: dict[str, dict[str, Any]] = {}
+    for loaded_case in loaded_cases:
+        if loaded_case.normalized_case_id in duplicate_case_ids:
+            load_errors.append({"path": str(loaded_case.path), "error": "duplicate case_id"})
+            continue
+        assessments.append(loaded_case.assessment)
+        if loaded_case.assessment.decision == "ready_for_execution":
+            cases_by_id[loaded_case.assessment.case_id] = loaded_case.payload
+
+    load_errors.sort(key=lambda item: (item["path"], item["error"]))
 
     runtime_assessments, runtime_load_errors = evaluate_runtime_results(
         runtime_results_path,
@@ -157,8 +186,14 @@ def evaluate_cases(
     return {
         "schema_version": 1,
         "summary": {
-            "total_case_files": len(assessments) + len(load_errors),
+            "total_case_files": len(case_paths),
             "assessed_cases": len(assessments),
+            "unique_assessed_cases": sum(
+                loaded_case.normalized_case_id is not None
+                and loaded_case.normalized_case_id not in duplicate_case_ids
+                for loaded_case in loaded_cases
+            ),
+            "duplicate_case_ids": len(duplicate_case_ids),
             "load_errors": len(load_errors) + len(runtime_load_errors),
             "case_load_errors": len(load_errors),
             "runtime_load_errors": len(runtime_load_errors),
