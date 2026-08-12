@@ -103,3 +103,58 @@ def test_manifest_parser_rejects_non_string_content_digest() -> None:
 
     with pytest.raises(ModuleSourceRevisionError, match="content_sha256"):
         PythonModuleSourceManifest.from_dict(payload)
+
+
+def test_same_length_change_between_verification_passes_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nbtriage.module_source_revisions as revisions
+
+    source = tmp_path / "demo.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    original = revisions._read_source_files
+    calls = 0
+
+    def mutate_after_first_read(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 1:
+            source.write_text("VALUE = 2\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(revisions, "_read_source_files", mutate_after_first_read)
+
+    result = scan_python_module_source("demo", source)
+
+    assert result.manifest is None
+    assert result.errors == ("source_changed_during_scan",)
+
+
+def test_added_python_file_between_enumerations_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nbtriage.module_source_revisions as revisions
+
+    package = tmp_path / "demo"
+    package.mkdir()
+    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    original = revisions._read_source_files
+    calls = 0
+
+    def add_after_first_read(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 1:
+            (package / "late.py").write_text("VALUE = 2\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(revisions, "_read_source_files", add_after_first_read)
+
+    result = scan_python_module_source("demo", package)
+
+    assert result.manifest is None
+    assert result.errors == ("source_changed_during_scan",)

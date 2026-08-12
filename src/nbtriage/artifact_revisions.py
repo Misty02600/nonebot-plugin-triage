@@ -377,18 +377,30 @@ def _build_source_revision(
     vcs_commit: str | None = None,
     force_partial: bool = False,
 ) -> ArtifactRevision:
-    scan = _scan_source(location, limits)
+    module_limits = ModuleSourceLimits(
+        max_files=limits.max_files,
+        max_total_bytes=limits.max_bytes,
+        max_file_bytes=limits.max_file_bytes,
+        max_directories=limits.max_directories,
+    )
     module_scan = scan_python_module_source(
         module_name,
         location.scan_root,
-        limits=ModuleSourceLimits(
-            max_files=limits.max_files,
-            max_total_bytes=limits.max_bytes,
-            max_file_bytes=limits.max_file_bytes,
-            max_directories=limits.max_directories,
-        ),
+        limits=module_limits,
     )
-    partial = force_partial or scan.partial or not scan.evidence or bool(module_scan.errors)
+    scan = _scan_source(location, limits)
+    verified_module_scan = scan_python_module_source(
+        module_name,
+        location.scan_root,
+        limits=module_limits,
+    )
+    module_manifest = (
+        module_scan.manifest
+        if module_scan.manifest is not None
+        and verified_module_scan.manifest == module_scan.manifest
+        else None
+    )
+    partial = force_partial or scan.partial or not scan.evidence or module_manifest is None
     status = ArtifactRevisionStatus.PARTIAL if partial else ArtifactRevisionStatus.LOCATED
     revision = _revision_digest(
         module_name=module_name,
@@ -408,7 +420,7 @@ def _build_source_revision(
         distribution_name=distribution_name,
         distribution_version=distribution_version,
         vcs_commit=vcs_commit,
-        module_source_manifest=module_scan.manifest,
+        module_source_manifest=module_manifest,
     )
 
 

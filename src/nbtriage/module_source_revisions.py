@@ -201,6 +201,23 @@ def scan_python_module_source(
     files, read_errors = _read_source_files(root, layout, candidates, active_limits)
     if read_errors:
         return ModuleSourceScan(None, read_errors)
+    verified_candidates, verification_errors = _source_candidates(root, layout, active_limits)
+    if verification_errors:
+        return ModuleSourceScan(None, verification_errors)
+    original_paths = _candidate_paths(root, layout, candidates)
+    verified_paths = _candidate_paths(root, layout, verified_candidates)
+    if original_paths is None or verified_paths is None or verified_paths != original_paths:
+        return ModuleSourceScan(None, ("source_changed_during_scan",))
+    verified_files, verification_errors = _read_source_files(
+        root,
+        layout,
+        verified_candidates,
+        active_limits,
+    )
+    if verification_errors:
+        return ModuleSourceScan(None, verification_errors)
+    if verified_files != files:
+        return ModuleSourceScan(None, ("source_changed_during_scan",))
     try:
         manifest = PythonModuleSourceManifest.create(normalized_module, layout, files)
     except ModuleSourceRevisionError as error:
@@ -288,7 +305,8 @@ def _read_source_files(
             resolved = path.resolve(strict=True)
             if not resolved.is_relative_to(root_directory.resolve(strict=True)):
                 return (), ("source_outside_module_root",)
-            size = resolved.stat().st_size
+            path_stat = resolved.stat()
+            size = path_stat.st_size
         except (OSError, RuntimeError):
             return (), ("source_stat_failed",)
         if size > limits.max_file_bytes:
@@ -296,10 +314,23 @@ def _read_source_files(
         if consumed + size > limits.max_total_bytes:
             return (), ("source_byte_limit",)
         try:
-            content = resolved.read_bytes()
+            with resolved.open("rb") as handle:
+                before = os.fstat(handle.fileno())
+                content = handle.read(limits.max_file_bytes + 1)
+                after = os.fstat(handle.fileno())
         except OSError:
             return (), ("source_read_failed",)
-        if len(content) != size:
+        try:
+            final_stat = resolved.stat()
+        except OSError:
+            return (), ("source_stat_failed",)
+        if (
+            len(content) != size
+            or len(content) != before.st_size
+            or _stat_identity(before) != _stat_identity(after)
+            or _stat_identity(after) != _stat_identity(final_stat)
+            or _stat_identity(path_stat) != _stat_identity(before)
+        ):
             return (), ("source_changed_during_scan",)
         relative = resolved.relative_to(root_directory).as_posix()
         try:
@@ -315,6 +346,29 @@ def _read_source_files(
         )
         consumed += size
     return tuple(files), ()
+
+
+def _candidate_paths(
+    root: Path,
+    layout: PythonModuleLayout,
+    candidates: tuple[Path, ...],
+) -> tuple[str, ...] | None:
+    root_directory = root if layout is PythonModuleLayout.PACKAGE else root.parent
+    try:
+        return tuple(
+            path.resolve(strict=True).relative_to(root_directory).as_posix() for path in candidates
+        )
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+    )
 
 
 def _manifest_revision(
