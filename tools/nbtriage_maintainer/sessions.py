@@ -7,6 +7,7 @@ import json
 import re
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -303,13 +304,15 @@ def approve_session(
         actor=resolved_actor,
         details={"action_id": session.action.action_id, "kind": session.action.kind},
     )
-    return replace(
+    updated = replace(
         session,
         status="ready_for_result",
         updated_at=timestamp,
         action=replace(session.action, status="approved"),
         events=[*session.events, event],
     )
+    _validate_session(updated)
+    return updated
 
 
 def attach_evidence_receipt(
@@ -436,13 +439,15 @@ def attach_runtime_assessment(
         actor=resolved_actor,
         details={"action_id": session.action.action_id, **result},
     )
-    return replace(
+    updated = replace(
         session,
         status=next_status,
         updated_at=timestamp,
         action=replace(session.action, status=next_action_status, result=result),
         events=[*session.events, event],
     )
+    _validate_session(updated)
+    return updated
 
 
 def _event_from_dict(payload: Any) -> SessionEvent:
@@ -468,6 +473,11 @@ def _validate_session(session: SupportSession) -> None:
         raise SessionStoreError("session action kind does not match route")
     if session.action.approval_required is not approval_required:
         raise SessionStoreError("session action approval requirement does not match route")
+    _validate_event_log_header(
+        session,
+        expected_kind=expected_kind,
+        approval_required=approval_required,
+    )
     if session.route == "needs_evidence":
         _validate_evidence_session(session)
         return
@@ -484,11 +494,101 @@ def _validate_session(session: SupportSession) -> None:
         allowed_states = {(initial_status, initial_action_status)}
     if (session.status, session.action.status) not in allowed_states:
         raise SessionStoreError("session and action states do not satisfy the route contract")
+    if session.action.action_id != "action-1":
+        raise SessionStoreError("non-evidence routes must retain action-1")
     final_state = session.status in {"completed", "blocked"}
     if final_state != (session.action.result is not None):
         raise SessionStoreError("runtime result presence does not match the session state")
     if session.action.requested_evidence:
         raise SessionStoreError("only request_evidence actions may contain requested evidence")
+    if session.route == "verify":
+        _validate_verify_event_chain(session)
+    elif len(session.events) != 2:
+        raise SessionStoreError("terminal non-verify routes must retain the initial event chain")
+
+
+def _validate_event_log_header(
+    session: SupportSession,
+    *,
+    expected_kind: str,
+    approval_required: bool,
+) -> None:
+    if [event.sequence for event in session.events] != list(range(1, len(session.events) + 1)):
+        raise SessionStoreError("session event sequence must be contiguous from 1")
+    if len(session.events) < 2:
+        raise SessionStoreError("session event log must contain its initial events")
+
+    created_event, proposed_event = session.events[:2]
+    if (
+        created_event.event_type != "session_created"
+        or created_event.actor != "nbtriage"
+        or created_event.details != {"case_id": session.case_id, "route": session.route}
+    ):
+        raise SessionStoreError("session_created event does not match the session")
+    if (
+        proposed_event.event_type != "action_proposed"
+        or proposed_event.actor != "b1-rag-only"
+        or proposed_event.details != {"kind": expected_kind, "approval_required": approval_required}
+    ):
+        raise SessionStoreError("initial action_proposed event does not match the route")
+
+    created_at = _aware_timestamp(session.created_at, "created_at")
+    updated_at = _aware_timestamp(session.updated_at, "updated_at")
+    event_times = [
+        _aware_timestamp(event.occurred_at, f"events[{index}].occurred_at")
+        for index, event in enumerate(session.events)
+    ]
+    if any(current < previous for previous, current in pairwise(event_times)):
+        raise SessionStoreError("session event timestamps must be non-decreasing")
+    if created_at != event_times[0]:
+        raise SessionStoreError("created_at must match the first session event")
+    if updated_at != event_times[-1]:
+        raise SessionStoreError("updated_at must match the latest session event")
+
+
+def _validate_verify_event_chain(session: SupportSession) -> None:
+    expected_types = ["session_created", "action_proposed"]
+    if session.status in {"ready_for_result", "completed", "blocked"}:
+        expected_types.append("action_approved")
+    if session.status in {"completed", "blocked"}:
+        expected_types.append("runtime_result_attached")
+    if [event.event_type for event in session.events] != expected_types:
+        raise SessionStoreError("verify session state is not proven by its event chain")
+
+    if len(expected_types) >= 3:
+        approval = session.events[2]
+        if approval.details != {
+            "action_id": session.action.action_id,
+            "kind": session.action.kind,
+        }:
+            raise SessionStoreError("action_approved event does not match the current action")
+
+    if len(expected_types) == 4:
+        result = session.action.result
+        if result is None:
+            raise SessionStoreError("terminal verify session is missing its runtime result")
+        decision = result.get("decision")
+        if session.status == "completed" and decision != "validated":
+            raise SessionStoreError("completed verify session requires a validated result")
+        if session.status == "blocked" and decision not in {"failed", "blocked"}:
+            raise SessionStoreError("blocked verify session requires a failed or blocked result")
+        if session.events[3].details != {
+            "action_id": session.action.action_id,
+            **result,
+        }:
+            raise SessionStoreError("runtime_result_attached event does not match action.result")
+
+
+def _aware_timestamp(value: Any, field: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise SessionStoreError(f"{field} must be a timezone-aware ISO timestamp")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise SessionStoreError(f"{field} must be a timezone-aware ISO timestamp") from error
+    if parsed.utcoffset() is None:
+        raise SessionStoreError(f"{field} must be a timezone-aware ISO timestamp")
+    return parsed.astimezone(UTC)
 
 
 def _validate_evidence_session(session: SupportSession) -> None:

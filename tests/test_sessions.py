@@ -203,7 +203,12 @@ def test_evidence_receipts_advance_one_frozen_candidate_at_a_time(tmp_path: Path
         "needs_evidence",
         missing_evidence=["logs", "configuration", "reproduction_steps"],
     )
-    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    session = create_session_from_report(
+        report_path,
+        "case-1",
+        session_id="session-1",
+        occurred_at="2026-08-08T12:00:00+00:00",
+    )
 
     after_steps = attach_evidence_receipt(
         session,
@@ -227,6 +232,7 @@ def test_evidence_receipts_advance_one_frozen_candidate_at_a_time(tmp_path: Path
     assert after_config.action.requested_evidence == ["logs"]
     assert exhausted.status == "ready_for_reassessment"
     assert exhausted.action.status == "completed"
+    assert exhausted.action.result is not None
     assert exhausted.action.result["receipt_id"] == "receipt-3"
     assert [item.slot for item in exhausted.evidence_receipts] == [
         "reproduction_steps",
@@ -333,6 +339,7 @@ def test_non_validated_runtime_result_preserves_auditable_reason(
 
     assert updated.status == "blocked"
     assert updated.action.status == "blocked"
+    assert updated.action.result is not None
     assert updated.action.result["decision"] == decision
     assert updated.action.result["blocking_reason"] == blocking_reason
     assert updated.action.result["failure_reason"] == failure_reason
@@ -398,6 +405,101 @@ def test_file_session_store_rejects_route_state_mismatch(tmp_path: Path) -> None
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(SessionStoreError, match="route contract"):
+        store.load("session-1")
+
+
+def test_file_session_store_rejects_approval_state_without_event(tmp_path: Path) -> None:
+    report_path = _prediction_report(tmp_path / "report.json", "verify")
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    store = FileSessionStore(tmp_path / "sessions")
+    path = store.create(session)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["status"] = "ready_for_result"
+    payload["action"]["status"] = "approved"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SessionStoreError, match="not proven by its event chain"):
+        store.load("session-1")
+
+
+def test_file_session_store_rejects_approval_event_for_other_action(tmp_path: Path) -> None:
+    report_path = _prediction_report(tmp_path / "report.json", "verify")
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    approved = approve_session(session, "maintainer")
+    store = FileSessionStore(tmp_path / "sessions")
+    path = store.create(approved)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["events"][2]["details"]["action_id"] = "action-forged"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SessionStoreError, match="action_approved event"):
+        store.load("session-1")
+
+
+def test_file_session_store_rejects_runtime_result_without_matching_event(
+    tmp_path: Path,
+) -> None:
+    report_path = _prediction_report(tmp_path / "report.json", "verify")
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    approved = approve_session(session, "maintainer")
+    completed = attach_runtime_assessment(
+        approved,
+        RuntimeAssessment(
+            case_id="case-1",
+            decision="validated",
+            buggy_ref="buggy",
+            fixed_ref="fixed",
+            probe_id="probe-1",
+            errors=[],
+        ),
+    )
+    store = FileSessionStore(tmp_path / "sessions")
+    path = store.create(completed)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["events"][3]["details"]["probe_id"] = "probe-forged"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SessionStoreError, match=r"does not match action\.result"):
+        store.load("session-1")
+
+
+def test_file_session_store_rejects_extra_verify_event(tmp_path: Path) -> None:
+    report_path = _prediction_report(tmp_path / "report.json", "verify")
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    approved = approve_session(session, "maintainer")
+    store = FileSessionStore(tmp_path / "sessions")
+    path = store.create(approved)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    extra = dict(payload["events"][2])
+    extra["sequence"] = 4
+    payload["events"].append(extra)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SessionStoreError, match="not proven by its event chain"):
+        store.load("session-1")
+
+
+def test_file_session_store_rejects_non_monotonic_event_time(tmp_path: Path) -> None:
+    report_path = _prediction_report(tmp_path / "report.json", "verify")
+    session = create_session_from_report(
+        report_path,
+        "case-1",
+        session_id="session-1",
+        occurred_at="2026-08-08T00:01:00+00:00",
+    )
+    approved = approve_session(
+        session,
+        "maintainer",
+        occurred_at="2026-08-08T00:02:00+00:00",
+    )
+    store = FileSessionStore(tmp_path / "sessions")
+    path = store.create(approved)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["events"][2]["occurred_at"] = "2026-08-08T00:00:00+00:00"
+    payload["updated_at"] = "2026-08-08T00:00:00+00:00"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SessionStoreError, match="non-decreasing"):
         store.load("session-1")
 
 
@@ -517,6 +619,7 @@ def test_session_cli_runs_approval_and_existing_oracle_result_loop(
 
     stored = FileSessionStore(sessions_dir).load("demo-session")
     assert stored.status == "completed"
+    assert stored.action.result is not None
     assert stored.action.result["probe_id"] == "probe-1"
     output = capsys.readouterr().out
     assert "awaiting_approval" in output
