@@ -160,6 +160,68 @@ def test_evaluate_b0_rejects_missing_case(tmp_path: Path) -> None:
         evaluate_b0(tmp_path / "cases", split_path)
 
 
+@pytest.mark.parametrize(
+    ("splits", "error_message"),
+    [
+        (
+            {
+                "custom": [
+                    {"case_id": "private-case-id"},
+                    {"case_id": "private-case-id"},
+                ]
+            },
+            "split manifest contains duplicate case_id within a split",
+        ),
+        (
+            {
+                "train": [{"case_id": "private-case-id"}],
+                "heldout": [{"case_id": "private-case-id"}],
+            },
+            "split manifest assigns a case_id to multiple splits",
+        ),
+    ],
+)
+def test_evaluate_b0_rejects_split_overlap_before_loading_cases(
+    tmp_path: Path,
+    splits: dict[str, list[dict[str, str]]],
+    error_message: str,
+) -> None:
+    split_path = tmp_path / "split.json"
+    split_path.write_text(
+        json.dumps({"split_id": "broken", "splits": splits}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(EvaluationError) as exc_info:
+        evaluate_b0(tmp_path / "missing-cases", split_path)
+
+    assert str(exc_info.value) == error_message
+    assert "private-case-id" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "splits",
+    [
+        {"": []},
+        {"   ": []},
+        {"custom": [{"case_id": ""}]},
+        {"custom": [{"case_id": " padded-case-id "}]},
+    ],
+)
+def test_evaluate_b0_rejects_noncanonical_split_fields(
+    tmp_path: Path,
+    splits: dict[str, list[dict[str, str]]],
+) -> None:
+    split_path = tmp_path / "split.json"
+    split_path.write_text(
+        json.dumps({"split_id": "broken", "splits": splits}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(EvaluationError):
+        evaluate_b0(tmp_path / "missing-cases", split_path)
+
+
 class FixtureB1Client:
     def __init__(self) -> None:
         self.calls = 0
@@ -186,6 +248,55 @@ class FixtureB1Client:
             provider_request_id=f"fixture-request-{self.calls}",
             latency_ms=2,
         )
+
+
+@pytest.mark.parametrize(
+    ("splits", "error_message"),
+    [
+        (
+            {
+                "custom": [
+                    {"case_id": "private-case-id"},
+                    {"case_id": "private-case-id"},
+                ]
+            },
+            "split manifest contains duplicate case_id within a split",
+        ),
+        (
+            {
+                "train": [{"case_id": "private-case-id"}],
+                "heldout": [{"case_id": "private-case-id"}],
+            },
+            "split manifest assigns a case_id to multiple splits",
+        ),
+    ],
+)
+def test_evaluate_b1_rejects_split_overlap_before_model_calls(
+    tmp_path: Path,
+    splits: dict[str, list[dict[str, str]]],
+    error_message: str,
+) -> None:
+    split_path = tmp_path / "split.json"
+    split_path.write_text(
+        json.dumps({"split_id": "broken", "splits": splits}),
+        encoding="utf-8",
+    )
+    client = FixtureB1Client()
+
+    with pytest.raises(EvaluationError) as exc_info:
+        asyncio.run(
+            evaluate_b1(
+                tmp_path / "missing-cases",
+                split_path,
+                client=client,
+                model="fixture-model",
+                cache_dir=tmp_path / "cache",
+            )
+        )
+
+    assert str(exc_info.value) == error_message
+    assert "private-case-id" not in str(exc_info.value)
+    assert client.calls == 0
 
 
 def test_evaluate_b1_reuses_shared_metrics_and_response_cache(tmp_path: Path) -> None:

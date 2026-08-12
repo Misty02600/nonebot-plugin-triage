@@ -251,10 +251,17 @@ def load_evaluation_dataset(cases_dir: Path, split_path: Path) -> EvaluationData
     if not isinstance(raw_splits, dict):
         raise EvaluationError("split manifest must contain splits")
 
-    split_case_ids = {
-        split_name: _split_case_ids(entries, split_name)
-        for split_name, entries in raw_splits.items()
-    }
+    split_case_ids: dict[str, list[str]] = {}
+    assigned_case_ids: set[str] = set()
+    for split_name, entries in raw_splits.items():
+        if not isinstance(split_name, str) or not split_name.strip():
+            raise EvaluationError("split manifest contains an invalid split name")
+        case_ids = _split_case_ids(entries)
+        if assigned_case_ids.intersection(case_ids):
+            raise EvaluationError("split manifest assigns a case_id to multiple splits")
+        split_case_ids[split_name] = case_ids
+        assigned_case_ids.update(case_ids)
+
     needed_case_ids = {case_id for case_ids in split_case_ids.values() for case_id in case_ids}
     cases = _load_cases(cases_dir, needed_case_ids)
     return EvaluationDataset(split_id, split_case_ids, cases)
@@ -514,14 +521,21 @@ def _load_cases(cases_dir: Path, needed_case_ids: set[str]) -> dict[str, dict[st
     return cases
 
 
-def _split_case_ids(entries: Any, split_name: str) -> list[str]:
+def _split_case_ids(entries: Any) -> list[str]:
     if not isinstance(entries, list):
-        raise EvaluationError(f"split {split_name} must be a list")
+        raise EvaluationError("split manifest contains entries that are not a list")
     case_ids = []
+    seen_case_ids: set[str] = set()
     for entry in entries:
-        if not isinstance(entry, dict) or not isinstance(entry.get("case_id"), str):
-            raise EvaluationError(f"split {split_name} contains an invalid entry")
-        case_ids.append(entry["case_id"])
+        if not isinstance(entry, dict):
+            raise EvaluationError("split manifest contains an invalid split entry")
+        case_id = entry.get("case_id")
+        if not isinstance(case_id, str) or not case_id or case_id.strip() != case_id:
+            raise EvaluationError("split manifest contains an invalid case_id")
+        if case_id in seen_case_ids:
+            raise EvaluationError("split manifest contains duplicate case_id within a split")
+        seen_case_ids.add(case_id)
+        case_ids.append(case_id)
     return case_ids
 
 
