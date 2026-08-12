@@ -12,6 +12,25 @@ Alconna `parse()`，也尚未接入任何第三方帮助插件。
 普通 Matcher 的命令识别会读取 NoneBot 2.5 的 `Rule.checkers` 结构。这不是稳定的跨版本公共协议，因此
 只能放在版本适配层：遇到未知 checker 或结构变化时保留未知约束并失败关闭，不能猜成公开、可执行能力。
 
+当前 schema v2 仍以 Matcher 作为运行事实锚点，但已接入首阶段能力归并：有界源码效果分析可以确认明确
+用户输出，或把只做共享状态读写的 message / passive Matcher 收敛为目标能力的支撑证据；无法确认的关系
+保留 `capability_mapping_unknown` 并失败关闭。Matcher、handler、Rule、Permission、命令结构和源码位置仍
+属于运行或代码事实，不天然等于一项用户可观察能力；完整独立事实表、跨 revision 稳定能力身份和一般
+多对多查询图尚未实现。
+
+## Matcher 与 Capability 的边界
+
+适配器应先形成带来源和 revision 的构建期事实，再由后续层按用户可观察效果派生 Capability。映射允许多对多：
+同一功能可能用命令 Matcher 启动，再由消息 Matcher 接收输入、推进状态或清理结果；这些支撑 Matcher 保留为
+证据，但不应重复显示成多项帮助。被动 Matcher 若本身产生独立的用户可观察效果，仍可形成能力，不能仅因
+没有命令头就隐藏。
+
+无法判断某个事实应独立展示、归入哪项能力或只承担支撑作用时，适配器保留事实和候选关系，并产生
+`capability_mapping_unknown`，而不是静默猜测或每个 Matcher 固定生成一项能力。LLM 可以提出引用
+Evidence ID 与 revision 的效果描述和候选映射，但不能凭语义相似度决定披露、平台、精确语法或消除 issue。
+普通 ServingView 最终只消费完成模型外门禁的派生 Capability；当前维护者视图展示派生记录和问题，支撑
+Matcher 只以压缩 Claim / Evidence 保存，独立原始事实与映射视图尚未实现。
+
 ## Handler 形参与用户语法的边界
 
 Python handler 的函数形参通常描述 NoneBot 如何注入运行上下文，不等同于用户要输入的命令参数。例如
@@ -37,7 +56,7 @@ NoneBot `SUPERUSER` 只决定当前事件是否可以读取维护者可见的能
 
 | 来源 | 可以利用什么 | 接入方式 | 明确不做什么 |
 |---|---|---|---|
-| NoneBot / Alconna 运行时 | 已加载插件、`Plugin.matcher`、命令结构、disabled、shortcut、命令与 Matcher 关联 | 第一阶段直接读取公共接口；内部 checker 结构由版本适配器隔离 | 不执行 Rule、Permission、handler、parser 或 executor |
+| NoneBot / Alconna 运行时 | 已加载插件、`Plugin.matcher`、命令结构、disabled、shortcut、命令与 Matcher 关联等事实 | 第一阶段直接读取公共接口；内部 checker 结构由版本适配器隔离；后续再派生用户可观察能力 | 不执行 Rule、Permission、handler、parser 或 executor；不把 Matcher 直接当成 Capability |
 | [PicMenu Next](https://github.com/lgc-NB2Dev/nonebot-plugin-picmenu-next) | 已整理的插件说明、旧 PicMenu `menu_data`、结构化 overlay 合并思路 | 以后可选地消费“已经加载并初始化”的只读快照，逐字段复制到 Triage 模型 | 不主动导入插件，不调用 `refresh_infos()`、formatter、mixin、模板或渲染器 |
 | [TreeHelp](https://github.com/he0119/nonebot-plugin-treehelp) | 从 `Plugin.matcher` 与已知 checker 识别普通命令的思路 | 参考算法后按当前 NoneBot 版本重写 | 不复制永久缓存和依赖内部对象形状的原实现 |
 | [nonebot_plugin_help_baize](https://github.com/sangonomiya249/nonebot_plugin_help_baize) | AST 字面量提取、来源位置和搜索文本设计 | 以后作为低置信静态证据源 | 不把正则结果当语法真值，不改写已安装插件源码 |
@@ -78,8 +97,9 @@ EvidenceUnit 边界处理；配置值则由 ADR-0029 的部署策略单独守门
 ## 与执行资格的关系
 
 帮助数据只参与能力发现和用法说明。即使某字段由人工检查过，也不能证明当前用户、群、adapter、配置和
-限流状态允许执行。模型外策略必须先为当前 adapter 与受众建立独立检索域：普通用户域从源头排除 review、
-restricted 和其他 adapter 能力；维护者域只有在模型外鉴权后才可读取受控受限记录，且 restricted 源码不因
+限流状态允许执行。模型外策略必须先为当前 adapter 与受众建立独立检索域：普通用户域从源头排除带
+blocking `analysis_issues`、restricted 和其他 adapter 能力；维护者域只有在模型外鉴权后才可读取受控受限
+记录，且 restricted 源码不因
 SUPERUSER 身份自动进入 LLM。真正执行仍由原插件自己的 Matcher、Permission、Rule 和 handler 决定。
 能力发现、字段说明和最终执行是三种判断问题，不要求在持久化模型中增加 `discover / teach / execute` 三个
 布尔字段。
@@ -98,3 +118,5 @@ SUPERUSER 身份自动进入 LLM。真正执行仍由原插件自己的 Matcher�
 - [ADR-0026：在检索与模型前隔离能力知识受众域](../adr/0026-filter-capability-knowledge-before-retrieval.md)
 - [ADR-0027：用事实输出合同约束能力帮助](../adr/0027-constrain-guidance-with-facts-not-fixed-wording.md)
 - [ADR-0029：由部署者 deny-list 控制相关配置值进入模型](../adr/0029-control-model-config-values-with-deployment-deny-list.md)
+- [ADR-0032：分离能力受众、平台范围与分析问题](../adr/0032-separate-capability-audience-analysis-and-platform-status.md)
+- [ADR-0034：区分 Matcher 事实与用户可观察能力](../adr/0034-distinguish-matchers-from-user-observable-capabilities.md)

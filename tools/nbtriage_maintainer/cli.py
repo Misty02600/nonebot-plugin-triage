@@ -232,9 +232,9 @@ def build_parser() -> argparse.ArgumentParser:
     capability_search_parser.add_argument("--index", type=Path, required=True)
     capability_search_parser.add_argument("--limit", type=_positive_int, default=5)
     capability_search_parser.add_argument(
-        "--include-review",
+        "--include-unresolved",
         action="store_true",
-        help="Include unverified review candidates.",
+        help="Include capabilities with unresolved analysis issues.",
     )
     capability_search_parser.add_argument(
         "--include-restricted",
@@ -635,7 +635,7 @@ def _run_search_capabilities(args: argparse.Namespace) -> int:
         hits = search_capability_index(
             args.index,
             args.query,
-            include_review=args.include_review,
+            include_unresolved=args.include_unresolved,
             include_restricted=args.include_restricted,
             limit=args.limit,
         )
@@ -650,6 +650,8 @@ def _run_search_capabilities(args: argparse.Namespace) -> int:
                 "owner": hit.record.owner,
                 "kind": hit.record.kind,
                 "disclosure": hit.record.disclosure.value,
+                "platform_scope": hit.record.platform_scope.to_dict(),
+                "analysis_issues": [issue.value for issue in hit.record.analysis_issues],
                 "state": hit.record.state.value,
                 "score": hit.score,
                 "claims": [

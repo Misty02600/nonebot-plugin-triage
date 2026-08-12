@@ -10,13 +10,18 @@ import pytest
 from arclet.alconna import Alconna, Args, CommandMeta, Option, Subcommand, command_manager
 from nonebot import on_command, on_message, on_notice
 from nonebot.matcher import matchers
-from nonebot.permission import SUPERUSER
+from nonebot.permission import SUPERUSER, Permission
 from nonebot.plugin import PluginMetadata
-from nonebot.rule import Rule
+from nonebot.rule import CommandRule, Rule
 from nonebot_plugin_alconna import on_alconna
 from pydantic import BaseModel
 
-from nbtriage.capabilities import Disclosure, RecordState
+from nbtriage.capabilities import (
+    AnalysisIssue,
+    Disclosure,
+    PlatformScopeKind,
+    RecordState,
+)
 from nonebot_plugin_triage import capability_snapshot as capability_snapshot_module
 from nonebot_plugin_triage.capability_snapshot import build_capability_snapshot
 
@@ -56,6 +61,43 @@ def _plugin(
         module_name=module_name,
         module=module,
         matcher=plugin_matchers,
+        metadata=PluginMetadata(
+            name="测试插件",
+            description="插件声明说明",
+            usage="测试用法",
+            supported_adapters={"~onebot.v11"},
+        ),
+    )
+
+
+def _source_plugin(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    *,
+    module_name: str | None = None,
+) -> SimpleNamespace:
+    name = module_name or f"snapshot_plugin_{uuid4().hex}"
+    package = tmp_path / name
+    package.mkdir()
+    module_file = package / "__init__.py"
+    module_file.write_text(source, encoding="utf-8")
+    module = ModuleType(name)
+    module.__file__ = str(module_file)
+    module.__spec__ = None
+    monkeypatch.setitem(sys.modules, name, module)
+    exec(compile(source, str(module_file), "exec"), module.__dict__)
+    registered = {item for values in matchers.values() for item in values}
+    return SimpleNamespace(
+        id_=name,
+        name=name,
+        module_name=name,
+        module=module,
+        matcher={
+            value
+            for value in vars(module).values()
+            if isinstance(value, type) and value in registered
+        },
         metadata=PluginMetadata(
             name="测试插件",
             description="插件声明说明",
@@ -144,7 +186,7 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     matcher_cleanup.append(matcher)
     plugin = _plugin(tmp_path, monkeypatch, {matcher})
 
-    review = build_capability_snapshot(plugins=[plugin])
+    automatic = build_capability_snapshot(plugins=[plugin])
     public = build_capability_snapshot(
         plugins=[plugin],
         explicit_public_alconna_paths={command.path},
@@ -156,10 +198,10 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     )
     command_manager.set_enabled(command, True)
 
-    review_record = review.records[0]
+    automatic_record = automatic.records[0]
     public_record = public.records[0]
     disabled_record = disabled.records[0]
-    assert review_record.disclosure is Disclosure.PUBLIC
+    assert automatic_record.disclosure is Disclosure.PUBLIC
     assert public_record.disclosure is Disclosure.PUBLIC
     assert public_record.state is RecordState.VERIFIED
     assert _record_values(public_record, "command.enabled") == (True,)
@@ -225,7 +267,35 @@ def test_superuser_and_custom_constraints_fail_closed_without_execution(
     command_manager.delete(hidden_command)
 
 
-def test_plain_message_and_passive_matchers_remain_low_confidence_review(
+def test_superuser_or_custom_permission_is_not_superuser_only(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    calls = 0
+
+    async def custom_permission() -> bool:
+        nonlocal calls
+        calls += 1
+        return True
+
+    matcher = on_command(
+        "mixed-permission",
+        permission=SUPERUSER | Permission(custom_permission),
+    )
+    matcher_cleanup.append(matcher)
+    plugin = _plugin(tmp_path, monkeypatch, {matcher})
+
+    (record,) = build_capability_snapshot(plugins=[plugin]).records
+
+    assert record.disclosure is Disclosure.PUBLIC
+    observed = {constraint.payload["observed"] for constraint in record.constraints}
+    assert "permission:superuser" not in observed
+    assert any(value.startswith("permission:opaque:") for value in observed)
+    assert calls == 0
+
+
+def test_plain_message_and_passive_matchers_remain_low_confidence_unresolved(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     matcher_cleanup: list[type[object]],
@@ -238,12 +308,279 @@ def test_plain_message_and_passive_matchers_remain_low_confidence_review(
     snapshot = build_capability_snapshot(plugins=[plugin])
 
     assert {record.kind for record in snapshot.records} == {"message", "passive"}
-    assert all(record.disclosure is Disclosure.REVIEW for record in snapshot.records)
+    assert all(record.disclosure is Disclosure.PUBLIC for record in snapshot.records)
+    assert all(AnalysisIssue.DYNAMIC_ENTRY in record.analysis_issues for record in snapshot.records)
     assert all(_record_values(record, "confidence") == ("low",) for record in snapshot.records)
 
 
+def test_production_snapshot_distinguishes_duplicate_named_user_and_support_handlers(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    plugin = _source_plugin(
+        tmp_path,
+        monkeypatch,
+        """\
+from nonebot import on_message, on_regex
+
+class MainTable:
+    @classmethod
+    def create(cls):
+        return None
+
+    @classmethod
+    def select(cls):
+        return ()
+
+monitor = on_message()
+
+@monitor.handle()
+async def _():
+    MainTable.create()
+
+query = on_regex(r"^谁艾特我$")
+
+@query.handle()
+async def _():
+    MainTable.select()
+    await query.finish("result")
+""",
+    )
+    matcher_cleanup.extend(plugin.matcher)
+
+    snapshot = build_capability_snapshot(plugins=[plugin])
+
+    assert len(snapshot.records) == 1
+    record = snapshot.records[0]
+    assert record.analysis_issues == ()
+    assert _record_values(record, "trigger.factory") == ("on_regex",)
+    assert _record_values(record, "trigger.entries") == ([r"^谁艾特我$"],)
+    supporting = _record_values(record, "supporting.matchers")[0]
+    assert len(supporting) == 1
+    assert supporting[0]["matcher_type"] == "message"
+    assert supporting[0]["shared_effects"] == ["MainTable"]
+    supporting_claim = next(
+        claim for claim in record.claims if claim.field == "supporting.matchers"
+    )
+    supporting_evidence = {
+        evidence.evidence_id: evidence
+        for evidence in record.evidence_refs
+        if evidence.kind in {"supporting_matcher_source", "supporting_handler_effect"}
+    }
+    assert supporting_evidence
+    assert any(
+        evidence.kind == "supporting_handler_effect"
+        and evidence.locator.endswith("/__init__.py")
+        and evidence.payload["line"] is not None
+        for evidence in supporting_evidence.values()
+    )
+    assert set(supporting_claim.evidence_ids) == set(supporting_evidence)
+
+
+def test_production_snapshot_does_not_fold_distinct_qualified_state_resources(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    plugin = _source_plugin(
+        tmp_path,
+        monkeypatch,
+        """\
+from nonebot import on_message, on_regex
+
+monitor = on_message()
+
+@monitor.handle()
+async def collect_mentions():
+    models.Mentions.create()
+
+query = on_regex(r"^查提醒$")
+
+@query.handle()
+async def query_reminders():
+    models.Reminders.select()
+    await query.finish("result")
+""",
+    )
+    matcher_cleanup.extend(plugin.matcher)
+
+    snapshot = build_capability_snapshot(plugins=[plugin])
+
+    assert len(snapshot.records) == 2
+    query_record = next(
+        record
+        for record in snapshot.records
+        if _record_values(record, "trigger.factory") == ("on_regex",)
+    )
+    assert _record_values(query_record, "supporting.matchers") == ()
+    listener_record = next(record for record in snapshot.records if record is not query_record)
+    assert AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN in listener_record.analysis_issues
+
+
+def test_production_snapshot_does_not_fold_state_handler_with_opaque_deeper_helper(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    plugin = _source_plugin(
+        tmp_path,
+        monkeypatch,
+        """\
+from nonebot import on_message, on_regex
+
+class SharedStore:
+    @classmethod
+    def save(cls):
+        return None
+
+    @classmethod
+    def load(cls):
+        return None
+
+async def deeper():
+    await external_notifier()
+
+async def maintain_state():
+    SharedStore.save()
+    await deeper()
+
+monitor = on_message()
+
+@monitor.handle()
+async def collect():
+    await maintain_state()
+
+query = on_regex(r"^查状态$")
+
+@query.handle()
+async def query_state():
+    SharedStore.load()
+    await query.finish("result")
+""",
+    )
+    matcher_cleanup.extend(plugin.matcher)
+
+    snapshot = build_capability_snapshot(plugins=[plugin])
+
+    assert len(snapshot.records) == 2
+    query_record = next(
+        record
+        for record in snapshot.records
+        if _record_values(record, "trigger.factory") == ("on_regex",)
+    )
+    assert _record_values(query_record, "supporting.matchers") == ()
+
+
+def test_explicit_command_is_not_folded_into_supporting_matcher(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    plugin = _source_plugin(
+        tmp_path,
+        monkeypatch,
+        """\
+from nonebot import on_command, on_message
+
+class SharedState:
+    @classmethod
+    def create(cls):
+        return None
+
+    @classmethod
+    def select(cls):
+        return ()
+
+command = on_command("record")
+
+@command.handle()
+async def record():
+    SharedState.create()
+
+query = on_message()
+
+@query.handle()
+async def query_state():
+    SharedState.select()
+    await query.finish("result")
+""",
+    )
+    matcher_cleanup.extend(plugin.matcher)
+
+    snapshot = build_capability_snapshot(plugins=[plugin])
+
+    assert len(snapshot.records) == 2
+    assert any(
+        _record_values(record, "command.header") == ("record",) for record in snapshot.records
+    )
+
+
+def test_command_with_unresolved_literal_keeps_blocking_entry_issue(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    plugin = _source_plugin(
+        tmp_path,
+        monkeypatch,
+        """\
+from nonebot import on_command
+
+command = on_command("dynamic")
+
+@command.handle()
+async def respond():
+    await command.finish("result")
+""",
+    )
+    matcher_cleanup.extend(plugin.matcher)
+    matcher = next(iter(plugin.matcher))
+    command_rule = next(
+        dependent.call
+        for dependent in matcher.rule.checkers
+        if isinstance(dependent.call, CommandRule)
+    )
+    command_rule.cmds = ()
+
+    (record,) = build_capability_snapshot(plugins=[plugin]).records
+
+    assert record.kind == "command"
+    assert AnalysisIssue.DYNAMIC_ENTRY in record.analysis_issues
+    assert AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN in record.analysis_issues
+    assert _record_values(record, "command.header") == ()
+
+
+def test_unresolved_matcher_mapping_is_blocking_issue(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    plugin = _source_plugin(
+        tmp_path,
+        monkeypatch,
+        """\
+from nonebot import on_message
+
+listener = on_message()
+
+@listener.handle()
+async def opaque():
+    unknown_effect()
+""",
+    )
+    matcher_cleanup.extend(plugin.matcher)
+
+    (record,) = build_capability_snapshot(plugins=[plugin]).records
+
+    assert record.analysis_issues == (
+        AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN,
+        AnalysisIssue.DYNAMIC_ENTRY,
+    )
+
+
 @pytest.mark.parametrize("supported_adapters", [set(), {"not a module"}])
-def test_command_with_unknown_platform_scope_remains_review(
+def test_command_with_unknown_platform_scope_remains_unresolved(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     matcher_cleanup: list[type[object]],
@@ -256,8 +593,10 @@ def test_command_with_unknown_platform_scope_remains_review(
 
     record = build_capability_snapshot(plugins=[plugin]).records[0]
 
-    assert record.disclosure is Disclosure.REVIEW
-    assert record.state is RecordState.CANDIDATE
+    assert record.disclosure is Disclosure.PUBLIC
+    assert record.platform_scope.kind is PlatformScopeKind.UNKNOWN
+    assert record.analysis_issues == (AnalysisIssue.PLATFORM_UNKNOWN,)
+    assert record.state is RecordState.VERIFIED
 
 
 def test_local_source_change_changes_snapshot_generation(

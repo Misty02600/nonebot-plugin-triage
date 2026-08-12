@@ -14,9 +14,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Self
 
-CAPABILITY_SCHEMA_VERSION = 1
-SNAPSHOT_SCHEMA_VERSION = 1
-CAPABILITY_INDEX_SCHEMA_VERSION = 1
+CAPABILITY_SCHEMA_VERSION = 2
+SNAPSHOT_SCHEMA_VERSION = 2
+CAPABILITY_INDEX_SCHEMA_VERSION = 2
 
 DEFAULT_SOURCE_EXTENSIONS = frozenset({".py", ".toml", ".yaml", ".yml", ".json", ".md"})
 DEFAULT_EXCLUDED_DIRECTORIES = frozenset(
@@ -71,8 +71,68 @@ class CapabilityIndexError(CapabilityError):
 
 class Disclosure(StrEnum):
     PUBLIC = "public"
-    REVIEW = "review"
     RESTRICTED = "restricted"
+
+
+class AnalysisIssue(StrEnum):
+    PLATFORM_UNKNOWN = "platform_unknown"
+    DYNAMIC_ENTRY = "dynamic_entry"
+    EVIDENCE_CONFLICT = "evidence_conflict"
+    SENSITIVE_AMBIGUITY = "sensitive_ambiguity"
+    EVIDENCE_INSUFFICIENT = "evidence_insufficient"
+    CAPABILITY_MAPPING_UNKNOWN = "capability_mapping_unknown"
+
+
+class PlatformScopeKind(StrEnum):
+    ALL = "all"
+    EXPLICIT = "explicit"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class PlatformScope:
+    kind: PlatformScopeKind = PlatformScopeKind.UNKNOWN
+    adapters: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "kind", _enum_value(self.kind, PlatformScopeKind, "scope.kind"))
+        adapters = tuple(
+            sorted(
+                (_adapter_spec(item, "scope.adapters") for item in self.adapters),
+                key=lambda item: (item.casefold(), item),
+            )
+        )
+        if len(adapters) != len(set(adapters)):
+            raise CapabilityError("scope.adapters contains duplicates")
+        if self.kind is PlatformScopeKind.EXPLICIT and not adapters:
+            raise CapabilityError("explicit platform scope requires adapters")
+        if self.kind is not PlatformScopeKind.EXPLICIT and adapters:
+            raise CapabilityError("only explicit platform scope may contain adapters")
+        object.__setattr__(self, "adapters", adapters)
+
+    @classmethod
+    def all(cls) -> Self:
+        return cls(PlatformScopeKind.ALL)
+
+    @classmethod
+    def explicit(cls, adapters: Iterable[str]) -> Self:
+        return cls(PlatformScopeKind.EXPLICIT, tuple(adapters))
+
+    @classmethod
+    def unknown(cls) -> Self:
+        return cls(PlatformScopeKind.UNKNOWN)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": self.kind.value, "adapters": list(self.adapters)}
+
+    @classmethod
+    def from_dict(cls, payload: Any) -> Self:
+        data = _object(payload, "platform scope")
+        _exact_fields(data, {"kind", "adapters"}, "platform scope")
+        return cls(
+            kind=data["kind"],
+            adapters=_tuple(data["adapters"], "platform_scope.adapters"),
+        )
 
 
 class RecordState(StrEnum):
@@ -338,6 +398,19 @@ class CapabilityCard:
     disclosure: Disclosure
     state: RecordState
     claims: tuple[Claim, ...]
+    platform_scope: PlatformScope = field(default_factory=PlatformScope.unknown)
+    analysis_issues: tuple[AnalysisIssue, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "analysis_issues",
+            _normalize_analysis_issues(
+                self.platform_scope,
+                self.analysis_issues,
+                "card",
+            ),
+        )
 
     def values(self, field_name: str) -> tuple[Any, ...]:
         return tuple(claim.value for claim in self.claims if claim.field == field_name)
@@ -348,6 +421,8 @@ class CapabilityCard:
             "owner": self.owner,
             "kind": self.kind,
             "disclosure": self.disclosure.value,
+            "platform_scope": self.platform_scope.to_dict(),
+            "analysis_issues": [issue.value for issue in self.analysis_issues],
             "state": self.state.value,
             "claims": [claim.to_dict() for claim in self.claims],
         }
@@ -357,7 +432,16 @@ class CapabilityCard:
         data = _object(payload, "capability card")
         _exact_fields(
             data,
-            {"capability_id", "owner", "kind", "disclosure", "state", "claims"},
+            {
+                "capability_id",
+                "owner",
+                "kind",
+                "disclosure",
+                "platform_scope",
+                "analysis_issues",
+                "state",
+                "claims",
+            },
             "capability card",
         )
         return cls(
@@ -365,6 +449,11 @@ class CapabilityCard:
             owner=_text(data["owner"], "card.owner"),
             kind=_text(data["kind"], "card.kind"),
             disclosure=_enum_value(data["disclosure"], Disclosure, "card.disclosure"),
+            platform_scope=PlatformScope.from_dict(data["platform_scope"]),
+            analysis_issues=tuple(
+                _enum_value(item, AnalysisIssue, "card.analysis_issues")
+                for item in _tuple(data["analysis_issues"], "card.analysis_issues")
+            ),
             state=_enum_value(data["state"], RecordState, "card.state"),
             claims=tuple(Claim.from_dict(item) for item in _list(data["claims"], "card.claims")),
         )
@@ -380,6 +469,8 @@ class CapabilityRecord:
     claims: tuple[Claim, ...] = ()
     constraints: tuple[Constraint, ...] = ()
     evidence_refs: tuple[EvidenceRef, ...] = ()
+    platform_scope: PlatformScope = field(default_factory=PlatformScope.unknown)
+    analysis_issues: tuple[AnalysisIssue, ...] = ()
     schema_version: int = CAPABILITY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -395,6 +486,15 @@ class CapabilityRecord:
             _enum_value(self.disclosure, Disclosure, "record.disclosure"),
         )
         object.__setattr__(self, "state", _enum_value(self.state, RecordState, "record.state"))
+        object.__setattr__(
+            self,
+            "analysis_issues",
+            _normalize_analysis_issues(
+                self.platform_scope,
+                self.analysis_issues,
+                "record",
+            ),
+        )
 
         claims = _instances(self.claims, Claim, "record.claims")
         constraints = _instances(self.constraints, Constraint, "record.constraints")
@@ -434,6 +534,8 @@ class CapabilityRecord:
             disclosure=self.disclosure,
             state=self.state,
             claims=self.claims,
+            platform_scope=self.platform_scope,
+            analysis_issues=self.analysis_issues,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -443,6 +545,8 @@ class CapabilityRecord:
             "owner": self.owner,
             "kind": self.kind,
             "disclosure": self.disclosure.value,
+            "platform_scope": self.platform_scope.to_dict(),
+            "analysis_issues": [issue.value for issue in self.analysis_issues],
             "state": self.state.value,
             "claims": [item.to_dict() for item in self.claims],
             "constraints": [item.to_dict() for item in self.constraints],
@@ -460,6 +564,8 @@ class CapabilityRecord:
                 "owner",
                 "kind",
                 "disclosure",
+                "platform_scope",
+                "analysis_issues",
                 "state",
                 "claims",
                 "constraints",
@@ -473,6 +579,11 @@ class CapabilityRecord:
             owner=data["owner"],
             kind=data["kind"],
             disclosure=data["disclosure"],
+            platform_scope=PlatformScope.from_dict(data["platform_scope"]),
+            analysis_issues=tuple(
+                _enum_value(item, AnalysisIssue, "capability_record.analysis_issues")
+                for item in _tuple(data["analysis_issues"], "capability_record.analysis_issues")
+            ),
             state=data["state"],
             claims=tuple(
                 Claim.from_dict(item) for item in _list(data["claims"], "capability_record.claims")
@@ -813,7 +924,7 @@ def fingerprint_source_tree(
 def build_capability_index(path: Path, snapshot: CapabilitySnapshot) -> None:
     """在同目录临时库中构建 FTS5 trigram 索引，再原子替换目标文件。
 
-    `public`、`review` 与 `restricted` 记录都进入全文索引；披露过滤在读取时、模型上下文构造前完成。
+    所有受众和分析状态都进入全文索引；披露与分析状态过滤在读取时、模型上下文构造前完成。
     构建失败时旧索引保持不变；本函数只写本地 SQLite，不执行能力代码，也不访问模型或网络。
 
     Args:
@@ -841,6 +952,8 @@ def build_capability_index(path: Path, snapshot: CapabilitySnapshot) -> None:
             """CREATE TABLE capability_records (
                 capability_id TEXT PRIMARY KEY,
                 disclosure TEXT NOT NULL,
+                analysis_issue_count INTEGER NOT NULL,
+                platform_scope_kind TEXT NOT NULL,
                 state TEXT NOT NULL,
                 record_json TEXT NOT NULL
             )"""
@@ -872,11 +985,14 @@ def build_capability_index(path: Path, snapshot: CapabilitySnapshot) -> None:
         for record in snapshot.records:
             connection.execute(
                 """INSERT INTO capability_records(
-                    capability_id, disclosure, state, record_json
-                ) VALUES (?, ?, ?, ?)""",
+                    capability_id, disclosure, analysis_issue_count,
+                    platform_scope_kind, state, record_json
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
                 (
                     record.capability_id,
                     record.disclosure.value,
+                    len(record.analysis_issues),
+                    record.platform_scope.kind.value,
                     record.state.value,
                     _canonical_json(record.to_dict()),
                 ),
@@ -913,7 +1029,7 @@ def search_capability_index(
     path: Path,
     query: str,
     *,
-    include_review: bool = False,
+    include_unresolved: bool = False,
     include_restricted: bool = False,
     capability_ids: Iterable[str] | None = None,
     limit: int = 10,
@@ -923,7 +1039,7 @@ def search_capability_index(
     Args:
         path: 已构建的 SQLite 能力索引。
         query: 用户的本地检索文本。
-        include_review: 是否显式允许返回待维护者复核的 `review`。
+        include_unresolved: 是否显式允许返回仍带分析问题的记录。
         include_restricted: 调用方已在索引之外完成授权时，是否返回 `restricted`。
         capability_ids: 可选的调用方预先批准能力 ID；过滤会在 FTS 排名和 limit 之前完成。
         limit: 最大结果数，范围为 1 到 100。
@@ -936,8 +1052,8 @@ def search_capability_index(
     """
     if not isinstance(query, str):
         raise CapabilityIndexError("query must be a string")
-    if not isinstance(include_review, bool):
-        raise CapabilityIndexError("include_review must be a boolean")
+    if not isinstance(include_unresolved, bool):
+        raise CapabilityIndexError("include_unresolved must be a boolean")
     if not isinstance(include_restricted, bool):
         raise CapabilityIndexError("include_restricted must be a boolean")
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
@@ -960,12 +1076,11 @@ def search_capability_index(
         _verify_index_schema(connection)
         query_candidates = _query_candidates(normalized_query)
         allowed_disclosures = [Disclosure.PUBLIC.value]
-        if include_review:
-            allowed_disclosures.append(Disclosure.REVIEW.value)
         if include_restricted:
             allowed_disclosures.append(Disclosure.RESTRICTED.value)
         disclosures = tuple(allowed_disclosures)
-        placeholders = ",".join("?" for _ in disclosures)
+        disclosure_placeholders = ",".join("?" for _ in disclosures)
+        issue_predicate = "" if include_unresolved else "AND records.analysis_issue_count = 0"
         rows: list[sqlite3.Row] = []
         match_query = _fts_query(query_candidates)
         for capability_id_batch in _capability_id_batches(allowed_capability_ids):
@@ -973,13 +1088,15 @@ def search_capability_index(
             if match_query is not None:
                 rows.extend(
                     connection.execute(
-                        f"""SELECT records.record_json,
+                        f"""SELECT records.capability_id AS indexed_capability_id,
+                                   records.record_json,
                                    bm25(capability_fts) AS rank
                             FROM capability_fts
                             JOIN capability_records AS records
                               ON records.capability_id = capability_fts.capability_id
                             WHERE capability_fts MATCH ?
-                              AND records.disclosure IN ({placeholders})
+                              AND records.disclosure IN ({disclosure_placeholders})
+                              {issue_predicate}
                               {id_clause}
                               AND records.state IN (?, ?)
                             ORDER BY rank ASC, records.capability_id ASC
@@ -1000,7 +1117,8 @@ def search_capability_index(
                     continue
                 rows.extend(
                     connection.execute(
-                        f"""SELECT records.record_json,
+                        f"""SELECT records.capability_id AS indexed_capability_id,
+                                   records.record_json,
                                    MIN(CASE
                                        WHEN terms.term = ? THEN -100.0
                                        WHEN instr(terms.term, ?) > 0 THEN -50.0
@@ -1014,7 +1132,8 @@ def search_capability_index(
                                 OR instr(terms.term, ?) > 0
                                 OR instr(?, terms.term) > 0
                             )
-                              AND records.disclosure IN ({placeholders})
+                              AND records.disclosure IN ({disclosure_placeholders})
+                              {issue_predicate}
                               {id_clause}
                               AND records.state IN (?, ?)
                             GROUP BY records.capability_id, records.record_json
@@ -1037,6 +1156,13 @@ def search_capability_index(
         hits_by_id: dict[str, CapabilitySearchHit] = {}
         for row in rows:
             hit = _search_hit_from_row(row)
+            if not _record_matches_search_scope(
+                hit.record,
+                include_unresolved=include_unresolved,
+                include_restricted=include_restricted,
+                capability_ids=allowed_capability_ids,
+            ):
+                continue
             current = hits_by_id.get(hit.record.capability_id)
             if current is None or hit.score > current.score:
                 hits_by_id[hit.record.capability_id] = hit
@@ -1065,17 +1191,27 @@ def capability_index_public_records(path: Path) -> tuple[CapabilityRecord, ...]:
         connection.execute("PRAGMA query_only=ON")
         _verify_index_schema(connection)
         rows = connection.execute(
-            """SELECT record_json
+            """SELECT capability_id AS indexed_capability_id, record_json
                FROM capability_records
-               WHERE disclosure = ? AND state IN (?, ?)
+               WHERE disclosure = ?
+                 AND analysis_issue_count = 0
+                 AND platform_scope_kind IN (?, ?)
+                 AND state IN (?, ?)
                ORDER BY capability_id ASC""",
             (
                 Disclosure.PUBLIC.value,
+                PlatformScopeKind.ALL.value,
+                PlatformScopeKind.EXPLICIT.value,
                 RecordState.VERIFIED.value,
                 RecordState.CANDIDATE.value,
             ),
         ).fetchall()
-        return tuple(CapabilityRecord.from_dict(json.loads(row["record_json"])) for row in rows)
+        records: list[CapabilityRecord] = []
+        for row in rows:
+            record = _record_from_index_row(row)
+            if _record_is_public_index_candidate(record):
+                records.append(record)
+        return tuple(records)
     except (sqlite3.Error, CapabilityError, json.JSONDecodeError) as error:
         if isinstance(error, CapabilityIndexError):
             raise
@@ -1196,6 +1332,7 @@ def _searchable_claims(record: CapabilityRecord) -> tuple[Claim, ...]:
         "config.references",
         "plugin.distribution",
         "plugin.module_name",
+        "supporting.matchers",
     }
     command_specific = any(
         claim.field in {"command.header", "command.literals", "command.path"}
@@ -1268,10 +1405,44 @@ def _verify_index_schema(connection: sqlite3.Connection) -> None:
 
 
 def _search_hit_from_row(row: sqlite3.Row) -> CapabilitySearchHit:
-    record = CapabilityRecord.from_dict(json.loads(row["record_json"]))
+    record = _record_from_index_row(row)
     return CapabilitySearchHit(
         record=record,
         score=-float(row["rank"]),
+    )
+
+
+def _record_from_index_row(row: sqlite3.Row) -> CapabilityRecord:
+    record = CapabilityRecord.from_dict(json.loads(row["record_json"]))
+    if record.capability_id != row["indexed_capability_id"]:
+        raise CapabilityIndexError("capability index record identity does not match its row")
+    return record
+
+
+def _record_matches_search_scope(
+    record: CapabilityRecord,
+    *,
+    include_unresolved: bool,
+    include_restricted: bool,
+    capability_ids: tuple[str, ...] | None,
+) -> bool:
+    if record.state not in {RecordState.VERIFIED, RecordState.CANDIDATE}:
+        return False
+    if record.disclosure is Disclosure.RESTRICTED and not include_restricted:
+        return False
+    if record.disclosure not in {Disclosure.PUBLIC, Disclosure.RESTRICTED}:
+        return False
+    if record.analysis_issues and not include_unresolved:
+        return False
+    return capability_ids is None or record.capability_id in capability_ids
+
+
+def _record_is_public_index_candidate(record: CapabilityRecord) -> bool:
+    return (
+        record.disclosure is Disclosure.PUBLIC
+        and not record.analysis_issues
+        and record.platform_scope.kind in {PlatformScopeKind.ALL, PlatformScopeKind.EXPLICIT}
+        and record.state in {RecordState.VERIFIED, RecordState.CANDIDATE}
     )
 
 
@@ -1328,6 +1499,35 @@ def _instances(value: Any, expected: type[Any], label: str) -> tuple[Any, ...]:
     return tuple(value)
 
 
+def _normalize_analysis_issues(
+    scope: PlatformScope,
+    issues: Iterable[AnalysisIssue],
+    label: str,
+) -> tuple[AnalysisIssue, ...]:
+    if not isinstance(scope, PlatformScope):
+        raise CapabilityError(f"{label}.platform_scope must be PlatformScope")
+    normalized = tuple(
+        sorted(
+            (_enum_value(item, AnalysisIssue, f"{label}.analysis_issues") for item in issues),
+            key=lambda item: item.value,
+        )
+    )
+    if len(normalized) != len(set(normalized)):
+        raise CapabilityError(f"{label}.analysis_issues contains duplicates")
+    if scope.kind is PlatformScopeKind.UNKNOWN:
+        normalized = tuple(
+            sorted(
+                {*normalized, AnalysisIssue.PLATFORM_UNKNOWN},
+                key=lambda item: item.value,
+            )
+        )
+    elif AnalysisIssue.PLATFORM_UNKNOWN in normalized:
+        raise CapabilityError(
+            f"{label} with known platform scope cannot have platform_unknown issue"
+        )
+    return normalized
+
+
 def _text(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > 2048 or "\x00" in value:
         raise CapabilityError(f"{label} must be a non-empty bounded string")
@@ -1348,6 +1548,21 @@ def _identifiers(value: Any, label: str) -> tuple[str, ...]:
     if len(normalized) != len(set(normalized)):
         raise CapabilityError(f"{label} contains duplicates")
     return tuple(sorted(normalized))
+
+
+def _adapter_spec(value: Any, label: str) -> str:
+    normalized = _identifier(value, label)
+    if normalized != normalized.strip():
+        raise CapabilityError(f"{label} must be a normalized adapter spec")
+    module, separator, attribute = normalized.partition(":")
+    if separator and (not attribute.isidentifier() or ":" in attribute):
+        raise CapabilityError(f"{label} must be a normalized adapter spec")
+    if module.startswith("~"):
+        module = f"nonebot.adapters.{module[1:]}"
+    parts = module.split(".")
+    if not parts or not all(part.isidentifier() for part in parts):
+        raise CapabilityError(f"{label} must be a normalized adapter spec")
+    return normalized
 
 
 def _positive_limit(value: Any, label: str) -> int:

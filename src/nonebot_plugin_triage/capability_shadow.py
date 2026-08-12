@@ -12,6 +12,7 @@ from nonebot import logger
 
 from nbtriage.capabilities import (
     CAPABILITY_INDEX_SCHEMA_VERSION,
+    AnalysisIssue,
     CapabilityIndexError,
     CapabilityRecord,
     CapabilitySearchHit,
@@ -20,6 +21,7 @@ from nbtriage.capabilities import (
     ClaimBasis,
     ConstraintEvaluability,
     Disclosure,
+    PlatformScopeKind,
     RecordState,
     build_capability_index,
     capability_index_public_records,
@@ -152,7 +154,7 @@ class CapabilityShadowService:
                 search_capability_index,
                 self._path,
                 query,
-                include_review=True,
+                include_unresolved=True,
                 include_restricted=True,
                 limit=limit,
             )
@@ -176,7 +178,7 @@ class CapabilityShadowService:
         limit: int = 5,
     ) -> PublicCapabilitySearch | None:
         """只检索当前 adapter 可说明的公开能力。"""
-        if not self._status.ready or self._status.stale:
+        if not self._status.ready or self._status.stale or self._status.partial is not False:
             return None
         try:
             public_records = await asyncio.to_thread(
@@ -186,7 +188,7 @@ class CapabilityShadowService:
             capability_ids = tuple(
                 record.capability_id
                 for record in public_records
-                if _record_supports_adapter(record, adapter_type)
+                if _record_is_publicly_servable(record, adapter_type)
             )
             if not capability_ids:
                 return PublicCapabilitySearch((), partial=self._status.partial)
@@ -204,7 +206,7 @@ class CapabilityShadowService:
             )
             return None
         return PublicCapabilitySearch(
-            tuple(hits),
+            tuple(hit for hit in hits if _record_is_publicly_servable(hit.record, adapter_type)),
             partial=self._status.partial,
         )
 
@@ -396,16 +398,17 @@ def format_maintainer_capability_guidance(result: MaintainerCapabilitySearch) ->
         f"{header}（{_disclosure_label(primary.disclosure)}；来源："
         f"{_safe_text(primary.owner, limit=80)}）"
     )
+    if primary.analysis_issues:
+        lines.append(
+            "分析待办："
+            + "、".join(_analysis_issue_label(issue) for issue in primary.analysis_issues)
+        )
     description = _claim_text(primary.claims, "description", limit=240)
     if description:
         lines.append(f"说明：{description}")
     usage = _claim_text(primary.claims, "usage", limit=240)
     if usage:
-        label = (
-            "索引记录的候选用法（未复核）"
-            if primary.state is RecordState.CANDIDATE
-            else "索引记录的用法"
-        )
+        label = "索引记录的候选用法" if primary.analysis_issues else "索引记录的用法"
         lines.append(f"{label}：{usage}")
     else:
         lines.append("用法：索引没有可靠用法，请核对当前插件源码、README 或插件自带帮助。")
@@ -426,6 +429,8 @@ def format_maintainer_capability_guidance(result: MaintainerCapabilitySearch) ->
             description = _claim_text(record.claims, "description", limit=120)
             suffix = f"：{description}" if description else ""
             labels = [_disclosure_label(record.disclosure)]
+            if record.analysis_issues:
+                labels.append("分析待补全")
             if any(
                 constraint.evaluability is ConstraintEvaluability.OPAQUE
                 for constraint in record.constraints
@@ -441,26 +446,31 @@ def format_maintainer_capability_guidance(result: MaintainerCapabilitySearch) ->
 
 def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
     """只用公开字段把当前 adapter 的能力候选格式化为用户帮助。"""
-    if not result.hits:
+    if result.partial is not False or result.stale:
         return ""
-    primary = result.hits[0].record
-    header = _claim_text(primary.claims, "command.header", limit=64)
+    safe_hits = tuple(
+        hit for hit in result.hits if _record_is_publicly_servable_without_adapter(hit.record)
+    )
+    if not safe_hits:
+        return ""
+    primary = safe_hits[0].record
+    header = _public_capability_label(primary)
     if header is None:
         return ""
     lines = [header]
-    description = _claim_text(primary.claims, "description", limit=240)
+    description = _public_claim_text(primary.claims, "description", limit=240)
     if description:
         lines.append(description)
-    usage = _claim_text(primary.claims, "usage", limit=240)
+    usage = _public_claim_text(primary.claims, "usage", limit=240)
     if usage:
         lines.append(f"用法：{usage}")
     else:
         lines.append("当前索引还没有可靠的完整用法。")
-    if len(result.hits) > 1:
+    if len(safe_hits) > 1:
         alternatives = [
             alternative
-            for hit in result.hits[1:]
-            if (alternative := _claim_text(hit.record.claims, "command.header", limit=64))
+            for hit in safe_hits[1:]
+            if (alternative := _public_capability_label(hit.record))
         ]
         if alternatives:
             lines.append(f"其他可能相关的功能：{'、'.join(alternatives)}。")
@@ -485,22 +495,125 @@ def _claim_text(claims: tuple[Claim, ...], field: str, *, limit: int) -> str | N
     return None
 
 
-def _record_supports_adapter(record: CapabilityRecord, adapter_type: type[object]) -> bool:
-    metadata_values = tuple(
+def _public_claim_text(claims: tuple[Claim, ...], field: str, *, limit: int) -> str | None:
+    """投影唯一、可公开复核的非精确语法文本。"""
+    candidates: set[str] = set()
+    for claim in claims:
+        if (
+            claim.field != field
+            or claim.basis not in {ClaimBasis.OBSERVED, ClaimBasis.DECLARED}
+            or not isinstance(claim.value, str)
+        ):
+            continue
+        cleaned = _safe_text(claim.value, limit=limit)
+        if cleaned:
+            candidates.add(cleaned)
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def _observed_command_header(claims: tuple[Claim, ...]) -> str | None:
+    candidates: set[str] = set()
+    for claim in claims:
+        if (
+            claim.field != "command.header"
+            or claim.basis is not ClaimBasis.OBSERVED
+            or not isinstance(claim.value, str)
+        ):
+            continue
+        cleaned = _safe_trigger_text(claim.value)
+        if cleaned is not None and len(cleaned) <= 64:
+            candidates.add(cleaned)
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def _public_capability_label(record: CapabilityRecord) -> str | None:
+    header = _observed_command_header(record.claims)
+    if header is not None:
+        return header
+    factory = _observed_trigger_factory(record.claims)
+    entries = _observed_trigger_entries(record.claims)
+    if not entries:
+        return None
+    if factory == "on_keyword" and all(len(entry) <= 32 for entry in entries):
+        suffix = " 等" if len(entries) > 4 else ""
+        return f"关键词：{'、'.join(entries[:4])}{suffix}"
+    if factory == "on_regex" and len(entries) == 1:
+        return f"正则触发：{entries[0]}"
+    return None
+
+
+def _record_is_publicly_servable_without_adapter(record: CapabilityRecord) -> bool:
+    return (
+        record.disclosure is Disclosure.PUBLIC
+        and not record.analysis_issues
+        and record.state in {RecordState.VERIFIED, RecordState.CANDIDATE}
+        and record.platform_scope.kind is not PlatformScopeKind.UNKNOWN
+        and _public_capability_label(record) is not None
+    )
+
+
+def _record_is_publicly_servable(
+    record: CapabilityRecord,
+    adapter_type: type[object],
+) -> bool:
+    return _record_is_publicly_servable_without_adapter(record) and _record_supports_adapter(
+        record,
+        adapter_type,
+    )
+
+
+def _observed_trigger_factory(claims: tuple[Claim, ...]) -> str | None:
+    factories = tuple(
         claim.value
-        for claim in record.claims
-        if claim.field == "plugin.metadata" and isinstance(claim.value, dict)
+        for claim in claims
+        if claim.field == "trigger.factory" and claim.basis is ClaimBasis.OBSERVED
     )
-    if not metadata_values:
+    if (
+        len(factories) != 1
+        or not isinstance(factories[0], str)
+        or factories[0] not in {"on_keyword", "on_regex"}
+    ):
+        return None
+    return factories[0]
+
+
+def _observed_trigger_entries(claims: tuple[Claim, ...]) -> tuple[str, ...]:
+    candidates: set[tuple[str, ...]] = set()
+    observed = False
+    for claim in claims:
+        if claim.field != "trigger.entries" or claim.basis is not ClaimBasis.OBSERVED:
+            continue
+        observed = True
+        if not isinstance(claim.value, list | tuple) or not claim.value or len(claim.value) > 16:
+            return ()
+        if any(not isinstance(item, str) for item in claim.value):
+            return ()
+        entries = tuple(_safe_trigger_text(item) for item in claim.value)
+        if any(entry is None for entry in entries):
+            return ()
+        candidates.add(tuple(entry for entry in entries if entry is not None))
+    if not observed or len(candidates) != 1:
+        return ()
+    return next(iter(candidates))
+
+
+def _safe_trigger_text(value: str) -> str | None:
+    if not value or len(value) > 96 or "@" in value:
+        return None
+    if any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in value):
+        return None
+    if value != " ".join(value.split()):
+        return None
+    return value
+
+
+def _record_supports_adapter(record: CapabilityRecord, adapter_type: type[object]) -> bool:
+    scope = record.platform_scope
+    if scope.kind is PlatformScopeKind.UNKNOWN:
         return False
-    raw_adapters = metadata_values[0].get("supported_adapters")
-    if raw_adapters is None:
+    if scope.kind is PlatformScopeKind.ALL:
         return True
-    if not isinstance(raw_adapters, list | tuple) or not raw_adapters:
-        return False
-    return any(
-        isinstance(item, str) and _adapter_spec_matches(item, adapter_type) for item in raw_adapters
-    )
+    return any(_adapter_spec_matches(item, adapter_type) for item in scope.adapters)
 
 
 def _adapter_spec_matches(spec: str, adapter_type: type[object]) -> bool:
@@ -529,9 +642,19 @@ def _safe_text(value: str, *, limit: int) -> str:
 def _disclosure_label(disclosure: Disclosure) -> str:
     return {
         Disclosure.PUBLIC: "已登记公开能力",
-        Disclosure.REVIEW: "未审核候选",
         Disclosure.RESTRICTED: "维护者可见受限能力",
     }[disclosure]
+
+
+def _analysis_issue_label(issue: AnalysisIssue) -> str:
+    return {
+        AnalysisIssue.PLATFORM_UNKNOWN: "缺少平台范围元数据",
+        AnalysisIssue.DYNAMIC_ENTRY: "入口需要进一步分析",
+        AnalysisIssue.EVIDENCE_CONFLICT: "证据互相冲突",
+        AnalysisIssue.SENSITIVE_AMBIGUITY: "存在敏感披露歧义",
+        AnalysisIssue.EVIDENCE_INSUFFICIENT: "现有证据不足",
+        AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN: "Matcher 与用户能力的关系尚未确认",
+    }[issue]
 
 
 __all__ = (

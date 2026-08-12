@@ -66,6 +66,9 @@ LLM 补全功能语义。如果先把全部记录交给词法 / 向量检索、�
 
 ## 替代关系
 
+- `review` 作为披露层的历史表达由
+  [ADR-0032](0032-separate-capability-audience-analysis-and-platform-status.md) 收敛为具体 `analysis_issues`；普通
+  ServingView 由受众、平台范围、issue、记录状态与 generation 新鲜度共同派生；
 - 收紧 [ADR-0022](0022-limit-capability-shadow-guidance-to-superusers.md) 的后续模型边界：保留现有维护者确定性
   检索，但 SUPERUSER 不再被视为受限源码默认进入 LLM 的授权；
 - 补充 [ADR-0025](0025-explain-plugin-behavior-from-deployment-evidence.md) 的受众与 EvidenceUnit 边界；

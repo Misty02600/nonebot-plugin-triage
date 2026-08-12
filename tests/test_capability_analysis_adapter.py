@@ -49,7 +49,7 @@ def _record(
     config_references: list[dict[str, object]],
     owner: str | None = None,
     plugin_module_name: str | None = None,
-    disclosure: Disclosure = Disclosure.REVIEW,
+    disclosure: Disclosure = Disclosure.PUBLIC,
     superuser_only: bool = False,
 ) -> CapabilityRecord:
     plugin_evidence_id = "evidence:plugin"
@@ -402,7 +402,7 @@ async def handle():
     ("disclosure", "superuser_only"),
     [
         (Disclosure.RESTRICTED, False),
-        (Disclosure.REVIEW, True),
+        (Disclosure.PUBLIC, True),
     ],
 )
 def test_restricted_source_requires_explicit_local_diagnostic_policy(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.metadata
 import inspect
@@ -7,7 +8,7 @@ import json
 import sys
 import weakref
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
@@ -18,6 +19,8 @@ from urllib.parse import urlsplit, urlunsplit
 from arclet.alconna import Alconna, command_manager
 
 from nbtriage.capabilities import (
+    AnalysisIssue,
+    CapabilityError,
     CapabilityRecord,
     CapabilitySnapshot,
     Claim,
@@ -26,9 +29,17 @@ from nbtriage.capabilities import (
     ConstraintEvaluability,
     Disclosure,
     EvidenceRef,
+    PlatformScope,
+    PlatformScopeKind,
     RecordState,
     SnapshotError,
     SourceRevision,
+)
+from nbtriage.capability_effects import HandlerAnchor, extract_function_effects
+from nbtriage.capability_role_analysis import (
+    CapabilityRole,
+    SourceEffectFact,
+    analyze_runtime_matcher_roles,
 )
 from nonebot_plugin_triage.config_policy import normalize_config_root
 from nonebot_plugin_triage.config_references import (
@@ -55,12 +66,6 @@ class CapabilityConfidence(StrEnum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
-
-
-class DisclosureState(StrEnum):
-    PUBLIC = "public"
-    REVIEW = "review"
-    RESTRICTED = "restricted"
 
 
 @dataclass(frozen=True)
@@ -135,7 +140,9 @@ class CapabilityCandidate:
     matcher_type: str
     kind: CapabilityKind
     confidence: CapabilityConfidence
-    disclosure: DisclosureState
+    disclosure: Disclosure
+    platform_scope: PlatformScope
+    analysis_issues: tuple[AnalysisIssue, ...]
     command_path: str | None
     header: str | None
     literal_commands: tuple[str, ...]
@@ -152,6 +159,9 @@ class CapabilityCandidate:
     handler_references: tuple[dict[str, object], ...]
     config_references: tuple[_ResolvedConfigReference, ...]
     evidence: tuple[SourceEvidence, ...]
+    trigger_factory: str | None = None
+    trigger_entries: tuple[str, ...] = ()
+    supporting_matchers: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -236,6 +246,8 @@ def build_capability_snapshot(
             f"plugin_source:{identity.module_name}:{error}"
             for error in identity.source.partial_errors
         )
+        plugin_candidates: list[CapabilityCandidate] = []
+        plugin_effects: list[tuple[str, tuple[SourceEffectFact, ...], bool]] = []
         for matcher in _ordered_matchers(getattr(plugin, "matcher", ())):
             try:
                 candidate = _candidate_from_matcher(
@@ -256,12 +268,19 @@ def build_capability_snapshot(
                 )
                 continue
             candidate_ids.add(candidate.candidate_id)
-            candidates.append(candidate)
+            plugin_candidates.append(candidate)
+            plugin_effects.append(
+                (
+                    candidate.candidate_id,
+                    *_matcher_effect_facts(matcher, identity, state),
+                )
+            )
             for evidence in candidate.evidence:
                 errors.extend(
                     f"candidate_source:{candidate.candidate_id}:{error}"
                     for error in evidence.partial_errors
                 )
+        candidates.extend(_merge_matcher_roles(plugin_candidates, plugin_effects))
 
     identity_tuple = tuple(sorted(identities, key=lambda item: item.plugin_id))
     candidate_tuple = tuple(
@@ -466,7 +485,7 @@ def _candidate_from_matcher(
     kind = CapabilityKind.MESSAGE if matcher_type == "message" else CapabilityKind.PASSIVE
     if not matcher_type:
         kind = CapabilityKind.OTHER
-    return _generic_candidate(
+    candidate = _generic_candidate(
         plugin,
         matcher,
         source,
@@ -476,6 +495,24 @@ def _candidate_from_matcher(
         kind=kind,
         superuser_only=superuser_only,
     )
+    factory, entries = _runtime_trigger(matcher)
+    return replace(candidate, trigger_factory=factory, trigger_entries=entries)
+
+
+def _runtime_trigger(matcher: object) -> tuple[str | None, tuple[str, ...]]:
+    for dependent in _safe_collection(getattr(getattr(matcher, "rule", None), "checkers", ())):
+        call = getattr(dependent, "call", None)
+        if _object_has_base(call, "nonebot.rule", "RegexRule"):
+            value = getattr(call, "regex", None)
+            if isinstance(value, str):
+                return "on_regex", (value,)
+        if _object_has_base(call, "nonebot.rule", "KeywordsRule"):
+            values = getattr(call, "keywords", ())
+            if isinstance(values, Collection) and not isinstance(values, str | bytes):
+                entries = tuple(sorted(item for item in values if isinstance(item, str)))
+                if entries:
+                    return "on_keyword", entries
+    return None, ()
 
 
 def _alconna_command(matcher: object) -> object | None:
@@ -531,15 +568,16 @@ def _alconna_candidate(
         except (KeyError, ValueError):
             enabled = False
     explicitly_public = registered and command_path is not None and command_path in public_paths
-    automatically_public = (
-        registered and enabled is True and name is not None and _platform_scope_is_known(plugin)
-    )
+    platform_scope = _platform_scope(plugin)
     if hidden or superuser_only or enabled is False:
-        disclosure = DisclosureState.RESTRICTED
-    elif explicitly_public or automatically_public:
-        disclosure = DisclosureState.PUBLIC
+        disclosure = Disclosure.RESTRICTED
     else:
-        disclosure = DisclosureState.REVIEW
+        disclosure = Disclosure.PUBLIC
+    analysis_issues: set[AnalysisIssue] = set()
+    if platform_scope.kind is PlatformScopeKind.UNKNOWN:
+        analysis_issues.add(AnalysisIssue.PLATFORM_UNKNOWN)
+    if name is None or not registered:
+        analysis_issues.add(AnalysisIssue.EVIDENCE_INSUFFICIENT)
     confidence = CapabilityConfidence.HIGH if explicitly_public else CapabilityConfidence.MEDIUM
     arguments = _alconna_arguments(getattr(command, "args", None))
     components = _alconna_components(getattr(command, "options", ()))
@@ -569,6 +607,8 @@ def _alconna_candidate(
         kind=CapabilityKind.ALCONNA,
         confidence=confidence,
         disclosure=disclosure,
+        platform_scope=platform_scope,
+        analysis_issues=tuple(sorted(analysis_issues, key=lambda item: item.value)),
         command_path=command_path,
         header=name,
         literal_commands=(name,) if name else (),
@@ -615,12 +655,13 @@ def _command_candidate(
     # so a loaded Matcher no longer retains a reliable primary/alias distinction.
     header = literal_commands[0] if literal_commands else None
     force_whitespace = force_values[0] if len(set(force_values)) == 1 else None
-    if superuser_only:
-        disclosure = DisclosureState.RESTRICTED
-    elif literal_commands and _platform_scope_is_known(plugin):
-        disclosure = DisclosureState.PUBLIC
-    else:
-        disclosure = DisclosureState.REVIEW
+    disclosure = Disclosure.RESTRICTED if superuser_only else Disclosure.PUBLIC
+    platform_scope = _platform_scope(plugin)
+    analysis_issues: set[AnalysisIssue] = set()
+    if platform_scope.kind is PlatformScopeKind.UNKNOWN:
+        analysis_issues.add(AnalysisIssue.PLATFORM_UNKNOWN)
+    if not literal_commands:
+        analysis_issues.add(AnalysisIssue.DYNAMIC_ENTRY)
     candidate_id = _candidate_id(
         plugin.plugin_id,
         source,
@@ -634,6 +675,8 @@ def _command_candidate(
         kind=CapabilityKind.COMMAND,
         confidence=CapabilityConfidence.MEDIUM,
         disclosure=disclosure,
+        platform_scope=platform_scope,
+        analysis_issues=tuple(sorted(analysis_issues, key=lambda item: item.value)),
         command_path=None,
         header=header,
         literal_commands=literal_commands,
@@ -672,13 +715,19 @@ def _generic_candidate(
         _safe_type_name(matcher),
     )
     description = plugin.metadata.description if plugin.metadata is not None else None
+    platform_scope = _platform_scope(plugin)
+    analysis_issues = {AnalysisIssue.DYNAMIC_ENTRY}
+    if platform_scope.kind is PlatformScopeKind.UNKNOWN:
+        analysis_issues.add(AnalysisIssue.PLATFORM_UNKNOWN)
     return CapabilityCandidate(
         candidate_id=candidate_id,
         plugin_id=plugin.plugin_id,
         matcher_type=matcher_type,
         kind=kind,
         confidence=CapabilityConfidence.LOW,
-        disclosure=(DisclosureState.RESTRICTED if superuser_only else DisclosureState.REVIEW),
+        disclosure=(Disclosure.RESTRICTED if superuser_only else Disclosure.PUBLIC),
+        platform_scope=platform_scope,
+        analysis_issues=tuple(sorted(analysis_issues, key=lambda item: item.value)),
         command_path=None,
         header=None,
         literal_commands=(),
@@ -700,16 +749,21 @@ def _generic_candidate(
 
 def _matcher_constraints(matcher: object) -> tuple[tuple[str, ...], bool]:
     constraints: set[str] = set()
-    superuser_only = False
 
     permission = getattr(matcher, "permission", None)
-    for dependent in _safe_collection(getattr(permission, "checkers", ())):
-        call = getattr(dependent, "call", None)
-        if _object_has_base(call, "nonebot.permission", "SuperUser"):
-            constraints.add("permission:superuser")
-            superuser_only = True
-        else:
-            constraints.add(f"permission:opaque:{_safe_type_name(call)}")
+    permission_calls = tuple(
+        getattr(dependent, "call", None)
+        for dependent in _safe_collection(getattr(permission, "checkers", ()))
+    )
+    superuser_only = bool(permission_calls) and all(
+        _qualified_type_name(call) == "nonebot.permission.SuperUser" for call in permission_calls
+    )
+    if superuser_only:
+        constraints.add("permission:superuser")
+    else:
+        constraints.update(
+            f"permission:opaque:{_safe_type_name(call)}" for call in permission_calls
+        )
 
     rule = getattr(matcher, "rule", None)
     for dependent in _safe_collection(getattr(rule, "checkers", ())):
@@ -730,24 +784,19 @@ def _matcher_constraints(matcher: object) -> tuple[tuple[str, ...], bool]:
     return tuple(sorted(constraints)), superuser_only
 
 
-def _platform_scope_is_known(plugin: PluginIdentity) -> bool:
+def _platform_scope(plugin: PluginIdentity) -> PlatformScope:
     metadata = plugin.metadata
     if metadata is None:
-        return False
+        return PlatformScope.unknown()
     adapters = metadata.supported_adapters
     if adapters is None:
-        return True
-    return bool(adapters) and all(_valid_adapter_spec(item) for item in adapters)
-
-
-def _valid_adapter_spec(value: str) -> bool:
-    module, separator, attribute = value.partition(":")
-    if separator and (not attribute or "." in attribute):
-        return False
-    if module.startswith("~"):
-        module = f"nonebot.adapters.{module[1:]}"
-    parts = module.split(".")
-    return bool(parts) and all(part.isidentifier() for part in parts)
+        return PlatformScope.all()
+    if adapters:
+        try:
+            return PlatformScope.explicit(adapters)
+        except CapabilityError:
+            pass
+    return PlatformScope.unknown()
 
 
 def _matcher_config_references(
@@ -865,6 +914,184 @@ def _matcher_handler_references(
             }
         )
     return tuple(sorted(result, key=lambda item: (str(item["module"]), str(item["function"]))))
+
+
+def _matcher_effect_facts(
+    matcher: object,
+    plugin: PluginIdentity,
+    state: _CollectorState,
+) -> tuple[tuple[SourceEffectFact, ...], bool]:
+    effects: list[SourceEffectFact] = []
+    handlers = _safe_collection(getattr(matcher, "handlers", ()))
+    if not handlers:
+        return (), False
+    analyzable = 0
+    analyzed = 0
+    for dependent in handlers:
+        call = getattr(dependent, "call", None)
+        if not inspect.isfunction(call):
+            continue
+        analyzable += 1
+        module_name = _safe_text(getattr(call, "__module__", None))
+        function_name = _safe_text(getattr(call, "__name__", None))
+        if (
+            module_name is None
+            or function_name is None
+            or not _module_belongs_to_plugin(module_name, plugin.module_name)
+        ):
+            continue
+        module = sys.modules.get(module_name)
+        try:
+            raw_source_path = inspect.getsourcefile(call)
+            source_path = (
+                Path(raw_source_path).resolve(strict=False)
+                if isinstance(raw_source_path, str) and raw_source_path
+                else None
+            )
+        except (OSError, TypeError, RuntimeError):
+            source_path = None
+        if source_path is None or not source_path.name:
+            source_path = _module_file(module)
+        if source_path is None:
+            continue
+        source_text, _ = _module_source_text(source_path, state)
+        if source_text is None:
+            continue
+        line = _function_definition_line(source_text, call)
+        if line is None:
+            continue
+        try:
+            (analysis,) = extract_function_effects(
+                source_text,
+                locator=_logical_module_path(module_name, source_path),
+                functions=(HandlerAnchor(function_name, line),),
+            )
+        except (TypeError, ValueError):
+            continue
+        effects.extend(analysis.effects)
+        if not analysis.partial_errors:
+            analyzed += 1
+    return tuple(effects), analyzable == len(handlers) and analyzed == analyzable
+
+
+def _merge_matcher_roles(
+    candidates: list[CapabilityCandidate],
+    matcher_effects: list[tuple[str, tuple[SourceEffectFact, ...], bool]],
+) -> tuple[CapabilityCandidate, ...]:
+    analyses = {item.matcher_key: item for item in analyze_runtime_matcher_roles(matcher_effects)}
+    by_id = {candidate.candidate_id: candidate for candidate in candidates}
+    support_by_target: dict[str, list[dict[str, object]]] = {}
+    support_evidence_by_target: dict[str, list[SourceEvidence]] = {}
+    omitted: set[str] = set()
+    for candidate in candidates:
+        analysis = analyses.get(candidate.candidate_id)
+        if analysis is None:
+            continue
+        if (
+            analysis.role is CapabilityRole.SUPPORTING
+            and AnalysisIssue.DYNAMIC_ENTRY in candidate.analysis_issues
+            and candidate.kind in {CapabilityKind.MESSAGE, CapabilityKind.PASSIVE}
+        ):
+            omitted.add(candidate.candidate_id)
+            for relationship in analysis.relationships:
+                support_by_target.setdefault(relationship.target_matcher_key, []).append(
+                    {
+                        "matcher_id": candidate.candidate_id,
+                        "matcher_type": candidate.matcher_type,
+                        "shared_effects": list(relationship.shared_symbols),
+                    }
+                )
+                support_evidence_by_target.setdefault(relationship.target_matcher_key, []).extend(
+                    (
+                        *(_supporting_source_evidence(source) for source in candidate.evidence),
+                        *(
+                            _supporting_effect_evidence(effect)
+                            for effect in relationship.source_effects
+                        ),
+                    )
+                )
+        elif analysis.role is CapabilityRole.USER_CAPABILITY and candidate.kind in {
+            CapabilityKind.MESSAGE,
+            CapabilityKind.PASSIVE,
+        }:
+            issues = tuple(
+                issue
+                for issue in candidate.analysis_issues
+                if issue is not AnalysisIssue.DYNAMIC_ENTRY
+            )
+            candidate = replace(candidate, analysis_issues=issues)
+            by_id[candidate.candidate_id] = candidate
+        elif AnalysisIssue.DYNAMIC_ENTRY in candidate.analysis_issues:
+            issues = tuple(
+                sorted(
+                    {*candidate.analysis_issues, AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN},
+                    key=lambda item: item.value,
+                )
+            )
+            by_id[candidate.candidate_id] = replace(candidate, analysis_issues=issues)
+
+    result: list[CapabilityCandidate] = []
+    for candidate in candidates:
+        if candidate.candidate_id in omitted:
+            continue
+        resolved = by_id[candidate.candidate_id]
+        support = tuple(support_by_target.get(candidate.candidate_id, ()))
+        if support:
+            support_evidence = tuple(
+                {
+                    source.source_id: source
+                    for source in support_evidence_by_target.get(candidate.candidate_id, ())
+                }.values()
+            )
+            resolved = replace(
+                resolved,
+                supporting_matchers=support,
+                evidence=(*resolved.evidence, *support_evidence),
+            )
+        result.append(resolved)
+    return tuple(result)
+
+
+def _supporting_source_evidence(source: SourceEvidence) -> SourceEvidence:
+    return _source_evidence(
+        kind="supporting_matcher_source",
+        module_name=source.module_name,
+        path=source.path,
+        line=source.line,
+        digest=source.digest,
+        partial_errors=source.partial_errors,
+    )
+
+
+def _supporting_effect_evidence(effect: SourceEffectFact) -> SourceEvidence:
+    return _source_evidence(
+        kind="supporting_handler_effect",
+        module_name=None,
+        path=effect.source.locator,
+        line=effect.source.line,
+        digest=effect.source.digest,
+        partial_errors=(),
+    )
+
+
+def _function_definition_line(source_text: str, function: object) -> int | None:
+    code = getattr(function, "__code__", None)
+    name = _safe_text(getattr(function, "__name__", None))
+    first_line = getattr(code, "co_firstlineno", None)
+    if name is None or not isinstance(first_line, int) or first_line < 1:
+        return None
+    try:
+        tree = ast.parse(source_text)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    matches: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) or node.name != name:
+            continue
+        identity_line = min((node.lineno, *(decorator.lineno for decorator in node.decorator_list)))
+        if identity_line == first_line:
+            matches.append(node.lineno)
+    return matches[0] if len(matches) == 1 else None
 
 
 def _module_config_bindings(
@@ -1345,6 +1572,35 @@ def _core_record(
     for field_name, value in observed_values:
         if value is not None and value != []:
             claims.append(Claim(field_name, value, ClaimBasis.OBSERVED, matcher_evidence))
+    if candidate.trigger_factory is not None:
+        claims.append(
+            Claim(
+                "trigger.factory", candidate.trigger_factory, ClaimBasis.OBSERVED, matcher_evidence
+            )
+        )
+    if candidate.trigger_entries:
+        claims.append(
+            Claim(
+                "trigger.entries",
+                list(candidate.trigger_entries),
+                ClaimBasis.OBSERVED,
+                matcher_evidence,
+            )
+        )
+    if candidate.supporting_matchers:
+        supporting_evidence = tuple(
+            item.evidence_id
+            for item in evidence
+            if item.kind in {"supporting_matcher_source", "supporting_handler_effect"}
+        )
+        claims.append(
+            Claim(
+                "supporting.matchers",
+                list(candidate.supporting_matchers),
+                ClaimBasis.INFERRED,
+                supporting_evidence or matcher_evidence,
+            )
+        )
     declared_evidence = (
         plugin_evidence if candidate.kind is not CapabilityKind.ALCONNA else matcher_evidence
     )
@@ -1394,13 +1650,14 @@ def _core_record(
         _core_constraint(candidate.candidate_id, label, matcher_evidence)
         for label in candidate.constraints
     )
-    disclosure = Disclosure(candidate.disclosure.value)
     return CapabilityRecord(
         capability_id=candidate.candidate_id,
         owner=candidate.plugin_id,
         kind=candidate.kind.value,
-        disclosure=disclosure,
-        state=(RecordState.VERIFIED if disclosure is Disclosure.PUBLIC else RecordState.CANDIDATE),
+        disclosure=candidate.disclosure,
+        platform_scope=candidate.platform_scope,
+        analysis_issues=candidate.analysis_issues,
+        state=RecordState.VERIFIED,
         claims=tuple(claims),
         constraints=constraints,
         evidence_refs=evidence,
@@ -1510,7 +1767,6 @@ __all__ = (
     "CapabilityConfidence",
     "CapabilityKind",
     "CapabilitySnapshot",
-    "DisclosureState",
     "DistributionIdentity",
     "PluginIdentity",
     "PluginMetadataCandidate",

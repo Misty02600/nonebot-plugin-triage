@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 from tools.nbtriage_maintainer.cli import main
 
 import nbtriage.capabilities as capabilities
 from nbtriage.capabilities import (
+    AnalysisIssue,
     CapabilityError,
     CapabilityIndexError,
     CapabilityRecord,
@@ -19,10 +21,12 @@ from nbtriage.capabilities import (
     ConstraintEvaluability,
     Disclosure,
     EvidenceRef,
+    PlatformScope,
     RecordState,
     SnapshotError,
     SourceRevision,
     build_capability_index,
+    capability_index_public_records,
     fingerprint_source_tree,
     search_capability_index,
 )
@@ -34,6 +38,8 @@ def _record(
     description: str,
     *,
     disclosure: Disclosure = Disclosure.PUBLIC,
+    platform_scope: PlatformScope | None = None,
+    analysis_issues: tuple[AnalysisIssue, ...] = (),
 ) -> CapabilityRecord:
     evidence_id = f"evidence:{capability_id}"
     evidence = EvidenceRef(
@@ -47,6 +53,8 @@ def _record(
         owner="nonebot-plugin-demo",
         kind="command",
         disclosure=disclosure,
+        platform_scope=platform_scope or PlatformScope.all(),
+        analysis_issues=analysis_issues,
         state=RecordState.VERIFIED,
         claims=(
             Claim(
@@ -154,21 +162,61 @@ def test_snapshot_rejects_old_schema_and_tampered_generation() -> None:
     with pytest.raises(CapabilityError, match="schema_version"):
         CapabilitySnapshot.from_dict(old)
 
+    nested_old = snapshot.to_dict()
+    nested_old["records"][0]["schema_version"] = 1
+    with pytest.raises(CapabilityError, match="schema_version"):
+        CapabilitySnapshot.from_dict(nested_old)
+
+    nested_claim_old = snapshot.to_dict()
+    nested_claim_old["records"][0]["claims"][0]["schema_version"] = 1
+    with pytest.raises(CapabilityError, match="schema_version"):
+        CapabilitySnapshot.from_dict(nested_claim_old)
+
     tampered = snapshot.to_dict()
     tampered["records"][0]["claims"][0]["value"] = "changed"
     with pytest.raises(CapabilityError, match="generation"):
         CapabilitySnapshot.from_dict(tampered)
 
 
-def test_search_defaults_to_public_and_review_requires_opt_in(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("schema_version",),
+        ("manifest", "schema_version"),
+        ("manifest", "source_revisions", 0, "schema_version"),
+        ("manifest", "errors", 0, "schema_version"),
+        ("records", 0, "schema_version"),
+        ("records", 0, "claims", 0, "schema_version"),
+        ("records", 0, "constraints", 0, "schema_version"),
+        ("records", 0, "evidence_refs", 0, "schema_version"),
+    ],
+)
+def test_snapshot_rejects_v1_at_every_nested_schema_boundary(
+    path: tuple[str | int, ...],
+) -> None:
+    snapshot = _snapshot(
+        [_record("command:image", "搜图", "图片搜索")],
+        errors=(SnapshotError(source_id="source:test", code="scan_incomplete"),),
+    )
+    payload = snapshot.to_dict()
+    target: Any = payload
+    for part in path[:-1]:
+        target = target[part]
+    target[path[-1]] = 1
+
+    with pytest.raises(CapabilityError, match="schema_version"):
+        CapabilitySnapshot.from_dict(payload)
+
+
+def test_search_defaults_to_resolved_public_and_unresolved_requires_opt_in(tmp_path: Path) -> None:
     snapshot = _snapshot(
         [
             _record("command:public", "天气查询", "公开天气功能"),
             _record(
-                "command:review",
+                "command:unresolved",
                 "天气管理",
                 "需要审核的天气功能",
-                disclosure=Disclosure.REVIEW,
+                analysis_issues=(AnalysisIssue.EVIDENCE_INSUFFICIENT,),
             ),
             _record(
                 "command:restricted",
@@ -182,7 +230,7 @@ def test_search_defaults_to_public_and_review_requires_opt_in(tmp_path: Path) ->
     build_capability_index(index_path, snapshot)
 
     default_hits = search_capability_index(index_path, "天气功能")
-    review_hits = search_capability_index(index_path, "天气功能", include_review=True)
+    unresolved_hits = search_capability_index(index_path, "天气功能", include_unresolved=True)
     restricted_hits = search_capability_index(
         index_path,
         "天气功能",
@@ -190,15 +238,76 @@ def test_search_defaults_to_public_and_review_requires_opt_in(tmp_path: Path) ->
     )
 
     assert [hit.card.capability_id for hit in default_hits] == ["command:public"]
-    assert {hit.card.capability_id for hit in review_hits} == {
+    assert {hit.card.capability_id for hit in unresolved_hits} == {
         "command:public",
-        "command:review",
+        "command:unresolved",
     }
     assert {hit.card.capability_id for hit in restricted_hits} == {
         "command:public",
         "command:restricted",
     }
-    assert review_hits[0].evidence_refs
+    assert unresolved_hits[0].evidence_refs
+
+
+def test_unknown_platform_scope_is_unresolved_and_excluded_by_default(tmp_path: Path) -> None:
+    record = _record(
+        "command:unknown-platform",
+        "搜图",
+        "平台范围未知的图片搜索",
+        platform_scope=PlatformScope.unknown(),
+    )
+    assert record.analysis_issues == (AnalysisIssue.PLATFORM_UNKNOWN,)
+    index_path = tmp_path / "capabilities.sqlite3"
+    build_capability_index(index_path, _snapshot([record]))
+
+    assert search_capability_index(index_path, "搜图") == []
+    assert [
+        hit.record.capability_id
+        for hit in search_capability_index(index_path, "搜图", include_unresolved=True)
+    ] == ["command:unknown-platform"]
+
+
+def test_explicit_platform_scope_requires_normalized_adapter_specs() -> None:
+    scope = PlatformScope.explicit(
+        ("pkg.adapter:CustomAdapter", "nonebot.adapters.discord", "~onebot.v11")
+    )
+
+    assert scope.adapters == (
+        "nonebot.adapters.discord",
+        "pkg.adapter:CustomAdapter",
+        "~onebot.v11",
+    )
+    assert PlatformScope.from_dict(scope.to_dict()) == scope
+
+    for invalid in (
+        "not a module",
+        "module:bad.attribute",
+        "module:bad-name",
+        "module:",
+        "~",
+        " module.Adapter",
+    ):
+        with pytest.raises(CapabilityError, match="adapter spec"):
+            PlatformScope.explicit((invalid,))
+
+
+def test_capability_mapping_issue_round_trips_and_blocks_public_serving(tmp_path: Path) -> None:
+    record = _record(
+        "command:mapping-unknown",
+        "监听器候选",
+        "Matcher 与用户能力关系尚未确认",
+        analysis_issues=(AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN,),
+    )
+    restored = CapabilityRecord.from_dict(record.to_dict())
+
+    assert restored.analysis_issues == (AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN,)
+
+    index_path = tmp_path / "capabilities.sqlite3"
+    build_capability_index(index_path, _snapshot([record]))
+
+    assert search_capability_index(index_path, "监听器") == []
+    unresolved = search_capability_index(index_path, "监听器", include_unresolved=True)
+    assert [hit.record.capability_id for hit in unresolved] == ["command:mapping-unknown"]
 
 
 def test_chinese_usage_query_prefers_image_search_over_triage(tmp_path: Path) -> None:
@@ -249,6 +358,67 @@ def test_search_applies_capability_allowlist_before_ranking_and_limit(
     assert [hit.record.capability_id for hit in hits] == ["command:target"]
 
 
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("disclosure", "public"),
+        ("analysis_issue_count", 0),
+        ("state", "verified"),
+    ],
+)
+def test_search_rechecks_parsed_record_after_index_columns_are_tampered(
+    tmp_path: Path,
+    column: str,
+    value: str | int,
+) -> None:
+    index_path = tmp_path / "capabilities.sqlite3"
+    if column == "disclosure":
+        record = _record(
+            "command:secret",
+            "秘密命令",
+            "仅管理员可见",
+            disclosure=Disclosure.RESTRICTED,
+        )
+    elif column == "analysis_issue_count":
+        record = _record(
+            "command:unresolved",
+            "待确认命令",
+            "仍有分析问题",
+            analysis_issues=(AnalysisIssue.EVIDENCE_INSUFFICIENT,),
+        )
+    else:
+        record = _record("command:stale", "旧命令", "已过期能力")
+        record = CapabilityRecord.from_dict({**record.to_dict(), "state": "stale"})
+    build_capability_index(index_path, _snapshot([record]))
+    with sqlite3.connect(index_path) as connection:
+        connection.execute(
+            f"UPDATE capability_records SET {column} = ? WHERE capability_id = ?",
+            (value, record.capability_id),
+        )
+        connection.commit()
+
+    assert search_capability_index(index_path, record.card.values("title")[0]) == []
+
+
+def test_index_readers_reject_mismatched_record_identity(tmp_path: Path) -> None:
+    index_path = tmp_path / "capabilities.sqlite3"
+    record = _record("command:image", "搜图", "图片搜索")
+    build_capability_index(index_path, _snapshot([record]))
+    payload = record.to_dict()
+    payload["capability_id"] = "command:forged"
+    with sqlite3.connect(index_path) as connection:
+        connection.execute(
+            "UPDATE capability_records SET record_json = ? WHERE capability_id = ?",
+            (json.dumps(payload, ensure_ascii=False), record.capability_id),
+        )
+        connection.commit()
+
+    with pytest.raises(CapabilityIndexError, match="identity"):
+        search_capability_index(index_path, "搜图")
+    with pytest.raises(CapabilityIndexError, match="identity"):
+        capability_index_public_records(index_path)
+
+
 def test_search_rejects_string_capability_allowlist(tmp_path: Path) -> None:
     index_path = tmp_path / "capabilities.sqlite3"
     build_capability_index(
@@ -277,6 +447,8 @@ def test_internal_config_and_handler_references_are_not_search_terms(tmp_path: P
         kind=record.kind,
         disclosure=record.disclosure,
         state=record.state,
+        platform_scope=record.platform_scope,
+        analysis_issues=record.analysis_issues,
         claims=(
             *record.claims,
             Claim(
@@ -332,6 +504,7 @@ def test_plugin_level_usage_does_not_contaminate_command_search(tmp_path: Path) 
         kind="alconna",
         disclosure=Disclosure.PUBLIC,
         state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
         claims=(
             Claim("command.header", "triage", ClaimBasis.OBSERVED),
             Claim(
@@ -347,6 +520,7 @@ def test_plugin_level_usage_does_not_contaminate_command_search(tmp_path: Path) 
         kind="alconna",
         disclosure=Disclosure.RESTRICTED,
         state=RecordState.CANDIDATE,
+        platform_scope=PlatformScope.all(),
         claims=(Claim("command.header", "报错查询", ClaimBasis.OBSERVED),),
     )
     index_path = tmp_path / "capabilities.sqlite3"
@@ -410,7 +584,7 @@ def test_search_rejects_old_index_schema(tmp_path: Path) -> None:
         search_capability_index(index_path, "搜图功能")
 
 
-def test_maintainer_cli_searches_review_only_when_requested(
+def test_maintainer_cli_searches_unresolved_only_when_requested(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -423,7 +597,7 @@ def test_maintainer_cli_searches_review_only_when_requested(
                     "command:image",
                     "搜图",
                     "搜索图片",
-                    disclosure=Disclosure.REVIEW,
+                    analysis_issues=(AnalysisIssue.EVIDENCE_INSUFFICIENT,),
                 )
             ]
         ),
@@ -438,7 +612,7 @@ def test_maintainer_cli_searches_review_only_when_requested(
                 "搜图",
                 "--index",
                 str(index_path),
-                "--include-review",
+                "--include-unresolved",
             ]
         )
         == 0

@@ -1,8 +1,8 @@
 # 流程：Alconna 公开能力与解析回执
 
 当前运行入口优先支持显式公开能力 Provider。默认关闭的部署本地影子索引会读取已经加载的 Alconna 与
-普通 Matcher：普通用户可检索当前 adapter 中自动确定为 `public` 的命令，SUPERUSER 通过模型外鉴权后还可
-读取带披露标签的候选；解析回执仍是仓库级实验，位于
+普通 Matcher：普通用户可检索派生 ServingView 中自动确定为 `public` 的命令，SUPERUSER 通过模型外鉴权后
+还可读取带具体分析问题或受限标签的记录；解析回执仍是仓库级实验，位于
 `tools/nbtriage_maintainer/alconna_capabilities.py`，不进入插件 wheel。
 
 ## 这条流程保证什么
@@ -29,10 +29,11 @@
 声明。该路径不会调用任意命令的 `parse()`、behavior、executor 或 handler。所有 `triage` 求助先过轻量
 入口限流。
 
-影子索引可以把未登记的第三方命令保存为 `review` 候选，把 `SUPERUSER`、`CommandMeta.hide=True` 和内部
-管理命令保存为 `restricted`。普通用户不会读取二者；SUPERUSER 可在显式 Provider 未命中时检索全部披露
-层，但回复只复述已有字段，并明确候选、受限、opaque 和执行资格未知。普通用户查询在 SQL 召回前把候选
-限定为当前 adapter 的 `public` 能力，stale generation 直接失败关闭；未来的源码工具和模型上下文也必须沿用
+影子索引把未解决的动态入口、平台缺口和证据问题保存为具体 `analysis_issues`，把 `SUPERUSER`、
+`CommandMeta.hide=True` 和内部管理命令保存为 `restricted`。普通用户不会读取这些记录；SUPERUSER 可在
+显式 Provider 未命中时检索维护者域，但回复只复述已有字段，并明确具体 issue、受限、opaque 和执行资格
+未知。普通用户查询在 SQL 召回前把候选限定为当前 adapter 派生 ServingView 中的 `public` 能力，stale
+generation 直接失败关闭；未来的源码工具和模型上下文也必须沿用
 同一受众域。未命中回复不能提示受限命令或其他平台能力存在。自动分析确认命令为 hidden /
 SUPERUSER-only 后，也不把其源码默认发送给 LLM。
 
@@ -46,7 +47,9 @@ SUPERUSER-only 后，也不把其源码默认发送给 LLM。
 影子采集发生在 NoneBot 已经加载插件之后，不额外导入第三方模块。Alconna 命令结构与普通
 `CommandRule` 是 `observed` Claim；PluginMetadata、README 或可选帮助数据分别作为 `declared` /
 `documented` Claim，并保留 Evidence 来源。自定义 Rule、Permission、限流器和 handler 判断只登记为
-`opaque` Constraint。影子披露态只有 `public / review / restricted`：其中 `restricted` 会持久化，但只能在
+`opaque` Constraint。影子受众态只有 `public / restricted`，平台范围为 `all / explicit / unknown`，
+`analysis_issues` 逐项记录动态入口、平台未知、证据冲突、敏感歧义或证据不足；不另存
+`ready / pending / conflicted`。其中 `restricted` 会持久化，但只能在
 模型外完成当前上下文鉴权后检索。后续需要完全排除的能力将由独立 operator exclude policy 在持久化前
 处理，不是另一种披露态；这个按能力排除接口当前尚未实现。
 
@@ -110,8 +113,9 @@ NoneBot Alconna 的公开 `Extension.parse_wrapper` 是后续接入候选，但�
 ## 当前未完成部分
 
 - 尚未为丰富解析回执注册真实 NoneBot extension 或只读 rule hook；`triage` Matcher 已是当前运行入口；
-- 普通用户只接入自动确定为 `public` 的当前 adapter 命令；`review / restricted` 仍只接入 SUPERUSER 的
-  确定性维护者回复，字段冲突归类工作流尚未实现；
+- 普通用户只接入当前 adapter 派生 ServingView 中无 blocking issue、记录状态为 `verified / candidate` 的
+  `public` 命令；带 issue、`conflicted / stale` 或 `restricted` 的记录仍只进入 SUPERUSER 的确定性维护者
+  回复，字段冲突归类工作流尚未实现；
 - 真实解析回执尚未接入运行入口；
 - 没有代用户执行命令；
 - 没有推断 `prefix_error`、权限、会话上下文、适配器不支持或能力停用回执；
@@ -125,4 +129,5 @@ NoneBot Alconna 的公开 `Extension.parse_wrapper` 是后续接入候选，但�
 - [ADR-0022：SUPERUSER 能力影子候选检索](../../adr/0022-limit-capability-shadow-guidance-to-superusers.md)
 - [ADR-0026：在检索与模型前隔离能力知识受众域](../../adr/0026-filter-capability-knowledge-before-retrieval.md)
 - [ADR-0027：用事实输出合同约束能力帮助](../../adr/0027-constrain-guidance-with-facts-not-fixed-wording.md)
+- [ADR-0032：分离能力受众、平台范围与分析问题](../../adr/0032-separate-capability-audience-analysis-and-platform-status.md)
 - [显式支持入口分流](support-intake-routing.md)

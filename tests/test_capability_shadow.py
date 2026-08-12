@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from nbtriage.capabilities import (
+    AnalysisIssue,
     CapabilityIndexError,
     CapabilityRecord,
     CapabilitySearchHit,
@@ -18,6 +19,7 @@ from nbtriage.capabilities import (
     Constraint,
     ConstraintEvaluability,
     Disclosure,
+    PlatformScope,
     RecordState,
     SnapshotError,
     search_capability_index,
@@ -54,6 +56,7 @@ def _snapshot(capability_id: str, *, disclosure: Disclosure = Disclosure.PUBLIC)
                 kind="command",
                 disclosure=disclosure,
                 state=RecordState.VERIFIED,
+                platform_scope=PlatformScope.all(),
                 claims=(
                     Claim(
                         field="title",
@@ -164,6 +167,56 @@ def test_refresh_forwards_current_public_declarations_and_indexes_snapshot(
     assert status.indexed_capability_count == 1
     assert status.restricted_capability_count == 0
     assert search_capability_index(path, "搜图")[0].record.capability_id == "command:image"
+
+
+def test_v1_index_is_rejected_on_startup_and_rebuilt_by_refresh(tmp_path: Path) -> None:
+    path = tmp_path / "capabilities.sqlite3"
+    _service(path, snapshot_builder=lambda **_: _snapshot("command:old")).refresh()
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("UPDATE metadata SET value = '1' WHERE key = 'schema_version'")
+        connection.commit()
+    finally:
+        connection.close()
+
+    service = _service(path, snapshot_builder=lambda **_: _snapshot("command:new"))
+    assert service.status.ready is False
+
+    status = service.refresh()
+
+    assert status.ready
+    assert status.observed_generation == status.served_generation
+    assert [hit.record.capability_id for hit in search_capability_index(path, "搜图")] == [
+        "command:new"
+    ]
+    with sqlite3.connect(path) as connection:
+        schema_version = connection.execute(
+            "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).fetchone()[0]
+    assert schema_version == "2"
+
+
+@pytest.mark.asyncio
+async def test_failed_refresh_never_serves_an_incompatible_v1_index(tmp_path: Path) -> None:
+    path = tmp_path / "capabilities.sqlite3"
+    _service(path, snapshot_builder=lambda **_: _snapshot("command:old")).refresh()
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("UPDATE metadata SET value = '1' WHERE key = 'schema_version'")
+        connection.commit()
+    finally:
+        connection.close()
+
+    def fail_snapshot(**_: object) -> CapabilitySnapshot:
+        raise RuntimeError("private failure detail")
+
+    service = _service(path, snapshot_builder=fail_snapshot)
+    service.refresh_safely()
+
+    assert service.status.ready is False
+    assert service.status.error_code == "RuntimeError"
+    assert await service.search_public("搜图", object) is None
+    assert await service.search_for_maintainer("搜图") is None
 
 
 def test_refresh_reconciles_standard_pyproject_with_runtime_modules(tmp_path: Path) -> None:
@@ -338,6 +391,7 @@ async def test_public_search_filters_adapter_before_returning_hits(tmp_path: Pat
             kind="command",
             disclosure=Disclosure.PUBLIC,
             state=RecordState.VERIFIED,
+            platform_scope=PlatformScope.explicit(("~onebot.v11",)),
             claims=(
                 Claim("command.header", "搜图", ClaimBasis.OBSERVED),
                 Claim("description", "查找图片来源", ClaimBasis.DECLARED),
@@ -355,6 +409,7 @@ async def test_public_search_filters_adapter_before_returning_hits(tmp_path: Pat
             kind="command",
             disclosure=Disclosure.PUBLIC,
             state=RecordState.VERIFIED,
+            platform_scope=PlatformScope.explicit(("nonebot.adapters.discord",)),
             claims=(
                 Claim("command.header", "搜图 Discord", ClaimBasis.OBSERVED),
                 Claim(
@@ -381,6 +436,114 @@ async def test_public_search_filters_adapter_before_returning_hits(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_public_search_rechecks_parsed_record_against_tampered_index_columns(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "capabilities.sqlite3"
+    restricted = CapabilityRecord(
+        capability_id="command:secret",
+        owner="admin-plugin",
+        kind="command",
+        disclosure=Disclosure.RESTRICTED,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(Claim("command.header", "秘密命令", ClaimBasis.OBSERVED),),
+    )
+    service = _service(
+        path,
+        snapshot_builder=lambda **_: CapabilitySnapshot.create((restricted,)),
+    )
+    service.refresh()
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """UPDATE capability_records
+               SET disclosure = 'public', analysis_issue_count = 0,
+                   platform_scope_kind = 'all', state = 'verified'
+               WHERE capability_id = 'command:secret'"""
+        )
+        connection.commit()
+
+    result = await service.search_public("秘密命令", object)
+
+    assert result is not None
+    assert result.hits == ()
+
+
+@pytest.mark.asyncio
+async def test_public_search_excludes_unobserved_exact_command_syntax(tmp_path: Path) -> None:
+    path = tmp_path / "capabilities.sqlite3"
+    record = CapabilityRecord(
+        capability_id="command:inferred-syntax",
+        owner="image-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(Claim("command.header", "猜测命令", ClaimBasis.INFERRED),),
+    )
+    service = _service(
+        path,
+        snapshot_builder=lambda **_: CapabilitySnapshot.create((record,)),
+    )
+    service.refresh()
+
+    result = await service.search_public("猜测命令", object)
+
+    assert result is not None
+    assert result.hits == ()
+
+
+@pytest.mark.asyncio
+async def test_public_search_excludes_unknown_matcher_mapping_but_maintainer_can_inspect_it(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "capabilities.sqlite3"
+    record = CapabilityRecord(
+        capability_id="message:unknown-mapping",
+        owner="listener-plugin",
+        kind="message",
+        disclosure=Disclosure.PUBLIC,
+        platform_scope=PlatformScope.all(),
+        analysis_issues=(AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN,),
+        state=RecordState.VERIFIED,
+        claims=(Claim("description", "图片监听候选", ClaimBasis.INFERRED),),
+    )
+    service = _service(
+        path,
+        snapshot_builder=lambda **_: CapabilitySnapshot.create((record,)),
+    )
+    service.refresh()
+
+    public = await service.search_public("图片监听", object)
+    maintainer = await service.search_for_maintainer("图片监听")
+
+    assert public is not None
+    assert public.hits == ()
+    assert maintainer is not None
+    assert [hit.record.capability_id for hit in maintainer.hits] == ["message:unknown-mapping"]
+
+
+@pytest.mark.asyncio
+async def test_fresh_partial_snapshot_is_not_served_to_public_users(tmp_path: Path) -> None:
+    path = tmp_path / "capabilities.sqlite3"
+    partial = CapabilitySnapshot.create(
+        _snapshot("command:image").records,
+        errors=(SnapshotError(source_id="source:partial", code="scan_incomplete"),),
+    )
+    service = _service(path, snapshot_builder=lambda **_: partial)
+
+    status = service.refresh()
+
+    assert status.ready
+    assert status.stale is False
+    assert status.partial is True
+    assert await service.search_public("搜图", object) is None
+    maintainer = await service.search_for_maintainer("搜图")
+    assert maintainer is not None
+    assert maintainer.partial is True
+
+
+@pytest.mark.asyncio
 async def test_other_adapters_cannot_exhaust_public_search_limit(tmp_path: Path) -> None:
     from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 
@@ -392,6 +555,7 @@ async def test_other_adapters_cannot_exhaust_public_search_limit(tmp_path: Path)
             kind="command",
             disclosure=Disclosure.PUBLIC,
             state=RecordState.VERIFIED,
+            platform_scope=PlatformScope.explicit(("nonebot.adapters.discord",)),
             claims=(
                 Claim("command.header", "搜图", ClaimBasis.OBSERVED),
                 Claim(
@@ -409,6 +573,7 @@ async def test_other_adapters_cannot_exhaust_public_search_limit(tmp_path: Path)
         kind="command",
         disclosure=Disclosure.PUBLIC,
         state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.explicit(("~onebot.v11",)),
         claims=(
             Claim("command.header", "搜图", ClaimBasis.OBSERVED),
             Claim(
@@ -437,6 +602,7 @@ def test_public_guidance_does_not_invent_usage_when_only_header_is_known() -> No
         kind="command",
         disclosure=Disclosure.PUBLIC,
         state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
         claims=(Claim("command.header", "搜图", ClaimBasis.OBSERVED),),
     )
 
@@ -448,6 +614,334 @@ def test_public_guidance_does_not_invent_usage_when_only_header_is_known() -> No
     )
 
     assert message == "搜图\n当前索引还没有可靠的完整用法。"
+
+
+@pytest.mark.parametrize(
+    "basis",
+    [ClaimBasis.DECLARED, ClaimBasis.DOCUMENTED, ClaimBasis.INFERRED],
+)
+def test_public_guidance_requires_observed_exact_command_header(
+    basis: ClaimBasis,
+) -> None:
+    record = CapabilityRecord(
+        capability_id="command:unverified-syntax",
+        owner="image-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(Claim("command.header", "猜测命令", basis),),
+    )
+
+    assert (
+        format_public_capability_guidance(
+            PublicCapabilitySearch(
+                hits=(CapabilitySearchHit(record=record, score=100.0),),
+                partial=False,
+            )
+        )
+        == ""
+    )
+
+
+@pytest.mark.parametrize(
+    ("record", "partial", "stale"),
+    [
+        (
+            CapabilityRecord(
+                capability_id="command:restricted-direct",
+                owner="admin-plugin",
+                kind="command",
+                disclosure=Disclosure.RESTRICTED,
+                state=RecordState.VERIFIED,
+                platform_scope=PlatformScope.all(),
+                claims=(Claim("command.header", "秘密命令", ClaimBasis.OBSERVED),),
+            ),
+            False,
+            False,
+        ),
+        (
+            CapabilityRecord(
+                capability_id="command:unresolved-direct",
+                owner="image-plugin",
+                kind="command",
+                disclosure=Disclosure.PUBLIC,
+                state=RecordState.VERIFIED,
+                platform_scope=PlatformScope.all(),
+                analysis_issues=(AnalysisIssue.EVIDENCE_INSUFFICIENT,),
+                claims=(Claim("command.header", "待确认命令", ClaimBasis.OBSERVED),),
+            ),
+            False,
+            False,
+        ),
+        (
+            CapabilityRecord(
+                capability_id="command:partial-direct",
+                owner="image-plugin",
+                kind="command",
+                disclosure=Disclosure.PUBLIC,
+                state=RecordState.VERIFIED,
+                platform_scope=PlatformScope.all(),
+                claims=(Claim("command.header", "部分命令", ClaimBasis.OBSERVED),),
+            ),
+            True,
+            False,
+        ),
+        (
+            CapabilityRecord(
+                capability_id="command:stale-direct",
+                owner="image-plugin",
+                kind="command",
+                disclosure=Disclosure.PUBLIC,
+                state=RecordState.VERIFIED,
+                platform_scope=PlatformScope.all(),
+                claims=(Claim("command.header", "旧命令", ClaimBasis.OBSERVED),),
+            ),
+            False,
+            True,
+        ),
+        (
+            CapabilityRecord(
+                capability_id="command:conflicted-direct",
+                owner="image-plugin",
+                kind="command",
+                disclosure=Disclosure.PUBLIC,
+                state=RecordState.CONFLICTED,
+                platform_scope=PlatformScope.all(),
+                claims=(Claim("command.header", "冲突命令", ClaimBasis.OBSERVED),),
+            ),
+            False,
+            False,
+        ),
+        (
+            CapabilityRecord(
+                capability_id="command:record-stale-direct",
+                owner="image-plugin",
+                kind="command",
+                disclosure=Disclosure.PUBLIC,
+                state=RecordState.STALE,
+                platform_scope=PlatformScope.all(),
+                claims=(Claim("command.header", "过期命令", ClaimBasis.OBSERVED),),
+            ),
+            False,
+            False,
+        ),
+        (
+            CapabilityRecord(
+                capability_id="command:unknown-scope-direct",
+                owner="image-plugin",
+                kind="command",
+                disclosure=Disclosure.PUBLIC,
+                state=RecordState.VERIFIED,
+                platform_scope=PlatformScope.unknown(),
+                claims=(Claim("command.header", "未知平台命令", ClaimBasis.OBSERVED),),
+            ),
+            False,
+            False,
+        ),
+    ],
+)
+def test_public_formatter_rechecks_serving_view_boundaries(
+    record: CapabilityRecord,
+    partial: bool,
+    stale: bool,
+) -> None:
+    assert (
+        format_public_capability_guidance(
+            PublicCapabilitySearch(
+                hits=(CapabilitySearchHit(record=record, score=100.0),),
+                partial=partial,
+                stale=stale,
+            )
+        )
+        == ""
+    )
+
+
+def test_public_guidance_omits_inferred_or_conflicting_declared_text() -> None:
+    record = CapabilityRecord(
+        capability_id="command:safe-text",
+        owner="image-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim("command.header", "搜图", ClaimBasis.OBSERVED),
+            Claim("description", "可核对说明", ClaimBasis.DECLARED),
+            Claim("description", "冲突说明", ClaimBasis.OBSERVED),
+            Claim("usage", "模型猜测用法", ClaimBasis.INFERRED),
+        ),
+    )
+
+    assert (
+        format_public_capability_guidance(
+            PublicCapabilitySearch(
+                hits=(CapabilitySearchHit(record=record, score=100.0),),
+                partial=False,
+            )
+        )
+        == "搜图\n当前索引还没有可靠的完整用法。"
+    )
+
+
+def test_public_guidance_rejects_conflicting_observed_command_headers() -> None:
+    record = CapabilityRecord(
+        capability_id="command:conflicting-syntax",
+        owner="image-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim("command.header", "搜图", ClaimBasis.OBSERVED),
+            Claim("command.header", "查图", ClaimBasis.OBSERVED),
+        ),
+    )
+
+    assert (
+        format_public_capability_guidance(
+            PublicCapabilitySearch(
+                hits=(CapabilitySearchHit(record=record, score=100.0),),
+                partial=False,
+            )
+        )
+        == ""
+    )
+
+
+@pytest.mark.parametrize(
+    ("factory", "entries", "expected"),
+    [
+        ("on_keyword", ["提醒", "备忘"], "关键词：提醒、备忘"),
+        ("on_regex", [r"^谁艾特我$"], r"正则触发：^谁艾特我$"),
+    ],
+)
+def test_public_guidance_projects_observed_non_command_triggers(
+    factory: str,
+    entries: list[str],
+    expected: str,
+) -> None:
+    record = CapabilityRecord(
+        capability_id=f"message:{factory}",
+        owner="listener-plugin",
+        kind="message",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim("trigger.factory", factory, ClaimBasis.OBSERVED),
+            Claim("trigger.entries", entries, ClaimBasis.OBSERVED),
+            Claim("description", "公开的消息触发能力", ClaimBasis.DECLARED),
+        ),
+    )
+
+    message = format_public_capability_guidance(
+        PublicCapabilitySearch(
+            hits=(CapabilitySearchHit(record=record, score=100.0),),
+            partial=False,
+        )
+    )
+
+    assert message == f"{expected}\n公开的消息触发能力\n当前索引还没有可靠的完整用法。"
+
+
+@pytest.mark.asyncio
+async def test_public_search_excludes_unprojectable_trigger_before_returning_hits(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "capabilities.sqlite3"
+    record = CapabilityRecord(
+        capability_id="message:unprojectable",
+        owner="listener-plugin",
+        kind="message",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim("trigger.factory", "custom_factory", ClaimBasis.OBSERVED),
+            Claim("trigger.entries", ["visible phrase"], ClaimBasis.OBSERVED),
+            Claim("description", "无法安全投影的触发器", ClaimBasis.DECLARED),
+        ),
+    )
+    service = _service(
+        path,
+        snapshot_builder=lambda **_: CapabilitySnapshot.create((record,)),
+    )
+    service.refresh()
+
+    result = await service.search_public("visible phrase", object)
+
+    assert result is not None
+    assert result.hits == ()
+    assert format_public_capability_guidance(result) == ""
+
+
+@pytest.mark.asyncio
+async def test_public_search_returns_safely_projectable_trigger(tmp_path: Path) -> None:
+    path = tmp_path / "capabilities.sqlite3"
+    record = CapabilityRecord(
+        capability_id="message:regex",
+        owner="listener-plugin",
+        kind="message",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim("trigger.factory", "on_regex", ClaimBasis.OBSERVED),
+            Claim("trigger.entries", [r"^谁艾特我$"], ClaimBasis.OBSERVED),
+            Claim("description", "查询谁艾特过我", ClaimBasis.DECLARED),
+        ),
+    )
+    service = _service(
+        path,
+        snapshot_builder=lambda **_: CapabilitySnapshot.create((record,)),
+    )
+    service.refresh()
+
+    result = await service.search_public("谁艾特我", object)
+
+    assert result is not None
+    assert [hit.record.capability_id for hit in result.hits] == ["message:regex"]
+    assert format_public_capability_guidance(result).startswith(r"正则触发：^谁艾特我$")
+
+
+@pytest.mark.parametrize(
+    ("factory_basis", "entries"),
+    [
+        (ClaimBasis.INFERRED, ["提醒"]),
+        (ClaimBasis.OBSERVED, ["@everyone"]),
+        (ClaimBasis.OBSERVED, ["第一行\n第二行"]),
+        (ClaimBasis.OBSERVED, ["x" * 97]),
+        (ClaimBasis.OBSERVED, [str(index) for index in range(17)]),
+    ],
+)
+def test_public_guidance_rejects_untrusted_or_lossy_trigger_projection(
+    factory_basis: ClaimBasis,
+    entries: list[str],
+) -> None:
+    record = CapabilityRecord(
+        capability_id="message:unsafe-trigger",
+        owner="listener-plugin",
+        kind="message",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim("trigger.factory", "on_keyword", factory_basis),
+            Claim("trigger.entries", entries, ClaimBasis.OBSERVED),
+        ),
+    )
+
+    assert (
+        format_public_capability_guidance(
+            PublicCapabilitySearch(
+                hits=(CapabilitySearchHit(record=record, score=100.0),),
+                partial=False,
+            )
+        )
+        == ""
+    )
 
 
 @pytest.mark.asyncio
@@ -533,12 +1027,13 @@ async def test_maintainer_search_failure_hides_exception_details(
     assert private_text not in repr(logger.warnings)
 
 
-def test_maintainer_guidance_marks_review_and_opaque_constraints() -> None:
+def test_maintainer_guidance_marks_analysis_issues_and_opaque_constraints() -> None:
     record = CapabilityRecord(
         capability_id="command:image",
         owner="YetAnotherPicSearch",
         kind="command",
-        disclosure=Disclosure.REVIEW,
+        disclosure=Disclosure.PUBLIC,
+        analysis_issues=(AnalysisIssue.EVIDENCE_INSUFFICIENT,),
         state=RecordState.CANDIDATE,
         claims=(
             Claim("command.header", "搜图", ClaimBasis.OBSERVED),
@@ -561,12 +1056,34 @@ def test_maintainer_guidance_marks_review_and_opaque_constraints() -> None:
     message = format_maintainer_capability_guidance(result)
 
     assert message.startswith("当前能力快照不完整")
-    assert "搜图（未审核候选；来源：YetAnotherPicSearch）" in message
+    assert "搜图（已登记公开能力；来源：YetAnotherPicSearch）" in message
+    assert "分析待办：现有证据不足" in message
     assert "说明：搜索图片出处" in message
     assert "索引没有可靠用法" in message
     assert "无法安全静态判断" in message
     assert "当前可执行" in message
     assert "--purge" not in message
+
+
+def test_maintainer_guidance_names_unknown_matcher_mapping() -> None:
+    record = CapabilityRecord(
+        capability_id="message:unknown",
+        owner="listener-plugin",
+        kind="message",
+        disclosure=Disclosure.PUBLIC,
+        analysis_issues=(AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN,),
+        state=RecordState.VERIFIED,
+        claims=(Claim("description", "后台监听候选", ClaimBasis.INFERRED),),
+    )
+
+    message = format_maintainer_capability_guidance(
+        MaintainerCapabilitySearch(
+            hits=(CapabilitySearchHit(record=record, score=100.0),),
+            partial=False,
+        )
+    )
+
+    assert "分析待办：Matcher 与用户能力的关系尚未确认" in message
 
 
 def test_maintainer_guidance_neutralizes_mentions_and_control_characters() -> None:
@@ -594,7 +1111,7 @@ def test_maintainer_guidance_neutralizes_mentions_and_control_characters() -> No
     assert "\u202e" not in message
     assert "＠everyone" in message
     assert "＠here" in message
-    assert "索引记录的候选用法（未复核）：搜图 ＠everyone" in message
+    assert "索引记录的候选用法：搜图 ＠everyone" in message
 
 
 def test_maintainer_guidance_prefers_stronger_field_evidence() -> None:
@@ -602,7 +1119,8 @@ def test_maintainer_guidance_prefers_stronger_field_evidence() -> None:
         capability_id="command:image",
         owner="YetAnotherPicSearch",
         kind="command",
-        disclosure=Disclosure.REVIEW,
+        disclosure=Disclosure.PUBLIC,
+        analysis_issues=(AnalysisIssue.EVIDENCE_INSUFFICIENT,),
         state=RecordState.CANDIDATE,
         claims=(
             Claim("command.header", "搜图", ClaimBasis.OBSERVED),
@@ -619,7 +1137,7 @@ def test_maintainer_guidance_prefers_stronger_field_evidence() -> None:
         )
     )
 
-    assert "索引记录的候选用法（未复核）：运行时声明用法" in message
+    assert "索引记录的候选用法：运行时声明用法" in message
     assert "旧文档用法" not in message
     assert "模型推断用法" not in message
 
@@ -629,7 +1147,8 @@ def test_maintainer_guidance_marks_secondary_opaque_candidate() -> None:
         capability_id="command:image",
         owner="image-plugin",
         kind="command",
-        disclosure=Disclosure.REVIEW,
+        disclosure=Disclosure.PUBLIC,
+        analysis_issues=(AnalysisIssue.EVIDENCE_INSUFFICIENT,),
         state=RecordState.CANDIDATE,
         claims=(Claim("command.header", "搜图"),),
     )
@@ -637,7 +1156,8 @@ def test_maintainer_guidance_marks_secondary_opaque_candidate() -> None:
         capability_id="message:image",
         owner="image-plugin",
         kind="message",
-        disclosure=Disclosure.REVIEW,
+        disclosure=Disclosure.PUBLIC,
+        analysis_issues=(AnalysisIssue.DYNAMIC_ENTRY,),
         state=RecordState.CANDIDATE,
         claims=(Claim("description", "被动搜图"),),
         constraints=(
@@ -660,7 +1180,10 @@ def test_maintainer_guidance_marks_secondary_opaque_candidate() -> None:
         )
     )
 
-    assert "- image-plugin [未审核候选；约束不透明]（image-plugin）：被动搜图" in message
+    assert (
+        "- image-plugin [已登记公开能力；分析待补全；约束不透明]"
+        "（image-plugin）：被动搜图" in message
+    )
 
 
 @pytest.mark.asyncio

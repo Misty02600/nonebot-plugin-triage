@@ -53,9 +53,11 @@
 
 ## 替代关系
 
+- 第 5 项尚未确定的持久 schema 已由
+  [ADR-0032](0032-separate-capability-audience-analysis-and-platform-status.md) 落实为受众、平台范围、具体分析问题与约束独立轴；
 - 部分替代 [ADR-0021](0021-use-deployment-local-capability-shadow-index.md) 中“自动发现候选默认 review”的边界；
 - 部分替代 [ADR-0022](0022-limit-capability-shadow-guidance-to-superusers.md) 中普通用户只能读取显式 Provider 的
-  过渡实现；SUPERUSER 的 review / restricted 维护者检索仍保留；
+  过渡实现；SUPERUSER 的未解决问题 / restricted 维护者检索仍保留；
 - 回答投影继续由 [ADR-0026](0026-filter-capability-knowledge-before-retrieval.md) 与
   [ADR-0027](0027-constrain-guidance-with-facts-not-fixed-wording.md) 约束。
 
