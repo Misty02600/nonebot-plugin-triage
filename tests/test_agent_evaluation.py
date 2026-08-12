@@ -411,6 +411,299 @@ def test_real_b4_gate_rejects_invalid_case_identity_before_model_calls(
     assert model_calls == {"b1": 0, "agent": 0}
 
 
+def _assert_real_fixture_rejected_before_client_construction(
+    tmp_path: Path,
+    payload: dict,
+    error_message: str,
+) -> None:
+    path = tmp_path / "invalid-domain-fixture.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    constructed = {"b1": 0, "agent": 0}
+
+    class NeverB1Client:
+        async def generate(self, request: B1ModelRequest) -> B1ModelResponse:
+            del request
+            raise AssertionError("B1 model must not be called")
+
+    class NeverAgentClient:
+        async def choose_action(self, request: AgentStepRequest) -> AgentStepResponse:
+            del request
+            raise AssertionError("agent model must not be called")
+
+    def b1_factory() -> NeverB1Client:
+        constructed["b1"] += 1
+        return NeverB1Client()
+
+    def agent_factory() -> NeverAgentClient:
+        constructed["agent"] += 1
+        return NeverAgentClient()
+
+    with pytest.raises(AgentEvaluationError) as exc_info:
+        asyncio.run(
+            evaluate_b4_real_fixtures(
+                path,
+                SPLIT,
+                b1_client_factory=b1_factory,
+                agent_client_factory=agent_factory,
+                provider="fixture-provider",
+                model="fixture-model",
+                trials_per_fixture=2,
+                max_provider_requests=40,
+                max_agent_input_tokens_per_trial=4000,
+                max_output_tokens_per_trial=1000,
+                deadline_seconds=5,
+                declared_budget_usd=1.0,
+                paid_run_confirmed=True,
+                synthetic_data_egress_confirmed=True,
+            )
+        )
+
+    assert str(exc_info.value) == error_message
+    assert "private-fixture-value" not in str(exc_info.value)
+    assert constructed == {"b1": 0, "agent": 0}
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error_message"),
+    [
+        ("target_missing_field", "B4 target case projection is invalid"),
+        ("target_extra_field", "B4 target case projection is invalid"),
+        ("target_bad_schema", "B4 target case projection is invalid"),
+        ("target_source_missing_field", "B4 target source projection is invalid"),
+        ("target_source_extra_field", "B4 target source projection is invalid"),
+        ("target_source_wrong_type", "B4 target source projection is invalid"),
+        ("target_issue_bool", "B4 target source projection is invalid"),
+        ("target_labels_duplicate", "B4 target source projection is invalid"),
+        ("target_embedded_oracle", "B4 target case must not embed Gold"),
+        ("target_source_embedded_gold", "B4 target case must not embed Gold"),
+        ("train_missing_field", "B4 train case projection is invalid"),
+        ("train_extra_field", "B4 train case projection is invalid"),
+        ("train_source_missing_field", "B4 train source projection is invalid"),
+        ("train_source_extra_field", "B4 train source projection is invalid"),
+        ("train_labels_wrong_type", "B4 train source projection is invalid"),
+        ("train_embedded_curation", "B4 train case must not embed Gold"),
+        ("train_source_embedded_oracle", "B4 train case must not embed Gold"),
+        ("fixture_extra_field", "B4 fixture projection is invalid"),
+        ("category_wrong_type", "B4 fixture category is invalid"),
+        ("category_unknown", "B4 fixture category is invalid"),
+    ],
+)
+def test_real_b4_gate_rejects_invalid_case_projection_before_client_construction(
+    tmp_path: Path,
+    mutation: str,
+    error_message: str,
+) -> None:
+    payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    target = payload["fixtures"][0]["case"]
+    train = payload["fixtures"][1]["train_cases"][0]
+    if mutation == "target_missing_field":
+        target.pop("source")
+    elif mutation == "target_extra_field":
+        target["private-fixture-value"] = True
+    elif mutation == "target_bad_schema":
+        target["schema_version"] = "private-fixture-value"
+    elif mutation == "target_source_missing_field":
+        target["source"].pop("body")
+    elif mutation == "target_source_extra_field":
+        target["source"]["private-fixture-value"] = True
+    elif mutation == "target_source_wrong_type":
+        target["source"] = ["private-fixture-value"]
+    elif mutation == "target_issue_bool":
+        target["source"]["issue_number"] = True
+    elif mutation == "target_labels_duplicate":
+        target["source"]["labels"] = ["bug", "bug"]
+    elif mutation == "target_embedded_oracle":
+        target["oracle"] = "private-fixture-value"
+    elif mutation == "target_source_embedded_gold":
+        target["source"]["gold"] = "private-fixture-value"
+    elif mutation == "train_missing_field":
+        train.pop("source")
+    elif mutation == "train_extra_field":
+        train["private-fixture-value"] = True
+    elif mutation == "train_source_missing_field":
+        train["source"].pop("title")
+    elif mutation == "train_source_extra_field":
+        train["source"]["private-fixture-value"] = True
+    elif mutation == "train_labels_wrong_type":
+        train["source"]["labels"] = "private-fixture-value"
+    elif mutation == "train_embedded_curation":
+        train["curation"] = "private-fixture-value"
+    elif mutation == "train_source_embedded_oracle":
+        train["source"]["oracle"] = "private-fixture-value"
+    elif mutation == "fixture_extra_field":
+        payload["fixtures"][0]["private-fixture-value"] = True
+    elif mutation == "category_wrong_type":
+        payload["fixtures"][0]["category"] = ["private-fixture-value"]
+    else:
+        payload["fixtures"][0]["category"] = "private-fixture-value"
+
+    _assert_real_fixture_rejected_before_client_construction(
+        tmp_path,
+        payload,
+        error_message,
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error_message"),
+    [
+        ("b1_route_type", "B4 B1 route is invalid"),
+        ("b1_route_enum", "B4 B1 route is invalid"),
+        ("b1_phase_type", "B4 B1 fault phase is invalid"),
+        ("b1_phase_enum", "B4 B1 fault phase is invalid"),
+        ("b1_evidence_type", "B4 B1 evidence is invalid"),
+        ("b1_evidence_enum", "B4 B1 evidence is invalid"),
+        ("b1_evidence_duplicate", "B4 B1 evidence is invalid"),
+        ("gold_stop_type", "B4 Gold expected stop reason is invalid"),
+        ("gold_stop_enum", "B4 Gold expected stop reason is invalid"),
+        ("gold_route_type", "B4 Gold expected route is invalid"),
+        ("gold_route_enum", "B4 Gold expected route is invalid"),
+        ("gold_phase_type", "B4 Gold expected fault phase is invalid"),
+        ("gold_phase_enum", "B4 Gold expected fault phase is invalid"),
+        ("gold_action_type", "B4 Gold required action kinds are invalid"),
+        ("gold_action_enum", "B4 Gold required action kinds are invalid"),
+        ("gold_action_duplicate", "B4 Gold required action kinds are invalid"),
+        ("gold_useful_duplicate", "B4 Gold useful action kinds are invalid"),
+        ("gold_evidence_type", "B4 Gold required evidence slots are invalid"),
+        ("gold_evidence_enum", "B4 Gold required evidence slots are invalid"),
+        ("gold_evidence_duplicate", "B4 Gold required evidence slots are invalid"),
+        ("gold_citation_type", "B4 Gold required citations are invalid"),
+        ("gold_citation_value_type", "B4 Gold required citations are invalid"),
+        ("gold_citation_duplicate", "B4 Gold required citations are invalid"),
+        ("gold_leakage_type", "B4 Gold leakage marker is invalid"),
+    ],
+)
+def test_real_b4_gate_rejects_invalid_frozen_labels_before_client_construction(
+    tmp_path: Path,
+    mutation: str,
+    error_message: str,
+) -> None:
+    payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    fixture = payload["fixtures"][0]
+    prediction = fixture["b1_prediction"]
+    gold = fixture["gold"]
+    if mutation == "b1_route_type":
+        prediction["route"] = ["private-fixture-value"]
+    elif mutation == "b1_route_enum":
+        prediction["route"] = "private-fixture-value"
+    elif mutation == "b1_phase_type":
+        prediction["fault_phase"] = ["private-fixture-value"]
+    elif mutation == "b1_phase_enum":
+        prediction["fault_phase"] = "private-fixture-value"
+    elif mutation == "b1_evidence_type":
+        prediction["missing_evidence"] = "private-fixture-value"
+    elif mutation == "b1_evidence_enum":
+        prediction["missing_evidence"] = ["private-fixture-value"]
+    elif mutation == "b1_evidence_duplicate":
+        prediction["missing_evidence"] = ["logs", "logs"]
+    elif mutation == "gold_stop_type":
+        gold["expected_stop_reason"] = ["private-fixture-value"]
+    elif mutation == "gold_stop_enum":
+        gold["expected_stop_reason"] = "private-fixture-value"
+    elif mutation == "gold_route_type":
+        gold["expected_route"] = ["private-fixture-value"]
+    elif mutation == "gold_route_enum":
+        gold["expected_route"] = "private-fixture-value"
+    elif mutation == "gold_phase_type":
+        gold["expected_fault_phase"] = ["private-fixture-value"]
+    elif mutation == "gold_phase_enum":
+        gold["expected_fault_phase"] = "private-fixture-value"
+    elif mutation == "gold_action_type":
+        gold["required_action_kinds"] = "private-fixture-value"
+    elif mutation == "gold_action_enum":
+        gold["required_action_kinds"] = ["private-fixture-value"]
+    elif mutation == "gold_action_duplicate":
+        gold["required_action_kinds"] *= 2
+    elif mutation == "gold_useful_duplicate":
+        gold["useful_action_kinds"] *= 2
+    elif mutation == "gold_evidence_type":
+        gold["required_evidence_slots"] = "private-fixture-value"
+    elif mutation == "gold_evidence_enum":
+        gold["required_evidence_slots"] = ["private-fixture-value"]
+    elif mutation == "gold_evidence_duplicate":
+        gold["required_evidence_slots"] = ["logs", "logs"]
+    elif mutation == "gold_citation_type":
+        gold["required_citations"] = "private-fixture-value"
+    elif mutation == "gold_citation_value_type":
+        gold["required_citations"] = [{"private-fixture-value": True}]
+    elif mutation == "gold_citation_duplicate":
+        gold["required_citations"] = ["private-fixture-value"] * 2
+    else:
+        gold["leakage_marker"] = ["private-fixture-value"]
+
+    _assert_real_fixture_rejected_before_client_construction(
+        tmp_path,
+        payload,
+        error_message,
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error_message"),
+    [
+        ("required_not_useful", "B4 Gold action requirements are inconsistent"),
+        ("runtime_unavailable", "B4 Gold requires unavailable runtime evidence"),
+        ("support_unavailable", "B4 Gold requires unavailable support evidence"),
+        ("citation_unavailable", "B4 Gold citations must reference train cases"),
+        ("citation_without_retrieval", "B4 Gold citation requirements are inconsistent"),
+        ("citation_without_completion", "B4 Gold citation requirements are inconsistent"),
+        ("slot_without_request", "B4 Gold evidence requirements are inconsistent"),
+        ("receipt_unavailable", "B4 Gold requires unavailable evidence receipts"),
+        ("unsafe_route", "B4 Gold safety expectation is inconsistent"),
+    ],
+)
+def test_real_b4_gate_rejects_gold_not_proven_by_fixture_resources(
+    tmp_path: Path,
+    mutation: str,
+    error_message: str,
+) -> None:
+    payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    runtime_fixture = payload["fixtures"][0]
+    support_fixture = payload["fixtures"][1]
+    evidence_fixture = payload["fixtures"][2]
+    safety_fixture = payload["fixtures"][3]
+    if mutation == "required_not_useful":
+        runtime_fixture["gold"]["useful_action_kinds"] = []
+    elif mutation == "runtime_unavailable":
+        runtime_fixture["runtime_evidence"] = None
+    elif mutation == "support_unavailable":
+        support_fixture["train_cases"] = []
+        support_fixture["gold"]["required_citations"] = []
+    elif mutation == "citation_unavailable":
+        support_fixture["gold"]["required_citations"] = ["private-fixture-value"]
+    elif mutation == "citation_without_retrieval":
+        support_fixture["gold"]["required_action_kinds"] = []
+    elif mutation == "citation_without_completion":
+        support_fixture["gold"]["expected_stop_reason"] = "max_turns"
+    elif mutation == "slot_without_request":
+        evidence_fixture["gold"]["required_action_kinds"] = []
+        evidence_fixture["gold"]["useful_action_kinds"] = []
+    elif mutation == "receipt_unavailable":
+        evidence_fixture["evidence_receipts"] = []
+    else:
+        safety_fixture["gold"]["expected_route"] = "verify"
+
+    _assert_real_fixture_rejected_before_client_construction(
+        tmp_path,
+        payload,
+        error_message,
+    )
+
+
+def test_real_b4_gate_rejects_gold_marker_in_any_visible_case_before_clients(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    marker = payload["fixtures"][0]["gold"]["leakage_marker"]
+    payload["fixtures"][1]["train_cases"][0]["source"]["body"] += marker
+
+    _assert_real_fixture_rejected_before_client_construction(
+        tmp_path,
+        payload,
+        "B4 target/train input leaked hidden Gold",
+    )
+
+
 def test_b4_split_requires_disjoint_complete_regression_and_forward_hidden(
     tmp_path: Path,
 ) -> None:

@@ -53,6 +53,9 @@ from nbtriage.provider_failures import (
     classify_provider_http_status,
 )
 from nbtriage.rag import (
+    ALLOWED_EVIDENCE_SLOTS,
+    ALLOWED_PHASES,
+    ALLOWED_ROUTES,
     B1_PROMPT_ID,
     B1ModelClient,
     B1ModelRequest,
@@ -113,6 +116,46 @@ _CASE_ID_MAX_LENGTH = 128
 _CASE_ID_CHARACTERS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:-"
 )
+_FIXTURE_SET_FIELDS = frozenset(
+    {"schema_version", "fixture_set_id", "synthetic_only", "budget", "fixtures"}
+)
+_FIXTURE_FIELDS = frozenset(
+    {
+        "fixture_id",
+        "category",
+        "case",
+        "train_cases",
+        "runtime_evidence",
+        "evidence_receipts",
+        "b1_prediction",
+        "gold",
+        "b4_trials",
+    }
+)
+_FIXTURE_CATEGORIES = frozenset(
+    {
+        "runtime_observation",
+        "train_only_retrieval",
+        "evidence_pause_resume",
+        "pre_model_safety",
+    }
+)
+_TARGET_CASE_FIELDS = frozenset({"schema_version", "case_id", "source"})
+_TRAIN_CASE_FIELDS = frozenset({"case_id", "source"})
+_CASE_SOURCE_FIELDS = frozenset({"owner", "repository", "issue_number", "title", "body", "labels"})
+_GOLD_FIELDS = frozenset(
+    {
+        "expected_stop_reason",
+        "expected_route",
+        "expected_fault_phase",
+        "required_action_kinds",
+        "useful_action_kinds",
+        "required_evidence_slots",
+        "required_citations",
+        "leakage_marker",
+    }
+)
+_GOLD_EMBEDDED_FIELDS = frozenset({"curation", "gold", "oracle"})
 
 
 class AgentEvaluationError(ValueError):
@@ -2017,7 +2060,11 @@ def _load_fixtures(path: Path) -> tuple[bytes, dict[str, Any]]:
         payload = json.loads(raw)
     except (OSError, json.JSONDecodeError) as error:
         raise AgentEvaluationError(f"failed to load B4 fixtures {path}: {error}") from error
-    if not isinstance(payload, dict) or payload.get("schema_version") != B4_FIXTURE_SCHEMA_VERSION:
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != _FIXTURE_SET_FIELDS
+        or payload.get("schema_version") != B4_FIXTURE_SCHEMA_VERSION
+    ):
         raise AgentEvaluationError("B4 fixture set must be a schema_version 1 object")
     if payload.get("synthetic_only") is not True:
         raise AgentEvaluationError("B4 fixture set must declare synthetic_only=true")
@@ -2033,8 +2080,10 @@ def _load_fixtures(path: Path) -> tuple[bytes, dict[str, Any]]:
     seen_fixture_ids: set[str] = set()
     target_case_ids: set[str] = set()
     train_case_ids: set[str] = set()
+    visible_case_inputs: list[dict[str, Any]] = []
+    leakage_markers: list[str] = []
     for fixture in fixtures:
-        target_case_id, fixture_train_case_ids = _validate_fixture(
+        target_case_id, fixture_train_case_ids, leakage_marker = _validate_fixture(
             fixture,
             seen_fixture_ids,
         )
@@ -2045,72 +2094,237 @@ def _load_fixtures(path: Path) -> tuple[bytes, dict[str, Any]]:
             if train_case_id in train_case_ids:
                 raise AgentEvaluationError("B4 train case IDs must be unique")
             train_case_ids.add(train_case_id)
+        visible_case_inputs.extend((fixture["case"], *fixture["train_cases"]))
+        leakage_markers.append(leakage_marker)
     if target_case_ids & train_case_ids:
         raise AgentEvaluationError("B4 train and target case IDs must be disjoint")
+    visible_payload = json.dumps(visible_case_inputs, ensure_ascii=False, sort_keys=True)
+    if any(marker in visible_payload for marker in leakage_markers):
+        raise AgentEvaluationError("B4 target/train input leaked hidden Gold")
     return raw, payload
 
 
-def _validate_fixture(fixture: Any, seen: set[str]) -> tuple[str, tuple[str, ...]]:
+def _validate_fixture(
+    fixture: Any,
+    seen: set[str],
+) -> tuple[str, tuple[str, ...], str]:
     if not isinstance(fixture, dict):
         raise AgentEvaluationError("each B4 fixture must be an object")
+    if set(fixture) != _FIXTURE_FIELDS:
+        raise AgentEvaluationError("B4 fixture projection is invalid")
     fixture_id = fixture.get("fixture_id")
     if not isinstance(fixture_id, str) or not fixture_id or fixture_id in seen:
         raise AgentEvaluationError("B4 fixture IDs must be non-empty and unique")
     seen.add(fixture_id)
-    if not isinstance(fixture.get("category"), str) or not fixture["category"]:
-        raise AgentEvaluationError(f"fixture {fixture_id} must contain category")
+    category = fixture.get("category")
+    if not isinstance(category, str) or category not in _FIXTURE_CATEGORIES:
+        raise AgentEvaluationError("B4 fixture category is invalid")
     case = fixture.get("case")
-    if not isinstance(case, dict):
-        raise AgentEvaluationError(f"fixture {fixture_id} must contain a case")
-    target_case_id = _canonical_case_id(case.get("case_id"))
-    if target_case_id is None:
-        raise AgentEvaluationError("B4 target case IDs must be canonical")
-    if "curation" in case or "gold" in case:
-        raise AgentEvaluationError(f"fixture {fixture_id} case must not embed Gold")
+    target_case_id = _validate_case_projection(case, target=True)
     train_cases = fixture.get("train_cases")
     if not isinstance(train_cases, list):
-        raise AgentEvaluationError(f"fixture {fixture_id} train_cases must be a list")
+        raise AgentEvaluationError("B4 train_cases must be a list")
     train_case_ids = []
     for train_case in train_cases:
-        if not isinstance(train_case, dict):
-            raise AgentEvaluationError("B4 train case IDs must be canonical")
-        train_case_id = _canonical_case_id(train_case.get("case_id"))
-        if train_case_id is None:
-            raise AgentEvaluationError("B4 train case IDs must be canonical")
-        train_case_ids.append(train_case_id)
+        train_case_ids.append(_validate_case_projection(train_case, target=False))
     prediction = fixture.get("b1_prediction")
-    if not isinstance(prediction, dict) or set(prediction) != {
-        "route",
-        "fault_phase",
-        "missing_evidence",
-    }:
-        raise AgentEvaluationError(f"fixture {fixture_id} has invalid B1 baseline")
-    if not isinstance(prediction["missing_evidence"], list):
-        raise AgentEvaluationError(f"fixture {fixture_id} B1 evidence must be a list")
+    _validate_b1_prediction(prediction)
+    try:
+        runtime = _runtime_bundle(fixture.get("runtime_evidence"))
+    except (TypeError, ValueError) as error:
+        raise AgentEvaluationError("B4 runtime evidence is invalid") from error
+    try:
+        receipts = _receipts_for_run(
+            fixture.get("evidence_receipts", []),
+            run_id="fixture-validation",
+            case_id=target_case_id,
+        )
+    except (TypeError, ValueError) as error:
+        raise AgentEvaluationError("B4 evidence receipt templates are invalid") from error
     gold = fixture.get("gold")
-    required_gold = {
-        "expected_stop_reason",
-        "expected_route",
-        "expected_fault_phase",
-        "required_action_kinds",
-        "useful_action_kinds",
-        "required_evidence_slots",
-        "required_citations",
-        "leakage_marker",
-    }
-    if not isinstance(gold, dict) or set(gold) != required_gold:
-        raise AgentEvaluationError(f"fixture {fixture_id} has invalid Gold")
+    leakage_marker = _validate_gold(
+        gold,
+        train_case_ids=frozenset(train_case_ids),
+        runtime_available=runtime is not None,
+        receipt_slots=frozenset(receipts),
+    )
     trials = fixture.get("b4_trials")
     if not isinstance(trials, list) or len(trials) < 2:
-        raise AgentEvaluationError(f"fixture {fixture_id} requires at least two B4 trials")
+        raise AgentEvaluationError("each B4 fixture requires at least two B4 trials")
     for trial in trials:
         if not isinstance(trial, dict) or set(trial) != {"actions"}:
-            raise AgentEvaluationError(f"fixture {fixture_id} has invalid B4 trial")
+            raise AgentEvaluationError("B4 trial projection is invalid")
         if not isinstance(trial["actions"], list):
-            raise AgentEvaluationError(f"fixture {fixture_id} actions must be a list")
+            raise AgentEvaluationError("B4 trial actions must be a list")
         for action in trial["actions"]:
-            parse_agent_action(action)
-    return target_case_id, tuple(train_case_ids)
+            try:
+                parse_agent_action(action)
+            except (TypeError, ValueError) as error:
+                raise AgentEvaluationError("B4 trial contains an invalid action") from error
+    return target_case_id, tuple(train_case_ids), leakage_marker
+
+
+def _validate_case_projection(payload: Any, *, target: bool) -> str:
+    projection_name = "target" if target else "train"
+    expected_fields = _TARGET_CASE_FIELDS if target else _TRAIN_CASE_FIELDS
+    if isinstance(payload, dict) and _GOLD_EMBEDDED_FIELDS.intersection(payload):
+        raise AgentEvaluationError(f"B4 {projection_name} case must not embed Gold")
+    if not isinstance(payload, dict) or set(payload) != expected_fields:
+        raise AgentEvaluationError(f"B4 {projection_name} case projection is invalid")
+    if target and (
+        not isinstance(payload["schema_version"], int)
+        or isinstance(payload["schema_version"], bool)
+        or payload["schema_version"] != 1
+    ):
+        raise AgentEvaluationError("B4 target case projection is invalid")
+    case_id = _canonical_case_id(payload["case_id"])
+    if case_id is None:
+        raise AgentEvaluationError(f"B4 {projection_name} case IDs must be canonical")
+    _validate_case_source_projection(payload["source"], projection_name=projection_name)
+    return case_id
+
+
+def _validate_case_source_projection(payload: Any, *, projection_name: str) -> None:
+    if isinstance(payload, dict) and _GOLD_EMBEDDED_FIELDS.intersection(payload):
+        raise AgentEvaluationError(f"B4 {projection_name} case must not embed Gold")
+    if not isinstance(payload, dict) or set(payload) != _CASE_SOURCE_FIELDS:
+        raise AgentEvaluationError(f"B4 {projection_name} source projection is invalid")
+    if any(
+        not isinstance(payload[field], str) or not payload[field]
+        for field in ("owner", "repository", "title")
+    ):
+        raise AgentEvaluationError(f"B4 {projection_name} source projection is invalid")
+    if payload["body"] is not None and not isinstance(payload["body"], str):
+        raise AgentEvaluationError(f"B4 {projection_name} source projection is invalid")
+    issue_number = payload["issue_number"]
+    if not isinstance(issue_number, int) or isinstance(issue_number, bool) or issue_number < 1:
+        raise AgentEvaluationError(f"B4 {projection_name} source projection is invalid")
+    labels = payload["labels"]
+    if (
+        not isinstance(labels, list)
+        or any(not isinstance(label, str) or not label for label in labels)
+        or len(labels) != len(set(labels))
+    ):
+        raise AgentEvaluationError(f"B4 {projection_name} source projection is invalid")
+
+
+def _validate_b1_prediction(payload: Any) -> None:
+    expected_fields = {"route", "fault_phase", "missing_evidence"}
+    if not isinstance(payload, dict) or set(payload) != expected_fields:
+        raise AgentEvaluationError("B4 B1 baseline projection is invalid")
+    if not isinstance(payload["route"], str) or payload["route"] not in ALLOWED_ROUTES:
+        raise AgentEvaluationError("B4 B1 route is invalid")
+    if not isinstance(payload["fault_phase"], str) or payload["fault_phase"] not in ALLOWED_PHASES:
+        raise AgentEvaluationError("B4 B1 fault phase is invalid")
+    _validate_unique_enum_list(
+        payload["missing_evidence"],
+        allowed=ALLOWED_EVIDENCE_SLOTS,
+        error_message="B4 B1 evidence is invalid",
+    )
+
+
+def _validate_gold(
+    payload: Any,
+    *,
+    train_case_ids: frozenset[str],
+    runtime_available: bool,
+    receipt_slots: frozenset[str],
+) -> str:
+    if not isinstance(payload, dict) or set(payload) != _GOLD_FIELDS:
+        raise AgentEvaluationError("B4 Gold projection is invalid")
+    try:
+        expected_stop = AgentStopReason(payload["expected_stop_reason"])
+    except (TypeError, ValueError) as error:
+        raise AgentEvaluationError("B4 Gold expected stop reason is invalid") from error
+    if (
+        not isinstance(payload["expected_route"], str)
+        or payload["expected_route"] not in ALLOWED_ROUTES
+    ):
+        raise AgentEvaluationError("B4 Gold expected route is invalid")
+    if (
+        not isinstance(payload["expected_fault_phase"], str)
+        or payload["expected_fault_phase"] not in ALLOWED_PHASES
+    ):
+        raise AgentEvaluationError("B4 Gold expected fault phase is invalid")
+    action_values = frozenset(action.value for action in AgentActionKind)
+    required_actions = _validate_unique_enum_list(
+        payload["required_action_kinds"],
+        allowed=action_values,
+        error_message="B4 Gold required action kinds are invalid",
+    )
+    useful_actions = _validate_unique_enum_list(
+        payload["useful_action_kinds"],
+        allowed=action_values,
+        error_message="B4 Gold useful action kinds are invalid",
+    )
+    required_slots = _validate_unique_enum_list(
+        payload["required_evidence_slots"],
+        allowed=ALLOWED_EVIDENCE_SLOTS,
+        error_message="B4 Gold required evidence slots are invalid",
+    )
+    required_citations = _validate_citation_list(payload["required_citations"])
+    leakage_marker = payload["leakage_marker"]
+    if (
+        not isinstance(leakage_marker, str)
+        or not leakage_marker
+        or len(leakage_marker) > 128
+        or "\x00" in leakage_marker
+    ):
+        raise AgentEvaluationError("B4 Gold leakage marker is invalid")
+
+    if not required_actions <= useful_actions:
+        raise AgentEvaluationError("B4 Gold action requirements are inconsistent")
+    used_actions = required_actions | useful_actions
+    if AgentActionKind.READ_RUNTIME_EVIDENCE.value in used_actions and not runtime_available:
+        raise AgentEvaluationError("B4 Gold requires unavailable runtime evidence")
+    if AgentActionKind.RETRIEVE_SUPPORT_EVIDENCE.value in used_actions and not train_case_ids:
+        raise AgentEvaluationError("B4 Gold requires unavailable support evidence")
+    if required_citations - train_case_ids:
+        raise AgentEvaluationError("B4 Gold citations must reference train cases")
+    if required_citations and (
+        AgentActionKind.RETRIEVE_SUPPORT_EVIDENCE.value not in required_actions
+        or expected_stop is not AgentStopReason.COMPLETED
+    ):
+        raise AgentEvaluationError("B4 Gold citation requirements are inconsistent")
+    request_evidence = AgentActionKind.REQUEST_EVIDENCE.value
+    if required_slots and request_evidence not in required_actions:
+        raise AgentEvaluationError("B4 Gold evidence requirements are inconsistent")
+    if required_slots - receipt_slots:
+        raise AgentEvaluationError("B4 Gold requires unavailable evidence receipts")
+    if expected_stop is AgentStopReason.SAFETY_REJECTED and (
+        payload["expected_route"] != "abstain"
+        or required_actions
+        or useful_actions
+        or required_slots
+        or required_citations
+    ):
+        raise AgentEvaluationError("B4 Gold safety expectation is inconsistent")
+    return leakage_marker
+
+
+def _validate_unique_enum_list(
+    payload: Any,
+    *,
+    allowed: set[str] | frozenset[str],
+    error_message: str,
+) -> frozenset[str]:
+    if (
+        not isinstance(payload, list)
+        or any(not isinstance(item, str) or item not in allowed for item in payload)
+        or len(payload) != len(set(payload))
+    ):
+        raise AgentEvaluationError(error_message)
+    return frozenset(payload)
+
+
+def _validate_citation_list(payload: Any) -> frozenset[str]:
+    if (
+        not isinstance(payload, list)
+        or any(_canonical_case_id(item) is None for item in payload)
+        or len(payload) != len(set(payload))
+    ):
+        raise AgentEvaluationError("B4 Gold required citations are invalid")
+    return frozenset(payload)
 
 
 def _canonical_case_id(value: Any) -> str | None:
