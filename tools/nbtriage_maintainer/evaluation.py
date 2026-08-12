@@ -123,6 +123,8 @@ class EvaluationDataset:
     cases: dict[str, dict[str, Any]]
     split_raw: bytes
     case_raw_by_id: dict[str, bytes]
+    cases_dir: Path
+    split_path: Path
 
 
 @dataclass
@@ -282,7 +284,9 @@ async def evaluate_b1(
 
 
 def load_evaluation_dataset(cases_dir: Path, split_path: Path) -> EvaluationDataset:
-    split_raw, split_payload = _load_object(split_path)
+    resolved_cases_dir = cases_dir.resolve()
+    resolved_split_path = split_path.resolve()
+    split_raw, split_payload = _load_object(resolved_split_path)
     split_id = split_payload.get("split_id")
     if not isinstance(split_id, str) or not split_id:
         raise EvaluationError("split manifest must contain split_id")
@@ -302,8 +306,16 @@ def load_evaluation_dataset(cases_dir: Path, split_path: Path) -> EvaluationData
         assigned_case_ids.update(case_ids)
 
     needed_case_ids = {case_id for case_ids in split_case_ids.values() for case_id in case_ids}
-    cases, case_raw_by_id = _load_cases(cases_dir, needed_case_ids)
-    return EvaluationDataset(split_id, split_case_ids, cases, split_raw, case_raw_by_id)
+    cases, case_raw_by_id = _load_cases(resolved_cases_dir, needed_case_ids)
+    return EvaluationDataset(
+        split_id,
+        split_case_ids,
+        cases,
+        split_raw,
+        case_raw_by_id,
+        resolved_cases_dir,
+        resolved_split_path,
+    )
 
 
 def _build_evaluation_report(
@@ -361,6 +373,8 @@ def _build_evaluation_report(
         "split_id": dataset.split_id,
         "generated_at": datetime.now(UTC).isoformat(),
         "source": {
+            "cases_dir": dataset.cases_dir.as_posix(),
+            "split_path": dataset.split_path.as_posix(),
             "split_sha256": hashlib.sha256(dataset.split_raw).hexdigest(),
             "case_corpus_sha256": case_corpus_sha256(
                 dataset.case_raw_by_id,

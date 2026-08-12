@@ -23,6 +23,7 @@ from tools.nbtriage_maintainer.bot_docs_evaluation import (
     BOT_DOCS_EVALUATION_ID,
     evaluate_bot_docs_retrieval,
 )
+from tools.nbtriage_maintainer.evaluation import evaluate_b0
 from tools.nbtriage_maintainer.evidence_policy import B3_EVIDENCE_POLICY_ID
 from tools.nbtriage_maintainer.evidence_policy_evaluation import evaluate_b3_evidence_policy
 from tools.nbtriage_maintainer.evidence_receipt_evaluation import (
@@ -217,6 +218,8 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
 
     if evaluation_id in _B0_B1_EVALUATION_IDS:
         _validate_b0_b1_provenance(payload)
+    if evaluation_id == "b0-checklist-v1":
+        _validate_b0_reproducibility(payload)
     if evaluation_id == ANSWER_QUALITY_EVALUATION_ID:
         _validate_answer_quality_reproducibility(payload)
     if evaluation_id == S3_EVALUATION_ID:
@@ -386,6 +389,8 @@ def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:
     if not isinstance(source, dict):
         raise MLflowTrackingError("B0/B1 evaluation artifact must contain source provenance")
     required_source_fields = {
+        "cases_dir",
+        "split_path",
         "split_sha256",
         "case_corpus_sha256",
         "case_corpus_scope",
@@ -393,6 +398,15 @@ def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:
     }
     if set(source) != required_source_fields:
         raise MLflowTrackingError("B0/B1 evaluation source provenance is invalid")
+    for field in ("cases_dir", "split_path"):
+        value = source.get(field)
+        if (
+            not isinstance(value, str)
+            or not value
+            or not Path(value).is_absolute()
+            or Path(value).resolve().as_posix() != value
+        ):
+            raise MLflowTrackingError("B0/B1 evaluation source paths must be absolute")
     for field in ("split_sha256", "case_corpus_sha256"):
         value = source.get(field)
         if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
@@ -419,6 +433,15 @@ def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:
         or re.fullmatch(r"[0-9a-f]{64}", revision.removeprefix(prefix)) is None
     ):
         raise MLflowTrackingError("B0/B1 evaluation code revision is invalid")
+
+
+def _validate_b0_reproducibility(payload: dict[str, Any]) -> None:
+    source = payload["source"]
+    try:
+        reproduced = evaluate_b0(Path(source["cases_dir"]), Path(source["split_path"]))
+    except Exception as error:
+        raise MLflowTrackingError("B0 evaluation report is not reproducible") from error
+    _require_reproduced_report(payload, reproduced, report_name="B0 evaluation")
 
 
 def _load_related_audit(artifact: _LoadedArtifact) -> _LoadedArtifact | None:

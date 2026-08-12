@@ -109,6 +109,8 @@ def test_evaluate_b0_reports_frozen_splits_and_missing_s3(tmp_path: Path) -> Non
 
     report = evaluate_b0(cases_dir, split_path)
 
+    assert report["source"]["cases_dir"] == cases_dir.resolve().as_posix()
+    assert report["source"]["split_path"] == split_path.resolve().as_posix()
     assert report["source"]["split_sha256"] == hashlib.sha256(split_path.read_bytes()).hexdigest()
     assert report["source"]["case_corpus_scope"] == "scored_splits"
     assert report["source"]["case_count"] == 3
@@ -511,6 +513,8 @@ def test_evaluate_b1_reuses_shared_metrics_and_response_cache(tmp_path: Path) ->
     )
 
     assert first_report["evaluation_id"] == "b1-rag-only-v1"
+    assert first_report["source"]["cases_dir"] == cases_dir.resolve().as_posix()
+    assert first_report["source"]["split_path"] == split_path.resolve().as_posix()
     assert first_report["summary"]["model"] == "fixture-model"
     assert first_report["summary"]["prompt_id"] == "b1-rag-only-v3"
     assert first_report["summary"]["model_calls"] == 3

@@ -23,6 +23,7 @@ from tools.nbtriage_maintainer.bot_docs_evaluation import (
     DEFAULT_BOT_DOCS_FIXTURE_PATH,
     evaluate_bot_docs_retrieval,
 )
+from tools.nbtriage_maintainer.evaluation import evaluate_b0
 from tools.nbtriage_maintainer.evidence_policy_evaluation import evaluate_b3_evidence_policy
 from tools.nbtriage_maintainer.evidence_receipt_evaluation import evaluate_b3_evidence_receipts
 from tools.nbtriage_maintainer.mlflow_tracking import (
@@ -164,6 +165,10 @@ def _b1_report() -> dict[str, Any]:
         },
         "split_id": "data-gate-v1",
         "source": {
+            "cases_dir": (Path.cwd() / "data/cases").resolve().as_posix(),
+            "split_path": (Path.cwd() / "evals/datasets/splits/data-gate-v1.json")
+            .resolve()
+            .as_posix(),
             "split_sha256": "a" * 64,
             "case_corpus_sha256": "b" * 64,
             "case_corpus_scope": "train_and_scored_splits",
@@ -171,6 +176,47 @@ def _b1_report() -> dict[str, Any]:
         },
         "summary": {"provider": "fixture-provider", "model": "fixture-model"},
     }
+
+
+def _write_b0_report(tmp_path: Path) -> Path:
+    cases_dir = tmp_path / "b0-cases"
+    cases_dir.mkdir()
+    case_id = "b0-case"
+    _write_json(
+        cases_dir / f"{case_id}.json",
+        {
+            "case_id": case_id,
+            "source": {
+                "owner": "nonebot",
+                "repository": "plugin-demo",
+                "title": "Unexpected behavior",
+                "body": "Python 3.12 traceback and reproduction steps are available.",
+                "labels": [],
+            },
+            "curation": {
+                "support_level": "s1_verify",
+                "execution_mode": "contract_exec",
+                "fault_phase": "handle",
+                "symptoms": ["exception"],
+                "candidate_owners": ["plugin"],
+                "versions": {"python": "3.12"},
+                "environment": {"os": "Windows"},
+                "required_evidence_gaps": [],
+                "unknowns": [],
+            },
+        },
+    )
+    split_path = tmp_path / "b0-split.json"
+    _write_json(
+        split_path,
+        {
+            "split_id": "b0-test-split",
+            "splits": {"train": [{"case_id": case_id}]},
+        },
+    )
+    report_path = tmp_path / "b0-report.json"
+    _write_json(report_path, evaluate_b0(cases_dir, split_path))
+    return report_path
 
 
 def _write_answer_quality_calibration_report(tmp_path: Path) -> Path:
@@ -358,6 +404,41 @@ def test_b1_publish_maps_evaluator_provenance_separately_from_publisher_git(
     )
 
 
+def test_b0_report_publishes_only_after_offline_reproduction(tmp_path: Path) -> None:
+    report_path = _write_b0_report(tmp_path)
+    mlflow = _FakeMLflow()
+
+    publication = publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    assert publication.created is True
+    assert len(mlflow.runs) == 1
+
+
+def test_b0_report_rejects_metric_tampering_before_mlflow_call(tmp_path: Path) -> None:
+    report_path = _write_b0_report(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["metrics_by_split"]["train"]["route_accuracy"] = 0.0
+    _write_json(report_path, payload)
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+def test_b0_report_rejects_missing_case_source_before_mlflow_call(tmp_path: Path) -> None:
+    report_path = _write_b0_report(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    Path(payload["source"]["cases_dir"], "b0-case.json").unlink()
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
 @pytest.mark.parametrize(
     ("target", "field", "value"),
     [
@@ -366,6 +447,8 @@ def test_b1_publish_maps_evaluator_provenance_separately_from_publisher_git(
         ("source", "case_corpus_sha256", "A" * 64),
         ("source", "case_corpus_scope", "all_cases"),
         ("source", "case_count", True),
+        ("source", "cases_dir", "relative/cases"),
+        ("source", "split_path", "relative/split.json"),
         ("contract", "code_revision", "git:main"),
     ],
 )
