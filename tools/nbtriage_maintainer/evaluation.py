@@ -7,7 +7,8 @@ import json
 import os
 import re
 from collections import Counter
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -77,6 +78,26 @@ GAP_KEYWORDS = {
     "raw_close_evidence": ("close code", "close reason", "关闭码", "关闭原因"),
 }
 _CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
+
+
+class EvaluationReportPublishError(OSError):
+    """终态报告无法发布，但完整结果已保留为可恢复工件。"""
+
+    def __init__(self, recovery_path: Path) -> None:
+        self.recovery_path = recovery_path
+        super().__init__(
+            "evaluation report target could not be published; "
+            f"complete report retained at {recovery_path}"
+        )
+
+
+@dataclass(frozen=True)
+class EvaluationReportReservation:
+    """一次终态报告发布权预留。"""
+
+    report_path: Path
+    marker_path: Path
+    token: str
 
 
 class EvaluationError(ValueError):
@@ -379,6 +400,92 @@ def write_evaluation_report(path: Path, report: dict[str, Any]) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+@contextmanager
+def reserve_new_evaluation_report(path: Path) -> Iterator[EvaluationReportReservation]:
+    """在昂贵评测开始前独占预留一个终态报告目标。寻址文件不是报告本身。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if os.path.lexists(path):
+        raise FileExistsError("evaluation report target already exists")
+
+    token = uuid4().hex
+    marker_path = path.with_name(f".{path.name}.reservation")
+    link_probe_path = path.with_name(f".{path.name}.{token}.link-probe")
+    marker_content = f"nbtriage-evaluation-report-reservation-v1:{token}\n".encode()
+    descriptor = os.open(
+        marker_path,
+        os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
+        0o600,
+    )
+    try:
+        try:
+            os.write(descriptor, marker_content)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.link(marker_path, link_probe_path)
+        link_probe_path.unlink()
+        if os.path.lexists(path):
+            raise FileExistsError("evaluation report target already exists")
+
+        yield EvaluationReportReservation(
+            report_path=path,
+            marker_path=marker_path,
+            token=token,
+        )
+    finally:
+        with suppress(OSError):
+            link_probe_path.unlink(missing_ok=True)
+        with suppress(OSError):
+            if marker_path.read_bytes() == marker_content:
+                marker_path.unlink()
+
+
+def publish_reserved_evaluation_report(
+    reservation: EvaluationReportReservation,
+    report: dict[str, Any],
+) -> None:
+    """发布已预留的完整报告；冲突时保留一份不会覆盖的恢复工件。"""
+    marker_content = f"nbtriage-evaluation-report-reservation-v1:{reservation.token}\n".encode()
+    temporary = reservation.report_path.with_name(
+        f".{reservation.report_path.name}.{reservation.token}.pending"
+    )
+    recovery = reservation.report_path.with_name(
+        f"{reservation.report_path.name}.{reservation.token}.recovery.json"
+    )
+    report_bytes = (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    descriptor = os.open(
+        temporary,
+        os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(report_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+        raise
+    published = False
+    try:
+        if reservation.marker_path.read_bytes() != marker_content:
+            raise FileExistsError("evaluation report reservation ownership changed")
+        os.link(temporary, reservation.report_path)
+        published = True
+    except OSError as error:
+        try:
+            os.link(temporary, recovery)
+            temporary.unlink()
+        except OSError:
+            recovery = temporary
+        raise EvaluationReportPublishError(recovery) from error
+    finally:
+        if published:
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)
 
 
 def write_new_evaluation_report(path: Path, report: dict[str, Any]) -> None:

@@ -59,6 +59,8 @@ from tools.nbtriage_maintainer.evaluation import (
     EvaluationError,
     evaluate_b0,
     evaluate_b1,
+    publish_reserved_evaluation_report,
+    reserve_new_evaluation_report,
     write_new_evaluation_report,
 )
 from tools.nbtriage_maintainer.evidence_policy import EvidencePolicyError
@@ -1359,31 +1361,31 @@ def _run_evaluate_b1_openai(args: argparse.Namespace) -> int:
         print("B1 evaluation failed: OPENAI_API_KEY is not set", file=sys.stderr)
         return 1
     try:
-        _require_new_report_target(args.report)
-        create_client = _load_model_symbol(
-            "nbtriage.openai_adapter",
-            "create_openai_responses_b1_client",
-        )
-        client = create_client(
-            api_key=api_key,
-            model=args.model,
-            timeout_seconds=args.timeout,
-            max_calls=args.max_model_calls,
-        )
-        report = asyncio.run(
-            evaluate_b1(
-                args.cases_dir,
-                args.split,
-                client=client,
-                provider="openai-responses",
-                model=args.model,
-                generation_config={"max_output_tokens": args.max_output_tokens},
-                cache_dir=args.cache_dir,
-                score_splits=(args.score_split,),
-                declared_budget_usd=args.declared_budget_usd,
+        with reserve_new_evaluation_report(args.report) as reservation:
+            create_client = _load_model_symbol(
+                "nbtriage.openai_adapter",
+                "create_openai_responses_b1_client",
             )
-        )
-        write_new_evaluation_report(args.report, report)
+            client = create_client(
+                api_key=api_key,
+                model=args.model,
+                timeout_seconds=args.timeout,
+                max_calls=args.max_model_calls,
+            )
+            report = asyncio.run(
+                evaluate_b1(
+                    args.cases_dir,
+                    args.split,
+                    client=client,
+                    provider="openai-responses",
+                    model=args.model,
+                    generation_config={"max_output_tokens": args.max_output_tokens},
+                    cache_dir=args.cache_dir,
+                    score_splits=(args.score_split,),
+                    declared_budget_usd=args.declared_budget_usd,
+                )
+            )
+            publish_reserved_evaluation_report(reservation, report)
     except (EvaluationError, B1Error, B1ProviderError, OSError) as error:
         print(f"B1 evaluation failed: {error}", file=sys.stderr)
         return 1
@@ -1424,35 +1426,35 @@ def _run_evaluate_b1_deepseek(args: argparse.Namespace) -> int:
         )
         return 1
     try:
-        _require_new_report_target(args.report)
-        client_type = _load_model_symbol(
-            "tools.nbtriage_maintainer.providers",
-            "DeepSeekResponsesB1Client",
-            install_hint="run 'uv sync --group maintainer' from the repository",
-        )
-        client = client_type(
-            api_key=api_key,
-            timeout_seconds=args.timeout,
-            max_calls=args.max_model_calls,
-        )
-        report = asyncio.run(
-            evaluate_b1(
-                args.cases_dir,
-                args.split,
-                client=client,
-                provider="deepseek-responses",
-                model=args.model,
-                generation_config={
-                    "max_output_tokens": args.max_output_tokens,
-                    "reasoning_effort": "none",
-                    "temperature": 0,
-                },
-                cache_dir=args.cache_dir,
-                score_splits=(args.score_split,),
-                declared_budget_usd=args.declared_budget_usd,
+        with reserve_new_evaluation_report(args.report) as reservation:
+            client_type = _load_model_symbol(
+                "tools.nbtriage_maintainer.providers",
+                "DeepSeekResponsesB1Client",
+                install_hint="run 'uv sync --group maintainer' from the repository",
             )
-        )
-        write_new_evaluation_report(args.report, report)
+            client = client_type(
+                api_key=api_key,
+                timeout_seconds=args.timeout,
+                max_calls=args.max_model_calls,
+            )
+            report = asyncio.run(
+                evaluate_b1(
+                    args.cases_dir,
+                    args.split,
+                    client=client,
+                    provider="deepseek-responses",
+                    model=args.model,
+                    generation_config={
+                        "max_output_tokens": args.max_output_tokens,
+                        "reasoning_effort": "none",
+                        "temperature": 0,
+                    },
+                    cache_dir=args.cache_dir,
+                    score_splits=(args.score_split,),
+                    declared_budget_usd=args.declared_budget_usd,
+                )
+            )
+            publish_reserved_evaluation_report(reservation, report)
     except (EvaluationError, B1Error, B1ProviderError, OSError) as error:
         print(f"B1 evaluation failed: {error}", file=sys.stderr)
         return 1

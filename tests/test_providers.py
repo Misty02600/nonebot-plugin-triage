@@ -424,3 +424,135 @@ def test_b1_cli_does_not_start_or_overwrite_existing_report(
 
     assert exit_code == 1
     assert report_path.read_text(encoding="utf-8") == '{"existing":true}\n'
+
+
+@pytest.mark.parametrize(
+    ("command", "api_key_env", "model", "max_output_tokens", "max_model_calls"),
+    [
+        ("evaluate-b1-openai", "OPENAI_API_KEY", "fixture-model", "400", "36"),
+        (
+            "evaluate-b1-deepseek",
+            "DEEPSEEK_API_KEY",
+            "deepseek-v4-flash",
+            "1024",
+            "11",
+        ),
+    ],
+)
+def test_b1_cli_checks_hard_link_support_before_loading_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    api_key_env: str,
+    model: str,
+    max_output_tokens: str,
+    max_model_calls: str,
+) -> None:
+    report_path = tmp_path / "paid-report.json"
+    monkeypatch.setenv(api_key_env, "isolation-test-key")
+    monkeypatch.setattr(
+        "tools.nbtriage_maintainer.evaluation.os.link",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("link unavailable")),
+    )
+
+    def unexpected_provider_load(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("B1 provider must not load when report publication is unsupported")
+
+    monkeypatch.setattr(
+        "tools.nbtriage_maintainer.cli._load_model_symbol",
+        unexpected_provider_load,
+    )
+    monkeypatch.setattr(
+        "tools.nbtriage_maintainer.cli.evaluate_b1",
+        unexpected_provider_load,
+    )
+
+    exit_code = main(
+        [
+            command,
+            "--model",
+            model,
+            "--max-output-tokens",
+            max_output_tokens,
+            "--max-model-calls",
+            max_model_calls,
+            "--declared-budget-usd",
+            "2",
+            "--score-split",
+            "validation",
+            "--report",
+            str(report_path),
+            "--confirm-paid-run",
+        ]
+    )
+
+    assert exit_code == 1
+    assert not report_path.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("command", "api_key_env", "model", "max_output_tokens", "max_model_calls"),
+    [
+        ("evaluate-b1-openai", "OPENAI_API_KEY", "fixture-model", "400", "36"),
+        (
+            "evaluate-b1-deepseek",
+            "DEEPSEEK_API_KEY",
+            "deepseek-v4-flash",
+            "1024",
+            "11",
+        ),
+    ],
+)
+def test_b1_cli_retains_paid_result_when_target_appears_after_provider_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+    api_key_env: str,
+    model: str,
+    max_output_tokens: str,
+    max_model_calls: str,
+) -> None:
+    report_path = tmp_path / "paid-report.json"
+    monkeypatch.setenv(api_key_env, "isolation-test-key")
+    monkeypatch.setattr(
+        "tools.nbtriage_maintainer.cli._load_model_symbol",
+        lambda *_args, **_kwargs: lambda **_client_kwargs: object(),
+    )
+
+    async def raced_evaluation(*_args: object, **_kwargs: object) -> dict[str, object]:
+        report_path.write_text('{"external":true}\n', encoding="utf-8")
+        return {"evaluation_id": "paid-fixture", "summary": {"model_calls": 1}}
+
+    monkeypatch.setattr("tools.nbtriage_maintainer.cli.evaluate_b1", raced_evaluation)
+
+    exit_code = main(
+        [
+            command,
+            "--model",
+            model,
+            "--max-output-tokens",
+            max_output_tokens,
+            "--max-model-calls",
+            max_model_calls,
+            "--declared-budget-usd",
+            "2",
+            "--score-split",
+            "validation",
+            "--report",
+            str(report_path),
+            "--confirm-paid-run",
+        ]
+    )
+
+    assert exit_code == 1
+    assert report_path.read_text(encoding="utf-8") == '{"external":true}\n'
+    recovery_paths = list(tmp_path.glob("paid-report.json.*.recovery.json"))
+    assert len(recovery_paths) == 1
+    assert json.loads(recovery_paths[0].read_text(encoding="utf-8")) == {
+        "evaluation_id": "paid-fixture",
+        "summary": {"model_calls": 1},
+    }
+    assert str(recovery_paths[0]) in capsys.readouterr().err
+    assert list(tmp_path.glob(".*.reservation")) == []

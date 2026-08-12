@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 from tools.nbtriage_maintainer.cli import main
-from tools.nbtriage_maintainer.evaluation import EvaluationError, evaluate_b0, evaluate_b1
+from tools.nbtriage_maintainer.evaluation import (
+    EvaluationError,
+    EvaluationReportPublishError,
+    evaluate_b0,
+    evaluate_b1,
+    publish_reserved_evaluation_report,
+    reserve_new_evaluation_report,
+)
 
 from nbtriage.rag import B1ModelResponse
 
@@ -148,6 +155,62 @@ def test_evaluate_b0_cli_writes_report(tmp_path: Path) -> None:
     assert json.loads(report_path.read_text(encoding="utf-8"))["evaluation_id"] == (
         "b0-checklist-v1"
     )
+
+
+def test_evaluation_report_reservation_is_not_visible_as_report(tmp_path: Path) -> None:
+    report_path = tmp_path / "reports" / "paid.json"
+
+    with (
+        reserve_new_evaluation_report(report_path) as reservation,
+        pytest.raises(FileExistsError),
+    ):
+        assert not report_path.exists()
+        assert reservation.marker_path.is_file()
+        with reserve_new_evaluation_report(report_path):
+            pass
+
+    assert not reservation.marker_path.exists()
+
+
+def test_evaluation_report_reservation_is_cleaned_after_failure(tmp_path: Path) -> None:
+    report_path = tmp_path / "reports" / "paid.json"
+
+    with (
+        pytest.raises(RuntimeError, match="provider failed"),
+        reserve_new_evaluation_report(report_path) as reservation,
+    ):
+        raise RuntimeError("provider failed")
+
+    assert not report_path.exists()
+    assert not reservation.marker_path.exists()
+
+
+def test_publish_reserved_evaluation_report_atomically_publishes(tmp_path: Path) -> None:
+    report_path = tmp_path / "reports" / "paid.json"
+    report = {"evaluation_id": "paid", "summary": {"model_calls": 1}}
+
+    with reserve_new_evaluation_report(report_path) as reservation:
+        publish_reserved_evaluation_report(reservation, report)
+
+    assert json.loads(report_path.read_text(encoding="utf-8")) == report
+    assert list(report_path.parent.glob("*.recovery.json")) == []
+    assert list(report_path.parent.glob("*.pending")) == []
+
+
+def test_publish_reserved_evaluation_report_retains_complete_result_on_target_race(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "reports" / "paid.json"
+    report = {"evaluation_id": "paid", "summary": {"model_calls": 1}}
+
+    with reserve_new_evaluation_report(report_path) as reservation:
+        report_path.write_text('{"external":true}\n', encoding="utf-8")
+        with pytest.raises(EvaluationReportPublishError) as raised:
+            publish_reserved_evaluation_report(reservation, report)
+
+    assert report_path.read_text(encoding="utf-8") == '{"external":true}\n'
+    assert json.loads(raised.value.recovery_path.read_text(encoding="utf-8")) == report
+    assert not reservation.marker_path.exists()
 
 
 def test_evaluate_b0_cli_does_not_overwrite_existing_report(
