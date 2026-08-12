@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import importlib.metadata
 import json
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -20,6 +22,15 @@ from nbtriage.artifact_revisions import (
 from nbtriage.module_source_revisions import scan_python_module_source
 
 
+def _record_hash(content: bytes) -> str:
+    digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=")
+    return f"sha256={digest.decode('ascii')}"
+
+
+def _distribution_file(locator: str, content: bytes) -> DistributionFile:
+    return DistributionFile(locator, _record_hash(content), len(content))
+
+
 class FakeMetadataAdapter:
     def __init__(
         self,
@@ -29,12 +40,18 @@ class FakeMetadataAdapter:
         files: Mapping[str, Sequence[DistributionFile]] | None = None,
         contents: Mapping[tuple[str, str], bytes] | None = None,
         direct_urls: Mapping[str, str] | None = None,
+        file_snapshots: Mapping[str, Sequence[Sequence[DistributionFile]]] | None = None,
+        content_snapshots: Mapping[tuple[str, str], Sequence[bytes]] | None = None,
     ) -> None:
         self._packages = packages
         self._versions = versions or {}
         self._files = files or {}
         self._contents = contents or {}
         self._direct_urls = direct_urls or {}
+        self._file_snapshots = {key: list(value) for key, value in (file_snapshots or {}).items()}
+        self._content_snapshots = {
+            key: list(value) for key, value in (content_snapshots or {}).items()
+        }
 
     def packages_distributions(self) -> Mapping[str, Sequence[str]]:
         return self._packages
@@ -43,6 +60,9 @@ class FakeMetadataAdapter:
         return self._versions.get(distribution_name)
 
     def files(self, distribution_name: str) -> Sequence[DistributionFile] | None:
+        snapshots = self._file_snapshots.get(distribution_name)
+        if snapshots:
+            return snapshots.pop(0)
         return self._files.get(distribution_name)
 
     def read_file(
@@ -52,7 +72,9 @@ class FakeMetadataAdapter:
         *,
         max_bytes: int,
     ) -> bytes | None:
-        content = self._contents.get((distribution_name, locator))
+        key = (distribution_name, locator)
+        snapshots = self._content_snapshots.get(key)
+        content = snapshots.pop(0) if snapshots else self._contents.get(key)
         if content is None:
             return None
         return content[: max_bytes + 1]
@@ -149,6 +171,8 @@ def test_local_plugin_revision_does_not_include_sibling_plugin_source(tmp_path: 
 
 
 def test_wheel_revision_uses_record_hash_and_fallback_content_digest() -> None:
+    package_init = b"enabled = True\n"
+    config = b"enabled=1\n"
     adapter = FakeMetadataAdapter(
         packages={"nonebot_plugin_demo": ("nonebot-plugin-demo",)},
         versions={"nonebot-plugin-demo": "1.2.3"},
@@ -156,24 +180,32 @@ def test_wheel_revision_uses_record_hash_and_fallback_content_digest() -> None:
             "nonebot-plugin-demo": (
                 DistributionFile(
                     "nonebot_plugin_demo/__init__.py",
-                    record_hash="sha256=record-value",
-                    size=12,
+                    record_hash=_record_hash(package_init),
+                    size=len(package_init),
                 ),
-                DistributionFile("nonebot_plugin_demo/config.py", size=10),
+                _distribution_file("nonebot_plugin_demo/config.py", config),
             )
         },
-        contents={("nonebot-plugin-demo", "nonebot_plugin_demo/config.py"): b"enabled=1\n"},
+        contents={
+            ("nonebot-plugin-demo", "nonebot_plugin_demo/__init__.py"): package_init,
+            ("nonebot-plugin-demo", "nonebot_plugin_demo/config.py"): config,
+        },
     )
 
     revision = build_artifact_revision("nonebot_plugin_demo", metadata_adapter=adapter)
 
     assert revision.status is ArtifactRevisionStatus.LOCATED
     assert revision.source_kind is ArtifactSourceKind.WHEEL
-    assert revision.module_source_manifest is None
+    assert revision.module_source_manifest is not None
+    assert [item.relative_path for item in revision.module_source_manifest.files] == [
+        "__init__.py",
+        "config.py",
+    ]
     assert revision.distribution_name == "nonebot-plugin-demo"
     assert revision.distribution_version == "1.2.3"
-    assert [item.basis for item in revision.evidence] == ["record_hash", "content_sha256"]
+    assert [item.basis for item in revision.evidence] == ["record_hash", "record_hash"]
 
+    changed_package_init = b"enabled = False\n"
     changed = FakeMetadataAdapter(
         packages={"nonebot_plugin_demo": ("nonebot-plugin-demo",)},
         versions={"nonebot-plugin-demo": "1.2.3"},
@@ -181,10 +213,13 @@ def test_wheel_revision_uses_record_hash_and_fallback_content_digest() -> None:
             "nonebot-plugin-demo": (
                 DistributionFile(
                     "nonebot_plugin_demo/__init__.py",
-                    record_hash="sha256=changed-record",
-                    size=12,
+                    record_hash=_record_hash(changed_package_init),
+                    size=len(changed_package_init),
                 ),
             )
+        },
+        contents={
+            ("nonebot-plugin-demo", "nonebot_plugin_demo/__init__.py"): changed_package_init,
         },
     )
     assert (
@@ -194,15 +229,14 @@ def test_wheel_revision_uses_record_hash_and_fallback_content_digest() -> None:
 
 
 def test_vcs_commit_participates_in_revision() -> None:
+    content = b"\n"
+
     def adapter_for(commit: str) -> FakeMetadataAdapter:
         return FakeMetadataAdapter(
             packages={"nonebot_plugin_demo": ("demo-dist",)},
             versions={"demo-dist": "0.1.0"},
-            files={
-                "demo-dist": (
-                    DistributionFile("nonebot_plugin_demo/__init__.py", "sha256=same", 1),
-                )
-            },
+            files={"demo-dist": (_distribution_file("nonebot_plugin_demo/__init__.py", content),)},
+            contents={("demo-dist", "nonebot_plugin_demo/__init__.py"): content},
             direct_urls={
                 "demo-dist": json.dumps(
                     {"url": "https://example.invalid/repo.git", "vcs_info": {"commit_id": commit}}
@@ -215,7 +249,215 @@ def test_vcs_commit_participates_in_revision() -> None:
 
     assert first.source_kind is ArtifactSourceKind.VCS
     assert first.vcs_commit == "abc123"
+    assert first.module_source_manifest is not None
     assert first.revision != second.revision
+
+
+def test_flat_wheel_module_manifest_excludes_sibling_files() -> None:
+    module_content = b"VALUE = 1\n"
+    sibling_content = b"VALUE = 2\n"
+    adapter = FakeMetadataAdapter(
+        packages={"demo": ("demo-dist",)},
+        versions={"demo-dist": "1.0.0"},
+        files={
+            "demo-dist": (
+                _distribution_file("demo.py", module_content),
+                _distribution_file("demo_extra.py", sibling_content),
+                _distribution_file("other/__init__.py", sibling_content),
+            )
+        },
+        contents={
+            ("demo-dist", "demo.py"): module_content,
+            ("demo-dist", "demo_extra.py"): sibling_content,
+            ("demo-dist", "other/__init__.py"): sibling_content,
+        },
+    )
+
+    revision = build_artifact_revision("demo", metadata_adapter=adapter)
+
+    assert revision.status is ArtifactRevisionStatus.LOCATED
+    assert revision.module_source_manifest is not None
+    assert revision.module_source_manifest.layout.value == "module"
+    assert [item.relative_path for item in revision.module_source_manifest.files] == ["demo.py"]
+
+
+@pytest.mark.parametrize(
+    ("record_hash", "declared_size", "content"),
+    [
+        (None, 10, b"VALUE = 1\n"),
+        ("sha256=not-a-canonical-digest", 10, b"VALUE = 1\n"),
+        (
+            "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(b"VALUE = 1\n").digest()).decode(),
+            10,
+            b"VALUE = 1\n",
+        ),
+        ("md5=XrY7u-Ae7tCTyyK7j1rNww", 10, b"VALUE = 1\n"),
+        (_record_hash(b"OTHER = 1\n"), 10, b"VALUE = 1\n"),
+        (_record_hash(b"VALUE = 1\n"), 9, b"VALUE = 1\n"),
+    ],
+)
+def test_wheel_module_manifest_rejects_unverified_record_fields(
+    record_hash: str | None,
+    declared_size: int,
+    content: bytes,
+) -> None:
+    adapter = FakeMetadataAdapter(
+        packages={"demo": ("demo-dist",)},
+        versions={"demo-dist": "1.0.0"},
+        files={"demo-dist": (DistributionFile("demo.py", record_hash, declared_size),)},
+        contents={("demo-dist", "demo.py"): content},
+    )
+
+    revision = build_artifact_revision("demo", metadata_adapter=adapter)
+
+    assert revision.status is ArtifactRevisionStatus.PARTIAL
+    assert revision.module_source_manifest is None
+
+
+def test_wheel_module_manifest_requires_record_size() -> None:
+    content = b"VALUE = 1\n"
+    adapter = FakeMetadataAdapter(
+        packages={"demo": ("demo-dist",)},
+        versions={"demo-dist": "1.0.0"},
+        files={"demo-dist": (DistributionFile("demo.py", _record_hash(content)),)},
+        contents={("demo-dist", "demo.py"): content},
+    )
+
+    revision = build_artifact_revision("demo", metadata_adapter=adapter)
+
+    assert revision.status is ArtifactRevisionStatus.PARTIAL
+    assert revision.module_source_manifest is None
+
+
+@pytest.mark.parametrize(
+    "locators",
+    [
+        ("demo/__init__.py", "demo.py"),
+        ("demo/config.py",),
+        ("demo/__init__.py", "demo/__init__.py"),
+        ("demo/__init__.py", "demo/Config.py", "demo/config.py"),
+    ],
+)
+def test_wheel_module_manifest_rejects_ambiguous_or_duplicate_topology(
+    locators: tuple[str, ...],
+) -> None:
+    content = b"VALUE = 1\n"
+    adapter = FakeMetadataAdapter(
+        packages={"demo": ("demo-dist",)},
+        versions={"demo-dist": "1.0.0"},
+        files={"demo-dist": tuple(_distribution_file(locator, content) for locator in locators)},
+        contents={("demo-dist", locator): content for locator in locators},
+    )
+
+    revision = build_artifact_revision("demo", metadata_adapter=adapter)
+
+    assert revision.status is ArtifactRevisionStatus.PARTIAL
+    assert revision.module_source_manifest is None
+
+
+def test_wheel_module_manifest_obeys_file_and_byte_limits() -> None:
+    package_init = b"A = 1\n"
+    extra = b"B = 2\n"
+    adapter = FakeMetadataAdapter(
+        packages={"demo": ("demo-dist",)},
+        versions={"demo-dist": "1.0.0"},
+        files={
+            "demo-dist": (
+                _distribution_file("demo/__init__.py", package_init),
+                _distribution_file("demo/extra.py", extra),
+            )
+        },
+        contents={
+            ("demo-dist", "demo/__init__.py"): package_init,
+            ("demo-dist", "demo/extra.py"): extra,
+        },
+    )
+
+    revision = build_artifact_revision(
+        "demo",
+        metadata_adapter=adapter,
+        limits=ArtifactScanLimits(max_files=1, max_bytes=100, max_file_bytes=100),
+    )
+
+    assert revision.status is ArtifactRevisionStatus.PARTIAL
+    assert revision.module_source_manifest is None
+
+
+def test_wheel_module_manifest_rejects_metadata_or_content_changes_during_scan() -> None:
+    first_content = b"VALUE = 1\n"
+    second_content = b"VALUE = 2\n"
+    first_file = _distribution_file("demo.py", first_content)
+    second_file = _distribution_file("demo.py", second_content)
+    metadata_changed = FakeMetadataAdapter(
+        packages={"demo": ("demo-dist",)},
+        versions={"demo-dist": "1.0.0"},
+        file_snapshots={"demo-dist": ((first_file,), (second_file,))},
+        contents={("demo-dist", "demo.py"): first_content},
+    )
+    content_changed = FakeMetadataAdapter(
+        packages={"demo": ("demo-dist",)},
+        versions={"demo-dist": "1.0.0"},
+        files={"demo-dist": (first_file,)},
+        content_snapshots={
+            ("demo-dist", "demo.py"): (first_content, second_content),
+        },
+    )
+
+    metadata_revision = build_artifact_revision("demo", metadata_adapter=metadata_changed)
+    content_revision = build_artifact_revision("demo", metadata_adapter=content_changed)
+
+    assert metadata_revision.status is ArtifactRevisionStatus.PARTIAL
+    assert metadata_revision.module_source_manifest is None
+    assert content_revision.status is ArtifactRevisionStatus.PARTIAL
+    assert content_revision.module_source_manifest is None
+
+
+def test_stdlib_distribution_external_record_path_is_partial_but_module_can_be_verified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_init = b"VALUE = 1\n"
+
+    class FakeHash:
+        mode = "sha256"
+        value = _record_hash(package_init).partition("=")[2]
+
+    class FakePackagePath(PurePosixPath):
+        hash: FakeHash | None
+        size: int
+
+    package_path = FakePackagePath("demo/__init__.py")
+    package_path.hash = FakeHash()
+    package_path.size = len(package_init)
+    script_path = FakePackagePath("../../Scripts/demo.exe")
+    script_path.hash = FakeHash()
+    script_path.size = len(package_init)
+
+    class FakeDistribution:
+        version = "1.0.0"
+        files = (package_path, script_path)
+
+        def locate_file(self, locator: str) -> Path:
+            del locator
+            raise AssertionError("read_file is monkeypatched")
+
+        def read_text(self, filename: str) -> None:
+            del filename
+            return None
+
+    monkeypatch.setattr(
+        importlib.metadata,
+        "packages_distributions",
+        lambda: {"demo": ("demo-dist",)},
+    )
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda _: FakeDistribution())
+    adapter = StdlibDistributionMetadataAdapter()
+    monkeypatch.setattr(adapter, "read_file", lambda *args, **kwargs: package_init)
+
+    revision = build_artifact_revision("demo", metadata_adapter=adapter)
+
+    assert revision.status is ArtifactRevisionStatus.PARTIAL
+    assert revision.module_source_manifest is not None
+    assert [item.locator for item in revision.evidence] == ["demo/__init__.py"]
 
 
 def test_editable_distribution_hashes_local_source_without_exposing_absolute_path(

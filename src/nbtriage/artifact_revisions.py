@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import importlib.metadata
 import json
@@ -9,18 +11,22 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Protocol, TypeVar
+from typing import Protocol, TypeVar, overload
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
 from nbtriage.module_source_revisions import (
+    ModuleSourceFile,
     ModuleSourceLimits,
+    ModuleSourceRevisionError,
+    PythonModuleLayout,
     PythonModuleSourceManifest,
     scan_python_module_source,
 )
 
 _MODULE_NAME_PATTERN = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$", re.ASCII)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_RECORD_SHA256_PATTERN = re.compile(r"^sha256=([A-Za-z0-9_-]{43})$", re.ASCII)
 _ResultT = TypeVar("_ResultT")
 _EXCLUDED_DIRECTORIES = frozenset(
     {
@@ -208,6 +214,50 @@ class _ScanResult:
     partial: bool
 
 
+@dataclass(frozen=True)
+class _RejectedDistributionFile:
+    safe_locator: str | None
+    identity: str
+
+
+@dataclass(frozen=True)
+class _DistributionFileListing(Sequence[DistributionFile]):
+    entries: tuple[DistributionFile, ...]
+    rejected: tuple[_RejectedDistributionFile, ...] = ()
+    incomplete: bool = False
+
+    def __len__(self) -> int:
+        return len(self.entries)
+
+    @overload
+    def __getitem__(self, index: int) -> DistributionFile: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[DistributionFile, ...]: ...
+
+    def __getitem__(self, index: int | slice) -> DistributionFile | tuple[DistributionFile, ...]:
+        return self.entries[index]
+
+
+@dataclass(frozen=True)
+class _DistributionFileSnapshot:
+    files: tuple[DistributionFile, ...]
+    rejected: tuple[_RejectedDistributionFile, ...] = ()
+    unknown_rejections: int = 0
+    unavailable: bool = False
+
+    @property
+    def partial(self) -> bool:
+        locators = tuple(item.locator for item in self.files)
+        return (
+            self.unavailable
+            or bool(self.rejected)
+            or self.unknown_rejections > 0
+            or len(set(locators)) != len(locators)
+            or len({locator.casefold() for locator in locators}) != len(locators)
+        )
+
+
 class StdlibDistributionMetadataAdapter:
     """把 `importlib.metadata` 暴露为不会导入目标插件的只读适配器。"""
 
@@ -229,18 +279,32 @@ class StdlibDistributionMetadataAdapter:
         if distribution is None or distribution.files is None:
             return None
         files: list[DistributionFile] = []
+        rejected: list[_RejectedDistributionFile] = []
         for item in distribution.files:
             record_hash = None
             if item.hash is not None:
                 record_hash = f"{item.hash.mode}={item.hash.value}"
-            files.append(
-                DistributionFile(
-                    locator=PurePosixPath(*item.parts).as_posix(),
-                    record_hash=record_hash,
-                    size=item.size,
+            raw_locator = PurePosixPath(*item.parts).as_posix()
+            try:
+                files.append(
+                    DistributionFile(
+                        locator=raw_locator,
+                        record_hash=record_hash,
+                        size=item.size,
+                    )
                 )
-            )
-        return tuple(files)
+            except ArtifactRevisionError:
+                rejected.append(
+                    _RejectedDistributionFile(
+                        safe_locator=_safe_module_locator(raw_locator),
+                        identity=_rejected_distribution_file_identity(
+                            raw_locator,
+                            record_hash=record_hash,
+                            size=item.size,
+                        ),
+                    )
+                )
+        return _DistributionFileListing(tuple(files), tuple(rejected))
 
     def read_file(
         self,
@@ -435,22 +499,9 @@ def _build_distribution_revision(
     limits: ArtifactScanLimits,
     force_partial: bool,
 ) -> ArtifactRevision:
-    partial = force_partial or version is None
-    try:
-        files = adapter.files(distribution_name)
-    except Exception:
-        files = None
-    if files is None:
-        files = ()
-        partial = True
-
-    normalized_files: list[DistributionFile] = []
-    for item in files:
-        if not isinstance(item, DistributionFile):
-            partial = True
-            continue
-        normalized_files.append(item)
-    normalized_files.sort(key=lambda item: item.locator)
+    first_snapshot = _distribution_file_snapshot(adapter, distribution_name)
+    partial = force_partial or version is None or first_snapshot.partial
+    normalized_files = list(first_snapshot.files)
     if len(normalized_files) > limits.max_files:
         normalized_files = normalized_files[: limits.max_files]
         partial = True
@@ -494,6 +545,22 @@ def _build_distribution_revision(
             )
         )
 
+    module_manifest, verified_snapshot = _build_distribution_module_manifest(
+        module_name,
+        adapter=adapter,
+        distribution_name=distribution_name,
+        first_snapshot=first_snapshot,
+        limits=limits,
+    )
+    if verified_snapshot != first_snapshot:
+        partial = True
+        module_manifest = None
+    if verified_snapshot.partial:
+        partial = True
+    if verified_snapshot.unavailable or verified_snapshot.unknown_rejections:
+        module_manifest = None
+    if module_manifest is None:
+        partial = True
     if not evidence:
         partial = True
     status = ArtifactRevisionStatus.PARTIAL if partial else ArtifactRevisionStatus.LOCATED
@@ -516,7 +583,171 @@ def _build_distribution_revision(
         distribution_name=distribution_name,
         distribution_version=version,
         vcs_commit=vcs_commit,
+        module_source_manifest=module_manifest,
     )
+
+
+def _distribution_file_snapshot(
+    adapter: DistributionMetadataAdapter,
+    distribution_name: str,
+) -> _DistributionFileSnapshot:
+    try:
+        raw_files = adapter.files(distribution_name)
+    except Exception:
+        return _DistributionFileSnapshot((), unavailable=True)
+    if raw_files is None:
+        return _DistributionFileSnapshot((), unavailable=True)
+
+    rejected: tuple[_RejectedDistributionFile, ...] = ()
+    incomplete = False
+    if isinstance(raw_files, _DistributionFileListing):
+        rejected = raw_files.rejected
+        incomplete = raw_files.incomplete
+    files: list[DistributionFile] = []
+    unknown_rejections = 0
+    for item in raw_files:
+        if isinstance(item, DistributionFile):
+            files.append(item)
+        else:
+            unknown_rejections += 1
+    files.sort(key=lambda item: item.locator)
+    return _DistributionFileSnapshot(
+        files=tuple(files),
+        rejected=tuple(sorted(rejected, key=lambda item: item.identity)),
+        unknown_rejections=unknown_rejections,
+        unavailable=incomplete,
+    )
+
+
+def _build_distribution_module_manifest(
+    module_name: str,
+    *,
+    adapter: DistributionMetadataAdapter,
+    distribution_name: str,
+    first_snapshot: _DistributionFileSnapshot,
+    limits: ArtifactScanLimits,
+) -> tuple[PythonModuleSourceManifest | None, _DistributionFileSnapshot]:
+    first_projection = _distribution_module_projection(module_name, first_snapshot, limits)
+    files = None
+    if first_projection is not None:
+        _, root_prefix, candidates = first_projection
+        files = _read_distribution_module_files(
+            adapter,
+            distribution_name=distribution_name,
+            root_prefix=root_prefix,
+            candidates=candidates,
+            limits=limits,
+        )
+
+    verified_snapshot = _distribution_file_snapshot(adapter, distribution_name)
+    if verified_snapshot != first_snapshot or first_projection is None or files is None:
+        return None, verified_snapshot
+    verified_projection = _distribution_module_projection(module_name, verified_snapshot, limits)
+    if verified_projection is None or verified_projection != first_projection:
+        return None, verified_snapshot
+    layout, root_prefix, candidates = verified_projection
+    verified_files = _read_distribution_module_files(
+        adapter,
+        distribution_name=distribution_name,
+        root_prefix=root_prefix,
+        candidates=candidates,
+        limits=limits,
+    )
+    if verified_files != files:
+        return None, verified_snapshot
+    try:
+        return PythonModuleSourceManifest.create(module_name, layout, files), verified_snapshot
+    except ModuleSourceRevisionError:
+        return None, verified_snapshot
+
+
+def _distribution_module_projection(
+    module_name: str,
+    snapshot: _DistributionFileSnapshot,
+    limits: ArtifactScanLimits,
+) -> tuple[PythonModuleLayout, str, tuple[DistributionFile, ...]] | None:
+    module_prefix = module_name.replace(".", "/")
+    package_marker = f"{module_prefix}/__init__.py"
+    flat_marker = f"{module_prefix}.py"
+    safe_locators = {item.locator for item in snapshot.files}
+    rejected_locators = {
+        item.safe_locator for item in snapshot.rejected if item.safe_locator is not None
+    }
+    if package_marker in rejected_locators or flat_marker in rejected_locators:
+        return None
+    has_package = package_marker in safe_locators
+    has_flat = flat_marker in safe_locators
+    if has_package == has_flat:
+        return None
+
+    if has_flat:
+        candidates = tuple(item for item in snapshot.files if item.locator == flat_marker)
+        root_prefix = module_prefix.rpartition("/")[0]
+        return PythonModuleLayout.MODULE, f"{root_prefix}/" if root_prefix else "", candidates
+
+    prefix = f"{module_prefix}/"
+    if any(
+        locator.startswith(prefix) and locator.casefold().endswith(".py")
+        for locator in rejected_locators
+    ):
+        return None
+    candidates = tuple(
+        item
+        for item in snapshot.files
+        if item.locator.startswith(prefix) and item.locator.casefold().endswith(".py")
+    )
+    if not candidates or len(candidates) > limits.max_files:
+        return None
+    relative_paths = tuple(item.locator.removeprefix(prefix) for item in candidates)
+    if len(set(relative_paths)) != len(relative_paths) or len(
+        {path.casefold() for path in relative_paths}
+    ) != len(relative_paths):
+        return None
+    return PythonModuleLayout.PACKAGE, prefix, candidates
+
+
+def _read_distribution_module_files(
+    adapter: DistributionMetadataAdapter,
+    *,
+    distribution_name: str,
+    root_prefix: str,
+    candidates: tuple[DistributionFile, ...],
+    limits: ArtifactScanLimits,
+) -> tuple[ModuleSourceFile, ...] | None:
+    files: list[ModuleSourceFile] = []
+    consumed = 0
+    for item in candidates:
+        expected_digest = _record_sha256(item.record_hash)
+        if expected_digest is None or item.size is None:
+            return None
+        if item.size > limits.max_file_bytes or consumed + item.size > limits.max_bytes:
+            return None
+        try:
+            content = adapter.read_file(
+                distribution_name,
+                item.locator,
+                max_bytes=item.size,
+            )
+        except Exception:
+            return None
+        if content is None or len(content) != item.size:
+            return None
+        actual_digest = hashlib.sha256(content).digest()
+        if actual_digest != expected_digest:
+            return None
+        relative_path = item.locator.removeprefix(root_prefix)
+        try:
+            files.append(
+                ModuleSourceFile(
+                    relative_path=relative_path,
+                    content_sha256=actual_digest.hex(),
+                    size=len(content),
+                )
+            )
+        except ModuleSourceRevisionError:
+            return None
+        consumed += len(content)
+    return tuple(files)
 
 
 def _locate_explicit_source(
@@ -808,6 +1039,46 @@ def _digest_field(digest: object, value: str) -> None:
     encoded = value.encode("utf-8")
     digest.update(len(encoded).to_bytes(8, "big"))  # type: ignore[attr-defined]
     digest.update(encoded)  # type: ignore[attr-defined]
+
+
+def _record_sha256(value: str | None) -> bytes | None:
+    if value is None or (match := _RECORD_SHA256_PATTERN.fullmatch(value)) is None:
+        return None
+    encoded = match.group(1).encode("ascii")
+    try:
+        decoded = base64.b64decode(
+            encoded + b"=" * (-len(encoded) % 4),
+            altchars=b"-_",
+            validate=True,
+        )
+    except (ValueError, binascii.Error):
+        return None
+    canonical = base64.urlsafe_b64encode(decoded).rstrip(b"=")
+    return (
+        decoded if len(decoded) == hashlib.sha256().digest_size and canonical == encoded else None
+    )
+
+
+def _safe_module_locator(value: object) -> str | None:
+    try:
+        return _relative_locator(value)
+    except ArtifactRevisionError:
+        return None
+
+
+def _rejected_distribution_file_identity(
+    locator: object,
+    *,
+    record_hash: object,
+    size: object,
+) -> str:
+    payload = json.dumps(
+        [locator, record_hash, size],
+        ensure_ascii=True,
+        separators=(",", ":"),
+        default=lambda _: "unsupported",
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _module_name(value: object) -> str:
