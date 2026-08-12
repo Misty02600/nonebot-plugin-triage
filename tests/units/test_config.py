@@ -1,4 +1,5 @@
 import pytest
+from nonebot.config import BaseSettings
 from pydantic import ValidationError
 
 from nonebot_plugin_triage.config import NBTriageConfig
@@ -38,3 +39,73 @@ def test_capability_shadow_is_opt_in_and_uses_a_local_path() -> None:
         NBTriageConfig(nbtriage_capability_shadow_path="pyproject.toml")
     with pytest.raises(ValidationError, match="must not target an environment file"):
         NBTriageConfig(nbtriage_capability_shadow_path=".env.sqlite3")
+
+
+def test_restricted_config_normalizes_nonebot_roots() -> None:
+    config = NBTriageConfig(
+        nbtriage_restricted_config=frozenset(
+            {
+                " Discord_Bots ",
+                "discord_bots__token",
+                "PLUGIN_COOKIE",
+            }
+        )
+    )
+
+    assert config.nbtriage_restricted_config == frozenset({"discord_bots", "plugin_cookie"})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "DISCORD_BOTS",
+        [""],
+        ["bad-key"],
+        ["__TOKEN"],
+        ["PLUGIN____TOKEN"],
+        ["A" * 257],
+        list(range(257)),
+    ],
+)
+def test_restricted_config_rejects_ambiguous_or_oversized_values(value: object) -> None:
+    with pytest.raises(ValidationError, match="restricted config"):
+        NBTriageConfig(nbtriage_restricted_config=value)  # type: ignore[arg-type]
+
+
+def test_nonebot_environment_decodes_restricted_config_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "NBTRIAGE_RESTRICTED_CONFIG",
+        '[" Discord_Bots ", "PLUGIN_COOKIE"]',
+    )
+
+    values = BaseSettings._settings_build_values(
+        NBTriageConfig,
+        {},
+        env_file=(),
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+    )
+    config = NBTriageConfig.model_validate(values)
+
+    assert config.nbtriage_restricted_config == frozenset({"discord_bots", "plugin_cookie"})
+
+
+def test_support_thread_config_has_bounded_compatible_defaults() -> None:
+    config = NBTriageConfig()
+
+    assert config.nbtriage_priority == 10
+    assert config.nbtriage_thread_max_entries == 4_096
+    assert config.nbtriage_thread_idle_seconds == 900
+    assert config.nbtriage_thread_absolute_seconds == 1_800
+
+    with pytest.raises(ValidationError):
+        NBTriageConfig(nbtriage_priority=1)
+    with pytest.raises(ValidationError):
+        NBTriageConfig(nbtriage_thread_max_entries=100_001)
+    with pytest.raises(ValidationError, match="absolute lifetime"):
+        NBTriageConfig(
+            nbtriage_thread_idle_seconds=901,
+            nbtriage_thread_absolute_seconds=900,
+        )

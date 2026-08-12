@@ -13,9 +13,10 @@ plugin_config = get_plugin_config(NBTriageConfig)
 
 __plugin_meta__ = PluginMetadata(
     name="NoneBot Triage Agent",
-    description="受理跨平台群聊求助，并按需关联 NoneBot 本机最小运行证据",
+    description="接收跨平台 triage 求助，并按需关联 NoneBot 本机最小运行证据",
     usage=(
         f"普通用户：发送“{plugin_config.nbtriage_command} <求助内容>”（@Bot 可选）\n"
+        "OneBot V11 群聊：可精确回复 Triage 的有效回答继续追问\n"
         "回复消息时会尝试关联对应运行记录\n"
         f"维护者：@Bot 发送“{plugin_config.nbtriage_query_command} <受理编号>”\n"
         f"试运行反馈：@Bot 发送“{plugin_config.nbtriage_feedback_command} "

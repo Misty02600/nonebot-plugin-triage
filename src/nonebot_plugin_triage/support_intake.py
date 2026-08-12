@@ -64,51 +64,12 @@ _CAPABILITY_PATTERNS = (
     "怎么开启",
     "怎么关闭",
 )
-_PROBLEM_PATTERNS = (
-    "报错",
-    "错误",
-    "异常",
-    "故障",
-    "失败",
-    "没反应",
-    "没有反应",
-    "不响应",
-    "无响应",
-    "没回复",
-    "没回",
-    "坏了",
-    "不能用",
-    "用不了",
-    "不工作",
-    "出错",
-    "崩溃",
-    "为什么没",
-    "为什么不",
+_EXPLICIT_REPORT_ACTIONS = frozenset(
+    {
+        "请受理这个故障",
+        "确认按故障处理",
+    }
 )
-_AMBIGUOUS_PROBLEM_PATTERNS = (
-    "是什么意思",
-    "是什么",
-    "解释",
-    "含义",
-    "定义",
-    "列表",
-    "文档",
-    "知识",
-    "名词",
-    "示例",
-    "是否",
-    "会不会",
-    "能否",
-    "有没有",
-)
-_PROBLEM_ALTERNATION = "|".join(
-    re.escape(pattern) for pattern in sorted(_PROBLEM_PATTERNS, key=len, reverse=True)
-)
-_NEGATED_PROBLEM_TEXT = re.compile(
-    rf"(?:不是|并非|没有|没|不算|不属于|不构成|未曾|未)"
-    rf"[^，。；;！？?!]{{0,8}}(?:{_PROBLEM_ALTERNATION})"
-)
-_QUESTION_END = re.compile(r"[吗么]\s*[？?]?$")
 _GENERIC_GUIDANCE_TEXT = re.compile(
     r"(?:怎么用|怎样用|如何使用?|使用方法|用法|帮助|教程|说明|功能|"
     r"能做什么|有什么|有哪些|支持什么|会什么|请问|告诉我)"
@@ -118,27 +79,25 @@ _CAPABILITY_PROVIDERS: dict[str, _CapabilityProvider] = {}
 
 
 def classify_support_request(text: str) -> SupportRequest:
-    """把 triage 后的文字分成首版支持入口能够可靠处理的窄意图。
+    """执行不产生外部副作用的确定性入口快判。
 
-    只识别确定性的功能问法与故障词；不明确文本返回 ``UNKNOWN``，交给上层追问或未来模型边界。
+    这里只识别确定性的功能问法和全文匹配的显式报障动作。其他自由表达与复合诉求仍交给语义
+    分类层，当前不可用时由上层保守追问；症状或题材词不会直接建立 incident。
     """
     content = " ".join(text.split())
     if not content:
         return SupportRequest(SupportIntent.EMPTY, "")
     asks_for_guidance = any(pattern in content for pattern in _CAPABILITY_PATTERNS)
-    reports_problem = any(pattern in content for pattern in _PROBLEM_PATTERNS)
-    problem_is_ambiguous = (
-        _NEGATED_PROBLEM_TEXT.search(content) is not None
-        or _QUESTION_END.search(content) is not None
-        or any(pattern in content for pattern in _AMBIGUOUS_PROBLEM_PATTERNS)
-    )
+    normalized_action = content.rstrip("。！!")
+    explicitly_requests_report = normalized_action in _EXPLICIT_REPORT_ACTIONS
+    contains_report_action = any(action in content for action in _EXPLICIT_REPORT_ACTIONS)
 
-    if reports_problem and (asks_for_guidance or problem_is_ambiguous):
+    if explicitly_requests_report:
+        return SupportRequest(SupportIntent.REPORT_PROBLEM, content)
+    if contains_report_action:
         return SupportRequest(SupportIntent.UNKNOWN, content)
     if asks_for_guidance:
         return SupportRequest(SupportIntent.CAPABILITY_GUIDANCE, content)
-    if reports_problem:
-        return SupportRequest(SupportIntent.REPORT_PROBLEM, content)
     return SupportRequest(SupportIntent.UNKNOWN, content)
 
 
@@ -208,7 +167,7 @@ def format_capability_guidance(
     limit: int = 8,
 ) -> str:
     if not capabilities:
-        return "当前没有找到可向你公开说明的 Alconna 功能。"
+        return "没有找到相关功能。"
 
     matches = _matching_capabilities(query, capabilities)
     if len(matches) == 1:

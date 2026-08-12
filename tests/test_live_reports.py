@@ -129,7 +129,10 @@ def test_cross_platform_report_accepts_structured_reply_without_identity_leak() 
 def test_private_scene_is_rejected() -> None:
     service, _, _ = make_service()
 
-    assert service.handle(make_request(private=True)).status is PublicReportStatus.SCENE_UNSUPPORTED
+    result = service.handle(make_request(private=True))
+
+    assert result.status is PublicReportStatus.SCENE_UNSUPPORTED
+    assert result.message == "当前不能在私聊中受理故障；其他求助仍可在私聊中使用 triage。"
 
 
 def test_missing_reply_creates_unlinked_incident() -> None:

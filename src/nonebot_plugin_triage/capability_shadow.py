@@ -4,7 +4,7 @@ import asyncio
 import sqlite3
 import unicodedata
 from collections.abc import Callable, Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -13,6 +13,7 @@ from nonebot import logger
 from nbtriage.capabilities import (
     CAPABILITY_INDEX_SCHEMA_VERSION,
     CapabilityIndexError,
+    CapabilityRecord,
     CapabilitySearchHit,
     CapabilitySnapshot,
     Claim,
@@ -21,13 +22,29 @@ from nbtriage.capabilities import (
     Disclosure,
     RecordState,
     build_capability_index,
+    capability_index_public_records,
     search_capability_index,
 )
+from nbtriage.capability_deployment import (
+    CapabilityDeployment,
+    build_capability_deployment,
+)
+from nbtriage.capability_reconciliation import PluginRuntimeStatus
 from nonebot_plugin_triage.capability_snapshot import build_capability_snapshot
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.support_intake import (
     registered_public_alconna_capability_paths,
 )
+
+
+def _loaded_plugin_module_names() -> tuple[str, ...]:
+    from nonebot.plugin import get_loaded_plugins
+
+    return tuple(
+        module_name
+        for plugin in get_loaded_plugins()
+        if isinstance(module_name := plugin.module_name, str)
+    )
 
 
 class SnapshotBuilder(Protocol):
@@ -38,6 +55,15 @@ class SnapshotBuilder(Protocol):
     ) -> CapabilitySnapshot: ...
 
 
+class DeploymentBuilder(Protocol):
+    def __call__(
+        self,
+        pyproject_path: Path,
+        *,
+        runtime_modules: Collection[str],
+    ) -> CapabilityDeployment: ...
+
+
 @dataclass(frozen=True)
 class CapabilityShadowStatus:
     observed_generation: str | None = None
@@ -46,6 +72,13 @@ class CapabilityShadowStatus:
     restricted_capability_count: int = 0
     partial: bool | None = None
     error_code: str | None = None
+    deployment_generation: str | None = None
+    declared_plugin_count: int = 0
+    registered_plugin_count: int = 0
+    not_observed_plugin_count: int = 0
+    runtime_only_plugin_count: int = 0
+    deployment_partial: bool | None = None
+    deployment_error_code: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -65,6 +98,13 @@ class MaintainerCapabilitySearch:
     stale: bool = False
 
 
+@dataclass(frozen=True)
+class PublicCapabilitySearch:
+    hits: tuple[CapabilitySearchHit, ...]
+    partial: bool | None
+    stale: bool = False
+
+
 class CapabilityShadowService:
     """构建部署本地能力影子索引，并在失败时保留最近一次完整版本。
 
@@ -79,11 +119,15 @@ class CapabilityShadowService:
         snapshot_builder: SnapshotBuilder = build_capability_snapshot,
         index_builder: Callable[[Path, CapabilitySnapshot], None] = build_capability_index,
         public_paths: Callable[[], Collection[str]] = (registered_public_alconna_capability_paths),
+        deployment_builder: DeploymentBuilder = build_capability_deployment,
+        runtime_modules: Callable[[], Collection[str]] = _loaded_plugin_module_names,
     ) -> None:
         self._path = path
         self._snapshot_builder = snapshot_builder
         self._index_builder = index_builder
         self._public_paths = public_paths
+        self._deployment_builder = deployment_builder
+        self._runtime_modules = runtime_modules
         served = _read_served_index_metadata(path)
         self._status = CapabilityShadowStatus(
             served_generation=served.generation,
@@ -124,13 +168,60 @@ class CapabilityShadowService:
             stale=self._status.stale,
         )
 
+    async def search_public(
+        self,
+        query: str,
+        adapter_type: type[object],
+        *,
+        limit: int = 5,
+    ) -> PublicCapabilitySearch | None:
+        """只检索当前 adapter 可说明的公开能力。"""
+        if not self._status.ready or self._status.stale:
+            return None
+        try:
+            public_records = await asyncio.to_thread(
+                capability_index_public_records,
+                self._path,
+            )
+            capability_ids = tuple(
+                record.capability_id
+                for record in public_records
+                if _record_supports_adapter(record, adapter_type)
+            )
+            if not capability_ids:
+                return PublicCapabilitySearch((), partial=self._status.partial)
+            hits = await asyncio.to_thread(
+                search_capability_index,
+                self._path,
+                query,
+                capability_ids=capability_ids,
+                limit=limit,
+            )
+        except CapabilityIndexError as error:
+            logger.warning(
+                "NoneBot Triage public capability search failed ({})",
+                type(error).__name__,
+            )
+            return None
+        return PublicCapabilitySearch(
+            tuple(hits),
+            partial=self._status.partial,
+        )
+
+    def refresh_deployment(self) -> CapabilityShadowStatus:
+        """只刷新声明/制品/运行集合协调，不重建能力索引。"""
+        self._refresh_deployment_safely()
+        return self._status
+
     def refresh(self) -> CapabilityShadowStatus:
+        self._refresh_deployment_safely()
         snapshot = self._snapshot_builder(explicit_public_alconna_paths=self._public_paths())
         restricted_count = sum(
             record.disclosure is Disclosure.RESTRICTED for record in snapshot.records
         )
         served = _read_served_index_metadata(self._path)
-        self._status = CapabilityShadowStatus(
+        self._status = replace(
+            self._status,
             observed_generation=snapshot.generation,
             served_generation=served.generation,
             indexed_capability_count=len(snapshot.records),
@@ -138,21 +229,66 @@ class CapabilityShadowService:
             partial=served.partial,
         )
         self._index_builder(self._path, snapshot)
-        self._status = CapabilityShadowStatus(
+        self._status = replace(
+            self._status,
             observed_generation=snapshot.generation,
             served_generation=snapshot.generation,
             indexed_capability_count=len(snapshot.records),
             restricted_capability_count=restricted_count,
             partial=snapshot.manifest.partial,
+            error_code=None,
         )
         return self._status
+
+    def _refresh_deployment_safely(self) -> None:
+        try:
+            runtime_modules = tuple(self._runtime_modules())
+            deployment = self._deployment_builder(
+                Path("pyproject.toml"),
+                runtime_modules=runtime_modules,
+            )
+            if not isinstance(deployment, CapabilityDeployment):
+                raise TypeError
+        except Exception as error:  # 部署清单失败不影响运行时快照和最近可用索引
+            self._status = replace(
+                self._status,
+                deployment_error_code=type(error).__name__,
+            )
+            logger.warning(
+                "NoneBot Triage deployment inventory refresh failed; "
+                "capability snapshot refresh will continue ({})",
+                type(error).__name__,
+            )
+            return
+
+        observations = deployment.reconciliation.observations
+        registered_count = sum(
+            item.status is PluginRuntimeStatus.REGISTERED for item in observations
+        )
+        not_observed_count = sum(
+            item.status is PluginRuntimeStatus.NOT_OBSERVED for item in observations
+        )
+        runtime_only_count = sum(
+            item.status is PluginRuntimeStatus.RUNTIME_ONLY for item in observations
+        )
+        self._status = replace(
+            self._status,
+            deployment_generation=deployment.generation,
+            declared_plugin_count=registered_count + not_observed_count,
+            registered_plugin_count=registered_count,
+            not_observed_plugin_count=not_observed_count,
+            runtime_only_plugin_count=runtime_only_count,
+            deployment_partial=deployment.is_partial,
+            deployment_error_code=None,
+        )
 
     def refresh_safely(self) -> None:
         try:
             status = self.refresh()
         except Exception as error:  # 启动期影子扩展失败不能阻断 Bot
             served = _read_served_index_metadata(self._path)
-            self._status = CapabilityShadowStatus(
+            self._status = replace(
+                self._status,
                 observed_generation=self._status.observed_generation,
                 served_generation=served.generation,
                 indexed_capability_count=self._status.indexed_capability_count,
@@ -175,13 +311,17 @@ class CapabilityShadowService:
             status.partial,
         )
 
+    async def refresh_in_background(self) -> None:
+        """把有界但可能较慢的制品扫描和索引构建移出启动关键路径。"""
+        await asyncio.to_thread(self.refresh_safely)
+
 
 def register_capability_shadow(
     config: NBTriageConfig,
     *,
-    startup_registrar: Callable[[Callable[[], None]], object] | None = None,
+    startup_registrar: Callable[[Callable[[], object]], object] | None = None,
 ) -> CapabilityShadowService | None:
-    """按配置注册一次启动期快照；未配置时不创建文件或生命周期钩子。"""
+    """按配置注册后台快照刷新；未配置时不创建文件或生命周期钩子。"""
     configured_path = config.nbtriage_capability_shadow_path
     if configured_path is None:
         return None
@@ -190,7 +330,14 @@ def register_capability_shadow(
 
         startup_registrar = get_driver().on_startup
     service = CapabilityShadowService(Path(configured_path))
-    startup_registrar(service.refresh_safely)
+    background_tasks: set[asyncio.Task[None]] = set()
+
+    async def schedule_refresh() -> None:
+        task = asyncio.create_task(service.refresh_in_background())
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+
+    startup_registrar(schedule_refresh)
     return service
 
 
@@ -292,6 +439,34 @@ def format_maintainer_capability_guidance(result: MaintainerCapabilitySearch) ->
     return "\n".join(lines)
 
 
+def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
+    """只用公开字段把当前 adapter 的能力候选格式化为用户帮助。"""
+    if not result.hits:
+        return ""
+    primary = result.hits[0].record
+    header = _claim_text(primary.claims, "command.header", limit=64)
+    if header is None:
+        return ""
+    lines = [header]
+    description = _claim_text(primary.claims, "description", limit=240)
+    if description:
+        lines.append(description)
+    usage = _claim_text(primary.claims, "usage", limit=240)
+    if usage:
+        lines.append(f"用法：{usage}")
+    else:
+        lines.append("当前索引还没有可靠的完整用法。")
+    if len(result.hits) > 1:
+        alternatives = [
+            alternative
+            for hit in result.hits[1:]
+            if (alternative := _claim_text(hit.record.claims, "command.header", limit=64))
+        ]
+        if alternatives:
+            lines.append(f"其他可能相关的功能：{'、'.join(alternatives)}。")
+    return "\n".join(lines)
+
+
 def _claim_text(claims: tuple[Claim, ...], field: str, *, limit: int) -> str | None:
     priority = {
         ClaimBasis.OBSERVED: 0,
@@ -308,6 +483,38 @@ def _claim_text(claims: tuple[Claim, ...], field: str, *, limit: int) -> str | N
         if cleaned:
             return cleaned
     return None
+
+
+def _record_supports_adapter(record: CapabilityRecord, adapter_type: type[object]) -> bool:
+    metadata_values = tuple(
+        claim.value
+        for claim in record.claims
+        if claim.field == "plugin.metadata" and isinstance(claim.value, dict)
+    )
+    if not metadata_values:
+        return False
+    raw_adapters = metadata_values[0].get("supported_adapters")
+    if raw_adapters is None:
+        return True
+    if not isinstance(raw_adapters, list | tuple) or not raw_adapters:
+        return False
+    return any(
+        isinstance(item, str) and _adapter_spec_matches(item, adapter_type) for item in raw_adapters
+    )
+
+
+def _adapter_spec_matches(spec: str, adapter_type: type[object]) -> bool:
+    module_name, separator, attribute = spec.partition(":")
+    if module_name.startswith("~"):
+        module_name = f"nonebot.adapters.{module_name[1:]}"
+    expected_name = attribute if separator else "Adapter"
+    actual_module = getattr(adapter_type, "__module__", "")
+    actual_name = getattr(adapter_type, "__name__", "")
+    return (
+        bool(module_name)
+        and actual_name == expected_name
+        and (actual_module == module_name or actual_module.startswith(f"{module_name}."))
+    )
 
 
 def _safe_text(value: str, *, limit: int) -> str:
@@ -331,6 +538,8 @@ __all__ = (
     "CapabilityShadowService",
     "CapabilityShadowStatus",
     "MaintainerCapabilitySearch",
+    "PublicCapabilitySearch",
     "format_maintainer_capability_guidance",
+    "format_public_capability_guidance",
     "register_capability_shadow",
 )

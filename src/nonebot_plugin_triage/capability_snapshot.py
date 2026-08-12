@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import sys
 import weakref
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
+from functools import cache
 from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
@@ -27,6 +29,12 @@ from nbtriage.capabilities import (
     RecordState,
     SnapshotError,
     SourceRevision,
+)
+from nonebot_plugin_triage.config_policy import normalize_config_root
+from nonebot_plugin_triage.config_references import (
+    ConfigReference,
+    ConfigReferenceError,
+    extract_config_references,
 )
 
 _MAX_TEXT_CHARS = 1_000
@@ -92,6 +100,7 @@ class PluginIdentity:
     plugin_id: str
     name: str
     module_name: str
+    config_type: type[object] | None
     metadata: PluginMetadataCandidate | None
     distribution: DistributionIdentity
     source: SourceEvidence
@@ -140,7 +149,17 @@ class CapabilityCandidate:
     arguments: tuple[AlconnaArgument, ...]
     components: tuple[AlconnaComponent, ...]
     constraints: tuple[str, ...]
+    handler_references: tuple[dict[str, object], ...]
+    config_references: tuple[_ResolvedConfigReference, ...]
     evidence: tuple[SourceEvidence, ...]
+
+
+@dataclass(frozen=True)
+class _ResolvedConfigReference:
+    module_name: str
+    source_revision: str
+    config_type: str
+    reference: ConfigReference
 
 
 @dataclass(frozen=True)
@@ -153,9 +172,23 @@ class _CollectedSnapshot:
 
 @dataclass
 class _CollectorState:
-    packages_distributions: Mapping[str, list[str]]
+    packages_distributions: Mapping[str, Sequence[str]]
     file_hashes: dict[Path, tuple[str | None, tuple[str, ...]]]
     module_hashes: dict[str, tuple[str | None, tuple[str, ...]]]
+    module_sources: dict[Path, tuple[str | None, str | None]]
+
+
+@cache
+def _installed_package_map() -> Mapping[str, Sequence[str]]:
+    """缓存当前进程安装发行包与顶层模块的只读映射。
+
+    NoneBot 不支持在同一进程内安装新发行包后再安全热载入。缓存仅避免每次刷新都重新
+    枚举整套 Python 元数据；进程重启后会自然重建。
+    """
+    try:
+        return importlib.metadata.packages_distributions()
+    except Exception:
+        return {}
 
 
 def build_capability_snapshot(
@@ -181,11 +214,8 @@ def build_capability_snapshot(
 
         plugins = get_loaded_plugins()
 
-    try:
-        package_map: Mapping[str, list[str]] = importlib.metadata.packages_distributions()
-    except Exception:
-        package_map = {}
-    state = _CollectorState(package_map, {}, {})
+    package_map = _installed_package_map()
+    state = _CollectorState(package_map, {}, {}, {})
     public_paths = frozenset(
         path for path in explicit_public_alconna_paths if isinstance(path, str)
     )
@@ -284,11 +314,15 @@ def _plugin_identity(plugin: object, state: _CollectorState) -> PluginIdentity:
     loaded_module = module if isinstance(module, ModuleType) else sys.modules.get(module_name)
     source = _module_source_evidence(loaded_module, module_name, state)
     distribution = _distribution_identity(module_name, loaded_module, source, state)
-    metadata = _metadata_candidate(getattr(plugin, "metadata", None))
+    raw_metadata = getattr(plugin, "metadata", None)
+    metadata = _metadata_candidate(raw_metadata)
+    raw_config_type = getattr(raw_metadata, "config", None)
+    config_type = raw_config_type if isinstance(raw_config_type, type) else None
     return PluginIdentity(
         plugin_id=plugin_id,
         name=name,
         module_name=module_name,
+        config_type=config_type,
         metadata=metadata,
         distribution=distribution,
         source=source,
@@ -399,6 +433,8 @@ def _candidate_from_matcher(
 ) -> CapabilityCandidate:
     source = _matcher_source_evidence(matcher, plugin, state)
     constraints, superuser_only = _matcher_constraints(matcher)
+    handler_references = _matcher_handler_references(matcher, plugin, state)
+    config_references = _matcher_config_references(matcher, plugin, state)
     matcher_type = _safe_text(getattr(matcher, "type", None)) or ""
     command = _alconna_command(matcher)
     if command is not None:
@@ -408,6 +444,8 @@ def _candidate_from_matcher(
             command,
             source,
             constraints,
+            handler_references,
+            config_references,
             superuser_only=superuser_only,
             public_paths=public_paths,
         )
@@ -419,6 +457,8 @@ def _candidate_from_matcher(
             matcher,
             source,
             constraints,
+            handler_references,
+            config_references,
             command_rules,
             superuser_only=superuser_only,
         )
@@ -431,6 +471,8 @@ def _candidate_from_matcher(
         matcher,
         source,
         constraints,
+        handler_references,
+        config_references,
         kind=kind,
         superuser_only=superuser_only,
     )
@@ -467,6 +509,8 @@ def _alconna_candidate(
     command: object,
     source: SourceEvidence,
     constraints: tuple[str, ...],
+    handler_references: tuple[dict[str, object], ...],
+    config_references: tuple[_ResolvedConfigReference, ...],
     *,
     superuser_only: bool,
     public_paths: frozenset[str],
@@ -487,9 +531,12 @@ def _alconna_candidate(
         except (KeyError, ValueError):
             enabled = False
     explicitly_public = registered and command_path is not None and command_path in public_paths
+    automatically_public = (
+        registered and enabled is True and name is not None and _platform_scope_is_known(plugin)
+    )
     if hidden or superuser_only or enabled is False:
         disclosure = DisclosureState.RESTRICTED
-    elif explicitly_public:
+    elif explicitly_public or automatically_public:
         disclosure = DisclosureState.PUBLIC
     else:
         disclosure = DisclosureState.REVIEW
@@ -535,6 +582,8 @@ def _alconna_candidate(
         arguments=arguments,
         components=components,
         constraints=tuple(sorted(alconna_constraints)),
+        handler_references=handler_references,
+        config_references=config_references,
         evidence=(source,),
     )
 
@@ -544,6 +593,8 @@ def _command_candidate(
     matcher: object,
     source: SourceEvidence,
     constraints: tuple[str, ...],
+    handler_references: tuple[dict[str, object], ...],
+    config_references: tuple[_ResolvedConfigReference, ...],
     command_rules: tuple[object, ...],
     *,
     superuser_only: bool,
@@ -564,14 +615,18 @@ def _command_candidate(
     # so a loaded Matcher no longer retains a reliable primary/alias distinction.
     header = literal_commands[0] if literal_commands else None
     force_whitespace = force_values[0] if len(set(force_values)) == 1 else None
-    disclosure = DisclosureState.RESTRICTED if superuser_only else DisclosureState.REVIEW
+    if superuser_only:
+        disclosure = DisclosureState.RESTRICTED
+    elif literal_commands and _platform_scope_is_known(plugin):
+        disclosure = DisclosureState.PUBLIC
+    else:
+        disclosure = DisclosureState.REVIEW
     candidate_id = _candidate_id(
         plugin.plugin_id,
         source,
         CapabilityKind.COMMAND,
         "|".join(literal_commands),
     )
-    description = plugin.metadata.description if plugin.metadata is not None else None
     return CapabilityCandidate(
         candidate_id=candidate_id,
         plugin_id=plugin.plugin_id,
@@ -584,7 +639,7 @@ def _command_candidate(
         literal_commands=literal_commands,
         aliases=literal_commands,
         prefixes=(),
-        description=description,
+        description=None,
         usage=None,
         example=None,
         force_whitespace=force_whitespace,
@@ -592,6 +647,8 @@ def _command_candidate(
         arguments=(),
         components=(),
         constraints=constraints,
+        handler_references=handler_references,
+        config_references=config_references,
         evidence=(source,),
     )
 
@@ -601,6 +658,8 @@ def _generic_candidate(
     matcher: object,
     source: SourceEvidence,
     constraints: tuple[str, ...],
+    handler_references: tuple[dict[str, object], ...],
+    config_references: tuple[_ResolvedConfigReference, ...],
     *,
     kind: CapabilityKind,
     superuser_only: bool,
@@ -633,6 +692,8 @@ def _generic_candidate(
         arguments=(),
         components=(),
         constraints=constraints,
+        handler_references=handler_references,
+        config_references=config_references,
         evidence=(source,),
     )
 
@@ -667,6 +728,181 @@ def _matcher_constraints(matcher: object) -> tuple[tuple[str, ...], bool]:
     if getattr(matcher, "_default_type_updater", None) is not None:
         constraints.add("type_updater:opaque")
     return tuple(sorted(constraints)), superuser_only
+
+
+def _platform_scope_is_known(plugin: PluginIdentity) -> bool:
+    metadata = plugin.metadata
+    if metadata is None:
+        return False
+    adapters = metadata.supported_adapters
+    if adapters is None:
+        return True
+    return bool(adapters) and all(_valid_adapter_spec(item) for item in adapters)
+
+
+def _valid_adapter_spec(value: str) -> bool:
+    module, separator, attribute = value.partition(":")
+    if separator and (not attribute or "." in attribute):
+        return False
+    if module.startswith("~"):
+        module = f"nonebot.adapters.{module[1:]}"
+    parts = module.split(".")
+    return bool(parts) and all(part.isidentifier() for part in parts)
+
+
+def _matcher_config_references(
+    matcher: object,
+    plugin: PluginIdentity,
+    state: _CollectorState,
+) -> tuple[_ResolvedConfigReference, ...]:
+    """从已加载 handler 的同文件源码中提取标准 Pydantic 配置属性读取。"""
+    result: list[_ResolvedConfigReference] = []
+    seen: set[tuple[str, str, str, str, int, int, int]] = set()
+    for dependent in _safe_collection(getattr(matcher, "handlers", ())):
+        call = getattr(dependent, "call", None)
+        if not inspect.isfunction(call):
+            continue
+        module_name = _safe_text(getattr(call, "__module__", None))
+        if module_name is None or not _module_belongs_to_plugin(module_name, plugin.module_name):
+            continue
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        source_path = _module_file(module)
+        if source_path is None:
+            continue
+        source_text, source_revision = _module_source_text(source_path, state)
+        if source_text is None or source_revision is None:
+            continue
+        bindings, config_types = _module_config_bindings(
+            module,
+            plugin.module_name,
+            plugin.config_type,
+        )
+        if not bindings:
+            continue
+        try:
+            references = extract_config_references(source_text, call.__name__, bindings)
+        except ConfigReferenceError:
+            continue
+        for reference in references:
+            identity = (
+                module_name,
+                reference.binding_name,
+                reference.field_name,
+                reference.config_key,
+                reference.line,
+                reference.column,
+                reference.helper_depth,
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            config_type = config_types.get(reference.binding_name)
+            if config_type is None:
+                continue
+            result.append(
+                _ResolvedConfigReference(
+                    module_name,
+                    source_revision,
+                    config_type,
+                    reference,
+                )
+            )
+    return tuple(
+        sorted(
+            result,
+            key=lambda item: (
+                item.module_name,
+                item.reference.line,
+                item.reference.column,
+                item.reference.helper_depth,
+                item.reference.function_name,
+                item.reference.binding_name,
+                item.reference.field_name,
+            ),
+        )
+    )
+
+
+def _matcher_handler_references(
+    matcher: object,
+    plugin: PluginIdentity,
+    state: _CollectorState,
+) -> tuple[dict[str, object], ...]:
+    result: list[dict[str, object]] = []
+    for dependent in _safe_collection(getattr(matcher, "handlers", ())):
+        call = getattr(dependent, "call", None)
+        if not inspect.isfunction(call):
+            continue
+        module_name = _safe_text(getattr(call, "__module__", None))
+        function_name = _safe_text(getattr(call, "__name__", None))
+        if (
+            module_name is None
+            or function_name is None
+            or not _module_belongs_to_plugin(module_name, plugin.module_name)
+        ):
+            continue
+        module = sys.modules.get(module_name)
+        if not isinstance(module, ModuleType):
+            continue
+        source_path = _module_file(module)
+        if source_path is None:
+            continue
+        _, source_revision = _module_source_text(source_path, state)
+        if source_revision is None:
+            continue
+        try:
+            line = inspect.getsourcelines(call)[1]
+        except (OSError, TypeError):
+            line = None
+        result.append(
+            {
+                "module": module_name,
+                "function": function_name,
+                "line": line,
+                "source_revision": source_revision,
+            }
+        )
+    return tuple(sorted(result, key=lambda item: (str(item["module"]), str(item["function"]))))
+
+
+def _module_config_bindings(
+    module: ModuleType,
+    plugin_module_name: str,
+    expected_config_type: type[object] | None,
+) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
+    from pydantic import BaseModel
+
+    bindings: dict[str, dict[str, str]] = {}
+    config_types: dict[str, str] = {}
+    for name, value in vars(module).items():
+        if not name.isidentifier() or not isinstance(value, BaseModel):
+            continue
+        if expected_config_type is None or type(value) is not expected_config_type:
+            continue
+        value_module = type(value).__module__
+        if not _module_belongs_to_plugin(value_module, plugin_module_name):
+            continue
+        fields: dict[str, str] = {}
+        for field_name, field_info in type(value).model_fields.items():
+            if not field_name.isidentifier():
+                continue
+            alias = field_info.validation_alias or field_info.alias or field_name
+            if not isinstance(alias, str):
+                continue
+            try:
+                fields[field_name] = normalize_config_root(alias)
+            except ValueError:
+                continue
+        if fields:
+            bindings[name] = fields
+            config_types[name] = f"{value_module}:{type(value).__qualname__}"
+    return bindings, config_types
+
+
+def _module_belongs_to_plugin(module_name: str, plugin_module_name: str) -> bool:
+    return module_name == plugin_module_name or module_name.startswith(f"{plugin_module_name}.")
 
 
 def _has_rule_checkers(rule: object) -> bool:
@@ -916,6 +1152,26 @@ def _file_digest(
     return result
 
 
+def _module_source_text(
+    path: Path,
+    state: _CollectorState,
+) -> tuple[str | None, str | None]:
+    cached = state.module_sources.get(path)
+    if cached is not None:
+        return cached
+    try:
+        if path.stat().st_size > _MAX_SOURCE_FILE_BYTES:
+            result = (None, None)
+        else:
+            source = path.read_text(encoding="utf-8")
+            digest = hashlib.sha256(source.encode("utf-8", errors="surrogatepass")).hexdigest()
+            result = (source, f"sha256:{digest}")
+    except (OSError, UnicodeError):
+        result = (None, None)
+    state.module_sources[path] = result
+    return result
+
+
 def _candidate_id(
     plugin_id: str,
     source: SourceEvidence,
@@ -1058,6 +1314,7 @@ def _core_record(
     claims: list[Claim] = [
         Claim("matcher.type", candidate.matcher_type, ClaimBasis.OBSERVED, matcher_evidence),
         Claim("confidence", candidate.confidence.value, ClaimBasis.INFERRED, matcher_evidence),
+        Claim("plugin.module_name", plugin.module_name, ClaimBasis.OBSERVED, plugin_evidence),
         Claim(
             "plugin.distribution",
             asdict(plugin.distribution),
@@ -1088,13 +1345,50 @@ def _core_record(
     for field_name, value in observed_values:
         if value is not None and value != []:
             claims.append(Claim(field_name, value, ClaimBasis.OBSERVED, matcher_evidence))
+    declared_evidence = (
+        plugin_evidence if candidate.kind is not CapabilityKind.ALCONNA else matcher_evidence
+    )
     for field_name, value in (
         ("description", candidate.description),
         ("usage", candidate.usage),
         ("example", candidate.example),
     ):
         if value is not None:
-            claims.append(Claim(field_name, value, ClaimBasis.DECLARED, matcher_evidence))
+            claims.append(Claim(field_name, value, ClaimBasis.DECLARED, declared_evidence))
+
+    if candidate.handler_references:
+        claims.append(
+            Claim(
+                "handler.references",
+                list(candidate.handler_references),
+                ClaimBasis.OBSERVED,
+                matcher_evidence,
+            )
+        )
+
+    if candidate.config_references:
+        claims.append(
+            Claim(
+                "config.references",
+                [
+                    {
+                        "module": item.module_name,
+                        "source_revision": item.source_revision,
+                        "config_type": item.config_type,
+                        "binding": item.reference.binding_name,
+                        "key": item.reference.config_key,
+                        "field": item.reference.field_name,
+                        "function": item.reference.function_name,
+                        "line": item.reference.line,
+                        "column": item.reference.column,
+                        "helper_depth": item.reference.helper_depth,
+                    }
+                    for item in candidate.config_references
+                ],
+                ClaimBasis.OBSERVED,
+                matcher_evidence,
+            )
+        )
 
     constraints = tuple(
         _core_constraint(candidate.candidate_id, label, matcher_evidence)
@@ -1142,7 +1436,7 @@ def _snapshot_revision(
 ) -> str:
     payload = json.dumps(
         {
-            "plugins": [asdict(plugin) for plugin in plugins],
+            "plugins": [_plugin_revision_payload(plugin) for plugin in plugins],
             "candidates": [asdict(candidate) for candidate in candidates],
             "partial_errors": errors,
         },
@@ -1151,6 +1445,23 @@ def _snapshot_revision(
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _plugin_revision_payload(plugin: PluginIdentity) -> dict[str, object]:
+    config_type = plugin.config_type
+    return {
+        "plugin_id": plugin.plugin_id,
+        "name": plugin.name,
+        "module_name": plugin.module_name,
+        "config_type": (
+            f"{config_type.__module__}:{config_type.__qualname__}"
+            if isinstance(config_type, type)
+            else None
+        ),
+        "metadata": asdict(plugin.metadata) if plugin.metadata is not None else None,
+        "distribution": asdict(plugin.distribution),
+        "source": asdict(plugin.source),
+    }
 
 
 def _safe_collection(value: object) -> tuple[object, ...]:

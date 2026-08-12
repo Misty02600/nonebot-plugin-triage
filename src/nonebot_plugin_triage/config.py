@@ -4,7 +4,16 @@ from collections.abc import Mapping
 from pathlib import PurePath
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
+from nonebot_plugin_triage.config_policy import normalize_config_root
 
 CommandName = Annotated[
     str,
@@ -25,7 +34,7 @@ class NBTriageConfig(BaseModel):
     nbtriage_query_command: CommandName = "报错查询"
     nbtriage_feedback_command: CommandName = "报错反馈"
     nbtriage_trial_stats_command: CommandName = "报错统计"
-    nbtriage_priority: int = Field(default=10, ge=1, le=100)
+    nbtriage_priority: int = Field(default=10, ge=2, le=100)
     nbtriage_query_priority: int = Field(default=10, ge=1, le=100)
     nbtriage_request_max_chars: int = Field(default=2_000, ge=1, le=8_000)
     nbtriage_support_cooldown_seconds: int = Field(default=2, ge=1, le=86_400)
@@ -51,6 +60,9 @@ class NBTriageConfig(BaseModel):
         ge=1,
         le=604_800,
     )
+    nbtriage_thread_max_entries: int = Field(default=4_096, ge=1, le=100_000)
+    nbtriage_thread_idle_seconds: int = Field(default=900, ge=1, le=604_800)
+    nbtriage_thread_absolute_seconds: int = Field(default=1_800, ge=1, le=604_800)
     nbtriage_incident_max_entries: int = Field(default=256, ge=1, le=100_000)
     nbtriage_incident_retention_seconds: int = Field(
         default=86_400,
@@ -73,6 +85,16 @@ class NBTriageConfig(BaseModel):
     nbtriage_model_name: ModelName | None = None
     nbtriage_model_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
     nbtriage_model_max_output_tokens: int = Field(default=1_024, ge=1, le=8_192)
+    nbtriage_restricted_config: frozenset[str] = Field(default_factory=frozenset)
+
+    @field_validator("nbtriage_restricted_config", mode="before")
+    @classmethod
+    def normalize_restricted_config(cls, value: Any) -> frozenset[str]:
+        if isinstance(value, str) or not isinstance(value, (list, tuple, set, frozenset)):
+            raise ValueError("restricted config must be a JSON array of configuration keys")
+        if len(value) > 256:
+            raise ValueError("restricted config must contain at most 256 keys")
+        return frozenset(normalize_config_root(item) for item in value)
 
     @model_validator(mode="before")
     @classmethod
@@ -110,6 +132,8 @@ class NBTriageConfig(BaseModel):
                 raise ValueError("capability shadow path must end with .sqlite3")
             if shadow_path.name.casefold().startswith(".env"):
                 raise ValueError("capability shadow path must not target an environment file")
+        if self.nbtriage_thread_absolute_seconds < self.nbtriage_thread_idle_seconds:
+            raise ValueError("thread absolute lifetime must not be shorter than idle lifetime")
         if self.nbtriage_model_enabled:
             if self.nbtriage_model_backend is None:
                 raise ValueError("model backend is required when model support is enabled")

@@ -205,8 +205,9 @@ def test_plugin_runtime_owns_optional_model_service() -> None:
     )
 
     runtime = create_plugin_runtime(
-        NBTriageConfig(),
+        NBTriageConfig(nbtriage_restricted_config=frozenset({"DISCORD_BOTS"})),
         model_service_factory=lambda _: service,
     )
 
     assert runtime.model_service is service
+    assert runtime.config_value_policy.is_restricted("discord_bots__token") is True

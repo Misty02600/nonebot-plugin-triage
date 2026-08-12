@@ -915,6 +915,7 @@ def search_capability_index(
     *,
     include_review: bool = False,
     include_restricted: bool = False,
+    capability_ids: Iterable[str] | None = None,
     limit: int = 10,
 ) -> list[CapabilitySearchHit]:
     """以只读连接检索本地能力卡片，并在模型边界前执行披露过滤。
@@ -924,6 +925,7 @@ def search_capability_index(
         query: 用户的本地检索文本。
         include_review: 是否显式允许返回待维护者复核的 `review`。
         include_restricted: 调用方已在索引之外完成授权时，是否返回 `restricted`。
+        capability_ids: 可选的调用方预先批准能力 ID；过滤会在 FTS 排名和 limit 之前完成。
         limit: 最大结果数，范围为 1 到 100。
 
     Returns:
@@ -940,6 +942,9 @@ def search_capability_index(
         raise CapabilityIndexError("include_restricted must be a boolean")
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
         raise CapabilityIndexError("limit must be an integer between 1 and 100")
+    allowed_capability_ids = _search_capability_ids(capability_ids)
+    if allowed_capability_ids == ():
+        return []
     normalized_query = unicodedata.normalize("NFKC", query).strip()
     if not normalized_query:
         return []
@@ -963,66 +968,72 @@ def search_capability_index(
         placeholders = ",".join("?" for _ in disclosures)
         rows: list[sqlite3.Row] = []
         match_query = _fts_query(query_candidates)
-        if match_query is not None:
-            rows.extend(
-                connection.execute(
-                    f"""SELECT records.record_json,
-                               bm25(capability_fts) AS rank
-                        FROM capability_fts
-                        JOIN capability_records AS records
-                          ON records.capability_id = capability_fts.capability_id
-                        WHERE capability_fts MATCH ?
-                          AND records.disclosure IN ({placeholders})
-                          AND records.state IN (?, ?)
-                        ORDER BY rank ASC, records.capability_id ASC
-                        LIMIT ?""",
-                    (
-                        match_query,
-                        *disclosures,
-                        RecordState.VERIFIED.value,
-                        RecordState.CANDIDATE.value,
-                        limit,
-                    ),
-                ).fetchall()
-            )
-        for candidate in query_candidates:
-            lookup = candidate.casefold()
-            if len(lookup) < 2:
-                continue
-            rows.extend(
-                connection.execute(
-                    f"""SELECT records.record_json,
-                               MIN(CASE
-                                   WHEN terms.term = ? THEN -100.0
-                                   WHEN instr(terms.term, ?) > 0 THEN -50.0
-                                   ELSE -25.0
-                               END) AS rank
-                        FROM capability_terms AS terms
-                        JOIN capability_records AS records
-                          ON records.capability_id = terms.capability_id
-                        WHERE (
-                            terms.term = ?
-                            OR instr(terms.term, ?) > 0
-                            OR instr(?, terms.term) > 0
-                        )
-                          AND records.disclosure IN ({placeholders})
-                          AND records.state IN (?, ?)
-                        GROUP BY records.capability_id, records.record_json
-                        ORDER BY rank ASC, records.capability_id ASC
-                        LIMIT ?""",
-                    (
-                        lookup,
-                        lookup,
-                        lookup,
-                        lookup,
-                        lookup,
-                        *disclosures,
-                        RecordState.VERIFIED.value,
-                        RecordState.CANDIDATE.value,
-                        limit,
-                    ),
-                ).fetchall()
-            )
+        for capability_id_batch in _capability_id_batches(allowed_capability_ids):
+            id_clause, id_parameters = _capability_id_clause(capability_id_batch)
+            if match_query is not None:
+                rows.extend(
+                    connection.execute(
+                        f"""SELECT records.record_json,
+                                   bm25(capability_fts) AS rank
+                            FROM capability_fts
+                            JOIN capability_records AS records
+                              ON records.capability_id = capability_fts.capability_id
+                            WHERE capability_fts MATCH ?
+                              AND records.disclosure IN ({placeholders})
+                              {id_clause}
+                              AND records.state IN (?, ?)
+                            ORDER BY rank ASC, records.capability_id ASC
+                            LIMIT ?""",
+                        (
+                            match_query,
+                            *disclosures,
+                            *id_parameters,
+                            RecordState.VERIFIED.value,
+                            RecordState.CANDIDATE.value,
+                            limit,
+                        ),
+                    ).fetchall()
+                )
+            for candidate in query_candidates:
+                lookup = candidate.casefold()
+                if len(lookup) < 2:
+                    continue
+                rows.extend(
+                    connection.execute(
+                        f"""SELECT records.record_json,
+                                   MIN(CASE
+                                       WHEN terms.term = ? THEN -100.0
+                                       WHEN instr(terms.term, ?) > 0 THEN -50.0
+                                       ELSE -25.0
+                                   END) AS rank
+                            FROM capability_terms AS terms
+                            JOIN capability_records AS records
+                              ON records.capability_id = terms.capability_id
+                            WHERE (
+                                terms.term = ?
+                                OR instr(terms.term, ?) > 0
+                                OR instr(?, terms.term) > 0
+                            )
+                              AND records.disclosure IN ({placeholders})
+                              {id_clause}
+                              AND records.state IN (?, ?)
+                            GROUP BY records.capability_id, records.record_json
+                            ORDER BY rank ASC, records.capability_id ASC
+                            LIMIT ?""",
+                        (
+                            lookup,
+                            lookup,
+                            lookup,
+                            lookup,
+                            lookup,
+                            *disclosures,
+                            *id_parameters,
+                            RecordState.VERIFIED.value,
+                            RecordState.CANDIDATE.value,
+                            limit,
+                        ),
+                    ).fetchall()
+                )
         hits_by_id: dict[str, CapabilitySearchHit] = {}
         for row in rows:
             hit = _search_hit_from_row(row)
@@ -1037,6 +1048,38 @@ def search_capability_index(
         if isinstance(error, CapabilityIndexError):
             raise
         raise CapabilityIndexError(f"failed to search capability index {path}: {error}") from error
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def capability_index_public_records(path: Path) -> tuple[CapabilityRecord, ...]:
+    """只读加载可参与普通用户检索的 public 记录，用于检索前构造受众域。"""
+    path = Path(path)
+    if not path.is_file():
+        raise CapabilityIndexError(f"capability index does not exist: {path}")
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        _verify_index_schema(connection)
+        rows = connection.execute(
+            """SELECT record_json
+               FROM capability_records
+               WHERE disclosure = ? AND state IN (?, ?)
+               ORDER BY capability_id ASC""",
+            (
+                Disclosure.PUBLIC.value,
+                RecordState.VERIFIED.value,
+                RecordState.CANDIDATE.value,
+            ),
+        ).fetchall()
+        return tuple(CapabilityRecord.from_dict(json.loads(row["record_json"])) for row in rows)
+    except (sqlite3.Error, CapabilityError, json.JSONDecodeError) as error:
+        if isinstance(error, CapabilityIndexError):
+            raise
+        raise CapabilityIndexError(f"failed to inspect capability index {path}: {error}") from error
     finally:
         if connection is not None:
             connection.close()
@@ -1148,6 +1191,12 @@ def _record_lookup_terms(record: CapabilityRecord) -> tuple[str, ...]:
 
 
 def _searchable_claims(record: CapabilityRecord) -> tuple[Claim, ...]:
+    internal_fields = {
+        "handler.references",
+        "config.references",
+        "plugin.distribution",
+        "plugin.module_name",
+    }
     command_specific = any(
         claim.field in {"command.header", "command.literals", "command.path"}
         for claim in record.claims
@@ -1155,7 +1204,7 @@ def _searchable_claims(record: CapabilityRecord) -> tuple[Claim, ...]:
     return tuple(
         claim
         for claim in record.claims
-        if claim.field != "plugin.distribution"
+        if claim.field not in internal_fields
         and not (command_specific and claim.field == "plugin.metadata")
     )
 
@@ -1170,6 +1219,41 @@ def _fts_query(candidates: Iterable[str]) -> str | None:
     if not terms:
         return None
     return " OR ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms)
+
+
+def _search_capability_ids(capability_ids: Iterable[str] | None) -> tuple[str, ...] | None:
+    if capability_ids is None:
+        return None
+    if isinstance(capability_ids, str | bytes):
+        raise CapabilityIndexError("capability_ids must be an iterable of identifiers")
+    try:
+        normalized = tuple(capability_ids)
+    except TypeError as error:
+        raise CapabilityIndexError("capability_ids must be an iterable of identifiers") from error
+    if len(normalized) > 10_000:
+        raise CapabilityIndexError("capability_ids exceeds the supported limit")
+    return tuple(sorted({_identifier(item, "capability_ids") for item in normalized}))
+
+
+def _capability_id_batches(
+    capability_ids: tuple[str, ...] | None,
+) -> tuple[tuple[str, ...] | None, ...]:
+    if capability_ids is None:
+        return (None,)
+    batch_size = 500
+    return tuple(
+        capability_ids[offset : offset + batch_size]
+        for offset in range(0, len(capability_ids), batch_size)
+    )
+
+
+def _capability_id_clause(
+    capability_ids: tuple[str, ...] | None,
+) -> tuple[str, tuple[str, ...]]:
+    if capability_ids is None:
+        return "", ()
+    placeholders = ",".join("?" for _ in capability_ids)
+    return f"AND records.capability_id IN ({placeholders})", capability_ids
 
 
 def _verify_index_schema(connection: sqlite3.Connection) -> None:

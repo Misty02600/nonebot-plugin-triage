@@ -88,7 +88,7 @@ class LiveReportService:
         if request.target.private:
             return PublicReportResult(
                 status=PublicReportStatus.SCENE_UNSUPPORTED,
-                message="当前仅支持群聊或频道内求助。",
+                message="当前不能在私聊中受理故障；其他求助仍可在私聊中使用 triage。",
             )
         now = self._clock()
         try:

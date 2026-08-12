@@ -23,39 +23,14 @@ from nonebot_plugin_triage.support_intake import (
     ("text", "intent", "content"),
     [
         ("", SupportIntent.EMPTY, ""),
-        ("报错", SupportIntent.REPORT_PROBLEM, "报错"),
+        ("请受理这个故障", SupportIntent.REPORT_PROBLEM, "请受理这个故障"),
+        ("请受理这个故障！", SupportIntent.REPORT_PROBLEM, "请受理这个故障！"),
+        ("确认按故障处理", SupportIntent.REPORT_PROBLEM, "确认按故障处理"),
         ("提醒功能怎么使用", SupportIntent.CAPABILITY_GUIDANCE, "提醒功能怎么使用"),
-        ("刚才执行后没反应", SupportIntent.REPORT_PROBLEM, "刚才执行后没反应"),
         ("今天天气不错", SupportIntent.UNKNOWN, "今天天气不错"),
-        (
-            "这不是报错，只想问提醒怎么用",
-            SupportIntent.UNKNOWN,
-            "这不是报错，只想问提醒怎么用",
-        ),
-        (
-            "这个功能不能用吗，怎么开启",
-            SupportIntent.UNKNOWN,
-            "这个功能不能用吗，怎么开启",
-        ),
-        ("这不是报错", SupportIntent.UNKNOWN, "这不是报错"),
-        ("报错是什么意思", SupportIntent.UNKNOWN, "报错是什么意思"),
-        ("这个功能会报错吗", SupportIntent.UNKNOWN, "这个功能会报错吗"),
-        ("支持错误提示配置吗", SupportIntent.UNKNOWN, "支持错误提示配置吗"),
-        ("这不是故障", SupportIntent.UNKNOWN, "这不是故障"),
-        ("没有异常", SupportIntent.UNKNOWN, "没有异常"),
-        ("并非失败", SupportIntent.UNKNOWN, "并非失败"),
-        ("不算报错", SupportIntent.UNKNOWN, "不算报错"),
-        ("没失败", SupportIntent.UNKNOWN, "没失败"),
-        ("没有崩溃", SupportIntent.UNKNOWN, "没有崩溃"),
-        ("为什么不工作", SupportIntent.REPORT_PROBLEM, "为什么不工作"),
-        ("刚才执行后没有反应", SupportIntent.REPORT_PROBLEM, "刚才执行后没有反应"),
-        ("错误码列表", SupportIntent.UNKNOWN, "错误码列表"),
-        ("故障排查文档", SupportIntent.UNKNOWN, "故障排查文档"),
-        ("异常处理知识", SupportIntent.UNKNOWN, "异常处理知识"),
-        ("报错名词解释", SupportIntent.UNKNOWN, "报错名词解释"),
     ],
 )
-def test_support_request_classification(
+def test_support_request_deterministic_fast_paths(
     text: str,
     intent: SupportIntent,
     content: str,
@@ -64,6 +39,48 @@ def test_support_request_classification(
 
     assert result.intent is intent
     assert result.content == content
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "刚才执行后没反应",
+        "刚才执行后没有反应",
+        "刚才执行后没响应",
+        "刚才执行后报错了",
+        "报错",
+        "报障",
+        "为什么不工作",
+        "这不是报错，只想问提醒怎么用",
+        "这个功能不能用吗，怎么开启",
+        "这不是报错",
+        "报错是什么意思",
+        "这个功能会报错吗",
+        "支持错误提示配置吗",
+        "这不是故障",
+        "没有异常",
+        "并非失败",
+        "不算报错",
+        "没失败",
+        "没有崩溃",
+        "请受理这个故障？",
+        "报错？",
+        "请受理这个故障吗",
+        "不要受理这个故障",
+        "假设它报错",
+        "报错时怎么办",
+        "请受理这个故障，也告诉我怎么配置",
+        "错误码列表",
+        "故障排查文档",
+        "异常处理知识",
+        "报错名词解释",
+    ],
+)
+def test_non_explicit_text_never_requests_incident(text: str) -> None:
+    result = classify_support_request(text)
+
+    assert result.intent is not SupportIntent.REPORT_PROBLEM
+    assert result.content == text
 
 
 def test_specific_capability_question_returns_usage() -> None:
@@ -98,6 +115,12 @@ def test_generic_capability_question_lists_available_commands() -> None:
     assert "- 提醒：创建提醒" in message
     assert "- 天气：查询天气" in message
     assert message.endswith("告诉我具体功能名，我再给你用法。")
+
+
+def test_empty_capability_result_uses_neutral_reply() -> None:
+    message = format_capability_guidance("搜图功能怎么用", ())
+
+    assert message == "没有找到相关功能。"
 
 
 async def test_capability_registry_is_explicit_and_never_executes_commands() -> None:

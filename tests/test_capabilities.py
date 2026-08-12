@@ -221,6 +221,110 @@ def test_chinese_usage_query_prefers_image_search_over_triage(tmp_path: Path) ->
     )
 
 
+def test_search_applies_capability_allowlist_before_ranking_and_limit(
+    tmp_path: Path,
+) -> None:
+    index_path = tmp_path / "capabilities.sqlite3"
+    build_capability_index(
+        index_path,
+        _snapshot(
+            [
+                _record("command:first", "搜图", "第一项图片搜索"),
+                _record("command:target", "搜图", "当前 adapter 的图片搜索"),
+            ]
+        ),
+    )
+
+    assert search_capability_index(index_path, "搜图", capability_ids=()) == []
+    hits = search_capability_index(
+        index_path,
+        "搜图",
+        capability_ids=(
+            *(f"allowed:{index:04d}" for index in range(600)),
+            "command:target",
+        ),
+        limit=1,
+    )
+
+    assert [hit.record.capability_id for hit in hits] == ["command:target"]
+
+
+def test_search_rejects_string_capability_allowlist(tmp_path: Path) -> None:
+    index_path = tmp_path / "capabilities.sqlite3"
+    build_capability_index(
+        index_path,
+        _snapshot([_record("command:image", "搜图", "图片搜索")]),
+    )
+
+    with pytest.raises(CapabilityIndexError, match="iterable of identifiers"):
+        search_capability_index(
+            index_path,
+            "搜图",
+            capability_ids="command:image",
+        )
+
+
+def test_internal_config_and_handler_references_are_not_search_terms(tmp_path: Path) -> None:
+    record = _record(
+        "command:image",
+        "图片搜索",
+        "按关键词搜索图片",
+    )
+    evidence_id = record.evidence_refs[0].evidence_id
+    record = CapabilityRecord(
+        capability_id=record.capability_id,
+        owner=record.owner,
+        kind=record.kind,
+        disclosure=record.disclosure,
+        state=record.state,
+        claims=(
+            *record.claims,
+            Claim(
+                "config.references",
+                [
+                    {
+                        "module": "private_plugin.config",
+                        "binding": "plugin_config",
+                        "field": "private_limit",
+                        "key": "PRIVATE_LIMIT",
+                    }
+                ],
+                ClaimBasis.OBSERVED,
+                (evidence_id,),
+            ),
+            Claim(
+                "handler.references",
+                [{"module": "private_plugin.handlers", "function": "internal_search"}],
+                ClaimBasis.OBSERVED,
+                (evidence_id,),
+            ),
+        ),
+        constraints=record.constraints,
+        evidence_refs=record.evidence_refs,
+    )
+    index_path = tmp_path / "capabilities.sqlite3"
+    build_capability_index(
+        index_path,
+        CapabilitySnapshot.create(
+            [record],
+            source_revisions=(
+                SourceRevision(
+                    source_id="source:test",
+                    kind="test",
+                    revision="1",
+                    locator="test://capabilities",
+                ),
+            ),
+        ),
+    )
+
+    assert search_capability_index(index_path, "PRIVATE_LIMIT") == []
+    assert search_capability_index(index_path, "internal_search") == []
+    assert [
+        hit.record.capability_id for hit in search_capability_index(index_path, "图片搜索")
+    ] == ["command:image"]
+
+
 def test_plugin_level_usage_does_not_contaminate_command_search(tmp_path: Path) -> None:
     public = CapabilityRecord(
         capability_id="command:triage",

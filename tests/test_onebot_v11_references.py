@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment
 from nonebot.adapters.onebot.v11.event import Reply as OneBotReply
 from nonebot.adapters.onebot.v11.event import Sender
 from nonebot.matcher import current_matcher
@@ -19,11 +19,18 @@ from nonebot_plugin_alconna import (
 
 import nonebot_plugin_triage.onebot_v11_references as onebot_references
 from nbtriage.message_references import PlatformMessageReferenceIndex
+from nbtriage.support_threads import OutboundThreadReferenceIndex
 from nonebot_plugin_triage.nonebot_runtime import NBTRIAGE_CORRELATION_STATE_KEY
 from nonebot_plugin_triage.onebot_v11_references import (
     ONEBOT_V11_ADAPTER_NAME,
+    OneBotV11IncomingReplyReferenceProvider,
     OneBotV11OutgoingReferenceProvider,
     OneBotV11OutgoingReferenceProviderError,
+)
+from nonebot_plugin_triage.thread_references import (
+    NBTRIAGE_THREAD_BINDING_STATE_KEY,
+    OutgoingThreadBinding,
+    SupportThreadReferenceBridge,
 )
 from nonebot_plugin_triage.universal_references import UniversalReferenceBridge, conversation_scope
 
@@ -33,6 +40,16 @@ def make_index() -> PlatformMessageReferenceIndex:
         secret_key=b"test-key-with-at-least-thirty-two-bytes",
         max_entries=16,
         retention_seconds=60,
+    )
+
+
+def make_thread_bridge() -> SupportThreadReferenceBridge:
+    return SupportThreadReferenceBridge(
+        OutboundThreadReferenceIndex(
+            secret_key=b"test-thread-key-with-at-least-32-bytes",
+            max_entries=16,
+            retention_seconds=60,
+        )
     )
 
 
@@ -123,6 +140,49 @@ async def test_matcher_send_result_binds_only_routing_fields_and_message_id() ->
 
 
 @pytest.mark.anyio
+async def test_matcher_send_result_also_binds_thread_to_actor_scope() -> None:
+    bridge = UniversalReferenceBridge(make_index())
+    thread_bridge = make_thread_bridge()
+    provider = OneBotV11OutgoingReferenceProvider(bridge, thread_bridge=thread_bridge)
+    bot = make_bot()
+    matcher = SimpleNamespace(
+        state={NBTRIAGE_THREAD_BINDING_STATE_KEY: OutgoingThreadBinding("thread-1", "actor-200")}
+    )
+    token = current_matcher.set(matcher)
+    try:
+        await provider.bind_outgoing_group_message(
+            bot,
+            None,
+            "send_group_msg",
+            {"group_id": 100},
+            {"message_id": 602},
+        )
+    finally:
+        current_matcher.reset(token)
+
+    assert (
+        thread_bridge.resolve_reply(
+            adapter_name=ONEBOT_V11_ADAPTER_NAME,
+            bot_scope="4200",
+            target=group_target(),
+            actor_scope="actor-200",
+            message_reference="602",
+        )
+        == "thread-1"
+    )
+    assert (
+        thread_bridge.resolve_reply(
+            adapter_name=ONEBOT_V11_ADAPTER_NAME,
+            bot_scope="4200",
+            target=group_target(),
+            actor_scope="actor-201",
+            message_reference="602",
+        )
+        is None
+    )
+
+
+@pytest.mark.anyio
 async def test_uniseg_reply_and_target_match_onebot_outgoing_scope() -> None:
     bot = make_bot()
     event = make_group_event(message_id=602, reply_message_id=601)
@@ -194,3 +254,37 @@ def test_registration_is_explicit_and_rejects_repeat(
         match="already registered",
     ):
         provider.register()
+
+
+def test_incoming_provider_uses_structured_original_reply_without_fetching_content() -> None:
+    event = make_group_event(message_id=603)
+    event.reply = None
+    event.original_message = Message(
+        [
+            MessageSegment.reply(601),
+            MessageSegment.text("FOLLOW_UP_ONLY"),
+        ]
+    )
+
+    reference = OneBotV11IncomingReplyReferenceProvider().extract(make_bot(), event)
+
+    assert reference is not None
+    assert reference.message_reference == "601"
+    assert reference.actor_scope == "200"
+    assert reference.target == group_target()
+
+
+def test_incoming_provider_prefers_adapter_reply_and_rejects_non_group_event() -> None:
+    event = make_group_event(message_id=604, reply_message_id=602)
+    event.original_message = Message(
+        [
+            MessageSegment.reply(999),
+            MessageSegment.text("FOLLOW_UP_ONLY"),
+        ]
+    )
+
+    reference = OneBotV11IncomingReplyReferenceProvider().extract(make_bot(), event)
+
+    assert reference is not None
+    assert reference.message_reference == "602"
+    assert OneBotV11IncomingReplyReferenceProvider().extract(make_bot(), object()) is None
