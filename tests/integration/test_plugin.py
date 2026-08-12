@@ -947,12 +947,71 @@ async def test_public_shadow_capability_guidance_is_available_to_regular_user(
         Claim,
         ClaimBasis,
         Disclosure,
+        EvidenceRef,
         PlatformScope,
         RecordState,
+        SourceRevision,
     )
+    from nbtriage.module_source_revisions import scan_python_module_source
     from nonebot_plugin_triage import handlers
     from nonebot_plugin_triage.capability_shadow import CapabilityShadowService
 
+    module_name = "nonebot_plugin_triage"
+    module_path = Path(__file__).parents[2] / "src" / module_name
+    scan = scan_python_module_source(module_name, module_path)
+    assert scan.manifest is not None
+    manifest = scan.manifest
+    source = SourceRevision(
+        source_id="integration-plugin-source",
+        kind="plugin_source",
+        revision=manifest.revision,
+        locator=f"{module_name}/__init__.py",
+        payload={
+            "module_name": module_name,
+            "line": None,
+            "module_source_manifest": manifest.to_dict(),
+        },
+    )
+    evidence = EvidenceRef(
+        evidence_id="integration-plugin-evidence",
+        source_id=source.source_id,
+        kind="plugin_source",
+        locator=f"{module_name}/__init__.py",
+        content_hash=manifest.revision,
+        payload={"module_name": module_name, "line": None},
+    )
+
+    def build_deployment(
+        pyproject_path: Path,
+        *,
+        runtime_modules,
+    ):
+        from nbtriage.artifact_revisions import (
+            ArtifactRevision,
+            ArtifactRevisionStatus,
+            ArtifactSourceKind,
+        )
+        from nbtriage.capability_deployment import build_capability_deployment
+
+        assert pyproject_path == Path("pyproject.toml")
+
+        def revision_builder(module_name: str, **_: object) -> ArtifactRevision:
+            assert module_name == "nonebot_plugin_triage"
+            return ArtifactRevision(
+                module_name=module_name,
+                status=ArtifactRevisionStatus.LOCATED,
+                source_kind=ArtifactSourceKind.LOCAL,
+                revision=manifest.revision,
+                evidence=(),
+                distribution_name="nonebot-plugin-triage",
+                module_source_manifest=manifest,
+            )
+
+        return build_capability_deployment(
+            pyproject_path,
+            runtime_modules=runtime_modules,
+            revision_builder=revision_builder,
+        )
     record = CapabilityRecord(
         capability_id="command:image",
         owner="YetAnotherPicSearch",
@@ -962,6 +1021,12 @@ async def test_public_shadow_capability_guidance_is_available_to_regular_user(
         platform_scope=PlatformScope.explicit(("~onebot.v11",)),
         claims=(
             Claim("command.header", "搜图", ClaimBasis.OBSERVED),
+            Claim(
+                "plugin.module_name",
+                module_name,
+                ClaimBasis.OBSERVED,
+                (evidence.evidence_id,),
+            ),
             Claim("description", "搜索图片出处", ClaimBasis.DECLARED),
             Claim("usage", "回复图片后发送搜图", ClaimBasis.DECLARED),
             Claim(
@@ -970,10 +1035,13 @@ async def test_public_shadow_capability_guidance_is_available_to_regular_user(
                 ClaimBasis.DECLARED,
             ),
         ),
+        evidence_refs=(evidence,),
     )
     shadow = CapabilityShadowService(
         tmp_path / "capabilities.sqlite3",
-        snapshot_builder=lambda **_: CapabilitySnapshot.create((record,)),
+        snapshot_builder=lambda **_: CapabilitySnapshot.create((record,), (source,)),
+        deployment_builder=build_deployment,
+        runtime_modules=lambda: (module_name,),
     )
     shadow.refresh()
     monkeypatch.setattr(

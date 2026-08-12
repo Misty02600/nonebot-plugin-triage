@@ -43,6 +43,8 @@ Matcher。把这些情况都称为“待审核”既无法说明真实缺口，�
    AND record_state in {verified, candidate}
    AND served snapshot is complete (partial == false)
    AND served generation is fresh
+   AND current deployment observation is registered
+   AND local/editable module source manifest exactly matches snapshot evidence
    ```
 
    `platform_scope=unknown` 不支持任何普通用户 adapter；`explicit` 只支持列出的 adapter；`all` 支持当前
@@ -92,11 +94,14 @@ Matcher。把这些情况都称为“待审核”既无法说明真实缺口，�
   的插件加载与 metadata 断言；2026-08-13 的本地源码快照验证还确认：7 条原动态候选收敛为 5 项用户能力和
   2 条支撑关系，`dynamic_entry=0`、`capability_mapping_unknown=0`，快照完整。该离线验证不替代正式 Bot
   启动后的部署 generation 刷新。
-- deployment 清单已经作为普通查询的保守全局前置门：本轮构建失败、partial 或尚未刷新时失败关闭，但这
-  不表示任一能力已完成 revision 对齐。
+- deployment 对齐已进入普通查询的派生 ServingView：完整刷新才创建同时绑定 snapshot / deployment generation
+  的 alignment；逐能力要求当前 `registered`，并只对 `local / editable` 制品比较快照与部署双方的同域模块
+  源码 manifest。未注册、源码变化、证据歧义或缺失均逐条剔除；全局刷新失败或任一快照 / deployment
+  partial 则整体失败关闭。wheel / VCS 首阶段没有同域 manifest，因此不会以版本、commit 或 `RECORD` 摘要
+  推断成已对齐。
 - 尚未落实：后台 LLM 语义编排、一般动态入口自动消解、字段冲突工作流、operator exclude policy，以及
-  ADR-0026 要求的逐能力 deployment revision 对齐门禁。有界 handler AST 效果分析与 Matcher 角色归并的
-  首阶段已由 ADR-0034 接入；这些其余缺口不改变本 ADR 的持久模型。
+  wheel / VCS 的可比模块源码证据。有界 handler AST 效果分析与 Matcher 角色归并的首阶段已由 ADR-0034
+  接入；这些其余缺口不改变本 ADR 的持久模型。
 
 ## 替代关系
 

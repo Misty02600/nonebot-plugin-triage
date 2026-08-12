@@ -27,6 +27,12 @@ from nbtriage.capabilities import (
     capability_index_public_records,
     search_capability_index,
 )
+from nbtriage.capability_alignment import (
+    CapabilityAlignmentState,
+    CapabilityDeploymentAlignment,
+    build_capability_deployment_alignment,
+    record_matches_alignment,
+)
 from nbtriage.capability_deployment import (
     CapabilityDeployment,
     build_capability_deployment,
@@ -81,6 +87,9 @@ class CapabilityShadowStatus:
     runtime_only_plugin_count: int = 0
     deployment_partial: bool | None = None
     deployment_error_code: str | None = None
+    alignment_generation: str | None = None
+    aligned_capability_count: int = 0
+    alignment_error_code: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -130,6 +139,8 @@ class CapabilityShadowService:
         self._public_paths = public_paths
         self._deployment_builder = deployment_builder
         self._runtime_modules = runtime_modules
+        self._deployment: CapabilityDeployment | None = None
+        self._alignment: CapabilityDeploymentAlignment | None = None
         served = _read_served_index_metadata(path)
         self._status = CapabilityShadowStatus(
             served_generation=served.generation,
@@ -185,6 +196,10 @@ class CapabilityShadowService:
             or not _deployment_inventory_is_ready(self._status)
         ):
             return None
+        alignment = self._current_alignment()
+        if alignment is None:
+            return None
+        aligned_by_id = alignment.by_capability_id
         try:
             public_records = await asyncio.to_thread(
                 capability_index_public_records,
@@ -193,7 +208,9 @@ class CapabilityShadowService:
             capability_ids = tuple(
                 record.capability_id
                 for record in public_records
-                if _record_is_publicly_servable(record, adapter_type)
+                if (aligned := aligned_by_id.get(record.capability_id)) is not None
+                and _record_is_publicly_servable(record, adapter_type)
+                and record_matches_alignment(record, aligned)
             )
             if not capability_ids:
                 return PublicCapabilitySearch((), partial=self._status.partial)
@@ -211,7 +228,13 @@ class CapabilityShadowService:
             )
             return None
         return PublicCapabilitySearch(
-            tuple(hit for hit in hits if _record_is_publicly_servable(hit.record, adapter_type)),
+            tuple(
+                hit
+                for hit in hits
+                if (aligned := aligned_by_id.get(hit.record.capability_id)) is not None
+                and _record_is_publicly_servable(hit.record, adapter_type)
+                and record_matches_alignment(hit.record, aligned)
+            ),
             partial=self._status.partial,
         )
 
@@ -245,9 +268,12 @@ class CapabilityShadowService:
             partial=snapshot.manifest.partial,
             error_code=None,
         )
+        self._refresh_alignment_safely(snapshot)
         return self._status
 
     def _refresh_deployment_safely(self) -> None:
+        self._deployment = None
+        self._alignment = None
         self._status = replace(
             self._status,
             deployment_generation=None,
@@ -257,6 +283,9 @@ class CapabilityShadowService:
             runtime_only_plugin_count=0,
             deployment_partial=None,
             deployment_error_code=None,
+            alignment_generation=None,
+            aligned_capability_count=0,
+            alignment_error_code="alignment_not_built",
         )
         try:
             runtime_modules = tuple(self._runtime_modules())
@@ -270,6 +299,7 @@ class CapabilityShadowService:
             self._status = replace(
                 self._status,
                 deployment_error_code=type(error).__name__,
+                alignment_error_code="deployment_unavailable",
             )
             logger.warning(
                 "NoneBot Triage deployment inventory refresh failed; "
@@ -278,6 +308,7 @@ class CapabilityShadowService:
             )
             return
 
+        self._deployment = deployment
         observations = deployment.reconciliation.observations
         registered_count = sum(
             item.status is PluginRuntimeStatus.REGISTERED for item in observations
@@ -298,6 +329,62 @@ class CapabilityShadowService:
             deployment_partial=deployment.is_partial,
             deployment_error_code=None,
         )
+
+    def _refresh_alignment_safely(self, snapshot: CapabilitySnapshot) -> None:
+        deployment = self._deployment
+        if deployment is None:
+            self._alignment = None
+            self._status = replace(
+                self._status,
+                alignment_generation=None,
+                aligned_capability_count=0,
+                alignment_error_code="deployment_unavailable",
+            )
+            return
+        try:
+            alignment = build_capability_deployment_alignment(snapshot, deployment)
+        except Exception as error:
+            self._alignment = None
+            self._status = replace(
+                self._status,
+                alignment_generation=None,
+                aligned_capability_count=0,
+                alignment_error_code="alignment_build_failed",
+            )
+            logger.warning(
+                "NoneBot Triage capability deployment alignment failed ({})",
+                type(error).__name__,
+            )
+            return
+
+        self._alignment = alignment
+        unavailable_code = (
+            alignment.reason_codes[0]
+            if alignment.state is CapabilityAlignmentState.UNAVAILABLE and alignment.reason_codes
+            else None
+        )
+        self._status = replace(
+            self._status,
+            alignment_generation=alignment.generation,
+            aligned_capability_count=len(alignment.capabilities),
+            alignment_error_code=unavailable_code,
+        )
+
+    def _current_alignment(self) -> CapabilityDeploymentAlignment | None:
+        alignment = self._alignment
+        status = self._status
+        if (
+            alignment is None
+            or alignment.state is not CapabilityAlignmentState.READY
+            or status.alignment_error_code is not None
+            or alignment.generation != status.alignment_generation
+            or len(alignment.capabilities) != status.aligned_capability_count
+            or alignment.snapshot_generation != status.observed_generation
+            or alignment.snapshot_generation != status.served_generation
+            or alignment.deployment_generation != status.deployment_generation
+        ):
+            return None
+        return alignment
 
     def refresh_safely(self) -> None:
         try:

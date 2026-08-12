@@ -58,13 +58,19 @@ LLM 补全功能语义。如果先把全部记录交给词法 / 向量检索、�
 - **2026-08-12 实现检查点**：普通用户已能检索自动公开候选；当前 adapter 的允许能力 ID 会在 SQL 召回与
   `limit` 前应用，stale generation 失败关闭，`review / restricted` 不进入普通用户候选。受控源码
   EvidenceUnit、默认拒绝受限源码、严格模型输出 schema 与证据引用闭包已有库级实现。
-- **2026-08-13 保守前置门**：普通查询新增 deployment readiness 全局失败关闭；只有本轮 deployment
-  构建成功且明确完整时才继续，重启后未刷新、刷新异常、partial 以及成功后再次失败均不复用旧 readiness。
-  快照索引构建与维护者检索保持可用。这一步没有把“清单完整”冒充逐能力 revision 对齐。
+- **2026-08-13 逐能力 deployment 对齐门**：完整刷新在本轮 deployment、snapshot 与索引发布后构建
+  alignment generation，并同时绑定 served snapshot generation 与 deployment generation。普通域只接纳唯一
+  `plugin.module_name` 观察及 `plugin_source` 证据所指向、当前状态为 `registered`、制品已定位且
+  `local / editable` 模块源码 manifest 与快照 manifest 精确相等的能力。alignment 能力 ID 先与 adapter / public
+  白名单求交，再进入 SQL 排名与 `limit`；索引记录在求交前和反序列化返回后都会用 alignment 中的整条记录
+  revision 二次复核。
+- deployment-only 刷新、进程重启后尚未完整刷新、刷新异常、snapshot / deployment partial，以及成功后再次
+  失败都会清除内存 alignment 并让普通查询失败关闭，不复用上一轮授权；快照索引构建与维护者检索仍保持
+  可用。首阶段不把 wheel `RECORD`、distribution 版本或 VCS commit 冒充同域模块源码 manifest；wheel / VCS
+  没有可比 manifest 时相应能力不进入普通域。
 - **尚未实现**：真实模型语义层、向量召回、Agent 源码搜索、持久语义知识和更完整的字段级 ServingView。
-  当前 adapter 与 disclosure 已在检索前过滤，snapshot stale 与 deployment readiness 均会失败关闭；但
-  reconciliation 尚未按 observation 与源码 manifest 逐能力强制“当前注册且 revision 对齐”。当前在线
-  帮助仍是确定性格式化，不能把库级假模型测试描述成已上线模型行为。
+  当前在线帮助仍是确定性格式化，且 wheel / VCS 的可比模块源码证据、热加载自动刷新与持久 alignment 缓存
+  尚未实现；不能把库级假模型测试描述成已上线模型行为。
 - 本 ADR 记录产品与安全边界，不授权创建实施计划或启动新的模型调用。
 
 ## 替代关系

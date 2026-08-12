@@ -17,7 +17,7 @@
 实际已加载模块 ───────────────────────────→ RuntimeObservation
                                               ↓
                   registered / not_observed / runtime_only 协调状态
-                                              ↓（完整性作为普通查询的全局前置门）
+                                              ↓（完整性 + 当前注册）
 已加载 Plugin / Matcher / Alconna
         + distribution / VCS / 可变源码摘要
         + PluginMetadata
@@ -33,6 +33,8 @@
        + analysis_issues + RecordState + Constraint
                          ↓
           原子构建本地 SQLite FTS5 索引
+                         ↓
+  snapshot / deployment generation + 模块源码 manifest 对齐
                          ↓
 当前 adapter 派生 ServingView / SUPERUSER 鉴权后的维护者域
 ```
@@ -81,24 +83,28 @@ ServingView。当前持久层不保留独立 Matcher 事实表或映射表；跨
   `restricted`。
 - 所有轴都可以写入 SQLite。普通 ServingView 只包含当前 adapter 在范围内、无 blocking issue、
   `RecordState` 为 `VERIFIED / CANDIDATE`、快照明确完整且 generation 新鲜的 `public`；`CONFLICTED / STALE`
-  不进入；
+  不进入。它还要求本轮 alignment 与 served snapshot / deployment generation 同时匹配，并且能力绑定的模块
+  当前 `registered`、制品为 `local / editable`、快照与部署侧模块源码 manifest 精确相等；
   维护者可显式纳入带 issue 的记录；
   `restricted` 只有在模型外根据当前上下文完成鉴权后才会进入候选集，不能先交给模型再让模型决定是否隐藏。
 - Token、`.env` 原文和私密日志不是能力，采集器从源头排除。需要完全不保存某项真实能力时，由独立的
   operator exclude policy 在生成记录前排除；系统没有 `hidden` 披露态。这个按能力排除接口尚未实现，
   当前不能用 `restricted` 代替它。
 - 新索引在临时文件中完整写入并通过完整性检查后替换目标；生成失败时不破坏旧文件。
-- 标准声明、制品 revision 与运行模块的协调已经实现。普通查询只在本轮 deployment 构建成功且
-  `deployment_partial == false` 时继续；进程重启后尚未完成本轮刷新、刷新异常或清单不完整均失败关闭，
-  不复用上一轮 readiness。该全局前置门不表示逐能力 revision 已经对齐；当前仍未按 observation 或源码
-  revision 剔除单条索引记录，也未用它驱动增量分析缓存。
+- 标准声明、制品 revision 与运行模块的协调、以及逐能力 deployment alignment 已经实现。完整刷新在索引发布
+  后创建同时绑定 snapshot / deployment generation 的 alignment；deployment-only 刷新只更新清单并清空旧
+  alignment，不能授权旧快照。普通查询先把 alignment 能力 ID 与 adapter / public 域求交，再把白名单作为
+  SQL 条件应用于排名和 `limit`；从索引反序列化记录后还会复核整条记录 revision，防止索引 JSON 与已对齐
+  快照漂移。当前只对 `local / editable` 比较共享的模块 Python 源码 manifest；wheel / VCS 没有同域可比
+  manifest 时逐能力失败关闭，尚未用 alignment 驱动增量分析缓存。
 
 ## 失败时的语义
 
 - 某来源失败时快照标记 `partial` 并记录稳定错误码，不能把缺失结果解释为“该插件没有能力”。
-- deployment 清单未在本轮成功完整构建时，普通用户查询失败关闭；快照索引仍可构建或保留，维护者仍能
-  带现有快照完整性 / stale 标记检索。这个保守门只证明部署清单可用于后续协调，不证明任一能力已经完成
-  “当前注册且 revision 对齐”。
+- deployment 清单未在本轮成功完整构建，或 snapshot / deployment 任一 partial 时，alignment 整体不可用，
+  普通用户查询失败关闭；未注册、源码 manifest 不一致、plugin 绑定证据缺失或歧义则只剔除受影响能力。
+  快照索引仍可构建或保留，维护者仍能带现有快照完整性 / stale 标记检索。进程重启、deployment-only 刷新、
+  构建异常及成功后再次失败都会清除内存 alignment，不复用上一轮公开授权。
 - `partial` 随索引 metadata 保存；旧索引缺少该字段时在线回复标记完整性未知，不推断为 `false`。
 - 首次后台刷新尚未发布 served generation 时，影子服务尚不可用；普通用户能力问答继续使用显式 Provider，
   不等待后台任务，也不把“正在构建”冒充未命中能力事实。
@@ -111,8 +117,9 @@ ServingView。当前持久层不保留独立 Matcher 事实表或映射表；跨
   不支持的记录；即使精确问到也表现为未找到，不能暗示受限能力或其他平台实现存在。
 - Matcher 已注册只证明运行事实存在。支撑 Matcher 或带 `capability_mapping_unknown` 的候选不能直接成为
   普通用户帮助项；维护者仍可查看事实、候选关系和具体 issue 以继续分析。
-- 普通用户 `triage` 先取得当前 adapter 对应的 `public` capability ID，再把该白名单作为 SQL 条件应用于 FTS
-  排名和 `limit` 之前；NoneBot `SUPERUSER` 检查通过后才读取维护者域，
+- 普通用户 `triage` 先取得通过整条记录 revision 复核的 alignment capability ID，并与当前 adapter 对应的
+  `public` capability ID 求交，再把该白名单作为 SQL 条件应用于 FTS 排名和 `limit` 之前；查询结果反序列化
+  后再次复核 alignment。NoneBot `SUPERUSER` 检查通过后才读取维护者域，
   回复会区分已登记公开、具体分析问题和维护者可见受限能力。普通用户不会读取带 blocking issue 或 `restricted` 的记录，
   模型也不会在过滤前看到它们。自动分析
   确认某能力为 hidden / SUPERUSER-only 后，默认不把该能力源码交给 LLM；维护者模型深查需要另行显式授权。

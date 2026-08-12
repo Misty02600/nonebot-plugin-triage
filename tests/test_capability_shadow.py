@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from collections.abc import Callable, Collection
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from nbtriage.artifact_revisions import (
+    ArtifactRevision,
+    ArtifactRevisionStatus,
+    ArtifactSourceKind,
+)
 from nbtriage.capabilities import (
     AnalysisIssue,
     CapabilityIndexError,
@@ -19,14 +26,22 @@ from nbtriage.capabilities import (
     Constraint,
     ConstraintEvaluability,
     Disclosure,
+    EvidenceRef,
     PlatformScope,
     RecordState,
     SnapshotError,
+    SourceRevision,
     search_capability_index,
 )
 from nbtriage.capability_deployment import (
     CapabilityDeployment,
     build_capability_deployment,
+)
+from nbtriage.module_source_revisions import (
+    ModuleSourceFile,
+    PythonModuleLayout,
+    PythonModuleSourceManifest,
+    scan_python_module_source,
 )
 from nonebot_plugin_triage.capability_shadow import (
     CapabilityShadowService,
@@ -47,8 +62,76 @@ class _RecordingLogger:
         self.warnings.append((message, args))
 
 
+_TEST_MODULE_NAME = "nonebot_plugin_triage"
+_TEST_MODULE_MANIFEST = PythonModuleSourceManifest.create(
+    _TEST_MODULE_NAME,
+    PythonModuleLayout.PACKAGE,
+    (
+        ModuleSourceFile(
+            relative_path="__init__.py",
+            content_sha256="0" * 64,
+            size=0,
+        ),
+    ),
+)
+
+
+def _aligned_snapshot(
+    records: Collection[CapabilityRecord],
+    *,
+    module_name: str = _TEST_MODULE_NAME,
+    module_path: Path | None = None,
+) -> CapabilitySnapshot:
+    if module_path is None:
+        assert module_name == _TEST_MODULE_NAME
+        manifest = _TEST_MODULE_MANIFEST
+    else:
+        scan = scan_python_module_source(module_name, module_path)
+        assert scan.manifest is not None
+        manifest = scan.manifest
+    source = SourceRevision(
+        source_id="plugin-source",
+        kind="plugin_source",
+        revision=manifest.revision,
+        locator=f"{module_name}/__init__.py",
+        payload={
+            "module_name": module_name,
+            "line": None,
+            "module_source_manifest": manifest.to_dict(),
+        },
+    )
+    aligned_records: list[CapabilityRecord] = []
+    for index, record in enumerate(records):
+        assert all(claim.field != "plugin.module_name" for claim in record.claims)
+        assert all(evidence.kind != "plugin_source" for evidence in record.evidence_refs)
+        evidence = EvidenceRef(
+            evidence_id=f"plugin-evidence:{index}",
+            source_id=source.source_id,
+            kind="plugin_source",
+            locator=f"{module_name}/__init__.py",
+            content_hash=manifest.revision,
+            payload={"module_name": module_name, "line": None},
+        )
+        aligned_records.append(
+            replace(
+                record,
+                claims=(
+                    *record.claims,
+                    Claim(
+                        "plugin.module_name",
+                        module_name,
+                        ClaimBasis.OBSERVED,
+                        (evidence.evidence_id,),
+                    ),
+                ),
+                evidence_refs=(*record.evidence_refs, evidence),
+            )
+        )
+    return CapabilitySnapshot.create(aligned_records, (source,))
+
+
 def _snapshot(capability_id: str, *, disclosure: Disclosure = Disclosure.PUBLIC):
-    return CapabilitySnapshot.create(
+    return _aligned_snapshot(
         [
             CapabilityRecord(
                 capability_id=capability_id,
@@ -75,10 +158,23 @@ def _empty_deployment_builder(
     runtime_modules: Collection[str],
 ) -> CapabilityDeployment:
     assert pyproject_path == Path("pyproject.toml")
-    assert runtime_modules == ()
+
+    def revision_builder(module_name: str, **_: object) -> ArtifactRevision:
+        assert module_name == _TEST_MODULE_NAME
+        return ArtifactRevision(
+            module_name=module_name,
+            status=ArtifactRevisionStatus.LOCATED,
+            source_kind=ArtifactSourceKind.LOCAL,
+            revision=_TEST_MODULE_MANIFEST.revision,
+            evidence=(),
+            distribution_name="nonebot-plugin-triage",
+            module_source_manifest=_TEST_MODULE_MANIFEST,
+        )
+
     return build_capability_deployment(
         pyproject_path,
-        runtime_modules=(),
+        runtime_modules=runtime_modules,
+        revision_builder=revision_builder,
     )
 
 
@@ -86,9 +182,21 @@ def _service(path: Path, **kwargs: Any) -> CapabilityShadowService:
     return CapabilityShadowService(
         path,
         deployment_builder=_empty_deployment_builder,
-        runtime_modules=lambda: (),
+        runtime_modules=lambda: (_TEST_MODULE_NAME,),
         **kwargs,
     )
+
+
+def _write_module_project(tmp_path: Path) -> tuple[Path, Path]:
+    package = tmp_path / "demo"
+    package.mkdir()
+    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[tool.nonebot.plugins]\ndemo-dist = ["demo"]\n',
+        encoding="utf-8",
+    )
+    return pyproject, package
 
 
 def test_shadow_is_default_off_without_registering_startup() -> None:
@@ -164,6 +272,9 @@ def test_refresh_forwards_current_public_declarations_and_indexes_snapshot(
     assert captured == [{"demo::image"}]
     assert status.ready
     assert status.observed_generation == status.served_generation
+    assert status.alignment_generation is not None
+    assert status.aligned_capability_count == 1
+    assert status.alignment_error_code is None
     assert status.indexed_capability_count == 1
     assert status.restricted_capability_count == 0
     assert search_capability_index(path, "搜图")[0].record.capability_id == "command:image"
@@ -427,7 +538,7 @@ async def test_failed_deployment_refresh_clears_previous_public_readiness(
         path,
         snapshot_builder=lambda **_: _snapshot("command:image"),
         deployment_builder=build_deployment,
-        runtime_modules=lambda: (),
+        runtime_modules=lambda: (_TEST_MODULE_NAME,),
     )
     service.refresh()
     ready_result = await service.search_public("搜图", object)
@@ -442,6 +553,60 @@ async def test_failed_deployment_refresh_clears_previous_public_readiness(
     assert await service.search_public("搜图", object) is None
     maintainer = await service.search_for_maintainer("搜图")
     assert maintainer is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutate_source", "runtime_modules"),
+    [(True, ("demo",)), (False, ())],
+    ids=("source-revision-mismatch", "module-not-registered"),
+)
+async def test_public_search_excludes_capabilities_not_aligned_to_deployment(
+    tmp_path: Path,
+    *,
+    mutate_source: bool,
+    runtime_modules: tuple[str, ...],
+) -> None:
+    pyproject, package = _write_module_project(tmp_path)
+    record = CapabilityRecord(
+        capability_id="command:demo",
+        owner="demo-dist",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(Claim("command.header", "演示命令", ClaimBasis.OBSERVED),),
+    )
+    snapshot = _aligned_snapshot((record,), module_name="demo", module_path=package)
+    if mutate_source:
+        (package / "__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    def build_deployment(
+        pyproject_path: Path,
+        *,
+        runtime_modules: Collection[str],
+    ) -> CapabilityDeployment:
+        assert pyproject_path == Path("pyproject.toml")
+        return build_capability_deployment(pyproject, runtime_modules=runtime_modules)
+
+    service = CapabilityShadowService(
+        tmp_path / "capabilities.sqlite3",
+        snapshot_builder=lambda **_: snapshot,
+        deployment_builder=build_deployment,
+        runtime_modules=lambda: runtime_modules,
+    )
+
+    status = service.refresh()
+    public = await service.search_public("演示命令", object)
+    maintainer = await service.search_for_maintainer("演示命令")
+
+    assert status.alignment_generation is not None
+    assert status.aligned_capability_count == 0
+    assert status.alignment_error_code is None
+    assert public is not None
+    assert public.hits == ()
+    assert maintainer is not None
+    assert [hit.record.capability_id for hit in maintainer.hits] == ["command:demo"]
 
 
 def test_restricted_records_are_persisted_but_require_explicit_access(
@@ -478,7 +643,7 @@ async def test_maintainer_search_includes_every_disclosure_layer(tmp_path: Path)
     )
     service = _service(
         path,
-        snapshot_builder=lambda **_: CapabilitySnapshot.create(records),
+        snapshot_builder=lambda **_: _aligned_snapshot(records),
     )
     service.refresh()
 
@@ -531,7 +696,7 @@ async def test_public_search_filters_adapter_before_returning_hits(tmp_path: Pat
     )
     service = _service(
         path,
-        snapshot_builder=lambda **_: CapabilitySnapshot.create(records),
+        snapshot_builder=lambda **_: _aligned_snapshot(records),
     )
     service.refresh()
 
@@ -560,7 +725,7 @@ async def test_public_search_rechecks_parsed_record_against_tampered_index_colum
     )
     service = _service(
         path,
-        snapshot_builder=lambda **_: CapabilitySnapshot.create((restricted,)),
+        snapshot_builder=lambda **_: _aligned_snapshot((restricted,)),
     )
     service.refresh()
     with sqlite3.connect(path) as connection:
@@ -592,7 +757,7 @@ async def test_public_search_excludes_unobserved_exact_command_syntax(tmp_path: 
     )
     service = _service(
         path,
-        snapshot_builder=lambda **_: CapabilitySnapshot.create((record,)),
+        snapshot_builder=lambda **_: _aligned_snapshot((record,)),
     )
     service.refresh()
 
@@ -619,7 +784,7 @@ async def test_public_search_excludes_unknown_matcher_mapping_but_maintainer_can
     )
     service = _service(
         path,
-        snapshot_builder=lambda **_: CapabilitySnapshot.create((record,)),
+        snapshot_builder=lambda **_: _aligned_snapshot((record,)),
     )
     service.refresh()
 
@@ -635,8 +800,10 @@ async def test_public_search_excludes_unknown_matcher_mapping_but_maintainer_can
 @pytest.mark.asyncio
 async def test_fresh_partial_snapshot_is_not_served_to_public_users(tmp_path: Path) -> None:
     path = tmp_path / "capabilities.sqlite3"
+    base = _snapshot("command:image")
     partial = CapabilitySnapshot.create(
-        _snapshot("command:image").records,
+        base.records,
+        base.manifest.source_revisions,
         errors=(SnapshotError(source_id="source:partial", code="scan_incomplete"),),
     )
     service = _service(path, snapshot_builder=lambda **_: partial)
@@ -694,7 +861,7 @@ async def test_other_adapters_cannot_exhaust_public_search_limit(tmp_path: Path)
     )
     service = _service(
         path,
-        snapshot_builder=lambda **_: CapabilitySnapshot.create((*discord_records, onebot_record)),
+        snapshot_builder=lambda **_: _aligned_snapshot((*discord_records, onebot_record)),
     )
     service.refresh()
 
@@ -702,6 +869,104 @@ async def test_other_adapters_cannot_exhaust_public_search_limit(tmp_path: Path)
 
     assert result is not None
     assert [hit.record.capability_id for hit in result.hits] == ["command:onebot:z"]
+
+
+@pytest.mark.asyncio
+async def test_unaligned_high_score_record_cannot_exhaust_public_search_limit(
+    tmp_path: Path,
+) -> None:
+    unaligned = CapabilityRecord(
+        capability_id="command:exact-but-unaligned",
+        owner="unknown-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(Claim("command.header", "搜图", ClaimBasis.OBSERVED),),
+    )
+    aligned = CapabilityRecord(
+        capability_id="command:aligned-lower-score",
+        owner="image-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim("command.header", "图片帮助", ClaimBasis.OBSERVED),
+            Claim("description", "可以使用搜图功能", ClaimBasis.DECLARED),
+        ),
+    )
+    aligned_snapshot = _aligned_snapshot((aligned,))
+    snapshot = CapabilitySnapshot.create(
+        (*aligned_snapshot.records, unaligned),
+        aligned_snapshot.manifest.source_revisions,
+    )
+    service = _service(
+        tmp_path / "capabilities.sqlite3",
+        snapshot_builder=lambda **_: snapshot,
+    )
+    service.refresh()
+
+    result = await service.search_public("搜图", object, limit=1)
+
+    assert service.status.aligned_capability_count == 1
+    assert result is not None
+    assert [hit.record.capability_id for hit in result.hits] == ["command:aligned-lower-score"]
+
+
+@pytest.mark.asyncio
+async def test_tampered_high_score_record_is_rejected_before_public_search_limit(
+    tmp_path: Path,
+) -> None:
+    high_score = CapabilityRecord(
+        capability_id="command:aligned-exact",
+        owner="image-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(Claim("command.header", "搜图", ClaimBasis.OBSERVED),),
+    )
+    lower_score = CapabilityRecord(
+        capability_id="command:aligned-lower-score",
+        owner="image-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim("command.header", "图片帮助", ClaimBasis.OBSERVED),
+            Claim("description", "可以使用搜图功能", ClaimBasis.DECLARED),
+        ),
+    )
+    snapshot = _aligned_snapshot((high_score, lower_score))
+    path = tmp_path / "capabilities.sqlite3"
+    service = _service(path, snapshot_builder=lambda **_: snapshot)
+    service.refresh()
+    indexed_high_score = next(
+        record for record in snapshot.records if record.capability_id == high_score.capability_id
+    )
+    tampered = replace(
+        indexed_high_score,
+        claims=(
+            *indexed_high_score.claims,
+            Claim("description", "索引内容已被篡改", ClaimBasis.DECLARED),
+        ),
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE capability_records SET record_json = ? WHERE capability_id = ?",
+            (
+                json.dumps(tampered.to_dict(), ensure_ascii=False),
+                tampered.capability_id,
+            ),
+        )
+        connection.commit()
+
+    result = await service.search_public("搜图", object, limit=1)
+
+    assert result is not None
+    assert [hit.record.capability_id for hit in result.hits] == ["command:aligned-lower-score"]
 
 
 def test_public_guidance_does_not_invent_usage_when_only_header_is_known() -> None:
@@ -975,7 +1240,7 @@ async def test_public_search_excludes_unprojectable_trigger_before_returning_hit
     )
     service = _service(
         path,
-        snapshot_builder=lambda **_: CapabilitySnapshot.create((record,)),
+        snapshot_builder=lambda **_: _aligned_snapshot((record,)),
     )
     service.refresh()
 
@@ -1004,7 +1269,7 @@ async def test_public_search_returns_safely_projectable_trigger(tmp_path: Path) 
     )
     service = _service(
         path,
-        snapshot_builder=lambda **_: CapabilitySnapshot.create((record,)),
+        snapshot_builder=lambda **_: _aligned_snapshot((record,)),
     )
     service.refresh()
 
@@ -1066,6 +1331,7 @@ async def test_served_partial_state_survives_service_restart(tmp_path: Path) -> 
     base = _snapshot("command:image")
     partial = CapabilitySnapshot.create(
         base.records,
+        base.manifest.source_revisions,
         partial=True,
         errors=(SnapshotError(source_id="plugin:image", code="source_unavailable"),),
     )
