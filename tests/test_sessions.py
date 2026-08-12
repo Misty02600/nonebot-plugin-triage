@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-from tools.nbtriage_maintainer.cli import main
+from tools.nbtriage_maintainer.cli import _load_session_case, main
 from tools.nbtriage_maintainer.runtime_results import (
     RuntimeAssessment,
     assess_runtime_result,
@@ -169,6 +169,38 @@ def test_b1_routes_create_bounded_session_actions(
     assert [event.sequence for event in session.events] == [1, 2]
     assert "Need a bounded next step." in session.prediction["answer"]
     assert "body" not in session.to_dict()
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "../outside",
+        "/outside",
+        "case\\outside",
+        ".",
+        " case-1",
+        "case-1 ",
+        "case\nid",
+    ],
+)
+def test_session_rejects_non_canonical_case_id(tmp_path: Path, case_id: str) -> None:
+    report_path = _prediction_report(tmp_path / "report.json", "verify", case_id=case_id)
+
+    with pytest.raises(SessionStoreError, match="case_id contains unsupported characters"):
+        create_session_from_report(report_path, case_id, session_id="session-1")
+
+
+def test_session_case_loader_rejects_path_escape_before_read(tmp_path: Path) -> None:
+    cases_dir = tmp_path / "cases"
+    cases_dir.mkdir()
+    outside = tmp_path / "outside.json"
+    original = json.dumps({"case_id": "../outside"})
+    outside.write_text(original, encoding="utf-8")
+
+    with pytest.raises(SessionStoreError, match="case_id contains unsupported characters"):
+        _load_session_case(cases_dir, "../outside")
+
+    assert outside.read_text(encoding="utf-8") == original
 
 
 def test_runtime_result_requires_approval_and_completes_session(tmp_path: Path) -> None:

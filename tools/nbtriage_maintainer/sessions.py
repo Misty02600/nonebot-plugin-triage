@@ -26,6 +26,7 @@ from tools.nbtriage_maintainer.runtime_results import (
 
 SESSION_SCHEMA_VERSION = 4
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
 
 ROUTE_ACTIONS = {
     "needs_evidence": ("request_evidence", "awaiting_evidence", "proposed", False),
@@ -125,7 +126,7 @@ class SupportSession:
             session = cls(
                 schema_version=SESSION_SCHEMA_VERSION,
                 session_id=session_id,
-                case_id=_required_string(payload.get("case_id"), "case_id"),
+                case_id=validate_case_id(payload.get("case_id")),
                 source_report=_required_string(payload.get("source_report"), "source_report"),
                 source_report_sha256=_sha256(payload.get("source_report_sha256")),
                 route=_required_string(payload.get("route"), "route"),
@@ -211,6 +212,7 @@ def create_session_from_report(
     Raises:
         SessionError: 报告无效、Case 不唯一或预测不满足 B3 路由契约。
     """
+    resolved_case_id = validate_case_id(case_id)
     raw = _read_bytes(report_path)
     try:
         report = json.loads(raw)
@@ -221,13 +223,15 @@ def create_session_from_report(
     rows = report.get("predictions")
     if not isinstance(rows, list):
         raise SessionError("prediction report must contain predictions")
-    matches = [row for row in rows if isinstance(row, dict) and row.get("case_id") == case_id]
+    matches = [
+        row for row in rows if isinstance(row, dict) and row.get("case_id") == resolved_case_id
+    ]
     if len(matches) != 1:
-        raise SessionError(f"prediction report must contain exactly one row for {case_id}")
+        raise SessionError("prediction report must contain exactly one row for the requested Case")
 
     row = matches[0]
     prediction = _object(row.get("prediction"), "prediction")
-    if prediction.get("case_id") != case_id:
+    if prediction.get("case_id") != resolved_case_id:
         raise SessionError("prediction case_id does not match report row")
     route = _required_string(prediction.get("route"), "prediction.route")
     action_config = ROUTE_ACTIONS.get(route)
@@ -260,7 +264,7 @@ def create_session_from_report(
             event_type="session_created",
             occurred_at=timestamp,
             actor="nbtriage",
-            details={"case_id": case_id, "route": route},
+            details={"case_id": resolved_case_id, "route": route},
         ),
         SessionEvent(
             sequence=2,
@@ -273,7 +277,7 @@ def create_session_from_report(
     session = SupportSession(
         schema_version=SESSION_SCHEMA_VERSION,
         session_id=resolved_session_id,
-        case_id=case_id,
+        case_id=resolved_case_id,
         source_report=str(report_path),
         source_report_sha256=hashlib.sha256(raw).hexdigest(),
         route=route,
@@ -483,6 +487,7 @@ def _event_from_dict(payload: Any) -> SessionEvent:
 
 
 def _validate_session(session: SupportSession) -> None:
+    validate_case_id(session.case_id)
     action_config = ROUTE_ACTIONS.get(session.route)
     if action_config is None:
         raise SessionStoreError(f"unsupported session route: {session.route}")
@@ -762,6 +767,12 @@ def _receipt_action_result(receipt: EvidenceReceipt) -> dict[str, Any]:
 def _session_id(value: Any) -> str:
     if not isinstance(value, str) or not SESSION_ID_PATTERN.fullmatch(value):
         raise SessionStoreError("session_id contains unsupported characters")
+    return value
+
+
+def validate_case_id(value: Any) -> str:
+    if not isinstance(value, str) or CASE_ID_PATTERN.fullmatch(value) is None:
+        raise SessionStoreError("case_id contains unsupported characters")
     return value
 
 

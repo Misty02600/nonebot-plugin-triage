@@ -88,6 +88,7 @@ from tools.nbtriage_maintainer.sessions import (
     attach_evidence_receipt,
     attach_runtime_assessment,
     create_session_from_report,
+    validate_case_id,
 )
 from tools.nbtriage_maintainer.timeline import (
     enrich_gold_direct_commits,
@@ -1045,10 +1046,11 @@ def _run_evaluate_b3_evidence_receipts(args: argparse.Namespace) -> int:
         f"{summary['case_count']} synthetic case(s), "
         f"accuracy={metrics['decision_accuracy']:.3f}, "
         f"{summary['model_calls']} model call(s), "
-        f"{summary['external_tool_calls']} external tool call(s)"
+        f"{summary['external_tool_calls']} external tool call(s), "
+        f"gate={report['quality_gate']['status']}"
     )
     print(f"report: {args.report}")
-    return 0
+    return 0 if report["quality_gate"]["status"] == "passed" else 1
 
 
 def _run_evaluate_answer_quality(args: argparse.Namespace) -> int:
@@ -1579,12 +1581,19 @@ def _run_session_show(args: argparse.Namespace) -> int:
 
 
 def _load_session_case(cases_dir: Path, case_id: str) -> dict[str, Any]:
-    path = cases_dir / f"{case_id}.json"
+    resolved_case_id = validate_case_id(case_id)
+    try:
+        resolved_cases_dir = cases_dir.resolve()
+        path = (resolved_cases_dir / f"{resolved_case_id}.json").resolve()
+    except OSError as error:
+        raise SessionError("failed to resolve SupportCase path") from error
+    if path.parent != resolved_cases_dir:
+        raise SessionError("SupportCase path escapes cases directory")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise SessionError(f"failed to load SupportCase {path}: {error}") from error
-    if not isinstance(payload, dict) or payload.get("case_id") != case_id:
+    if not isinstance(payload, dict) or payload.get("case_id") != resolved_case_id:
         raise SessionError(f"invalid SupportCase for session: {path}")
     return payload
 
