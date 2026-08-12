@@ -962,11 +962,16 @@ def _support_observation(
     action: RetrieveSupportEvidenceAction,
     environment: AgentEnvironment,
 ) -> NormalizedObservation:
-    hits = environment.retriever.retrieve(environment.case, limit=20)
-    if action.scope is SupportEvidenceScope.SAME_REPOSITORY:
-        repository = _repository(environment.case)
-        hits = [item for item in hits if item.repository == repository]
-    hits = hits[: action.limit]
+    repository = (
+        _repository(environment.case)
+        if action.scope is SupportEvidenceScope.SAME_REPOSITORY
+        else None
+    )
+    hits = environment.retriever.retrieve(
+        environment.case,
+        limit=action.limit,
+        repository=repository,
+    )
     return NormalizedObservation(
         action_id=_action_id(action),
         kind=AgentActionKind.RETRIEVE_SUPPORT_EVIDENCE,

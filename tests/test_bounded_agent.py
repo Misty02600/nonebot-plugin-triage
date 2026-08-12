@@ -264,6 +264,50 @@ async def test_agent_changes_action_after_normalized_observations() -> None:
 
 
 @async_test
+async def test_same_repository_scope_finds_case_beyond_global_top_twenty() -> None:
+    other_repository_cases = [
+        {
+            "case_id": f"global-{index:02d}",
+            "source": {
+                "owner": "nonebot",
+                "repository": f"other-{index:02d}",
+                "issue_number": index + 2,
+                "title": "plugin fails during startup",
+                "body": "Python 3.12 raises DemoError while loading the plugin.",
+                "labels": ["bug"],
+            },
+        }
+        for index in range(20)
+    ]
+    same_repository_case = _train_case()
+    same_repository_case["source"]["title"] = "Different topic"
+    same_repository_case["source"]["body"] = "unrelated"
+    script = _Script(
+        [
+            RetrieveSupportEvidenceAction(
+                scope=SupportEvidenceScope.SAME_REPOSITORY,
+                limit=1,
+                decision_summary="寻找同仓库相似案例",
+            ),
+            _finish(citations=["train-1"]),
+        ]
+    )
+    environment = AgentEnvironment(
+        case=_case(),
+        retriever=TrainCaseRetriever([*other_repository_cases, same_repository_case]),
+    )
+
+    state = await _runner(script).start(environment, run_id="run-repository-scope")
+
+    observation = state.trajectory[0].observation
+    assert observation is not None
+    assert observation.status == "ok"
+    assert observation.content["items"][0]["case_id"] == "train-1"
+    assert len(observation.content["items"]) == 1
+    assert state.stop_reason is AgentStopReason.COMPLETED
+
+
+@async_test
 async def test_evidence_request_pauses_and_resumes_without_repeating_model_action() -> None:
     script = _Script(
         [

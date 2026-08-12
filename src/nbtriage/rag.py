@@ -182,6 +182,10 @@ class TrainCaseRetriever:
     def __init__(self, train_cases: list[dict[str, Any]]) -> None:
         self._index = B0SearchIndex(train_cases)
         self._cases = {case["case_id"]: case for case in train_cases}
+        self._repository_indexes = {
+            repository: B0SearchIndex(repository_cases)
+            for repository, repository_cases in _group_cases_by_repository(train_cases).items()
+        }
 
     @property
     def has_cases(self) -> bool:
@@ -193,9 +197,13 @@ class TrainCaseRetriever:
         *,
         limit: int = 5,
         excerpt_chars: int = 2_000,
+        repository: str | None = None,
     ) -> list[RetrievedEvidence]:
         evidence = []
-        for hit in self._index.search(case, limit=limit):
+        index = self._index if repository is None else self._repository_indexes.get(repository)
+        if index is None:
+            return evidence
+        for hit in index.search(case, limit=limit):
             source = self._cases[hit.case_id]["source"]
             evidence.append(
                 RetrievedEvidence(
@@ -512,6 +520,17 @@ def _enum_value(value: Any, field: str, allowed: set[str]) -> str:
 
 def _repository(source: dict[str, Any]) -> str:
     return f"{source.get('owner', '')}/{source.get('repository', '')}"
+
+
+def _group_cases_by_repository(
+    cases: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for case in cases:
+        source = case.get("source")
+        repository = _repository(source if isinstance(source, dict) else {})
+        grouped.setdefault(repository, []).append(case)
+    return grouped
 
 
 def _issue_number(source: dict[str, Any]) -> int | None:

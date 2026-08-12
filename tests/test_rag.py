@@ -87,6 +87,49 @@ def test_train_retriever_returns_auditable_bounded_evidence() -> None:
     assert len(evidence[0].excerpt) == 24
 
 
+def test_train_retriever_filters_repository_before_limit() -> None:
+    other_repository_cases = [
+        _case(
+            f"global-{index:02d}",
+            "Python 3.12 exact failure",
+            repository=f"other-{index:02d}",
+        )
+        for index in range(20)
+    ]
+    same_repository_case = _case(
+        "same-repository",
+        "unrelated",
+        repository="target",
+    )
+    same_repository_case["source"]["title"] = "Different topic"
+    query = _case("query-case", "Python 3.12 exact failure", repository="target")
+    retriever = TrainCaseRetriever([*other_repository_cases, same_repository_case])
+
+    assert [item.case_id for item in retriever.retrieve(query, limit=20)] == [
+        f"global-{index:02d}" for index in range(20)
+    ]
+
+    scoped = retriever.retrieve(query, limit=1, repository="nonebot/target")
+
+    assert [item.case_id for item in scoped] == ["same-repository"]
+
+
+def test_train_retriever_repository_scope_keeps_limit_bounded() -> None:
+    train_cases = [
+        _case(f"same-{index}", "shared symptom", repository="target")
+        for index in range(3)
+    ]
+    query = _case("query-case", "shared symptom", repository="target")
+
+    evidence = TrainCaseRetriever(train_cases).retrieve(
+        query,
+        limit=2,
+        repository="nonebot/target",
+    )
+
+    assert [item.case_id for item in evidence] == ["same-0", "same-1"]
+
+
 def test_b1_request_does_not_change_when_gold_changes() -> None:
     source = _case("query-case", "Plugin 1.2.3 returns the wrong result.")
     first = {**source, "curation": {"execution_mode": "contract_exec"}}
