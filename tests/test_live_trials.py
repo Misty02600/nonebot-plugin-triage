@@ -325,6 +325,34 @@ def test_trial_log_summary_deduplicates_and_uses_latest_feedback(
     assert output == payload
 
 
+def test_trial_log_summary_excludes_orphan_updates_from_coverage(tmp_path) -> None:
+    path = tmp_path / "trials.jsonl"
+    sink = RotatingJsonlTrialEventSink(path, max_bytes=65_536, backup_count=1)
+    service = make_service(sink=sink)
+    incident = make_incident()
+    service.start(incident, cluster=cluster_for(incident), intake_latency_ms=10, now=NOW)
+    service.record_summary_view(incident.incident_id, now=NOW)
+    service.record_feedback(incident.incident_id, TrialFeedback.USEFUL, now=NOW)
+    update_lines = [
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["kind"] != "started"
+    ]
+    path.write_text("\n".join(update_lines) + "\n", encoding="utf-8")
+
+    summary = summarize_trial_logs(path, backup_count=1)
+    payload = summary.to_dict()
+
+    assert summary.valid_event_count == 2
+    assert summary.observed_trial_count == 1
+    assert summary.started_trial_count == 0
+    assert summary.orphan_event_count == 2
+    assert summary.queried_trial_count == 0
+    assert summary.useful_feedback_count == 0
+    assert payload["query_coverage"] == 0.0
+    assert payload["feedback_coverage"] == 0.0
+
+
 def test_trial_log_summary_bounds_oversized_and_truncated_lines(tmp_path) -> None:
     path = tmp_path / "trials.jsonl"
     path.write_bytes(b"x" * 65_537 + b"\n" + b"\xff\n" + b"truncated")

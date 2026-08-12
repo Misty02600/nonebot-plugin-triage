@@ -687,12 +687,14 @@ def summarize_trial_logs(path: Path, *, backup_count: int) -> TrialLogSummary:
     }
     started_trials = set(started_events)
     viewed_trials = {
-        event["trial_id"] for event in events if event["kind"] is TrialEventKind.SUMMARY_VIEWED
+        event["trial_id"]
+        for event in events
+        if event["kind"] is TrialEventKind.SUMMARY_VIEWED and event["trial_id"] in started_trials
     }
     feedback_by_trial: dict[str, tuple[int, int, TrialFeedback]] = {}
     for event in events:
         feedback = event["feedback"]
-        if feedback is None:
+        if feedback is None or event["trial_id"] not in started_trials:
             continue
         candidate = (event["feedback_revision"], event["sequence"], feedback)
         previous = feedback_by_trial.get(event["trial_id"])
