@@ -138,6 +138,8 @@ def assess_case(payload: dict[str, Any]) -> CaseAssessment:
 def evaluate_cases(
     cases_dir: Path,
     runtime_results_path: Path | None = None,
+    *,
+    probe_root: Path | None = None,
 ) -> dict[str, Any]:
     case_paths = sorted(cases_dir.glob("*.json"))
     loaded_cases: list[_LoadedCase] = []
@@ -178,6 +180,7 @@ def evaluate_cases(
     runtime_assessments, runtime_load_errors = evaluate_runtime_results(
         runtime_results_path,
         cases_by_id,
+        probe_root=probe_root,
     )
     decisions = Counter(item.decision for item in assessments)
     runtime_decisions = Counter(item.decision for item in runtime_assessments)

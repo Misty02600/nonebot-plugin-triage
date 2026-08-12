@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.nbtriage_maintainer.gate import assess_case, evaluate_cases
+from tools.nbtriage_maintainer.runtime_results import case_oracle_revision, probe_file_sha256
 
 
 def complete_case(mode: str = "sandbox_exec") -> dict[str, Any]:
@@ -58,6 +59,31 @@ def complete_case(mode: str = "sandbox_exec") -> dict[str, Any]:
             },
         },
     }
+
+
+def runtime_result(case: dict[str, Any], probe_root: Path, status: str) -> dict[str, Any]:
+    probe_source = "probe.py"
+    (probe_root / probe_source).write_text("assert True\n", encoding="utf-8")
+    result: dict[str, Any] = {
+        "case_id": case["case_id"],
+        "status": status,
+        "probe_id": "probe-1",
+        "probe_source": probe_source,
+        "probe_source_sha256": probe_file_sha256(probe_root, probe_source),
+        "case_oracle_revision": case_oracle_revision(case),
+        "buggy_ref": case["curation"]["oracle"]["buggy_ref"],
+        "fixed_ref": case["curation"]["oracle"]["fixed_ref"],
+    }
+    if status == "validated":
+        result.update(
+            {
+                "buggy_oracle_matched": True,
+                "fixed_oracle_matched": True,
+                "buggy_observation": "TargetException was raised",
+                "fixed_observation": "process exited with code 0",
+            }
+        )
+    return result
 
 
 def test_executable_case_is_ready_only_with_full_oracle() -> None:
@@ -144,26 +170,14 @@ def test_duplicate_case_ids_cannot_meet_either_gate(tmp_path: Path) -> None:
     runtime_file.write_text(
         json.dumps(
             {
-                "schema_version": 1,
-                "results": [
-                    {
-                        "case_id": "gh-owner-repo-1",
-                        "status": "validated",
-                        "probe_id": "probe-1",
-                        "buggy_ref": "v1.0.0",
-                        "fixed_ref": "v1.0.1",
-                        "buggy_oracle_matched": True,
-                        "fixed_oracle_matched": True,
-                        "buggy_observation": "TargetException was raised",
-                        "fixed_observation": "process exited with code 0",
-                    }
-                ],
+                "schema_version": 2,
+                "results": [runtime_result(complete_case(), tmp_path, "validated")],
             }
         ),
         encoding="utf-8",
     )
 
-    report = evaluate_cases(cases_dir, runtime_file)
+    report = evaluate_cases(cases_dir, runtime_file, probe_root=tmp_path)
 
     assert report["summary"]["total_case_files"] == 15
     assert report["summary"]["assessed_cases"] == 0
@@ -234,26 +248,14 @@ def test_evaluate_cases_counts_matching_runtime_oracle(tmp_path: Path) -> None:
     (runtime_dir / "batch.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
-                "results": [
-                    {
-                        "case_id": "gh-owner-repo-1",
-                        "status": "validated",
-                        "probe_id": "probe-1",
-                        "buggy_ref": "v1.0.0",
-                        "fixed_ref": "v1.0.1",
-                        "buggy_oracle_matched": True,
-                        "fixed_oracle_matched": True,
-                        "buggy_observation": "TargetException was raised",
-                        "fixed_observation": "process exited with code 0",
-                    }
-                ],
+                "schema_version": 2,
+                "results": [runtime_result(complete_case(), tmp_path, "validated")],
             }
         ),
         encoding="utf-8",
     )
 
-    report = evaluate_cases(cases_dir, runtime_dir)
+    report = evaluate_cases(cases_dir, runtime_dir, probe_root=tmp_path)
 
     assert report["summary"]["runtime_validated"] == 1
     assert report["summary"]["runtime_invalid"] == 0
@@ -268,14 +270,11 @@ def test_runtime_oracle_ref_must_match_case(tmp_path: Path) -> None:
     runtime_file.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "results": [
                     {
-                        "case_id": "gh-owner-repo-1",
-                        "status": "blocked",
-                        "probe_id": "probe-1",
+                        **runtime_result(complete_case(), tmp_path, "blocked"),
                         "buggy_ref": "wrong-ref",
-                        "fixed_ref": "v1.0.1",
                         "blocking_reason": "Linux runner is unavailable",
                         "required_runner": "Linux container",
                     }
@@ -285,7 +284,7 @@ def test_runtime_oracle_ref_must_match_case(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    report = evaluate_cases(cases_dir, runtime_file)
+    report = evaluate_cases(cases_dir, runtime_file, probe_root=tmp_path)
 
     assert report["summary"]["runtime_invalid"] == 1
     assert report["summary"]["runtime_blocked"] == 0

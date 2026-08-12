@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pytest
 from tools.nbtriage_maintainer.cli import main
-from tools.nbtriage_maintainer.runtime_results import RuntimeAssessment, assess_runtime_result
+from tools.nbtriage_maintainer.runtime_results import (
+    RuntimeAssessment,
+    assess_runtime_result,
+    case_oracle_revision,
+    probe_file_sha256,
+)
 from tools.nbtriage_maintainer.sessions import (
     FileSessionStore,
     SessionStateError,
@@ -89,6 +94,50 @@ def _prediction_report(
     return path
 
 
+def _runtime_case(case_id: str = "case-1") -> dict:
+    return {
+        "schema_version": 1,
+        "case_id": case_id,
+        "curation": {
+            "oracle": {
+                "buggy_ref": "buggy",
+                "fixed_ref": "fixed",
+                "failure_signature": "target failure",
+                "success_assertion": "successful exit",
+            }
+        },
+    }
+
+
+def _runtime_assessment(
+    tmp_path: Path,
+    *,
+    decision: str = "validated",
+    case_id: str = "case-1",
+    errors: list[str] | None = None,
+    buggy_ref: str = "buggy",
+    blocking_reason: str | None = None,
+    failure_reason: str | None = None,
+    required_runner: str | None = None,
+) -> RuntimeAssessment:
+    probe_source = "probe.py"
+    (tmp_path / probe_source).write_text("assert True\n", encoding="utf-8")
+    return RuntimeAssessment(
+        case_id=case_id,
+        decision=decision,
+        buggy_ref=buggy_ref,
+        fixed_ref="fixed",
+        probe_id="probe-1",
+        errors=[] if errors is None else errors,
+        case_oracle_revision=case_oracle_revision(_runtime_case(case_id)),
+        probe_source=probe_source,
+        probe_source_sha256=probe_file_sha256(tmp_path, probe_source),
+        blocking_reason=blocking_reason,
+        failure_reason=failure_reason,
+        required_runner=required_runner,
+    )
+
+
 @pytest.mark.parametrize(
     ("route", "action", "status", "approval_required"),
     [
@@ -130,14 +179,7 @@ def test_runtime_result_requires_approval_and_completes_session(tmp_path: Path) 
         session_id="session-1",
         occurred_at="2026-08-08T00:00:00+00:00",
     )
-    assessment = RuntimeAssessment(
-        case_id="case-1",
-        decision="validated",
-        buggy_ref="buggy",
-        fixed_ref="fixed",
-        probe_id="probe-1",
-        errors=[],
-    )
+    assessment = _runtime_assessment(tmp_path)
 
     with pytest.raises(SessionStateError, match="approved run_oracle"):
         attach_runtime_assessment(session, assessment)
@@ -160,6 +202,9 @@ def test_runtime_result_requires_approval_and_completes_session(tmp_path: Path) 
     assert completed.action.result == {
         "decision": "validated",
         "probe_id": "probe-1",
+        "probe_source": "probe.py",
+        "probe_source_sha256": probe_file_sha256(tmp_path, "probe.py"),
+        "case_oracle_revision": case_oracle_revision(_runtime_case()),
         "buggy_ref": "buggy",
         "fixed_ref": "fixed",
         "blocking_reason": None,
@@ -326,13 +371,9 @@ def test_non_validated_runtime_result_preserves_auditable_reason(
     report_path = _prediction_report(tmp_path / "report.json", "verify")
     session = create_session_from_report(report_path, "case-1", session_id="session-1")
     approved = approve_session(session, "maintainer")
-    assessment = RuntimeAssessment(
-        case_id="case-1",
+    assessment = _runtime_assessment(
+        tmp_path,
         decision=decision,
-        buggy_ref="buggy",
-        fixed_ref="fixed",
-        probe_id="probe-1",
-        errors=[],
         blocking_reason=blocking_reason,
         failure_reason=failure_reason,
         required_runner=required_runner,
@@ -353,12 +394,10 @@ def test_invalid_runtime_assessment_does_not_advance_session(tmp_path: Path) -> 
     report_path = _prediction_report(tmp_path / "report.json", "verify")
     session = create_session_from_report(report_path, "case-1", session_id="session-1")
     approved = approve_session(session, "maintainer")
-    invalid = RuntimeAssessment(
-        case_id="case-1",
+    invalid = _runtime_assessment(
+        tmp_path,
         decision="invalid",
         buggy_ref="wrong-ref",
-        fixed_ref="fixed",
-        probe_id="probe-1",
         errors=["buggy_ref does not match SupportCase Oracle"],
     )
 
@@ -374,12 +413,8 @@ def test_runtime_assessment_with_errors_does_not_advance_session(tmp_path: Path)
     report_path = _prediction_report(tmp_path / "report.json", "verify")
     session = create_session_from_report(report_path, "case-1", session_id="session-1")
     approved = approve_session(session, "maintainer")
-    assessment = RuntimeAssessment(
-        case_id="case-1",
-        decision="validated",
-        buggy_ref="buggy",
-        fixed_ref="fixed",
-        probe_id="probe-1",
+    assessment = _runtime_assessment(
+        tmp_path,
         errors=["buggy Oracle did not match"],
     )
 
@@ -409,10 +444,14 @@ def test_attach_accepts_every_valid_runtime_result_assessment(
     report_path = _prediction_report(tmp_path / "report.json", "verify")
     session = create_session_from_report(report_path, "case-1", session_id="session-1")
     approved = approve_session(session, "maintainer")
+    (tmp_path / "probe.py").write_text("assert True\n", encoding="utf-8")
     result = {
         "case_id": "case-1",
         "status": status,
         "probe_id": "probe-1",
+        "probe_source": "probe.py",
+        "probe_source_sha256": probe_file_sha256(tmp_path, "probe.py"),
+        "case_oracle_revision": case_oracle_revision(_runtime_case()),
         "buggy_ref": "buggy",
         "fixed_ref": "fixed",
         "buggy_oracle_matched": True,
@@ -421,11 +460,8 @@ def test_attach_accepts_every_valid_runtime_result_assessment(
         "fixed_observation": "successful exit",
         **reason_fields,
     }
-    case = {
-        "case_id": "case-1",
-        "curation": {"oracle": {"buggy_ref": "buggy", "fixed_ref": "fixed"}},
-    }
-    assessment = assess_runtime_result(result, case)
+    case = _runtime_case()
+    assessment = assess_runtime_result(result, case, probe_root=tmp_path)
 
     assert assessment.errors == []
     updated = attach_runtime_assessment(approved, assessment)
@@ -456,17 +492,14 @@ def test_runtime_assessment_requires_consistent_result_fields(
     report_path = _prediction_report(tmp_path / "report.json", "verify")
     session = create_session_from_report(report_path, "case-1", session_id="session-1")
     approved = approve_session(session, "maintainer")
-    assessment = RuntimeAssessment(
-        case_id="case-1",
+    assessment = _runtime_assessment(
+        tmp_path,
         decision=decision,
-        buggy_ref="buggy",
-        fixed_ref="fixed",
-        probe_id=probe_id,
-        errors=[],
         blocking_reason=blocking_reason,
         failure_reason=failure_reason,
         required_runner=required_runner,
     )
+    assessment = RuntimeAssessment(**{**assessment.__dict__, "probe_id": probe_id})
 
     with pytest.raises(SessionStateError, match="invalid runtime assessment"):
         attach_runtime_assessment(approved, assessment)
@@ -549,14 +582,7 @@ def test_file_session_store_rejects_runtime_result_without_matching_event(
     approved = approve_session(session, "maintainer")
     completed = attach_runtime_assessment(
         approved,
-        RuntimeAssessment(
-            case_id="case-1",
-            decision="validated",
-            buggy_ref="buggy",
-            fixed_ref="fixed",
-            probe_id="probe-1",
-            errors=[],
-        ),
+        _runtime_assessment(tmp_path),
     )
     store = FileSessionStore(tmp_path / "sessions")
     path = store.create(completed)
@@ -590,14 +616,7 @@ def test_file_session_store_rejects_matching_forged_runtime_result(
     approved = approve_session(session, "maintainer")
     completed = attach_runtime_assessment(
         approved,
-        RuntimeAssessment(
-            case_id="case-1",
-            decision="validated",
-            buggy_ref="buggy",
-            fixed_ref="fixed",
-            probe_id="probe-1",
-            errors=[],
-        ),
+        _runtime_assessment(tmp_path),
     )
     store = FileSessionStore(tmp_path / "sessions")
     path = store.create(completed)
@@ -792,26 +811,27 @@ def test_session_cli_runs_approval_and_existing_oracle_result_loop(
     sessions_dir = tmp_path / "sessions"
     cases_dir = tmp_path / "cases"
     cases_dir.mkdir()
+    case = _runtime_case(case_id)
     (cases_dir / f"{case_id}.json").write_text(
-        json.dumps(
-            {
-                "case_id": case_id,
-                "curation": {"oracle": {"buggy_ref": "buggy", "fixed_ref": "fixed"}},
-            }
-        ),
+        json.dumps(case),
         encoding="utf-8",
     )
+    probe_source = "probe.py"
+    (tmp_path / probe_source).write_text("assert True\n", encoding="utf-8")
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
     (runtime_dir / "result.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "results": [
                     {
                         "case_id": case_id,
                         "status": "validated",
                         "probe_id": "probe-1",
+                        "probe_source": probe_source,
+                        "probe_source_sha256": probe_file_sha256(tmp_path, probe_source),
+                        "case_oracle_revision": case_oracle_revision(case),
                         "buggy_ref": "buggy",
                         "fixed_ref": "fixed",
                         "buggy_oracle_matched": True,
@@ -867,6 +887,8 @@ def test_session_cli_runs_approval_and_existing_oracle_result_loop(
                 str(cases_dir),
                 "--runtime-results",
                 str(runtime_dir),
+                "--probe-root",
+                str(tmp_path),
             ]
         )
         == 0

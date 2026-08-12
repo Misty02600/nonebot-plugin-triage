@@ -79,7 +79,7 @@ from tools.nbtriage_maintainer.mlflow_tracking import (
     MLflowTrackingError,
     publish_evaluation_to_mlflow,
 )
-from tools.nbtriage_maintainer.runtime_results import evaluate_runtime_results
+from tools.nbtriage_maintainer.runtime_results import DEFAULT_PROBE_ROOT, evaluate_runtime_results
 from tools.nbtriage_maintainer.safety_evaluation import SafetyEvaluationError, evaluate_s3
 from tools.nbtriage_maintainer.sessions import (
     FileSessionStore,
@@ -181,6 +181,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("evals/oracles"),
         help="Versioned Oracle result file or directory.",
+    )
+    gate_parser.add_argument(
+        "--probe-root",
+        type=Path,
+        default=DEFAULT_PROBE_ROOT,
+        help="Trusted root for repository-relative Oracle probe_source paths.",
     )
     gate_parser.add_argument("--report", type=Path, default=Path("reports/data-gate.json"))
 
@@ -547,6 +553,7 @@ def build_parser() -> argparse.ArgumentParser:
     session_runtime_parser.add_argument(
         "--runtime-results", type=Path, default=Path("evals/oracles")
     )
+    session_runtime_parser.add_argument("--probe-root", type=Path, default=DEFAULT_PROBE_ROOT)
     session_runtime_parser.add_argument("--actor", default="runtime-validator")
 
     session_evidence_parser = subparsers.add_parser(
@@ -847,7 +854,11 @@ def _run_export_annotations(args: argparse.Namespace) -> int:
 
 
 def _run_gate(args: argparse.Namespace) -> int:
-    report = evaluate_cases(args.cases_dir, args.runtime_results)
+    report = evaluate_cases(
+        args.cases_dir,
+        args.runtime_results,
+        probe_root=args.probe_root,
+    )
     write_report(args.report, report)
     summary = report["summary"]
     print(
@@ -1513,6 +1524,7 @@ def _run_session_attach_runtime(args: argparse.Namespace) -> int:
         assessments, load_errors = evaluate_runtime_results(
             args.runtime_results,
             {session.case_id: case},
+            probe_root=args.probe_root,
         )
         if load_errors:
             raise SessionError(f"runtime result load failed: {load_errors[0]}")

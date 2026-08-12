@@ -23,7 +23,7 @@ from tools.nbtriage_maintainer.runtime_results import (
     runtime_result_validation_error,
 )
 
-SESSION_SCHEMA_VERSION = 2
+SESSION_SCHEMA_VERSION = 3
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 ROUTE_ACTIONS = {
@@ -427,6 +427,9 @@ def attach_runtime_assessment(
     result = {
         "decision": assessment.decision,
         "probe_id": assessment.probe_id,
+        "probe_source": assessment.probe_source,
+        "probe_source_sha256": assessment.probe_source_sha256,
+        "case_oracle_revision": assessment.case_oracle_revision,
         "buggy_ref": assessment.buggy_ref,
         "fixed_ref": assessment.fixed_ref,
         "blocking_reason": assessment.blocking_reason,

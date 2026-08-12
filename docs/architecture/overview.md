@@ -214,7 +214,7 @@ current runtime capability record → bounded handler/config EvidenceUnit
 | Curation | 应用或导出人工 annotation | 只能修改 Case 的 `curation` | 版本化 annotation | `tools/nbtriage_maintainer/curation.py` |
 | Case model | 定义可编辑策展字段与序列化边界 | 被 Collector 和 Gate 使用 | Case schema v1 | `tools/nbtriage_maintainer/models.py` |
 | Data Gate | 按执行模式计算缺失字段和就绪类别 | 只读 Case JSON | 报告 schema v1 | `tools/nbtriage_maintainer/gate.py` |
-| Runtime result validator | 核对运行状态、Probe、故障 / 修复引用和两侧 Oracle 命中 | 只读版本化结果；不执行第三方代码 | Oracle 运行结论 | `tools/nbtriage_maintainer/runtime_results.py` |
+| Runtime result validator | 核对运行状态、Case / Oracle 规范化版本、Probe 原始字节 SHA-256、故障 / 修复引用和两侧 Oracle 命中 | 只读 schema v2 结果；Probe 必须在显式受信根内；不执行第三方代码 | 内容绑定的 Oracle 运行结论 | `tools/nbtriage_maintainer/runtime_results.py` |
 | B0 predictor | 抽取版本值和证据状态，给出固定补问、症状 / 阶段 / 责任层与路由 | 只读 `source` 和仓库身份；train-only 检索；不接触 `curation` | 无长期状态 | `src/nbtriage/baselines.py` |
 | Evaluation harness | 加载冻结 split、隔离预测与 Gold、计算分层指标并写报告；不进入发行包 | 不修改 Case；历史 S3 无分母时不伪造样本，改由独立合成评测补充 | 评测报告 schema v1 | `tools/nbtriage_maintainer/evaluation.py`、`tools/nbtriage_maintainer/safety_evaluation.py` |
 | Safety pre-model guard | 识别目标 Case 中明确请求越过凭据、控制面、生产、账号、私密数据或外部写入边界的组合 | 只读公开 `source`；命中后不检索、不读缓存、不调用模型；不能替代副作用入口授权 | 风险类别与拒绝预测 | `src/nbtriage/safety.py`、`src/nbtriage/rag.py` |
@@ -275,7 +275,7 @@ current runtime capability record → bounded handler/config EvidenceUnit
 - `NBTRIAGE_CAPABILITY_SHADOW_PATH` 指向的 SQLite 是当前部署本地派生数据：只在显式配置后由启动钩子调度后台原子生成，不进入 Git 或发行物；首次可服务 generation 发布前普通用户回退显式 Provider；带 `analysis_issues` 的记录只有维护者显式检索时返回，`restricted` 会持久化但只有模型外上下文鉴权通过后才能检索；后续 operator exclude policy 将负责在持久化前完全排除指定能力，当前尚无这个按能力排除接口；
 - `evals/curation/batches/` 保存人工晋级批次，`evals/curation/annotations/` 保存可复建的人工结论；二者不复制原始 Issue 正文；
 - `evals/datasets/catalog/`、`evals/datasets/fixtures/` 与 `evals/datasets/splits/` 保存可审查输入、合成安全集合和冻结切分；
-- `evals/oracles/` 保存经过引用校验、可作为回归合同复建依据的 Oracle 结论；完整机器报告已迁入本地 `reports/` 或 MLflow，`evals/` 不再保存运行快照；
+- `evals/oracles/` 保存 schema v2 Oracle 结论，以 Case / Oracle 规范化版本与 Probe 原始字节 SHA-256 绑定引用校验，可作为回归合同复建依据；完整机器报告已迁入本地 `reports/` 或 MLflow，`evals/` 不再保存运行快照；
 - `curation.field_provenance` 为每个资格字段记录 `source.body`、`gold.comment.<id>` 或策展推断来源；Gate 不接受没有来源标记的完整字段；
 - `visibility_boundary` 固定为目标 Issue 的 `opened_at`；当前 GitHub API 无法证明 Issue 正文未在后来编辑，因此 schema 明确记录 `body_edit_history_unavailable`，不能把当前正文误称为严格历史快照；
 - `evals/datasets/splits/data-gate-v1.json` 按 `opened_at` 建立 train / validation / held-out 时间窗；相同根因簇、重复 / 回移植和相同 Oracle 引用必须留在同一 split；
