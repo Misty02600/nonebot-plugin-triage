@@ -48,7 +48,7 @@ def _write_review_package(
     tmp_path: Path,
     *,
     promotion_passed: bool = True,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path]:
     report_path = _real_report(tmp_path / "b4-real.json", promotion_passed=promotion_passed)
     samples, annotations = build_b4_answer_quality_review(
         report_path,
@@ -66,7 +66,7 @@ def _write_review_package(
         json.dumps(annotations, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    return samples_path, annotations_path
+    return report_path, samples_path, annotations_path
 
 
 def _complete_annotations(path: Path) -> None:
@@ -108,6 +108,8 @@ def test_export_builds_forward_hidden_offline_review_package(tmp_path: Path) -> 
     assert sample["candidate"]["answer"] == "补充回执确认连接关闭异常来自适配器路径。"
     assert sample["context"]["evidence"][0]["evidence_id"] == "receipt:logs"
     assert annotations["review"]["kind"] == "pending_human_review"
+    assert annotations["schema_version"] == 2
+    assert annotations["fixture_revision"].startswith("nbtriage-answer-quality-fixtures-sha256:")
     assert annotations["annotations"][0]["scores"] == dict.fromkeys(ANSWER_QUALITY_AXES)
 
     serialized = json.dumps((samples, annotations), ensure_ascii=False)
@@ -162,17 +164,22 @@ def test_export_ignores_terminal_step_failures_and_keeps_completed_only(
 
 
 def test_pending_review_template_cannot_be_scored(tmp_path: Path) -> None:
-    samples_path, annotations_path = _write_review_package(tmp_path)
+    _, samples_path, annotations_path = _write_review_package(tmp_path)
 
     with pytest.raises(AnswerQualityEvaluationError, match="review kind is not supported"):
         evaluate_answer_quality(RUBRIC, samples_path, annotations_path)
 
 
 def test_completed_review_is_only_offline_fixed_fixture_evidence(tmp_path: Path) -> None:
-    samples_path, annotations_path = _write_review_package(tmp_path)
+    report_path, samples_path, annotations_path = _write_review_package(tmp_path)
     _complete_annotations(annotations_path)
 
-    report = evaluate_answer_quality(RUBRIC, samples_path, annotations_path)
+    report = evaluate_answer_quality(
+        RUBRIC,
+        samples_path,
+        annotations_path,
+        source_report_path=report_path,
+    )
 
     assert report["evaluation_scope"] == "offline_fixed_fixture"
     assert report["summary"]["human_reviewed"] is True
@@ -184,14 +191,38 @@ def test_completed_review_is_only_offline_fixed_fixture_evidence(tmp_path: Path)
     assert any("deployed Bot" in item for item in report["limitations"])
 
 
+def test_completed_review_requires_the_original_source_report(tmp_path: Path) -> None:
+    source_report_path, samples_path, annotations_path = _write_review_package(tmp_path)
+    _complete_annotations(annotations_path)
+
+    with pytest.raises(AnswerQualityEvaluationError, match="requires its source B4 report"):
+        evaluate_answer_quality(RUBRIC, samples_path, annotations_path)
+
+    source_report = json.loads(source_report_path.read_text(encoding="utf-8"))
+    source_report["trials"][0]["fixture_id"] = "changed-after-review-export"
+    source_report_path.write_text(json.dumps(source_report), encoding="utf-8")
+    with pytest.raises(AnswerQualityEvaluationError, match="does not match its digest"):
+        evaluate_answer_quality(
+            RUBRIC,
+            samples_path,
+            annotations_path,
+            source_report_path=source_report_path,
+        )
+
+
 def test_human_scores_cannot_override_failed_source_b4_gate(tmp_path: Path) -> None:
-    samples_path, annotations_path = _write_review_package(
+    report_path, samples_path, annotations_path = _write_review_package(
         tmp_path,
         promotion_passed=False,
     )
     _complete_annotations(annotations_path)
 
-    report = evaluate_answer_quality(RUBRIC, samples_path, annotations_path)
+    report = evaluate_answer_quality(
+        RUBRIC,
+        samples_path,
+        annotations_path,
+        source_report_path=report_path,
+    )
 
     assert report["quality_claim_gate"]["eligible"] is False
     assert report["quality_claim_gate"]["decision"] == "not_eligible_source_b4_gate_failed"
@@ -242,9 +273,9 @@ def test_export_cli_writes_new_local_package_without_overwrite(tmp_path: Path) -
 
 
 def test_candidate_quality_cli_never_overwrites_human_result(tmp_path: Path) -> None:
-    samples_path, annotations_path = _write_review_package(tmp_path)
+    source_report_path, samples_path, annotations_path = _write_review_package(tmp_path)
     _complete_annotations(annotations_path)
-    report_path = tmp_path / "quality-report.json"
+    quality_report_path = tmp_path / "quality-report.json"
     arguments = [
         "evaluate-answer-quality",
         "--rubric",
@@ -253,11 +284,13 @@ def test_candidate_quality_cli_never_overwrites_human_result(tmp_path: Path) -> 
         str(samples_path),
         "--annotations",
         str(annotations_path),
+        "--source-report",
+        str(source_report_path),
         "--report",
-        str(report_path),
+        str(quality_report_path),
     ]
 
     assert main(arguments) == 0
-    preserved = report_path.read_bytes()
+    preserved = quality_report_path.read_bytes()
     assert main(arguments) == 1
-    assert report_path.read_bytes() == preserved
+    assert quality_report_path.read_bytes() == preserved

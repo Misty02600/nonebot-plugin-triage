@@ -11,6 +11,7 @@ from typing import Any
 ANSWER_QUALITY_EVALUATION_ID = "answer-quality-human-rubric-v2"
 ANSWER_QUALITY_RUBRIC_ID = "answer-quality-v1"
 ANSWER_QUALITY_OFFLINE_SCOPE = "offline_fixed_fixture"
+ANSWER_QUALITY_FIXTURE_REVISION_PREFIX = "nbtriage-answer-quality-fixtures-sha256:"
 ANSWER_QUALITY_AXES = (
     "groundedness",
     "completeness",
@@ -25,10 +26,25 @@ class AnswerQualityEvaluationError(ValueError):
     pass
 
 
+def answer_quality_fixture_revision(payload: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    digest = hashlib.sha256(b"nbtriage-answer-quality-fixtures-v1\0")
+    digest.update(canonical)
+    return ANSWER_QUALITY_FIXTURE_REVISION_PREFIX + digest.hexdigest()
+
+
 def evaluate_answer_quality(
     rubric_path: Path,
     fixtures_path: Path,
     annotations_path: Path,
+    *,
+    source_report_path: Path | None = None,
 ) -> dict[str, Any]:
     """校验并汇总 answer + citations 的人工评分合同。
 
@@ -39,6 +55,7 @@ def evaluate_answer_quality(
         rubric_path: 版本化评分轴、锚点和门槛定义。
         fixtures_path: 固定的可见 Context、候选回答和引用集合。
         annotations_path: 与 Fixture 完整对应的人工评分或合成校准 Oracle。
+        source_report_path: 候选质量 Fixture 对应的原始真实 B4 报告；校准集必须省略。
 
     Returns:
         包含来源哈希、逐样本评分、聚合指标、校准门和质量声明门的报告。
@@ -51,14 +68,20 @@ def evaluate_answer_quality(
     annotations_raw, annotations = _load_object(annotations_path, "answer quality annotations")
     scale_minimum, scale_maximum = _validate_rubric(rubric)
     samples = _validate_fixtures(fixtures)
+    try:
+        fixture_revision = answer_quality_fixture_revision(fixtures)
+    except (TypeError, ValueError) as error:
+        raise AnswerQualityEvaluationError("fixture content cannot be canonicalized") from error
     judgments = _validate_annotations(
         annotations,
         fixture_set_id=fixtures["fixture_set_id"],
+        fixture_revision=fixture_revision,
         sample_ids=set(samples),
         scale_minimum=scale_minimum,
         scale_maximum=scale_maximum,
     )
     _validate_contract_binding(rubric, fixtures, annotations)
+    source_report_reference = _validate_source_report_binding(fixtures, source_report_path)
 
     rows = []
     axis_totals = dict.fromkeys(ANSWER_QUALITY_AXES, 0)
@@ -147,8 +170,11 @@ def evaluate_answer_quality(
             "rubric_sha256": hashlib.sha256(rubric_raw).hexdigest(),
             "fixtures_path": str(fixtures_path),
             "fixtures_sha256": hashlib.sha256(fixtures_raw).hexdigest(),
+            "fixture_revision": fixture_revision,
             "annotations_path": str(annotations_path),
             "annotations_sha256": hashlib.sha256(annotations_raw).hexdigest(),
+            "source_report_path": source_report_reference[0],
+            "source_report_sha256": source_report_reference[1],
         },
         "summary": {
             "sample_count": sample_count,
@@ -434,10 +460,56 @@ def _validate_source_evaluation(payload: dict[str, Any]) -> None:
         raise AnswerQualityEvaluationError("source promotion_gate_passed must be boolean")
 
 
+def _validate_source_report_binding(
+    fixtures: dict[str, Any], source_report_path: Path | None
+) -> tuple[str | None, str | None]:
+    if fixtures["purpose"] == "rubric_calibration":
+        if source_report_path is not None:
+            raise AnswerQualityEvaluationError("calibration fixtures must not bind a source report")
+        return None, None
+    if source_report_path is None:
+        raise AnswerQualityEvaluationError("candidate quality requires its source B4 report")
+    report_raw, report = _load_object(source_report_path, "source B4 report")
+    source = fixtures["source_evaluation"]
+    if hashlib.sha256(report_raw).hexdigest() != source["report_sha256"]:
+        raise AnswerQualityEvaluationError("source B4 report content does not match its digest")
+    summary = report.get("summary")
+    promotion_gate = report.get("promotion_gate")
+    expected = {
+        "evaluation_id": report.get("evaluation_id"),
+        "report_schema_version": report.get("schema_version"),
+        "generated_at": report.get("generated_at"),
+        "evaluation_contract": report.get("evaluation_contract"),
+        "fixture_set_id": report.get("fixture_set_id"),
+        "split_id": report.get("split_id"),
+        "score_split": (
+            promotion_gate.get("score_split") if isinstance(promotion_gate, dict) else None
+        ),
+        "model_kind": summary.get("model_kind") if isinstance(summary, dict) else None,
+        "provider": summary.get("provider") if isinstance(summary, dict) else None,
+        "model": summary.get("model") if isinstance(summary, dict) else None,
+        "trials_per_fixture": (
+            summary.get("trials_per_fixture") if isinstance(summary, dict) else None
+        ),
+        "real_model_multi_trial": (
+            promotion_gate.get("checks", {}).get("real_model_multi_trial")
+            if isinstance(promotion_gate, dict) and isinstance(promotion_gate.get("checks"), dict)
+            else None
+        ),
+        "promotion_gate_passed": (
+            promotion_gate.get("passed") if isinstance(promotion_gate, dict) else None
+        ),
+    }
+    if any(source[field] != value for field, value in expected.items()):
+        raise AnswerQualityEvaluationError("source B4 report projection does not match fixtures")
+    return str(source_report_path), hashlib.sha256(report_raw).hexdigest()
+
+
 def _validate_annotations(
     payload: dict[str, Any],
     *,
     fixture_set_id: str,
+    fixture_revision: str,
     sample_ids: set[str],
     scale_minimum: int,
     scale_maximum: int,
@@ -446,16 +518,19 @@ def _validate_annotations(
         "schema_version",
         "annotation_set_id",
         "fixture_set_id",
+        "fixture_revision",
         "rubric_id",
         "review",
         "annotations",
     }
-    if set(payload) != required or payload.get("schema_version") != 1:
-        raise AnswerQualityEvaluationError("annotation set must be a schema_version 1 contract")
+    if set(payload) != required or payload.get("schema_version") != 2:
+        raise AnswerQualityEvaluationError("annotation set must be a schema_version 2 contract")
     if not isinstance(payload.get("annotation_set_id"), str) or not payload["annotation_set_id"]:
         raise AnswerQualityEvaluationError("annotation_set_id must be non-empty")
     if payload.get("fixture_set_id") != fixture_set_id:
         raise AnswerQualityEvaluationError("annotations are bound to a different fixture set")
+    if payload.get("fixture_revision") != fixture_revision:
+        raise AnswerQualityEvaluationError("annotations are bound to different fixture content")
     if payload.get("rubric_id") != ANSWER_QUALITY_RUBRIC_ID:
         raise AnswerQualityEvaluationError("annotation rubric_id is not supported")
     review = payload.get("review")

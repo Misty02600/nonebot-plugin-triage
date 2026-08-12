@@ -326,6 +326,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("evals/curation/answer-quality/calibration-v1.json"),
     )
     answer_quality_parser.add_argument(
+        "--source-report",
+        type=Path,
+        help="Original real B4 report required by candidate-quality fixtures.",
+    )
+    answer_quality_parser.add_argument(
         "--report",
         type=Path,
         default=Path("artifacts/eval-answer-quality-calibration.json"),
@@ -1028,7 +1033,12 @@ def _run_evaluate_b3_evidence_receipts(args: argparse.Namespace) -> int:
 
 def _run_evaluate_answer_quality(args: argparse.Namespace) -> int:
     try:
-        report = evaluate_answer_quality(args.rubric, args.fixtures, args.annotations)
+        report = evaluate_answer_quality(
+            args.rubric,
+            args.fixtures,
+            args.annotations,
+            source_report_path=args.source_report,
+        )
         if report["summary"]["purpose"] == "rubric_calibration":
             write_evaluation_report(args.report, report)
         else:

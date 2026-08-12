@@ -14,6 +14,7 @@ from tools.nbtriage_maintainer.agent_evaluation import (
 from tools.nbtriage_maintainer.answer_quality_evaluation import (
     ANSWER_QUALITY_AXES,
     ANSWER_QUALITY_RUBRIC_ID,
+    answer_quality_fixture_revision,
 )
 
 ANSWER_QUALITY_FIXTURE_SCHEMA_VERSION = 2
@@ -115,9 +116,10 @@ def build_b4_answer_quality_review(
         "fixtures": review_samples,
     }
     annotations = {
-        "schema_version": 1,
+        "schema_version": 2,
         "annotation_set_id": f"{fixture_set_id}-human-v1",
         "fixture_set_id": fixture_set_id,
+        "fixture_revision": answer_quality_fixture_revision(samples),
         "rubric_id": ANSWER_QUALITY_RUBRIC_ID,
         "review": {
             "kind": "pending_human_review",
