@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+
+from nonebot import require
 
 from nbtriage.live_trials import (
     LiveTrialService,
@@ -21,14 +24,26 @@ _FEEDBACK_TOKENS = {
     "incomplete": TrialFeedback.INCOMPLETE,
     "incorrect": TrialFeedback.INCORRECT,
 }
+_TRIAL_EVENT_LOG_FILENAME = "trial-events.jsonl"
 
 
-def create_trial_service(config: NBTriageConfig) -> LiveTrialService:
+def _resolve_trial_log_path(filename: str) -> Path:
+    require("nonebot_plugin_localstore")
+    from nonebot_plugin_localstore import get_plugin_data_file
+
+    return get_plugin_data_file(filename)
+
+
+def create_trial_service(
+    config: NBTriageConfig,
+    *,
+    trial_log_path_resolver: Callable[[str], Path] = _resolve_trial_log_path,
+) -> LiveTrialService:
     mode = TrialMode(config.nbtriage_trial_mode)
     sink = None
     if mode is TrialMode.OBSERVE:
         sink = RotatingJsonlTrialEventSink(
-            Path(config.nbtriage_trial_log_path),
+            trial_log_path_resolver(_TRIAL_EVENT_LOG_FILENAME),
             max_bytes=config.nbtriage_trial_log_max_bytes,
             backup_count=config.nbtriage_trial_log_backup_count,
         )

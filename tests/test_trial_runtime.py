@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from nbtriage.live_trials import (
+    LiveTrialError,
     LiveTrialSummary,
+    RotatingJsonlTrialEventSink,
     TrialFeedback,
     TrialMode,
     TrialOperationResult,
@@ -21,38 +23,72 @@ from nonebot_plugin_triage.trials import (
 )
 
 
-def test_trial_runtime_is_default_off_without_creating_log(tmp_path) -> None:
-    path = tmp_path / "trials.jsonl"
-    service = create_trial_service(NBTriageConfig(nbtriage_trial_log_path=str(path)))
+def test_trial_runtime_is_default_off_without_resolving_or_creating_log(tmp_path) -> None:
+    data_dir = tmp_path / "plugin-data"
+    resolved_filenames: list[str] = []
+
+    def resolve(filename: str) -> Path:
+        resolved_filenames.append(filename)
+        data_dir.mkdir(parents=True)
+        return data_dir / filename
+
+    service = create_trial_service(
+        NBTriageConfig(),
+        trial_log_path_resolver=resolve,
+    )
 
     assert service.mode is TrialMode.OFF
     assert service.sink is None
-    assert not path.exists()
+    assert resolved_filenames == []
+    assert not data_dir.exists()
 
 
 def test_observe_runtime_builds_bounded_rotating_sink(tmp_path) -> None:
-    path = tmp_path / "trials.jsonl"
+    path = tmp_path / "trial-events.jsonl"
+    resolved_filenames: list[str] = []
+
+    def resolve(filename: str) -> Path:
+        resolved_filenames.append(filename)
+        return path
+
     service = create_trial_service(
         NBTriageConfig(
             nbtriage_trial_mode="observe",
-            nbtriage_trial_log_path=str(path),
             nbtriage_trial_log_max_bytes=65_536,
             nbtriage_trial_log_backup_count=3,
-        )
+        ),
+        trial_log_path_resolver=resolve,
     )
 
     assert service.mode is TrialMode.OBSERVE
-    assert service.sink is not None
+    assert resolved_filenames == ["trial-events.jsonl"]
+    assert isinstance(service.sink, RotatingJsonlTrialEventSink)
     assert service.sink.path == Path(path)
     assert service.sink.max_bytes == 65_536
     assert service.sink.backup_count == 3
     assert not path.exists()
 
 
-@pytest.mark.parametrize("value", [r"\\server\share\trials.jsonl", "//server/share/log"])
-def test_trial_config_rejects_unc_log_path(value: str) -> None:
-    with pytest.raises(ValidationError, match="must be local"):
-        NBTriageConfig(nbtriage_trial_log_path=value)
+def test_observe_runtime_fails_closed_when_resolver_returns_invalid_path() -> None:
+    def resolve(_: str) -> Any:
+        return "not-a-path"
+
+    with pytest.raises(LiveTrialError):
+        create_trial_service(
+            NBTriageConfig(nbtriage_trial_mode="observe"),
+            trial_log_path_resolver=resolve,
+        )
+
+
+def test_observe_runtime_fails_closed_when_log_path_cannot_be_resolved() -> None:
+    def resolve(_: str) -> Path:
+        raise PermissionError("denied")
+
+    with pytest.raises(PermissionError, match="denied"):
+        create_trial_service(
+            NBTriageConfig(nbtriage_trial_mode="observe"),
+            trial_log_path_resolver=resolve,
+        )
 
 
 @pytest.mark.parametrize(

@@ -52,6 +52,8 @@ def verify() -> None:
     for module_name in MAINTAINER_MODULES:
         if _module_exists(module_name):
             raise RuntimeError(f"base wheel unexpectedly includes {module_name}")
+    if not _module_exists("nonebot_plugin_localstore"):
+        raise RuntimeError("base wheel is missing the LocalStore runtime dependency")
 
     console_scripts = {
         entry_point.name

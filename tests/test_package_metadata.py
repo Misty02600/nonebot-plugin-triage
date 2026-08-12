@@ -46,6 +46,12 @@ def test_model_provider_stacks_are_isolated_to_their_optional_extras() -> None:
     assert "pydantic-ai-slim[anthropic,openai]==2.27.0" in metadata["dependency-groups"]["dev"]
 
 
+def test_localstore_is_a_bounded_base_runtime_dependency() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+
+    assert "nonebot-plugin-localstore>=0.7.4,<0.8" in project["dependencies"]
+
+
 def test_mlflow_tracking_is_a_maintainer_only_dependency() -> None:
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project = metadata["project"]

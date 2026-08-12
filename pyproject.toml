@@ -17,6 +17,7 @@ classifiers = [
 dependencies = [
     "nonebot2>=2.5,<2.6",
     "nonebot-plugin-alconna>=0.62,<0.63",
+    "nonebot-plugin-localstore>=0.7.4,<0.8",
     "pydantic>=2.11",
 ]
 
