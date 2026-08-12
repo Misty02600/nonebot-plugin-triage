@@ -13,6 +13,12 @@ from typing import Protocol, TypeVar
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
+from nbtriage.module_source_revisions import (
+    ModuleSourceLimits,
+    PythonModuleSourceManifest,
+    scan_python_module_source,
+)
+
 _MODULE_NAME_PATTERN = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$", re.ASCII)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _ResultT = TypeVar("_ResultT")
@@ -141,6 +147,7 @@ class ArtifactRevision:
     distribution_name: str | None = None
     distribution_version: str | None = None
     vcs_commit: str | None = None
+    module_source_manifest: PythonModuleSourceManifest | None = None
 
     def __post_init__(self) -> None:
         _module_name(self.module_name)
@@ -154,10 +161,21 @@ class ArtifactRevision:
             not isinstance(item, ArtifactEvidence) for item in self.evidence
         ):
             raise ArtifactRevisionError("evidence must be a tuple of ArtifactEvidence")
+        if self.module_source_manifest is not None:
+            if not isinstance(self.module_source_manifest, PythonModuleSourceManifest):
+                raise ArtifactRevisionError(
+                    "module_source_manifest must be PythonModuleSourceManifest"
+                )
+            if self.module_source_manifest.module_name != self.module_name:
+                raise ArtifactRevisionError("module source manifest module does not match artifact")
         if self.status is ArtifactRevisionStatus.MISSING:
             if self.source_kind is not ArtifactSourceKind.UNKNOWN:
                 raise ArtifactRevisionError("missing artifacts must have unknown source kind")
-            if self.revision is not None or self.evidence:
+            if (
+                self.revision is not None
+                or self.evidence
+                or self.module_source_manifest is not None
+            ):
                 raise ArtifactRevisionError("missing artifacts cannot have revision evidence")
         elif self.revision is None:
             raise ArtifactRevisionError("located artifacts require a revision")
@@ -360,7 +378,17 @@ def _build_source_revision(
     force_partial: bool = False,
 ) -> ArtifactRevision:
     scan = _scan_source(location, limits)
-    partial = force_partial or scan.partial or not scan.evidence
+    module_scan = scan_python_module_source(
+        module_name,
+        location.scan_root,
+        limits=ModuleSourceLimits(
+            max_files=limits.max_files,
+            max_total_bytes=limits.max_bytes,
+            max_file_bytes=limits.max_file_bytes,
+            max_directories=limits.max_directories,
+        ),
+    )
+    partial = force_partial or scan.partial or not scan.evidence or bool(module_scan.errors)
     status = ArtifactRevisionStatus.PARTIAL if partial else ArtifactRevisionStatus.LOCATED
     revision = _revision_digest(
         module_name=module_name,
@@ -380,6 +408,7 @@ def _build_source_revision(
         distribution_name=distribution_name,
         distribution_version=distribution_version,
         vcs_commit=vcs_commit,
+        module_source_manifest=module_scan.manifest,
     )
 
 

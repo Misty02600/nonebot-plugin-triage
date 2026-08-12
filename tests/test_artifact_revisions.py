@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from nbtriage.artifact_revisions import (
+    ArtifactRevision,
     ArtifactRevisionError,
     ArtifactRevisionStatus,
     ArtifactScanLimits,
@@ -16,6 +17,7 @@ from nbtriage.artifact_revisions import (
     StdlibDistributionMetadataAdapter,
     build_artifact_revision,
 )
+from nbtriage.module_source_revisions import scan_python_module_source
 
 
 class FakeMetadataAdapter:
@@ -95,6 +97,8 @@ def test_explicit_local_revision_tracks_source_but_excludes_runtime_data(tmp_pat
     assert first.status is ArtifactRevisionStatus.LOCATED
     assert first.source_kind is ArtifactSourceKind.LOCAL
     assert first.revision is not None and len(first.revision) == 64
+    assert first.module_source_manifest is not None
+    module_revision = first.module_source_manifest.revision
     locators = {item.locator for item in first.evidence}
     assert locators == {
         "README.md",
@@ -107,10 +111,14 @@ def test_explicit_local_revision_tracks_source_but_excludes_runtime_data(tmp_pat
     (data / "private.py").write_text("secret = 2\n", encoding="utf-8")
     ignored_change = build_artifact_revision("nonebot_plugin_demo", search_paths=(project,))
     assert ignored_change.revision == first.revision
+    assert ignored_change.module_source_manifest is not None
+    assert ignored_change.module_source_manifest.revision == module_revision
 
     source.write_text("value = 2\n", encoding="utf-8")
     source_change = build_artifact_revision("nonebot_plugin_demo", search_paths=(project,))
     assert source_change.revision != first.revision
+    assert source_change.module_source_manifest is not None
+    assert source_change.module_source_manifest.revision != module_revision
 
 
 def test_local_plugin_revision_does_not_include_sibling_plugin_source(tmp_path: Path) -> None:
@@ -161,6 +169,7 @@ def test_wheel_revision_uses_record_hash_and_fallback_content_digest() -> None:
 
     assert revision.status is ArtifactRevisionStatus.LOCATED
     assert revision.source_kind is ArtifactSourceKind.WHEEL
+    assert revision.module_source_manifest is None
     assert revision.distribution_name == "nonebot-plugin-demo"
     assert revision.distribution_version == "1.2.3"
     assert [item.basis for item in revision.evidence] == ["record_hash", "content_sha256"]
@@ -243,6 +252,23 @@ def test_missing_module_has_no_synthetic_revision() -> None:
     assert revision.source_kind is ArtifactSourceKind.UNKNOWN
     assert revision.revision is None
     assert revision.evidence == ()
+
+
+def test_artifact_rejects_a_module_manifest_for_another_module(tmp_path: Path) -> None:
+    source = tmp_path / "other.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    scan = scan_python_module_source("other", source)
+    assert scan.manifest is not None
+
+    with pytest.raises(ArtifactRevisionError, match="module does not match"):
+        ArtifactRevision(
+            module_name="demo",
+            status=ArtifactRevisionStatus.LOCATED,
+            source_kind=ArtifactSourceKind.LOCAL,
+            revision="a" * 64,
+            evidence=(),
+            module_source_manifest=scan.manifest,
+        )
 
 
 def test_source_limit_marks_revision_partial(tmp_path: Path) -> None:

@@ -618,6 +618,10 @@ def test_local_source_change_changes_snapshot_generation(
     ]
     source = second.manifest.source_revisions[0]
     assert source.revision != "unavailable"
+    manifest = source.payload["module_source_manifest"]
+    assert isinstance(manifest, dict)
+    assert manifest["revision"] == source.revision
+    assert manifest["module_name"] == plugin.module_name
     assert str(tmp_path) not in second.to_json()
 
 

@@ -159,6 +159,11 @@ def _generation(
                         "distribution_name": item.artifact.distribution_name,
                         "distribution_version": item.artifact.distribution_version,
                         "vcs_commit": item.artifact.vcs_commit,
+                        "module_source_revision": (
+                            item.artifact.module_source_manifest.revision
+                            if item.artifact.module_source_manifest is not None
+                            else None
+                        ),
                     }
                     if item.artifact is not None
                     else None

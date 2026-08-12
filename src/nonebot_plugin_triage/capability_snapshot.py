@@ -41,6 +41,7 @@ from nbtriage.capability_role_analysis import (
     SourceEffectFact,
     analyze_runtime_matcher_roles,
 )
+from nbtriage.module_source_revisions import ModuleSourceScan, scan_python_module_source
 from nonebot_plugin_triage.config_policy import normalize_config_root
 from nonebot_plugin_triage.config_references import (
     ConfigReference,
@@ -49,9 +50,7 @@ from nonebot_plugin_triage.config_references import (
 )
 
 _MAX_TEXT_CHARS = 1_000
-_MAX_SOURCE_FILES = 256
 _MAX_SOURCE_FILE_BYTES = 1 * 1024 * 1024
-_MAX_SOURCE_TOTAL_BYTES = 4 * 1024 * 1024
 
 
 class CapabilityKind(StrEnum):
@@ -77,6 +76,7 @@ class SourceEvidence:
     line: int | None
     digest: str | None
     partial_errors: tuple[str, ...] = ()
+    module_source_manifest: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -185,6 +185,7 @@ class _CollectorState:
     packages_distributions: Mapping[str, Sequence[str]]
     file_hashes: dict[Path, tuple[str | None, tuple[str, ...]]]
     module_hashes: dict[str, tuple[str | None, tuple[str, ...]]]
+    module_scans: dict[str, ModuleSourceScan]
     module_sources: dict[Path, tuple[str | None, str | None]]
 
 
@@ -225,7 +226,7 @@ def build_capability_snapshot(
         plugins = get_loaded_plugins()
 
     package_map = _installed_package_map()
-    state = _CollectorState(package_map, {}, {}, {})
+    state = _CollectorState(package_map, {}, {}, {}, {})
     public_paths = frozenset(
         path for path in explicit_public_alconna_paths if isinstance(path, str)
     )
@@ -1235,6 +1236,7 @@ def _module_source_evidence(
 ) -> SourceEvidence:
     path = _module_file(module)
     digest, errors = _module_source_hash(module, module_name, state)
+    scan = _module_source_scan(module, module_name, state)
     return _source_evidence(
         kind="plugin_source",
         module_name=module_name,
@@ -1242,6 +1244,7 @@ def _module_source_evidence(
         line=None,
         digest=digest,
         partial_errors=errors,
+        module_source_manifest=(scan.manifest.to_dict() if scan.manifest is not None else None),
     )
 
 
@@ -1253,6 +1256,7 @@ def _source_evidence(
     line: int | None,
     digest: str | None,
     partial_errors: tuple[str, ...],
+    module_source_manifest: dict[str, object] | None = None,
 ) -> SourceEvidence:
     payload = json.dumps(
         [kind, module_name, path, line, digest],
@@ -1268,6 +1272,7 @@ def _source_evidence(
         line=line,
         digest=digest,
         partial_errors=partial_errors,
+        module_source_manifest=module_source_manifest,
     )
 
 
@@ -1298,67 +1303,28 @@ def _module_source_hash(
 ) -> tuple[str | None, tuple[str, ...]]:
     if module_name in state.module_hashes:
         return state.module_hashes[module_name]
-    module_file = _module_file(module)
-    if module_file is None:
-        result = (None, ("source_unavailable",))
-        state.module_hashes[module_name] = result
-        return result
-
-    root = module_file.parent if module_file.name == "__init__.py" else module_file
-    try:
-        files = (
-            sorted(root.rglob("*.py"), key=lambda path: path.as_posix())
-            if root.is_dir()
-            else [root]
-        )
-    except OSError:
-        result = (None, ("source_enumeration_failed",))
-        state.module_hashes[module_name] = result
-        return result
-
-    root_directory = (
-        root.resolve(strict=False) if root.is_dir() else root.parent.resolve(strict=False)
-    )
-    digest = hashlib.sha256()
-    errors: list[str] = []
-    total_bytes = 0
-    accepted_files = 0
-    for file_path in files:
-        if accepted_files >= _MAX_SOURCE_FILES:
-            errors.append("source_file_limit")
-            break
-        try:
-            resolved = file_path.resolve(strict=True)
-            if not resolved.is_relative_to(root_directory):
-                errors.append("source_outside_module_root")
-                continue
-            size = resolved.stat().st_size
-        except (OSError, RuntimeError):
-            errors.append("source_stat_failed")
-            continue
-        if size > _MAX_SOURCE_FILE_BYTES:
-            errors.append(f"source_file_too_large:{resolved.name}")
-            continue
-        if total_bytes + size > _MAX_SOURCE_TOTAL_BYTES:
-            errors.append("source_byte_limit")
-            break
-        try:
-            content = resolved.read_bytes()
-        except OSError:
-            errors.append(f"source_read_failed:{resolved.name}")
-            continue
-        relative = resolved.relative_to(root_directory).as_posix()
-        digest.update(relative.encode("utf-8", errors="surrogatepass"))
-        digest.update(b"\0")
-        digest.update(hashlib.sha256(content).digest())
-        accepted_files += 1
-        total_bytes += len(content)
-    if accepted_files == 0:
-        result = (None, tuple(sorted(set(errors or ["source_empty"]))))
-    else:
-        result = (digest.hexdigest(), tuple(sorted(set(errors))))
+    scan = _module_source_scan(module, module_name, state)
+    result = (scan.manifest.revision, ()) if scan.manifest is not None else (None, scan.errors)
     state.module_hashes[module_name] = result
     return result
+
+
+def _module_source_scan(
+    module: ModuleType | None,
+    module_name: str,
+    state: _CollectorState,
+) -> ModuleSourceScan:
+    cached = state.module_scans.get(module_name)
+    if cached is not None:
+        return cached
+    module_file = _module_file(module)
+    scan = (
+        scan_python_module_source(module_name, module_file)
+        if module_file is not None
+        else ModuleSourceScan(None, ("source_unavailable",))
+    )
+    state.module_scans[module_name] = scan
+    return scan
 
 
 def _file_digest(
@@ -1484,6 +1450,8 @@ def _source_revision(
         "module_name": source.module_name,
         "line": source.line,
     }
+    if source.module_source_manifest is not None:
+        source_payload["module_source_manifest"] = source.module_source_manifest
     if payload:
         source_payload.update(payload)
     return SourceRevision(
