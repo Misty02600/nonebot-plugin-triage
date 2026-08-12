@@ -69,8 +69,11 @@
 
 ## 落实与确认
 
-- 基础切片已落实：领域快照、本地 FTS5 / 短词检索、NoneBot 已加载对象采集、默认关闭的启动构建、
+- 基础切片已落实：领域快照、本地 FTS5 / 短词检索、NoneBot 已加载对象采集、默认关闭的启动后后台构建、
   `public / review / restricted` 读取过滤和维护者检索命令均已有实现。
+- 2026-08-12 性能检查点：startup hook 只调度后台任务，完整 refresh 通过 `asyncio.to_thread` 执行；同一轮
+  deployment 构建只枚举一次 distribution package map。首次 served generation ready 前，普通用户继续
+  回退显式 Provider。
 - 自动测试确认源码摘要排除 `.env` 与运行数据、不保存绝对本机路径；普通 Matcher 与 Alconna 可被发现但
   不执行；SUPERUSER、`hide=True` 与停用 Alconna 作为 `restricted` 持久化但不进入默认检索；短中文功能
   问法可以命中目标能力；构建发布失败会保留旧索引并区分 observed / served generation。
@@ -81,6 +84,9 @@
 
 ## 替代关系
 
+- 第 2、4 条中“自动发现普通命令默认 review、普通 public 主要依赖显式批准”的边界，已被
+  [ADR-0024](0024-auto-publish-deterministic-capability-fields.md) 部分替代；确定入口和平台范围可判定时
+  自动 public，动态、冲突、敏感和证据不足项继续 review。
 - 第 6 条的“第一阶段不接入回复”和群聊 SUPERUSER 尚未接入边界，已被
   [ADR-0022](0022-limit-capability-shadow-guidance-to-superusers.md) 部分替代；普通用户仍只读取已批准
   public，review / restricted 的证据与执行资格边界不变。

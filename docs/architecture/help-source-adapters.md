@@ -5,12 +5,31 @@
 
 ## 当前实现
 
-第一阶段已经直接读取 NoneBot 的已加载 Plugin / Matcher 和 Alconna 命令管理器，只生成部署本地快照与
-FTS5 索引。它不调用 Matcher 的 Rule、Permission、handler 或 Alconna `parse()`，也尚未接入任何第三方
-帮助插件。
+第一阶段已经读取标准 `pyproject.toml` 声明、安装制品 revision、NoneBot 的已加载 Plugin / Matcher 和
+Alconna 命令管理器，生成部署本地快照与 FTS5 索引。它不调用 Matcher 的 Rule、Permission、handler 或
+Alconna `parse()`，也尚未接入任何第三方帮助插件。
 
 普通 Matcher 的命令识别会读取 NoneBot 2.5 的 `Rule.checkers` 结构。这不是稳定的跨版本公共协议，因此
 只能放在版本适配层：遇到未知 checker 或结构变化时保留未知约束并失败关闭，不能猜成公开、可执行能力。
+
+## Handler 形参与用户语法的边界
+
+Python handler 的函数形参通常描述 NoneBot 如何注入运行上下文，不等同于用户要输入的命令参数。例如
+`Bot`、`Event`、`Matcher`、`T_State`、`UniMessage` 和 `MsgTarget` 只让 handler 取得当前事件、消息或目标。
+`CommandArg()`、`ShellCommandArgs()`、正则组等 parameterless 依赖可以证明 handler 消费了哪一类输入，
+但除非它们背后有 Alconna、`argparse` 等结构化解析器，否则仍不能单靠函数签名还原允许的选项和组合。
+
+用户可见语法的证据按下面的边界提取：
+
+- Alconna 的 Args、Option 和 Subcommand 可以从结构化命令对象读取；
+- 普通 `on_command` 的运行时对象通常只能可靠提供命令字、别名和空白规则；
+- handler 若再对命令余项执行 `split()`、正则、手写循环或状态机，精确语法必须沿实际解析代码、配置、
+  测试和插件自带帮助交叉提取，不能把 handler 的依赖注入形参当成用法；
+- 多轮等待、Reply、图片段等输入前提同样属于 handler 行为，而不是普通函数签名能够表达的参数表。
+
+NoneBot `SUPERUSER` 只决定当前事件是否可以读取维护者可见的能力证据。它不会改变 Python 反射结果，也
+不会让运行时快照自动取得 handler 内手写的参数语法。部署侧离线分析器能读取已安装源码，是因为它受到
+单独的本机路径与数据策略授权，不是因为群聊用户通过了 `SUPERUSER`。
 
 ## 调研后的复用分级
 
@@ -27,7 +46,19 @@ FTS5 索引。它不调用 Matcher 的 Rule、Permission、handler 或 Alconna `
 当前没有必要把第三方项目的 Python 代码复制进核心。NoneBot、Alconna 和上述可参考项目大多允许按其许可
 复用，但协议重写更容易保留 Triage 的来源模型与安全边界。AGPL / GPL 实现、未声明许可证的私有实现或
 素材不复制进 MIT 核心；会动态执行 Python / Jinja / JavaScript 模板、第三方回调或全局预处理器的路径也
-不接入。把 README 或源码发送给远端模型生成帮助的方案不符合部署本地 RAG 边界。
+不接入。
+
+当前产品运行路径没有把 README、源码或配置值发送给能力分析模型。库级实现已经可以从当前能力记录裁剪
+handler EvidenceUnit、提取标准 Config 引用、在策略判定后瞬时投影值，并通过禁用工具的单次 Direct
+Request 客户端取得严格结构化结果；只有假模型测试使用这条链。后续真实源码证据外发仍按 ADR-0025 的来源与
+EvidenceUnit 边界处理；配置值则由 ADR-0029 的部署策略单独守门，不能借源码授权一并放开。
+
+`NBTRIAGE_RESTRICTED_CONFIG` 已实现为顶层 NoneBot 配置键的 JSON deny-list，运行时持有的
+`ConfigValuePolicy` 在任何值读取前按大小写不敏感顶层键判定，`__` 嵌套键按顶层整项限制。投影器只读
+已经存在、类型与源码 revision 均匹配的 Pydantic 配置实例，并拒绝 restricted、缺失、Secret、嵌套模型、
+自定义对象和超限值；不会调用 `get_plugin_config()`、validator、`model_dump()` 或任意属性逻辑。第一版不
+追踪绕过标准 Config 链的 `os.getenv()` 等读取；拿不到安全的有效值时保留 unknown。Bot handler、启动后台
+分析和真实模型资格尚未接入，因此这项库级能力不会自行触发配置读取或模型请求。
 
 ## 后续来源接口
 
@@ -46,12 +77,24 @@ FTS5 索引。它不调用 Matcher 的 Rule、Permission、handler 或 Alconna `
 
 ## 与执行资格的关系
 
-帮助数据只参与 `discover` / `teach`。即使某字段由人工检查过，也不能证明当前用户、群、adapter、配置和
-限流状态允许执行。普通用户、维护者和受限能力必须先在模型外完成披露过滤；真正执行仍由原插件自己的
-Matcher、Permission、Rule 和 handler 决定。
+帮助数据只参与能力发现和用法说明。即使某字段由人工检查过，也不能证明当前用户、群、adapter、配置和
+限流状态允许执行。模型外策略必须先为当前 adapter 与受众建立独立检索域：普通用户域从源头排除 review、
+restricted 和其他 adapter 能力；维护者域只有在模型外鉴权后才可读取受控受限记录，且 restricted 源码不因
+SUPERUSER 身份自动进入 LLM。真正执行仍由原插件自己的 Matcher、Permission、Rule 和 handler 决定。
+能力发现、字段说明和最终执行是三种判断问题，不要求在持久化模型中增加 `discover / teach / execute` 三个
+布尔字段。
+
+回答层不为这些来源规定固定句式。来源只产生可验证的事实：公开能力若有可靠证据，可以说明必要输入、
+群聊 / 私聊条件、公开角色要求和限流的作用域、额度、窗口或重置方式；只有底层库名、配置字段或源码位置
+时，不能直接把实现细节投影给普通用户。整项 hidden / SUPERUSER-only / restricted 能力仍在模型前移除，
+不能因为发现了“管理员权限”字样就对普通用户说明该能力存在。
 
 ## 相关资料
 
 - [部署本地能力影子索引](flows/capability-shadow-index.md)
 - [Alconna 公开能力与解析回执](flows/alconna-capability-and-parse-receipts.md)
 - [ADR-0021：用部署本地影子索引整理 Bot 能力证据](../adr/0021-use-deployment-local-capability-shadow-index.md)
+- [ADR-0024：自动公开确定且低风险的能力字段](../adr/0024-auto-publish-deterministic-capability-fields.md)
+- [ADR-0026：在检索与模型前隔离能力知识受众域](../adr/0026-filter-capability-knowledge-before-retrieval.md)
+- [ADR-0027：用事实输出合同约束能力帮助](../adr/0027-constrain-guidance-with-facts-not-fixed-wording.md)
+- [ADR-0029：由部署者 deny-list 控制相关配置值进入模型](../adr/0029-control-model-config-values-with-deployment-deny-list.md)

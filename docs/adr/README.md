@@ -7,7 +7,7 @@
 | [ADR-0003](0003-unified-capability-guidance-and-incident-intake.md) | 部分被替代 | 用统一显式入口分流能力导航、指令纠错、疑似故障、无关与不安全请求；触发细节由 ADR-0020 更新 |
 | [ADR-0004](0004-onebot-v11-first-and-keyed-message-reference-index.md) | 部分被替代 | OneBot V11 作为首个 QQ dogfood 与带密钥引用索引来源 |
 | [ADR-0005](0005-first-group-report-interaction-policy.md) | 已被替代 | 原 OneBot 专属报障交互策略，保留为决策历史 |
-| [ADR-0006](0006-cross-platform-alconna-entry-and-reference-providers.md) | 部分被替代 | 从第一版采用 Alconna 跨平台入口，并把出站引用差异隔离为 Provider |
+| [ADR-0006](0006-cross-platform-alconna-entry-and-reference-providers.md) | 部分被替代 | 从第一版采用 Alconna 跨平台入口，并把出站引用差异隔离为 Provider；统一私聊拒绝由 ADR-0028 收窄 |
 | [ADR-0007](0007-single-distribution-dual-namespace.md) | 已采纳 | 采用单仓库、单发行包、插件入口与领域核心双命名空间结构 |
 | [ADR-0008](0008-pydantic-ai-controlled-model-adaptation.md) | 已采纳 | 采用 Pydantic AI 的 Model / Provider / Profile 与 Direct Request 作为受控多模型 API 适配层 |
 | [ADR-0009](0009-use-async-model-boundary.md) | 已采纳 | 模型调用核心采用异步协议，同步 CLI 只在进程边缘桥接 |
@@ -21,6 +21,14 @@
 | [ADR-0017](0017-run-deterministic-evaluations-through-pytest.md) | 已采纳 | 通过现有 pytest job 执行确定性评测回归，当前不增加专用 job、摘要或 Artifact |
 | [ADR-0018](0018-use-localstore-only-for-enabled-trial-audit-log.md) | 已采纳 | 只用 LocalStore 保存显式启用的 trial 审计 JSONL，其余诊断关联继续保持内存态 |
 | [ADR-0019](0019-distribute-rag-corpus-as-versioned-knowledge-pack.md) | 已采纳 | 基础发行包不内置 RAG 语料；产品需要时再发布独立、可选、版本化的离线知识包 |
-| [ADR-0020](0020-use-triage-command-for-natural-language-support.md) | 已采纳 | 用必选 `triage` 指令承接自然语言求助；`@Bot` 与 Reply 均为可选上下文 |
+| [ADR-0020](0020-use-triage-command-for-natural-language-support.md) | 部分被替代 | 用必选 `triage` 指令承接首次自然语言求助；精确回复续问由 ADR-0030 增加窄例外 |
 | [ADR-0021](0021-use-deployment-local-capability-shadow-index.md) | 已采纳 | 用字段级证据构建默认关闭的部署本地能力影子索引，先评估再接入回复 |
 | [ADR-0022](0022-limit-capability-shadow-guidance-to-superusers.md) | 已采纳 | 只在模型外 SUPERUSER 鉴权后把影子候选接入 triage 维护者回复 |
+| [ADR-0023](0023-defer-orm-until-durable-business-state.md) | 已采纳 | 按状态语义分层存储，等权威业务状态需要事务与恢复时再评审并优先复用 ORM 基础设施 |
+| [ADR-0024](0024-auto-publish-deterministic-capability-fields.md) | 已采纳 | 确定且低风险的命令字段自动公开，动态、冲突、敏感或证据不足项才进入 review |
+| [ADR-0025](0025-explain-plugin-behavior-from-deployment-evidence.md) | 已采纳 | 用多源部署证据向已鉴权开发者解释插件行为，并区分观察事实、静态推导与未知 |
+| [ADR-0026](0026-filter-capability-knowledge-before-retrieval.md) | 已采纳；回答投影由 ADR-0027 细化 | 在检索与模型前按受众和 adapter 隔离能力知识，普通用户不感知受限或跨 adapter 能力 |
+| [ADR-0027](0027-constrain-guidance-with-facts-not-fixed-wording.md) | 已采纳 | 用事实输出合同约束能力帮助，模型自由组织措辞并具体说明公开能力的可验证约束 |
+| [ADR-0028](0028-allow-private-triage-and-superuser-request-context-replies.md) | 已采纳 | 允许 triage 私聊进入统一分流，并向已鉴权 SUPERUSER 的原始提问会话返回完整行为解释 |
+| [ADR-0029](0029-control-model-config-values-with-deployment-deny-list.md) | 已采纳 | 由部署者 deny-list 控制能力相关配置值进入模型，原值不持久化或对外披露 |
+| [ADR-0030](0030-continue-support-thread-by-exact-reply.md) | 已采纳 | 允许精确回复 Triage 已登记回答续接短期支持 Thread，不监听其他普通消息 |

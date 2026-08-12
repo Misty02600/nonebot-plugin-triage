@@ -89,7 +89,7 @@ NBTRIAGE_TRIAL_LOG_BACKUP_COUNT=5
 - 磁盘至少容纳 `max_bytes × (backup_count + 1)`，默认有界窗口约 60 MiB；
 - 日志不得上传、提交、公开或用于训练，除非另行完成来源、隐私和许可证复核。
 
-上线 smoke 依次验证：`triage 某个功能怎么使用` 得到说明且不产生 incident；`triage 刚才执行后报错了`
+上线 smoke 依次验证：`triage 某个功能怎么使用` 得到说明且不产生 incident；`triage 请受理这个故障`
 得到受理编号；再回复近期 Bot 消息验证证据关联。`SUPERUSER` 查询对应 incident、记录
 一次枚举反馈并查看统计；非 `SUPERUSER` 无法读取后三个入口；日志只出现当前 JSONL 与有界编号备份，且
 不含消息正文、平台身份、correlation ID、异常消息或 Provider 凭据。

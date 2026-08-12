@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-11 |
+| 已采纳；续问触发部分被 ADR-0030 替代 | 2026-08-11 |
 
 ## 当时遇到了什么
 
@@ -28,19 +28,25 @@
 
 ## 当前实现边界
 
-Alconna 已接收 `triage` 后的任意数量文本参数，入口也已区分功能问法、明确故障和待澄清请求。能力说明只
-读取插件显式登记的公开 Alconna 能力；未登记、`CommandMeta.hide=True` 或停用命令不会展示，也不会重新
-运行命令解析或 handler。
+Alconna 已接收 `triage` 后的任意数量文本参数，入口也已区分功能问法、明确故障和待澄清请求。能力说明
+优先读取插件显式登记的公开 Alconna 能力，未命中时还可读取当前 adapter 中自动确定为 `public` 的影子
+命令；`CommandMeta.hide=True`、停用、review 或 restricted 能力不会进入普通用户候选，也不会重新运行
+命令解析或 handler。
 
-插件模型资格表当前仍为空，因此还没有启用模型 Agent。现阶段使用确定性首轮分流，无法判断的请求只追问
-一次；后续模型意图边界必须继续输出受限的 `IntakeSignals`，不能让原文直接控制工具。
+插件模型资格表当前仍为空，因此还没有启用模型 Agent。现阶段使用确定性首轮分流；无法判断的首次请求会
+建立不含正文的短期澄清 Thread，OneBot V11 群聊用户可精确 Reply 一次来补充意图。该续答随后必须进入
+功能教学、明确故障受理或终止态，不继续循环追问。教学回答则可在 Thread TTL 内通过最近一次已登记回答
+继续相关问答。后续模型意图边界必须继续输出受限的 `IntakeSignals`，不能让原文直接控制工具。
 
-ADR-0021 已加入默认关闭的部署本地能力影子索引，自动收集已加载插件的候选证据。按 ADR-0022，普通用户
-仍只读取显式公开 Provider；`SUPERUSER` 在模型外完成当前 Bot / Event 鉴权后，可通过 `triage` 检索带
-披露标签的 `public / review / restricted` 候选。该路径只复述已有字段并提示执行资格未知，不启用模型或
+ADR-0021 已加入默认关闭的部署本地能力影子索引，自动收集已加载插件的候选证据。ADR-0024 后，普通用户
+还可查询当前 adapter 的自动 public 命令；`SUPERUSER` 在模型外完成当前 Bot / Event 鉴权后，可通过
+`triage` 检索带披露标签的 `public / review / restricted` 候选。两条影子路径只复述已有字段，不启用模型或
 运行第三方 Permission、Rule、handler。
 
 ## 替代关系
+
+- [ADR-0030](0030-continue-support-thread-by-exact-reply.md) 后续增加窄例外：精确 Reply 到 Triage 已登记回答
+  可以省略 `triage` 续接短期 Thread；本 ADR 的首次入口与普通消息不监听边界继续有效；
 
 - 部分替代 [ADR-0003](0003-unified-capability-guidance-and-incident-intake.md) 的 `@Bot` / Reply 触发细节；
   统一入口、五类 disposition 与只有疑似故障进入技术责任层的决定继续有效；

@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 | 替代关系 |
 |---|---|---|
-| 已采纳；入口语法部分被 [ADR-0020](0020-use-triage-command-for-natural-language-support.md) 替代 | 2026-08-09 | 替代 ADR-0005，并替代 ADR-0004 的 OneBot 专属入站引用与解析部分 |
+| 已采纳；入口语法部分被 [ADR-0020](0020-use-triage-command-for-natural-language-support.md) 替代；统一私聊拒绝部分被 [ADR-0028](0028-allow-private-triage-and-superuser-request-context-replies.md) 替代 | 2026-08-09 | 替代 ADR-0005，并替代 ADR-0004 的 OneBot 专属入站引用与解析部分 |
 
 ## 背景
 
@@ -51,6 +51,11 @@ ADR-0005 曾把首个用户入口冻结为 OneBot V11 `on_fullmatch`、`GroupMes
 - 插件元数据表示入口可适配范围，不代表每个适配器都完成真实平台端到端测试；支持矩阵必须另行维护；
 - `Event.get_user_id()`、Target 与 Reply 不可用时入口失败关闭为公开错误，不回退到正文解析或时间猜测；
 - 当前仍只支持群聊 / 频道显式报障，不把跨平台等同于开放私聊或任意历史查询。
+
+## 后续替代关系
+
+- [ADR-0028](0028-allow-private-triage-and-superuser-request-context-replies.md) 允许私聊进入统一 `triage`
+  意图分流，但没有开放私聊疑似故障受理；本 ADR 对私聊报障和引用关联的限制继续有效。
 
 ## 参考
 

@@ -61,11 +61,15 @@
   NoneBot `SUPERUSER` 检查；格式化器对 disclosure、partial、缺失 usage 和 opaque constraint 给出固定说明。
 - 自动测试覆盖普通用户无法读取 review、SUPERUSER 可读取候选、三种披露层均进入维护者搜索、索引未就绪
   时失败关闭，以及无可靠 usage 时不编造参数。
+- 启动钩子当前只调度后台 refresh；首次索引 ready 前普通用户继续回退显式 Provider，求助入口不等待扫描。
 - nonemigut 部署实测生成 624 条记录并精确命中 YetAnotherPicSearch 的“搜图”候选；SQLite 完整性检查通过，
   快照 `partial=False`。这只验证检索链，不把该候选自动批准为普通用户 public。
 
 ## 替代关系
 
+- 第 1、8 条中普通用户只能读取显式 Provider、自动候选必须本地逐项审批的过渡边界，已被
+  [ADR-0024](0024-auto-publish-deterministic-capability-fields.md) 部分替代；review / restricted 仍只进入
+  已鉴权维护者域。
 - 部分替代 [ADR-0021](0021-use-deployment-local-capability-shadow-index.md) 中“第一阶段不接入群聊回复”和
   “群聊 SUPERUSER 尚未接入”的实施边界；影子采集、披露、证据和执行资格边界继续有效。
 - 补充 [ADR-0020](0020-use-triage-command-for-natural-language-support.md)：不增加新命令，继续使用必选
