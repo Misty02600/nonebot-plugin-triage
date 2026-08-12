@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,8 +11,24 @@ from typing import Any
 from tools.nbtriage_maintainer.bot_docs import BotDocsEvidence, BotDocsIndex
 
 BOT_DOCS_EVALUATION_ID = "bot-docs-retrieval-v1"
+BOT_DOCS_CUSTOM_EVALUATION_ID = "bot-docs-retrieval-custom-unqualified-v1"
 BOT_DOCS_EVALUATION_RESULT_LIMIT = 5
 DEFAULT_BOT_DOCS_FIXTURE_PATH = Path("evals/datasets/fixtures/bot-docs-retrieval-v1.json")
+BOT_DOCS_OFFICIAL_FIXTURE_SHA256 = (
+    "b90751395cd716d6b1d436819c63ba38b7516768d54713e3741d52aec4675bd1"
+)
+BOT_DOCS_OFFICIAL_CASE_COUNT = 25
+_FIXTURE_FIELDS = frozenset(
+    {"schema_version", "fixture_id", "description", "quality_gate", "cases"}
+)
+_CASE_FIELDS = frozenset({"case_id", "query", "expected_paths"})
+_QUALITY_GATE_FIELDS = frozenset(
+    {
+        "minimum_hybrid_recall_at_5",
+        "minimum_provenance_valid_rate",
+        "require_hybrid_not_worse_than_metadata",
+    }
+)
 
 
 class BotDocsEvaluationError(ValueError):
@@ -49,7 +66,7 @@ def evaluate_bot_docs_retrieval(
     if limit != BOT_DOCS_EVALUATION_RESULT_LIMIT:
         raise BotDocsEvaluationError("bot-docs retrieval v1 requires result limit 5")
 
-    fixture = _load_fixture(fixture_path)
+    fixture_raw, fixture = _load_fixture(fixture_path)
     cases = _parse_cases(fixture)
     if not cases:
         raise BotDocsEvaluationError("bot-docs retrieval fixture has no cases")
@@ -89,13 +106,28 @@ def evaluate_bot_docs_retrieval(
             {"strategy": strategy, **prediction} for prediction in strategy_predictions
         )
 
-    quality_gate = _quality_gate(fixture, metrics_by_strategy)
+    fixture_sha256 = hashlib.sha256(fixture_raw).hexdigest()
+    official_contract = fixture_sha256 == BOT_DOCS_OFFICIAL_FIXTURE_SHA256
+    quality_gate = _quality_gate(
+        fixture,
+        metrics_by_strategy,
+        official_contract=official_contract,
+    )
     metadata = index.metadata()
     return {
         "schema_version": 1,
-        "evaluation_id": BOT_DOCS_EVALUATION_ID,
+        "evaluation_id": (
+            BOT_DOCS_EVALUATION_ID if official_contract else BOT_DOCS_CUSTOM_EVALUATION_ID
+        ),
+        "evaluation_qualification": ("official" if official_contract else "custom_unqualified"),
         "retriever_id": metadata["retriever_id"],
         "fixture_id": fixture["fixture_id"],
+        "fixture": {
+            "path": fixture_path.as_posix(),
+            "sha256": fixture_sha256,
+            "official_sha256": BOT_DOCS_OFFICIAL_FIXTURE_SHA256,
+            "official_case_count": BOT_DOCS_OFFICIAL_CASE_COUNT,
+        },
         "index": {
             "schema_version": int(metadata["schema_version"]),
             "corpus_sha256": metadata["corpus_sha256"],
@@ -116,20 +148,23 @@ def evaluate_bot_docs_retrieval(
     }
 
 
-def _load_fixture(path: Path) -> dict[str, Any]:
+def _load_fixture(path: Path) -> tuple[bytes, dict[str, Any]]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        raw = path.read_bytes()
+        payload = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BotDocsEvaluationError(
             f"failed to read bot-docs retrieval fixture: {error}"
         ) from error
     if not isinstance(payload, dict):
         raise BotDocsEvaluationError("bot-docs retrieval fixture must be an object")
+    if set(payload) != _FIXTURE_FIELDS:
+        raise BotDocsEvaluationError("bot-docs retrieval fixture fields are invalid")
     if payload.get("schema_version") != 1:
         raise BotDocsEvaluationError("unsupported bot-docs retrieval fixture schema")
     if payload.get("fixture_id") != BOT_DOCS_EVALUATION_ID:
         raise BotDocsEvaluationError("bot-docs retrieval fixture identity does not match")
-    return payload
+    return raw, payload
 
 
 def _parse_cases(fixture: dict[str, Any]) -> list[_RetrievalCase]:
@@ -139,23 +174,29 @@ def _parse_cases(fixture: dict[str, Any]) -> list[_RetrievalCase]:
     cases = []
     seen_ids = set()
     for index, raw_case in enumerate(raw_cases):
-        if not isinstance(raw_case, dict):
+        if not isinstance(raw_case, dict) or set(raw_case) != _CASE_FIELDS:
             raise BotDocsEvaluationError(f"fixture case {index} must be an object")
         case_id = raw_case.get("case_id")
         query = raw_case.get("query")
         expected_paths = raw_case.get("expected_paths")
-        if not isinstance(case_id, str) or not case_id.strip() or case_id in seen_ids:
+        if (
+            not isinstance(case_id, str)
+            or not case_id
+            or case_id != case_id.strip()
+            or case_id in seen_ids
+        ):
             raise BotDocsEvaluationError(
                 f"fixture case {index} has an invalid or duplicate case_id"
             )
-        if not isinstance(query, str) or not query.strip():
-            raise BotDocsEvaluationError(f"fixture case {case_id} has no query")
+        if not isinstance(query, str) or not query.strip() or query != query.strip():
+            raise BotDocsEvaluationError(f"fixture case {index} has no query")
         if (
             not isinstance(expected_paths, list)
             or not expected_paths
-            or not all(isinstance(item, str) and item for item in expected_paths)
+            or not all(_is_normalized_expected_path(item) for item in expected_paths)
+            or len(expected_paths) != len(set(expected_paths))
         ):
-            raise BotDocsEvaluationError(f"fixture case {case_id} has invalid expected_paths")
+            raise BotDocsEvaluationError(f"fixture case {index} has invalid expected_paths")
         seen_ids.add(case_id)
         cases.append(_RetrievalCase(case_id, query, tuple(expected_paths)))
     return cases
@@ -208,10 +249,13 @@ def _has_valid_provenance(hit: dict[str, Any]) -> bool:
 
 
 def _quality_gate(
-    fixture: dict[str, Any], metrics_by_strategy: dict[str, dict[str, Any]]
+    fixture: dict[str, Any],
+    metrics_by_strategy: dict[str, dict[str, Any]],
+    *,
+    official_contract: bool,
 ) -> dict[str, Any]:
     raw_gate = fixture.get("quality_gate")
-    if not isinstance(raw_gate, dict):
+    if not isinstance(raw_gate, dict) or set(raw_gate) != _QUALITY_GATE_FIELDS:
         raise BotDocsEvaluationError("bot-docs retrieval fixture has no quality_gate")
     minimum_recall = _gate_number(raw_gate, "minimum_hybrid_recall_at_5")
     minimum_provenance = _gate_number(raw_gate, "minimum_provenance_valid_rate")
@@ -227,6 +271,7 @@ def _quality_gate(
         key for key in hybrid if key.startswith("recall_at_") and key != "recall_at_1"
     )
     checks = {
+        "official_fixture_contract": official_contract,
         "hybrid_recall": hybrid[hybrid_recall_key] >= minimum_recall,
         "hybrid_provenance": hybrid["provenance_valid_rate"] >= minimum_provenance,
         "hybrid_not_worse_than_metadata": (
@@ -234,7 +279,13 @@ def _quality_gate(
         ),
     }
     return {
-        "status": "passed" if all(checks.values()) else "failed",
+        "status": (
+            "passed"
+            if all(checks.values())
+            else "unqualified"
+            if not official_contract
+            else "failed"
+        ),
         "thresholds": {
             "minimum_hybrid_recall_at_5": minimum_recall,
             "minimum_provenance_valid_rate": minimum_provenance,
@@ -253,3 +304,10 @@ def _gate_number(gate: dict[str, Any], field: str) -> float:
 
 def _ratio(numerator: int | float, denominator: int) -> float:
     return round(numerator / denominator, 6) if denominator else 0.0
+
+
+def _is_normalized_expected_path(value: object) -> bool:
+    if not isinstance(value, str) or not value or "\\" in value:
+        return False
+    path = Path(value)
+    return not path.is_absolute() and value == path.as_posix() and ".." not in path.parts

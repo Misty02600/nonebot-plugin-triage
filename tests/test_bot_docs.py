@@ -10,6 +10,8 @@ from tools.nbtriage_maintainer.bot_docs import (
     build_bot_docs_index,
 )
 from tools.nbtriage_maintainer.bot_docs_evaluation import (
+    BOT_DOCS_OFFICIAL_FIXTURE_SHA256,
+    DEFAULT_BOT_DOCS_FIXTURE_PATH,
     BotDocsEvaluationError,
     evaluate_bot_docs_retrieval,
 )
@@ -153,6 +155,7 @@ def test_bot_docs_retrieval_evaluation_compares_metadata_and_hybrid(
             {
                 "schema_version": 1,
                 "fixture_id": "bot-docs-retrieval-v1",
+                "description": "custom local retrieval smoke test",
                 "quality_gate": {
                     "minimum_hybrid_recall_at_5": 1.0,
                     "minimum_provenance_valid_rate": 1.0,
@@ -186,7 +189,12 @@ def test_bot_docs_retrieval_evaluation_compares_metadata_and_hybrid(
     }
     assert report["metrics_by_strategy"]["hybrid"]["recall_at_5"] == 1.0
     assert report["metrics_by_strategy"]["hybrid"]["provenance_valid_rate"] == 1.0
-    assert report["quality_gate"]["status"] == "passed"
+    assert report["evaluation_qualification"] == "custom_unqualified"
+    assert report["evaluation_id"] == "bot-docs-retrieval-custom-unqualified-v1"
+    assert report["quality_gate"]["status"] == "unqualified"
+    assert report["quality_gate"]["checks"]["official_fixture_contract"] is False
+    assert report["fixture"]["official_case_count"] == 25
+    assert len(report["fixture"]["sha256"]) == 64
     with pytest.raises(BotDocsEvaluationError, match="requires result limit 5"):
         evaluate_bot_docs_retrieval(index_path, fixture_path, limit=3)
 
@@ -201,6 +209,7 @@ def test_bot_docs_cli_build_search_and_evaluate(tmp_path: Path, capsys) -> None:
             {
                 "schema_version": 1,
                 "fixture_id": "bot-docs-retrieval-v1",
+                "description": "custom CLI retrieval smoke test",
                 "quality_gate": {
                     "minimum_hybrid_recall_at_5": 1.0,
                     "minimum_provenance_valid_rate": 1.0,
@@ -248,8 +257,66 @@ def test_bot_docs_cli_build_search_and_evaluate(tmp_path: Path, capsys) -> None:
                 str(report_path),
             ]
         )
-        == 0
+        == 1
     )
-    assert json.loads(report_path.read_text(encoding="utf-8"))["quality_gate"]["status"] == (
-        "passed"
-    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["evaluation_qualification"] == "custom_unqualified"
+    assert report["quality_gate"]["status"] == "unqualified"
+
+
+def test_bot_docs_official_fixture_identity_is_content_bound(tmp_path: Path) -> None:
+    source_root = _bot_docs_fixture(tmp_path)
+    index_path = tmp_path / "indexes/bot-docs.sqlite3"
+    build_bot_docs_index(source_root, index_path)
+
+    official = evaluate_bot_docs_retrieval(index_path, DEFAULT_BOT_DOCS_FIXTURE_PATH)
+    mutated_path = tmp_path / "mutated.json"
+    mutated = json.loads(DEFAULT_BOT_DOCS_FIXTURE_PATH.read_text(encoding="utf-8"))
+    mutated["quality_gate"]["minimum_hybrid_recall_at_5"] = 0.0
+    mutated["quality_gate"]["minimum_provenance_valid_rate"] = 0.0
+    mutated["quality_gate"]["require_hybrid_not_worse_than_metadata"] = False
+    mutated["cases"] = mutated["cases"][:1]
+    mutated_path.write_text(json.dumps(mutated, ensure_ascii=False), encoding="utf-8")
+
+    unqualified = evaluate_bot_docs_retrieval(index_path, mutated_path)
+
+    assert official["evaluation_qualification"] == "official"
+    assert official["evaluation_id"] == "bot-docs-retrieval-v1"
+    assert official["fixture"]["sha256"] == BOT_DOCS_OFFICIAL_FIXTURE_SHA256
+    assert official["summary"]["case_count"] == 25
+    assert official["quality_gate"]["status"] == "failed"
+    assert unqualified["evaluation_qualification"] == "custom_unqualified"
+    assert unqualified["evaluation_id"] == "bot-docs-retrieval-custom-unqualified-v1"
+    assert unqualified["quality_gate"]["status"] == "unqualified"
+    assert unqualified["quality_gate"]["checks"] == {
+        "official_fixture_contract": False,
+        "hybrid_recall": True,
+        "hybrid_provenance": True,
+        "hybrid_not_worse_than_metadata": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload["cases"][0].update(extra="value"),
+        lambda payload: payload["cases"][0]["expected_paths"].append(
+            payload["cases"][0]["expected_paths"][0]
+        ),
+        lambda payload: payload["cases"][0].update(expected_paths=["../outside.md"]),
+    ],
+)
+def test_bot_docs_fixture_rejects_ambiguous_case_projection(
+    tmp_path: Path,
+    mutate,
+) -> None:
+    source_root = _bot_docs_fixture(tmp_path)
+    index_path = tmp_path / "indexes/bot-docs.sqlite3"
+    build_bot_docs_index(source_root, index_path)
+    payload = json.loads(DEFAULT_BOT_DOCS_FIXTURE_PATH.read_text(encoding="utf-8"))
+    mutate(payload)
+    path = tmp_path / "invalid.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(BotDocsEvaluationError):
+        evaluate_bot_docs_retrieval(index_path, path)
