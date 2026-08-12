@@ -182,6 +182,65 @@ def test_evaluate_b0_cli_does_not_overwrite_existing_report(
     assert report_path.read_text(encoding="utf-8") == '{"existing":true}\n'
 
 
+@pytest.mark.parametrize(
+    ("command", "evaluator", "arguments"),
+    [
+        (
+            "evaluate-bot-docs-retrieval",
+            "evaluate_bot_docs_retrieval",
+            ["--index", "unused.sqlite3", "--fixtures", "unused.json"],
+        ),
+        ("evaluate-s3", "evaluate_s3", ["--fixtures", "unused.json"]),
+        (
+            "evaluate-b3-evidence-policy",
+            "evaluate_b3_evidence_policy",
+            ["--prediction-report", "unused.json"],
+        ),
+        (
+            "evaluate-b3-evidence-receipts",
+            "evaluate_b3_evidence_receipts",
+            ["--fixtures", "unused.json"],
+        ),
+        (
+            "evaluate-answer-quality",
+            "evaluate_answer_quality",
+            [
+                "--rubric",
+                "unused-rubric.json",
+                "--fixtures",
+                "unused-fixtures.json",
+                "--annotations",
+                "unused-annotations.json",
+            ],
+        ),
+        (
+            "evaluate-b4-scripted",
+            "evaluate_b4_scripted_fixtures",
+            ["--fixtures", "unused-fixtures.json", "--split", "unused-split.json"],
+        ),
+    ],
+)
+def test_terminal_evaluation_cli_does_not_start_or_overwrite_existing_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    evaluator: str,
+    arguments: list[str],
+) -> None:
+    report_path = tmp_path / f"{command}.json"
+    report_path.write_text('{"existing":true}\n', encoding="utf-8")
+
+    def unexpected_evaluation(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("terminal evaluation must not start for an existing report target")
+
+    monkeypatch.setattr(f"tools.nbtriage_maintainer.cli.{evaluator}", unexpected_evaluation)
+
+    exit_code = main([command, *arguments, "--report", str(report_path)])
+
+    assert exit_code == 1
+    assert report_path.read_text(encoding="utf-8") == '{"existing":true}\n'
+
+
 def test_evaluate_b0_rejects_missing_case(tmp_path: Path) -> None:
     split_path = tmp_path / "split.json"
     split_path.write_text(

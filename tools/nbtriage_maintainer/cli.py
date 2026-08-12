@@ -59,7 +59,6 @@ from tools.nbtriage_maintainer.evaluation import (
     EvaluationError,
     evaluate_b0,
     evaluate_b1,
-    write_evaluation_report,
     write_new_evaluation_report,
 )
 from tools.nbtriage_maintainer.evidence_policy import EvidencePolicyError
@@ -957,8 +956,9 @@ def _run_search_bot_docs(args: argparse.Namespace) -> int:
 
 def _run_evaluate_bot_docs_retrieval(args: argparse.Namespace) -> int:
     try:
+        _require_new_report_target(args.report)
         report = evaluate_bot_docs_retrieval(args.index, args.fixtures)
-        write_evaluation_report(args.report, report)
+        write_new_evaluation_report(args.report, report)
     except (BotDocsEvaluationError, BotDocsIndexError, OSError) as error:
         print(f"bot-docs retrieval evaluation failed: {error}", file=sys.stderr)
         return 1
@@ -976,8 +976,9 @@ def _run_evaluate_bot_docs_retrieval(args: argparse.Namespace) -> int:
 
 def _run_evaluate_s3(args: argparse.Namespace) -> int:
     try:
+        _require_new_report_target(args.report)
         report = asyncio.run(evaluate_s3(args.fixtures))
-        write_evaluation_report(args.report, report)
+        write_new_evaluation_report(args.report, report)
     except (SafetyEvaluationError, OSError) as error:
         print(f"S3 evaluation failed: {error}", file=sys.stderr)
         return 1
@@ -1002,8 +1003,9 @@ def _run_evaluate_s3(args: argparse.Namespace) -> int:
 
 def _run_evaluate_b3_evidence_policy(args: argparse.Namespace) -> int:
     try:
+        _require_new_report_target(args.report)
         report = evaluate_b3_evidence_policy(args.prediction_report)
-        write_evaluation_report(args.report, report)
+        write_new_evaluation_report(args.report, report)
     except (EvidencePolicyError, EvidencePolicyEvaluationError, OSError) as error:
         print(f"B3 evidence policy evaluation failed: {error}", file=sys.stderr)
         return 1
@@ -1029,8 +1031,9 @@ def _run_evaluate_b3_evidence_policy(args: argparse.Namespace) -> int:
 
 def _run_evaluate_b3_evidence_receipts(args: argparse.Namespace) -> int:
     try:
+        _require_new_report_target(args.report)
         report = evaluate_b3_evidence_receipts(args.fixtures)
-        write_evaluation_report(args.report, report)
+        write_new_evaluation_report(args.report, report)
     except (EvidenceReceiptEvaluationError, OSError) as error:
         print(f"B3 evidence receipt evaluation failed: {error}", file=sys.stderr)
         return 1
@@ -1050,16 +1053,14 @@ def _run_evaluate_b3_evidence_receipts(args: argparse.Namespace) -> int:
 
 def _run_evaluate_answer_quality(args: argparse.Namespace) -> int:
     try:
+        _require_new_report_target(args.report)
         report = evaluate_answer_quality(
             args.rubric,
             args.fixtures,
             args.annotations,
             source_report_path=args.source_report,
         )
-        if report["summary"]["purpose"] == "rubric_calibration":
-            write_evaluation_report(args.report, report)
-        else:
-            write_new_evaluation_report(args.report, report)
+        write_new_evaluation_report(args.report, report)
     except (AnswerQualityEvaluationError, OSError) as error:
         print(f"answer quality evaluation failed: {error}", file=sys.stderr)
         return 1
@@ -1116,8 +1117,9 @@ def _run_export_answer_quality_review(args: argparse.Namespace) -> int:
 
 def _run_evaluate_b4_scripted(args: argparse.Namespace) -> int:
     try:
+        _require_new_report_target(args.report)
         report = asyncio.run(evaluate_b4_scripted_fixtures(args.fixtures, args.split))
-        write_evaluation_report(args.report, report)
+        write_new_evaluation_report(args.report, report)
     except (AgentEvaluationError, OSError) as error:
         print(f"B4 scripted evaluation failed: {error}", file=sys.stderr)
         return 1
