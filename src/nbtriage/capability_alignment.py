@@ -151,6 +151,8 @@ def build_capability_deployment_alignment(
         if artifact.source_kind not in {
             ArtifactSourceKind.LOCAL,
             ArtifactSourceKind.EDITABLE,
+            ArtifactSourceKind.WHEEL,
+            ArtifactSourceKind.VCS,
         }:
             reasons.add("artifact_source_kind_unsupported")
             continue

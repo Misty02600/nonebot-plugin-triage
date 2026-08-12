@@ -95,13 +95,13 @@ Matcher。把这些情况都称为“待审核”既无法说明真实缺口，�
   2 条支撑关系，`dynamic_entry=0`、`capability_mapping_unknown=0`，快照完整。该离线验证不替代正式 Bot
   启动后的部署 generation 刷新。
 - deployment 对齐已进入普通查询的派生 ServingView：完整刷新才创建同时绑定 snapshot / deployment generation
-  的 alignment；逐能力要求当前 `registered`，并只对 `local / editable` 制品比较快照与部署双方的同域模块
+  的 alignment；逐能力要求当前 `registered`，并对 `local / editable / wheel / vcs` 制品比较快照与部署双方的同域模块
   源码 manifest。未注册、源码变化、证据歧义或缺失均逐条剔除；全局刷新失败或任一快照 / deployment
-  partial 则整体失败关闭。wheel / VCS 首阶段没有同域 manifest，因此不会以版本、commit 或 `RECORD` 摘要
+  partial 则整体失败关闭。wheel / VCS 缺少完整同域 manifest 时不会以版本、commit 或 `RECORD` 摘要
   推断成已对齐。
 - 尚未落实：后台 LLM 语义编排、一般动态入口自动消解、字段冲突工作流、operator exclude policy，以及
-  wheel / VCS 的可比模块源码证据。有界 handler AST 效果分析与 Matcher 角色归并的首阶段已由 ADR-0034
-  接入；这些其余缺口不改变本 ADR 的持久模型。
+  更广泛的语义知识接入。有界 handler AST 效果分析与 Matcher 角色归并的首阶段已由 ADR-0034 接入；
+  这些其余缺口不改变本 ADR 的持久模型。
 
 ## 替代关系
 

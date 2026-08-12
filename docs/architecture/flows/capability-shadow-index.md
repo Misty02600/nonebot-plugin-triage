@@ -84,7 +84,8 @@ ServingView。当前持久层不保留独立 Matcher 事实表或映射表；跨
 - 所有轴都可以写入 SQLite。普通 ServingView 只包含当前 adapter 在范围内、无 blocking issue、
   `RecordState` 为 `VERIFIED / CANDIDATE`、快照明确完整且 generation 新鲜的 `public`；`CONFLICTED / STALE`
   不进入。它还要求本轮 alignment 与 served snapshot / deployment generation 同时匹配，并且能力绑定的模块
-  当前 `registered`、制品为 `local / editable`、快照与部署侧模块源码 manifest 精确相等；
+  当前 `registered`、制品为 `local / editable / wheel / vcs` 且状态为 `located`、快照与部署侧模块源码
+  manifest 精确相等；
   维护者可显式纳入带 issue 的记录；
   `restricted` 只有在模型外根据当前上下文完成鉴权后才会进入候选集，不能先交给模型再让模型决定是否隐藏。
 - Token、`.env` 原文和私密日志不是能力，采集器从源头排除。需要完全不保存某项真实能力时，由独立的
@@ -95,8 +96,8 @@ ServingView。当前持久层不保留独立 Matcher 事实表或映射表；跨
   后创建同时绑定 snapshot / deployment generation 的 alignment；deployment-only 刷新只更新清单并清空旧
   alignment，不能授权旧快照。普通查询先把 alignment 能力 ID 与 adapter / public 域求交，再把白名单作为
   SQL 条件应用于排名和 `limit`；从索引反序列化记录后还会复核整条记录 revision，防止索引 JSON 与已对齐
-  快照漂移。当前只对 `local / editable` 比较共享的模块 Python 源码 manifest；wheel / VCS 没有同域可比
-  manifest 时逐能力失败关闭，尚未用 alignment 驱动增量分析缓存。
+  快照漂移。`local / editable / wheel / vcs` 都比较共享的模块 Python 源码 manifest；任一来源缺少完整
+  manifest 或内容不一致时逐能力失败关闭，尚未用 alignment 驱动增量分析缓存。
 
 ## 失败时的语义
 

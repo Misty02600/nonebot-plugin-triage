@@ -61,15 +61,15 @@ LLM 补全功能语义。如果先把全部记录交给词法 / 向量检索、�
 - **2026-08-13 逐能力 deployment 对齐门**：完整刷新在本轮 deployment、snapshot 与索引发布后构建
   alignment generation，并同时绑定 served snapshot generation 与 deployment generation。普通域只接纳唯一
   `plugin.module_name` 观察及 `plugin_source` 证据所指向、当前状态为 `registered`、制品已定位且
-  `local / editable` 模块源码 manifest 与快照 manifest 精确相等的能力。alignment 能力 ID 先与 adapter / public
+  `local / editable / wheel / vcs` 模块源码 manifest 与快照 manifest 精确相等的能力。alignment 能力 ID 先与 adapter / public
   白名单求交，再进入 SQL 排名与 `limit`；索引记录在求交前和反序列化返回后都会用 alignment 中的整条记录
   revision 二次复核。
 - deployment-only 刷新、进程重启后尚未完整刷新、刷新异常、snapshot / deployment partial，以及成功后再次
   失败都会清除内存 alignment 并让普通查询失败关闭，不复用上一轮授权；快照索引构建与维护者检索仍保持
-  可用。首阶段不把 wheel `RECORD`、distribution 版本或 VCS commit 冒充同域模块源码 manifest；wheel / VCS
-  没有可比 manifest 时相应能力不进入普通域。
+  可用。wheel `RECORD`、distribution 版本或 VCS commit 仍不能冒充同域模块源码 manifest；wheel / VCS
+  缺少完整可比 manifest 时相应能力不进入普通域。
 - **尚未实现**：真实模型语义层、向量召回、Agent 源码搜索、持久语义知识和更完整的字段级 ServingView。
-  当前在线帮助仍是确定性格式化，且 wheel / VCS 的可比模块源码证据、热加载自动刷新与持久 alignment 缓存
+  当前在线帮助仍是确定性格式化，且热加载自动刷新与持久 alignment 缓存
   尚未实现；不能把库级假模型测试描述成已上线模型行为。
 - 本 ADR 记录产品与安全边界，不授权创建实施计划或启动新的模型调用。
 
