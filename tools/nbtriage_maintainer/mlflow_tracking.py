@@ -12,6 +12,7 @@ import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,10 @@ _BUNDLE_TAG = "nbtriage.bundle_sha256"
 
 
 class MLflowTrackingError(ValueError):
+    pass
+
+
+class _DuplicateJsonKeyError(ValueError):
     pass
 
 
@@ -188,8 +193,11 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
     except OSError as error:
         raise MLflowTrackingError(f"evaluation artifact could not be read: {path}") from error
     try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        payload = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_object_without_duplicate_keys,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, _DuplicateJsonKeyError) as error:
         raise MLflowTrackingError("evaluation artifact must be valid UTF-8 JSON") from error
     if not isinstance(payload, dict):
         raise MLflowTrackingError("evaluation artifact must contain one JSON object")
@@ -200,6 +208,8 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
     schema_version = payload.get("schema_version")
     if not isinstance(schema_version, int) or isinstance(schema_version, bool):
         raise MLflowTrackingError("evaluation artifact must contain an integer schema_version")
+    if "generated_at" in payload:
+        _validate_generated_at(payload["generated_at"])
 
     if payload.get("artifact_kind") == _B4_REAL_PARTIAL_KIND:
         status = payload.get("status")
@@ -225,6 +235,32 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
         payload=payload,
         sha256=hashlib.sha256(raw).hexdigest(),
     )
+
+
+def _object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonKeyError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def _validate_generated_at(value: Any) -> None:
+    if not isinstance(value, str) or not value:
+        raise MLflowTrackingError(
+            "evaluation artifact generated_at must be timezone-aware ISO 8601"
+        )
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise MLflowTrackingError(
+            "evaluation artifact generated_at must be timezone-aware ISO 8601"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise MLflowTrackingError(
+            "evaluation artifact generated_at must be timezone-aware ISO 8601"
+        )
 
 
 def _validate_answer_quality_reproducibility(payload: dict[str, Any]) -> None:

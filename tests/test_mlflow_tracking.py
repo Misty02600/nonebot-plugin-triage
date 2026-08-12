@@ -377,6 +377,44 @@ def test_non_b0_b1_report_remains_compatible_without_provenance(tmp_path: Path) 
     assert publication.created is True
 
 
+def test_publish_rejects_duplicate_json_keys_before_mlflow_call(tmp_path: Path) -> None:
+    report_path = tmp_path / "duplicate-key.json"
+    report_path.write_text(
+        '{"schema_version":1,"evaluation_id":"legacy-other-v1",'
+        '"summary":{"case_count":1,"case_count":999}}',
+        encoding="utf-8",
+    )
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="valid UTF-8 JSON"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+@pytest.mark.parametrize("generated_at", ["not-a-time", "2026-08-13T12:00:00"])
+def test_publish_rejects_invalid_or_naive_generated_at_before_mlflow_call(
+    tmp_path: Path,
+    generated_at: str,
+) -> None:
+    report_path = tmp_path / "bad-generated-at.json"
+    _write_json(
+        report_path,
+        {
+            "schema_version": 1,
+            "evaluation_id": "legacy-other-v1",
+            "generated_at": generated_at,
+            "summary": {},
+        },
+    )
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="timezone-aware ISO 8601"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
 @pytest.mark.parametrize("report_kind", ["calibration", "candidate"])
 def test_answer_quality_publish_requires_and_preserves_reproduced_report(
     tmp_path: Path,
