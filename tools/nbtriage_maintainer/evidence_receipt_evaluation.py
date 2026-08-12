@@ -15,13 +15,25 @@ from nbtriage.evidence_receipts import (
 )
 from nbtriage.rag import ALLOWED_EVIDENCE_SLOTS
 
+B3_EVIDENCE_RECEIPT_EVALUATION_ID = "b3-evidence-receipts-v1"
+B3_EVIDENCE_RECEIPT_CUSTOM_EVALUATION_ID = "b3-evidence-receipts-custom-unqualified-v1"
+B3_EVIDENCE_RECEIPT_OFFICIAL_FIXTURE_SHA256 = (
+    "b788c4590eb61fa9d9ca0a34e281f038baeef9053e781ed9697137a51b3ebcef"
+)
+B3_EVIDENCE_RECEIPT_OFFICIAL_CASE_COUNT = 16
+
 
 class EvidenceReceiptEvaluationError(ValueError):
     pass
 
 
 def evaluate_b3_evidence_receipts(fixtures_path: Path) -> dict[str, Any]:
-    """离线评估结构化回执校验与请求绑定，不接触原始私人材料。"""
+    """离线评估结构化回执校验与请求绑定，不接触原始私人材料。
+
+    只有与仓库冻结 Fixture 原始字节、集合 ID 和 Case 数量都一致的输入才具备正式 Gate
+    资格。其他结构合法的合成集合仍可用于本地诊断，但报告会降级为
+    ``custom_unqualified``。
+    """
     raw, payload = _load_fixtures(fixtures_path)
     rows = []
     correct = 0
@@ -72,28 +84,52 @@ def evaluate_b3_evidence_receipts(fixtures_path: Path) -> dict[str, Any]:
         )
 
     count = len(rows)
+    fixtures_sha256 = hashlib.sha256(raw).hexdigest()
+    official_contract = (
+        fixtures_sha256 == B3_EVIDENCE_RECEIPT_OFFICIAL_FIXTURE_SHA256
+        and payload["fixture_set_id"] == B3_EVIDENCE_RECEIPT_EVALUATION_ID
+        and count == B3_EVIDENCE_RECEIPT_OFFICIAL_CASE_COUNT
+    )
+    summary = {
+        "case_count": count,
+        "synthetic_only": True,
+        "expected_valid": expected_valid,
+        "expected_invalid": expected_invalid,
+        "model_calls": 0,
+        "external_tool_calls": 0,
+    }
+    metrics = {
+        "decision_accuracy": _ratio(correct, count),
+        "valid_accept_rate": _ratio(valid_accepted, expected_valid),
+        "invalid_reject_rate": _ratio(invalid_rejected, expected_invalid),
+    }
+    quality_gate = _quality_gate(
+        summary,
+        metrics,
+        official_contract=official_contract,
+    )
     return {
         "schema_version": 1,
-        "evaluation_id": "b3-evidence-receipts-v1",
+        "evaluation_id": (
+            B3_EVIDENCE_RECEIPT_EVALUATION_ID
+            if official_contract
+            else B3_EVIDENCE_RECEIPT_CUSTOM_EVALUATION_ID
+        ),
+        "evaluation_qualification": (
+            "official_frozen_fixture" if official_contract else "custom_unqualified"
+        ),
         "fixture_set_id": payload["fixture_set_id"],
         "generated_at": datetime.now(UTC).isoformat(),
         "source": {
-            "fixtures_path": str(fixtures_path),
-            "fixtures_sha256": hashlib.sha256(raw).hexdigest(),
+            "fixtures_path": fixtures_path.as_posix(),
+            "fixtures_sha256": fixtures_sha256,
+            "official_fixtures_sha256": B3_EVIDENCE_RECEIPT_OFFICIAL_FIXTURE_SHA256,
+            "official_fixture_set_id": B3_EVIDENCE_RECEIPT_EVALUATION_ID,
+            "official_case_count": B3_EVIDENCE_RECEIPT_OFFICIAL_CASE_COUNT,
         },
-        "summary": {
-            "case_count": count,
-            "synthetic_only": True,
-            "expected_valid": expected_valid,
-            "expected_invalid": expected_invalid,
-            "model_calls": 0,
-            "external_tool_calls": 0,
-        },
-        "metrics": {
-            "decision_accuracy": _ratio(correct, count),
-            "valid_accept_rate": _ratio(valid_accepted, expected_valid),
-            "invalid_reject_rate": _ratio(invalid_rejected, expected_invalid),
-        },
+        "summary": summary,
+        "metrics": metrics,
+        "quality_gate": quality_gate,
         "predictions": rows,
         "limitations": [
             "All receipts are synthetic and do not establish truth or diagnostic sufficiency.",
@@ -162,6 +198,42 @@ def _error_category(error: EvidenceReceiptError) -> str:
     if "field" in message or "facts" in message:
         return "schema"
     return "value"
+
+
+def _quality_gate(
+    summary: dict[str, Any],
+    metrics: dict[str, float],
+    *,
+    official_contract: bool,
+) -> dict[str, Any]:
+    checks = {
+        "official_fixture_contract": official_contract,
+        "complete_official_coverage": (
+            summary["case_count"] == B3_EVIDENCE_RECEIPT_OFFICIAL_CASE_COUNT
+        ),
+        "decision_accuracy": metrics["decision_accuracy"] == 1.0,
+        "valid_accept_rate": metrics["valid_accept_rate"] == 1.0,
+        "invalid_reject_rate": metrics["invalid_reject_rate"] == 1.0,
+        "zero_model_calls": summary["model_calls"] == 0,
+        "zero_external_tool_calls": summary["external_tool_calls"] == 0,
+    }
+    if not official_contract:
+        status = "unqualified"
+    else:
+        status = "passed" if all(checks.values()) else "failed"
+    return {
+        "status": status,
+        "thresholds": {
+            "official_fixture_set_id": B3_EVIDENCE_RECEIPT_EVALUATION_ID,
+            "official_case_count": B3_EVIDENCE_RECEIPT_OFFICIAL_CASE_COUNT,
+            "minimum_decision_accuracy": 1.0,
+            "minimum_valid_accept_rate": 1.0,
+            "minimum_invalid_reject_rate": 1.0,
+            "maximum_model_calls": 0,
+            "maximum_external_tool_calls": 0,
+        },
+        "checks": checks,
+    }
 
 
 def _ratio(numerator: int, denominator: int) -> float:
