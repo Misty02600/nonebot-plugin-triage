@@ -44,6 +44,7 @@ nosetests.xml
 .hypothesis/
 .pytest_cache/
 .pytest-tmp-*/
+.pytest-review*/
 .tmp/
 .coverage
 .coverage.*
