@@ -17,7 +17,7 @@
 实际已加载模块 ───────────────────────────→ RuntimeObservation
                                               ↓
                   registered / not_observed / runtime_only 协调状态
-                                              ↓（当前只进入 shadow status）
+                                              ↓（完整性作为普通查询的全局前置门）
 已加载 Plugin / Matcher / Alconna
         + distribution / VCS / 可变源码摘要
         + PluginMetadata
@@ -88,12 +88,17 @@ ServingView。当前持久层不保留独立 Matcher 事实表或映射表；跨
   operator exclude policy 在生成记录前排除；系统没有 `hidden` 披露态。这个按能力排除接口尚未实现，
   当前不能用 `restricted` 代替它。
 - 新索引在临时文件中完整写入并通过完整性检查后替换目标；生成失败时不破坏旧文件。
-- 标准声明、制品 revision 与运行模块的协调已经实现，但当前只更新服务状态；尚未用它剔除索引记录或驱动
-  增量分析缓存。
+- 标准声明、制品 revision 与运行模块的协调已经实现。普通查询只在本轮 deployment 构建成功且
+  `deployment_partial == false` 时继续；进程重启后尚未完成本轮刷新、刷新异常或清单不完整均失败关闭，
+  不复用上一轮 readiness。该全局前置门不表示逐能力 revision 已经对齐；当前仍未按 observation 或源码
+  revision 剔除单条索引记录，也未用它驱动增量分析缓存。
 
 ## 失败时的语义
 
 - 某来源失败时快照标记 `partial` 并记录稳定错误码，不能把缺失结果解释为“该插件没有能力”。
+- deployment 清单未在本轮成功完整构建时，普通用户查询失败关闭；快照索引仍可构建或保留，维护者仍能
+  带现有快照完整性 / stale 标记检索。这个保守门只证明部署清单可用于后续协调，不证明任一能力已经完成
+  “当前注册且 revision 对齐”。
 - `partial` 随索引 metadata 保存；旧索引缺少该字段时在线回复标记完整性未知，不推断为 `false`。
 - 首次后台刷新尚未发布 served generation 时，影子服务尚不可用；普通用户能力问答继续使用显式 Provider，
   不等待后台任务，也不把“正在构建”冒充未命中能力事实。

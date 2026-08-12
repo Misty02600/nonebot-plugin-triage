@@ -178,7 +178,12 @@ class CapabilityShadowService:
         limit: int = 5,
     ) -> PublicCapabilitySearch | None:
         """只检索当前 adapter 可说明的公开能力。"""
-        if not self._status.ready or self._status.stale or self._status.partial is not False:
+        if (
+            not self._status.ready
+            or self._status.stale
+            or self._status.partial is not False
+            or not _deployment_inventory_is_ready(self._status)
+        ):
             return None
         try:
             public_records = await asyncio.to_thread(
@@ -243,6 +248,16 @@ class CapabilityShadowService:
         return self._status
 
     def _refresh_deployment_safely(self) -> None:
+        self._status = replace(
+            self._status,
+            deployment_generation=None,
+            declared_plugin_count=0,
+            registered_plugin_count=0,
+            not_observed_plugin_count=0,
+            runtime_only_plugin_count=0,
+            deployment_partial=None,
+            deployment_error_code=None,
+        )
         try:
             runtime_modules = tuple(self._runtime_modules())
             deployment = self._deployment_builder(
@@ -347,6 +362,15 @@ def register_capability_shadow(
 class _ServedIndexMetadata:
     generation: str | None = None
     partial: bool | None = None
+
+
+def _deployment_inventory_is_ready(status: CapabilityShadowStatus) -> bool:
+    """判断本轮部署清单是否完整；不表示逐能力 revision 已对齐。"""
+    return (
+        status.deployment_generation is not None
+        and status.deployment_partial is False
+        and status.deployment_error_code is None
+    )
 
 
 def _read_served_index_metadata(path: Path) -> _ServedIndexMetadata:

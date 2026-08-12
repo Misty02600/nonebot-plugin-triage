@@ -92,6 +92,8 @@ Matcher。把这些情况都称为“待审核”既无法说明真实缺口，�
   的插件加载与 metadata 断言；2026-08-13 的本地源码快照验证还确认：7 条原动态候选收敛为 5 项用户能力和
   2 条支撑关系，`dynamic_entry=0`、`capability_mapping_unknown=0`，快照完整。该离线验证不替代正式 Bot
   启动后的部署 generation 刷新。
+- deployment 清单已经作为普通查询的保守全局前置门：本轮构建失败、partial 或尚未刷新时失败关闭，但这
+  不表示任一能力已完成 revision 对齐。
 - 尚未落实：后台 LLM 语义编排、一般动态入口自动消解、字段冲突工作流、operator exclude policy，以及
   ADR-0026 要求的逐能力 deployment revision 对齐门禁。有界 handler AST 效果分析与 Matcher 角色归并的
   首阶段已由 ADR-0034 接入；这些其余缺口不改变本 ADR 的持久模型。

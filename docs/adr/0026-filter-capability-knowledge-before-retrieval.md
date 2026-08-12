@@ -58,10 +58,13 @@ LLM 补全功能语义。如果先把全部记录交给词法 / 向量检索、�
 - **2026-08-12 实现检查点**：普通用户已能检索自动公开候选；当前 adapter 的允许能力 ID 会在 SQL 召回与
   `limit` 前应用，stale generation 失败关闭，`review / restricted` 不进入普通用户候选。受控源码
   EvidenceUnit、默认拒绝受限源码、严格模型输出 schema 与证据引用闭包已有库级实现。
+- **2026-08-13 保守前置门**：普通查询新增 deployment readiness 全局失败关闭；只有本轮 deployment
+  构建成功且明确完整时才继续，重启后未刷新、刷新异常、partial 以及成功后再次失败均不复用旧 readiness。
+  快照索引构建与维护者检索保持可用。这一步没有把“清单完整”冒充逐能力 revision 对齐。
 - **尚未实现**：真实模型语义层、向量召回、Agent 源码搜索、持久语义知识和更完整的字段级 ServingView。
-  当前 adapter 与 disclosure 已在检索前过滤，stale 也会失败关闭；但 deployment reconciliation 尚只进入
-  服务状态，未按逐能力强制“当前注册且 revision 对齐”。当前在线帮助仍是确定性格式化，不能把库级
-  假模型测试描述成已上线模型行为。
+  当前 adapter 与 disclosure 已在检索前过滤，snapshot stale 与 deployment readiness 均会失败关闭；但
+  reconciliation 尚未按 observation 与源码 manifest 逐能力强制“当前注册且 revision 对齐”。当前在线
+  帮助仍是确定性格式化，不能把库级假模型测试描述成已上线模型行为。
 - 本 ADR 记录产品与安全边界，不授权创建实施计划或启动新的模型调用。
 
 ## 替代关系

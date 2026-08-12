@@ -59,7 +59,7 @@ def _snapshot(capability_id: str, *, disclosure: Disclosure = Disclosure.PUBLIC)
                 platform_scope=PlatformScope.all(),
                 claims=(
                     Claim(
-                        field="title",
+                        field="command.header",
                         value="搜图",
                         basis=ClaimBasis.OBSERVED,
                     ),
@@ -77,7 +77,7 @@ def _empty_deployment_builder(
     assert pyproject_path == Path("pyproject.toml")
     assert runtime_modules == ()
     return build_capability_deployment(
-        Path("__nbtriage_test_missing_pyproject__.toml"),
+        pyproject_path,
         runtime_modules=(),
     )
 
@@ -292,7 +292,8 @@ def test_deployment_refresh_does_not_build_or_replace_capability_index(tmp_path:
     assert status.ready is False
 
 
-def test_deployment_failure_does_not_block_snapshot_or_expose_details(
+@pytest.mark.asyncio
+async def test_deployment_failure_does_not_block_snapshot_or_expose_details(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -323,8 +324,13 @@ def test_deployment_failure_does_not_block_snapshot_or_expose_details(
 
     assert status.ready
     assert status.deployment_generation is None
+    assert status.deployment_partial is None
     assert status.deployment_error_code == "RuntimeError"
     assert search_capability_index(path, "搜图")[0].record.capability_id == "command:image"
+    assert await service.search_public("搜图", object) is None
+    maintainer = await service.search_for_maintainer("搜图")
+    assert maintainer is not None
+    assert [hit.record.capability_id for hit in maintainer.hits] == ["command:image"]
     assert logger.warnings == [
         (
             "NoneBot Triage deployment inventory refresh failed; "
@@ -333,6 +339,109 @@ def test_deployment_failure_does_not_block_snapshot_or_expose_details(
         )
     ]
     assert private_text not in repr(logger.warnings)
+
+
+@pytest.mark.asyncio
+async def test_partial_deployment_blocks_public_but_not_maintainer_search(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "capabilities.sqlite3"
+
+    def build_partial_deployment(
+        pyproject_path: Path,
+        *,
+        runtime_modules: Collection[str],
+    ) -> CapabilityDeployment:
+        assert pyproject_path == Path("pyproject.toml")
+        assert runtime_modules == ()
+        return build_capability_deployment(
+            tmp_path / "missing-pyproject.toml",
+            runtime_modules=(),
+        )
+
+    service = CapabilityShadowService(
+        path,
+        snapshot_builder=lambda **_: _snapshot("command:image"),
+        deployment_builder=build_partial_deployment,
+        runtime_modules=lambda: (),
+    )
+
+    status = service.refresh()
+
+    assert status.ready
+    assert status.deployment_generation is not None
+    assert status.deployment_partial is True
+    assert status.deployment_error_code is None
+    assert await service.search_public("搜图", object) is None
+    maintainer = await service.search_for_maintainer("搜图")
+    assert maintainer is not None
+    assert [hit.record.capability_id for hit in maintainer.hits] == ["command:image"]
+
+
+@pytest.mark.asyncio
+async def test_public_search_requires_current_deployment_refresh_after_restart(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "capabilities.sqlite3"
+    _service(path, snapshot_builder=lambda **_: _snapshot("command:image")).refresh()
+
+    restarted = _service(
+        path,
+        snapshot_builder=lambda **_: _snapshot("command:image"),
+    )
+
+    assert restarted.status.ready
+    assert restarted.status.deployment_generation is None
+    assert restarted.status.deployment_partial is None
+    assert await restarted.search_public("搜图", object) is None
+    maintainer = await restarted.search_for_maintainer("搜图")
+    assert maintainer is not None
+    restarted.refresh_deployment()
+    assert await restarted.search_public("搜图", object) is None
+    restarted.refresh()
+    result = await restarted.search_public("搜图", object)
+    assert result is not None
+    assert [hit.record.capability_id for hit in result.hits] == ["command:image"]
+
+
+@pytest.mark.asyncio
+async def test_failed_deployment_refresh_clears_previous_public_readiness(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "capabilities.sqlite3"
+    should_fail = False
+
+    def build_deployment(
+        pyproject_path: Path,
+        *,
+        runtime_modules: Collection[str],
+    ) -> CapabilityDeployment:
+        if should_fail:
+            raise RuntimeError("private deployment failure")
+        return _empty_deployment_builder(
+            pyproject_path,
+            runtime_modules=runtime_modules,
+        )
+
+    service = CapabilityShadowService(
+        path,
+        snapshot_builder=lambda **_: _snapshot("command:image"),
+        deployment_builder=build_deployment,
+        runtime_modules=lambda: (),
+    )
+    service.refresh()
+    ready_result = await service.search_public("搜图", object)
+    assert ready_result is not None
+
+    should_fail = True
+    status = service.refresh_deployment()
+
+    assert status.deployment_generation is None
+    assert status.deployment_partial is None
+    assert status.deployment_error_code == "RuntimeError"
+    assert await service.search_public("搜图", object) is None
+    maintainer = await service.search_for_maintainer("搜图")
+    assert maintainer is not None
 
 
 def test_restricted_records_are_persisted_but_require_explicit_access(
