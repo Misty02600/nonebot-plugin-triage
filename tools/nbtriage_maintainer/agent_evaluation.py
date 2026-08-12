@@ -109,6 +109,10 @@ _PARTIAL_FAILURE_STAGES = frozenset(
         "whole_run",
     }
 )
+_CASE_ID_MAX_LENGTH = 128
+_CASE_ID_CHARACTERS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:-"
+)
 
 
 class AgentEvaluationError(ValueError):
@@ -2026,13 +2030,27 @@ def _load_fixtures(path: Path) -> tuple[bytes, dict[str, Any]]:
     fixtures = payload.get("fixtures")
     if not isinstance(fixtures, list) or not fixtures:
         raise AgentEvaluationError("B4 fixture set must contain fixtures")
-    seen: set[str] = set()
+    seen_fixture_ids: set[str] = set()
+    target_case_ids: set[str] = set()
+    train_case_ids: set[str] = set()
     for fixture in fixtures:
-        _validate_fixture(fixture, seen)
+        target_case_id, fixture_train_case_ids = _validate_fixture(
+            fixture,
+            seen_fixture_ids,
+        )
+        if target_case_id in target_case_ids:
+            raise AgentEvaluationError("B4 target case IDs must be unique")
+        target_case_ids.add(target_case_id)
+        for train_case_id in fixture_train_case_ids:
+            if train_case_id in train_case_ids:
+                raise AgentEvaluationError("B4 train case IDs must be unique")
+            train_case_ids.add(train_case_id)
+    if target_case_ids & train_case_ids:
+        raise AgentEvaluationError("B4 train and target case IDs must be disjoint")
     return raw, payload
 
 
-def _validate_fixture(fixture: Any, seen: set[str]) -> None:
+def _validate_fixture(fixture: Any, seen: set[str]) -> tuple[str, tuple[str, ...]]:
     if not isinstance(fixture, dict):
         raise AgentEvaluationError("each B4 fixture must be an object")
     fixture_id = fixture.get("fixture_id")
@@ -2042,12 +2060,24 @@ def _validate_fixture(fixture: Any, seen: set[str]) -> None:
     if not isinstance(fixture.get("category"), str) or not fixture["category"]:
         raise AgentEvaluationError(f"fixture {fixture_id} must contain category")
     case = fixture.get("case")
-    if not isinstance(case, dict) or not isinstance(case.get("case_id"), str):
+    if not isinstance(case, dict):
         raise AgentEvaluationError(f"fixture {fixture_id} must contain a case")
+    target_case_id = _canonical_case_id(case.get("case_id"))
+    if target_case_id is None:
+        raise AgentEvaluationError("B4 target case IDs must be canonical")
     if "curation" in case or "gold" in case:
         raise AgentEvaluationError(f"fixture {fixture_id} case must not embed Gold")
-    if not isinstance(fixture.get("train_cases"), list):
+    train_cases = fixture.get("train_cases")
+    if not isinstance(train_cases, list):
         raise AgentEvaluationError(f"fixture {fixture_id} train_cases must be a list")
+    train_case_ids = []
+    for train_case in train_cases:
+        if not isinstance(train_case, dict):
+            raise AgentEvaluationError("B4 train case IDs must be canonical")
+        train_case_id = _canonical_case_id(train_case.get("case_id"))
+        if train_case_id is None:
+            raise AgentEvaluationError("B4 train case IDs must be canonical")
+        train_case_ids.append(train_case_id)
     prediction = fixture.get("b1_prediction")
     if not isinstance(prediction, dict) or set(prediction) != {
         "route",
@@ -2080,6 +2110,18 @@ def _validate_fixture(fixture: Any, seen: set[str]) -> None:
             raise AgentEvaluationError(f"fixture {fixture_id} actions must be a list")
         for action in trial["actions"]:
             parse_agent_action(action)
+    return target_case_id, tuple(train_case_ids)
+
+
+def _canonical_case_id(value: Any) -> str | None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > _CASE_ID_MAX_LENGTH
+        or any(character not in _CASE_ID_CHARACTERS for character in value)
+    ):
+        return None
+    return value
 
 
 def _runtime_bundle(payload: Any) -> RuntimeEvidenceBundle | None:

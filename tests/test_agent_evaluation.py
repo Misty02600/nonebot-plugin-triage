@@ -20,6 +20,7 @@ from tools.nbtriage_maintainer.evaluation import write_new_evaluation_report
 from nbtriage.bounded_agent import (
     AgentStepError,
     AgentStepRejectionReason,
+    AgentStepRequest,
     AgentStepResponse,
     AgentStepResponseError,
     AgentStepUsage,
@@ -31,7 +32,7 @@ from nbtriage.model_contracts import (
     B1ResponseRejectionReason,
 )
 from nbtriage.provider_failures import ProviderFailureReason
-from nbtriage.rag import B1ModelResponse
+from nbtriage.rag import B1ModelRequest, B1ModelResponse
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "evals" / "datasets" / "fixtures" / "b4-bounded-agent-v1.json"
@@ -326,6 +327,88 @@ def test_fixture_rejects_gold_embedded_in_case_and_requires_multi_trial(
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(AgentEvaluationError, match="at least two"):
         asyncio.run(evaluate_b4_scripted_fixtures(path, SPLIT))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error_message"),
+    [
+        ("duplicate_target", "B4 target case IDs must be unique"),
+        ("blank_target", "B4 target case IDs must be canonical"),
+        ("noncanonical_target", "B4 target case IDs must be canonical"),
+        ("duplicate_train_within_fixture", "B4 train case IDs must be unique"),
+        ("duplicate_train_across_fixtures", "B4 train case IDs must be unique"),
+        ("blank_train", "B4 train case IDs must be canonical"),
+        ("noncanonical_train", "B4 train case IDs must be canonical"),
+        ("target_train_overlap", "B4 train and target case IDs must be disjoint"),
+    ],
+)
+def test_real_b4_gate_rejects_invalid_case_identity_before_model_calls(
+    tmp_path: Path,
+    mutation: str,
+    error_message: str,
+) -> None:
+    payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    fixtures = payload["fixtures"]
+    train_case = copy.deepcopy(fixtures[1]["train_cases"][0])
+    untrusted_case_id = "private-case-id"
+    if mutation == "duplicate_target":
+        fixtures[1]["case"]["case_id"] = fixtures[0]["case"]["case_id"]
+    elif mutation == "blank_target":
+        fixtures[0]["case"]["case_id"] = ""
+    elif mutation == "noncanonical_target":
+        fixtures[0]["case"]["case_id"] = f" {untrusted_case_id} "
+    elif mutation == "duplicate_train_within_fixture":
+        fixtures[1]["train_cases"].append(train_case)
+    elif mutation == "duplicate_train_across_fixtures":
+        fixtures[0]["train_cases"].append(train_case)
+    elif mutation == "blank_train":
+        train_case["case_id"] = ""
+        fixtures[0]["train_cases"].append(train_case)
+    elif mutation == "noncanonical_train":
+        train_case["case_id"] = f"{untrusted_case_id}/nested"
+        fixtures[0]["train_cases"].append(train_case)
+    else:
+        train_case["case_id"] = fixtures[0]["case"]["case_id"]
+        fixtures[0]["train_cases"].append(train_case)
+    path = tmp_path / "invalid-case-identity.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    model_calls = {"b1": 0, "agent": 0}
+
+    class CountingB1Client:
+        async def generate(self, request: B1ModelRequest) -> B1ModelResponse:
+            del request
+            model_calls["b1"] += 1
+            raise AssertionError("B1 model must not be called")
+
+    class CountingAgentClient:
+        async def choose_action(self, request: AgentStepRequest) -> AgentStepResponse:
+            del request
+            model_calls["agent"] += 1
+            raise AssertionError("agent model must not be called")
+
+    with pytest.raises(AgentEvaluationError) as exc_info:
+        asyncio.run(
+            evaluate_b4_real_fixtures(
+                path,
+                SPLIT,
+                b1_client_factory=CountingB1Client,
+                agent_client_factory=CountingAgentClient,
+                provider="fixture-provider",
+                model="fixture-model",
+                trials_per_fixture=2,
+                max_provider_requests=40,
+                max_agent_input_tokens_per_trial=4000,
+                max_output_tokens_per_trial=1000,
+                deadline_seconds=5,
+                declared_budget_usd=1.0,
+                paid_run_confirmed=True,
+                synthetic_data_egress_confirmed=True,
+            )
+        )
+
+    assert str(exc_info.value) == error_message
+    assert untrusted_case_id not in str(exc_info.value)
+    assert model_calls == {"b1": 0, "agent": 0}
 
 
 def test_b4_split_requires_disjoint_complete_regression_and_forward_hidden(
