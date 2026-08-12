@@ -363,3 +363,22 @@ def test_evaluate_b1_can_run_validation_without_exposing_heldout(tmp_path: Path)
     assert set(report["metrics_by_split"]) == {"validation"}
     assert {row["split"] for row in report["predictions"]} == {"validation"}
     assert client.calls == 1
+
+
+def test_evaluate_b1_rejects_empty_score_splits_before_model_calls(tmp_path: Path) -> None:
+    cases_dir, split_path = _fixture(tmp_path)
+    client = FixtureB1Client()
+
+    with pytest.raises(EvaluationError, match="score_splits must not be empty"):
+        asyncio.run(
+            evaluate_b1(
+                cases_dir,
+                split_path,
+                client=client,
+                model="fixture-model",
+                cache_dir=tmp_path / "cache",
+                score_splits=(),
+            )
+        )
+
+    assert client.calls == 0

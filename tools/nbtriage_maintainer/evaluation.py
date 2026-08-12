@@ -184,7 +184,7 @@ async def evaluate_b1(
         B1Error: 模型输出或响应缓存无效。
     """
     dataset = load_evaluation_dataset(cases_dir, split_path)
-    selected_splits = score_splits or tuple(dataset.split_case_ids)
+    selected_splits = tuple(dataset.split_case_ids) if score_splits is None else score_splits
     unknown_splits = set(selected_splits) - set(dataset.split_case_ids)
     if unknown_splits:
         raise EvaluationError(f"unknown score splits: {sorted(unknown_splits)}")
@@ -276,7 +276,9 @@ def _build_evaluation_report(
     limitations: list[str],
     score_split_names: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    selected_splits = score_split_names or tuple(dataset.split_case_ids)
+    selected_splits = (
+        tuple(dataset.split_case_ids) if score_split_names is None else score_split_names
+    )
     evaluated_case_ids = {
         case_id for split_name in selected_splits for case_id in dataset.split_case_ids[split_name]
     }
