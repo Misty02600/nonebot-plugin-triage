@@ -14,6 +14,25 @@ from tools.nbtriage_maintainer.evidence_policy import (
     select_next_evidence,
 )
 
+_B3_FIXTURE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "fixture_set_id",
+        "artifact_profile",
+        "source_kind",
+        "contains_provider_metadata",
+        "evaluation_id",
+        "summary",
+        "predictions",
+    }
+)
+_B3_FIXTURE_SET_ID = "b3-evidence-policy-validation-v1"
+_B3_ARTIFACT_PROFILE = "b3-evidence-policy-curated-fixture-v1"
+_B3_SOURCE_KIND = "curated_public_regression_projection"
+_B3_ROW_FIELDS = frozenset({"split", "case_id", "gold", "prediction"})
+_B3_GOLD_FIELDS = frozenset({"route", "missing_evidence"})
+_B3_PREDICTION_FIELDS = frozenset({"case_id", "route", "fault_phase", "missing_evidence"})
+
 
 class EvidencePolicyEvaluationError(ValueError):
     pass
@@ -60,7 +79,7 @@ def evaluate_b3_evidence_policy(prediction_report: Path) -> dict[str, Any]:
     """
     raw, report = _load_report(prediction_report)
     summary = _object(report.get("summary"), "summary")
-    if summary.get("score_splits") != ["validation"]:
+    if set(summary) != {"score_splits"} or summary.get("score_splits") != ["validation"]:
         raise EvidencePolicyEvaluationError(
             "B3 evidence policy v1 can only be tuned on a validation-only B1 report"
         )
@@ -83,6 +102,10 @@ def evaluate_b3_evidence_policy(prediction_report: Path) -> dict[str, Any]:
         case_id = _required_normalized_string(item.get("case_id"), "case_id")
         gold = _object(item.get("gold"), "gold")
         prediction = _object(item.get("prediction"), "prediction")
+        if set(gold) != _B3_GOLD_FIELDS or set(prediction) != _B3_PREDICTION_FIELDS:
+            raise EvidencePolicyEvaluationError(
+                "B3 fixture prediction fields do not match the curated projection schema"
+            )
         prediction_case_id = _required_normalized_string(
             prediction.get("case_id"), "prediction.case_id"
         )
@@ -183,7 +206,18 @@ def _load_report(path: Path) -> tuple[bytes, dict[str, Any]]:
         payload = json.loads(raw)
     except (OSError, json.JSONDecodeError) as error:
         raise EvidencePolicyEvaluationError(f"failed to load B1 report {path}: {error}") from error
-    if not isinstance(payload, dict) or payload.get("evaluation_id") != "b1-rag-only-v1":
+    if not isinstance(payload, dict) or set(payload) != _B3_FIXTURE_FIELDS:
+        raise EvidencePolicyEvaluationError(
+            "prediction report must match the curated B3 fixture schema"
+        )
+    if (
+        payload.get("schema_version") != 1
+        or payload.get("fixture_set_id") != _B3_FIXTURE_SET_ID
+        or payload.get("artifact_profile") != _B3_ARTIFACT_PROFILE
+        or payload.get("source_kind") != _B3_SOURCE_KIND
+        or payload.get("contains_provider_metadata") is not False
+        or payload.get("evaluation_id") != "b1-rag-only-v1"
+    ):
         raise EvidencePolicyEvaluationError("prediction report must be a B1 evaluation report")
     return raw, payload
 
@@ -202,6 +236,10 @@ def _validated_prediction_rows(value: Any) -> list[dict[str, Any]]:
     seen_case_ids: set[str] = set()
     for value_row in value:
         row = _object(value_row, "prediction row")
+        if set(row) != _B3_ROW_FIELDS:
+            raise EvidencePolicyEvaluationError(
+                "B3 fixture row fields do not match the curated projection schema"
+            )
         case_id = _required_normalized_string(row.get("case_id"), "case_id")
         if case_id in seen_case_ids:
             raise EvidencePolicyEvaluationError(

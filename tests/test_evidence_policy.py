@@ -97,6 +97,67 @@ def test_policy_evaluation_rejects_mismatched_nested_case_id(tmp_path: Path) -> 
         evaluate_b3_evidence_policy(mismatched_report)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", None),
+        ("fixture_set_id", "other-fixture"),
+        ("artifact_profile", "raw-provider-report"),
+        ("source_kind", "provider_output"),
+        ("contains_provider_metadata", True),
+    ],
+)
+def test_policy_evaluation_requires_the_curated_projection_identity(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    payload = json.loads(VALIDATION_FIXTURE.read_text(encoding="utf-8"))
+    if value is None:
+        del payload[field]
+    else:
+        payload[field] = value
+    malformed_report = tmp_path / "wrong-profile.json"
+    malformed_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(EvidencePolicyEvaluationError, match="report must"):
+        evaluate_b3_evidence_policy(malformed_report)
+
+
+@pytest.mark.parametrize(
+    ("target", "field", "value"),
+    [
+        ("summary", "case_count", 12),
+        ("row", "provider_request_id", "request-private"),
+        ("gold", "route", None),
+        ("prediction", "citations", ["untrusted"]),
+    ],
+)
+def test_policy_evaluation_rejects_fields_outside_the_curated_projection(
+    tmp_path: Path,
+    target: str,
+    field: str,
+    value: object,
+) -> None:
+    payload = json.loads(VALIDATION_FIXTURE.read_text(encoding="utf-8"))
+    containers = {
+        "summary": payload["summary"],
+        "row": payload["predictions"][0],
+        "gold": payload["predictions"][0]["gold"],
+        "prediction": payload["predictions"][0]["prediction"],
+    }
+    container = containers[target]
+    if value is None:
+        del container[field]
+    else:
+        container[field] = value
+    malformed_report = tmp_path / "extra-field.json"
+    malformed_report.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(EvidencePolicyEvaluationError):
+        evaluate_b3_evidence_policy(malformed_report)
+
+
 @pytest.mark.parametrize("field_path", [("case_id",), ("prediction", "case_id")])
 def test_policy_evaluation_rejects_non_normalized_case_id(
     tmp_path: Path,
