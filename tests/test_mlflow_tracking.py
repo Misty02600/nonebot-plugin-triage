@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -8,11 +9,29 @@ from typing import Any
 
 import pytest
 from tools.nbtriage_maintainer import cli
+from tools.nbtriage_maintainer.agent_evaluation import (
+    B4_REAL_EVALUATION_ID,
+    evaluate_b4_scripted_fixtures,
+)
+from tools.nbtriage_maintainer.answer_quality_evaluation import (
+    ANSWER_QUALITY_AXES,
+    evaluate_answer_quality,
+)
+from tools.nbtriage_maintainer.answer_review_export import build_b4_answer_quality_review
 from tools.nbtriage_maintainer.mlflow_tracking import (
     MLflowPublication,
     MLflowTrackingError,
     publish_evaluation_to_mlflow,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
+ANSWER_QUALITY_RUBRIC = ROOT / "evals" / "rubrics" / "answer-quality-v1.json"
+ANSWER_QUALITY_FIXTURES = (
+    ROOT / "evals" / "datasets" / "fixtures" / "answer-quality-calibration-v1.json"
+)
+ANSWER_QUALITY_ANNOTATIONS = ROOT / "evals" / "curation" / "answer-quality" / "calibration-v1.json"
+B4_FIXTURES = ROOT / "evals" / "datasets" / "fixtures" / "b4-bounded-agent-v1.json"
+B4_SPLIT = ROOT / "evals" / "datasets" / "splits" / "b4-gate-v1.json"
 
 
 class _FakeRunContext:
@@ -141,6 +160,71 @@ def _b1_report() -> dict[str, Any]:
     }
 
 
+def _write_answer_quality_calibration_report(tmp_path: Path) -> Path:
+    report = evaluate_answer_quality(
+        ANSWER_QUALITY_RUBRIC,
+        ANSWER_QUALITY_FIXTURES,
+        ANSWER_QUALITY_ANNOTATIONS,
+    )
+    path = tmp_path / "answer-quality-calibration.json"
+    _write_json(path, report)
+    return path
+
+
+def _write_answer_quality_candidate_report(tmp_path: Path) -> Path:
+    source = asyncio.run(evaluate_b4_scripted_fixtures(B4_FIXTURES, B4_SPLIT))
+    source["evaluation_id"] = B4_REAL_EVALUATION_ID
+    source["summary"].update(
+        {
+            "model_kind": "real",
+            "provider": "fixture-provider",
+            "model": "fixture-model",
+            "trials_per_fixture": 2,
+        }
+    )
+    source["promotion_gate"]["checks"]["real_model_multi_trial"] = True
+    source["promotion_gate"]["passed"] = True
+    source["promotion_gate"]["decision"] = "eligible_for_fixture"
+    source_path = tmp_path / "b4-real.json"
+    _write_json(source_path, source)
+
+    fixtures, annotations = build_b4_answer_quality_review(
+        source_path,
+        B4_FIXTURES,
+        B4_SPLIT,
+        ANSWER_QUALITY_RUBRIC,
+    )
+    annotations["review"] = {
+        "kind": "human_review",
+        "reviewer_id": "fixture-reviewer",
+        "completed_at": "2026-08-10T12:00:00+08:00",
+    }
+    for annotation in annotations["annotations"]:
+        annotation["scores"] = dict.fromkeys(ANSWER_QUALITY_AXES, 2)
+        annotation["rationales"] = {
+            axis: f"人工复核确认 {axis} 达到完整锚点。" for axis in ANSWER_QUALITY_AXES
+        }
+    fixtures_path = tmp_path / "answer-quality-samples.json"
+    annotations_path = tmp_path / "answer-quality-annotations.json"
+    _write_json(fixtures_path, fixtures)
+    _write_json(annotations_path, annotations)
+    report = evaluate_answer_quality(
+        ANSWER_QUALITY_RUBRIC,
+        fixtures_path,
+        annotations_path,
+        source_report_path=source_path,
+    )
+    report_path = tmp_path / "answer-quality-candidate.json"
+    _write_json(report_path, report)
+    return report_path
+
+
+def _assert_mlflow_untouched(mlflow: _FakeMLflow) -> None:
+    assert mlflow.tracking_uri is None
+    assert mlflow.experiment_name is None
+    assert mlflow.runs == []
+
+
 def test_publish_maps_stable_fields_and_preserves_exact_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -264,45 +348,113 @@ def test_non_b0_b1_report_remains_compatible_without_provenance(tmp_path: Path) 
     assert publication.created is True
 
 
-def test_answer_quality_report_preserves_offline_scope_and_source_model(
+@pytest.mark.parametrize("report_kind", ["calibration", "candidate"])
+def test_answer_quality_publish_requires_and_preserves_reproduced_report(
     tmp_path: Path,
+    report_kind: str,
 ) -> None:
-    report_path = tmp_path / "answer-quality.json"
-    _write_json(
-        report_path,
-        {
-            "schema_version": 2,
-            "evaluation_id": "answer-quality-human-rubric-v2",
-            "evaluation_scope": "offline_fixed_fixture",
-            "fixture_set_id": "answer-quality-b4-fixture",
-            "source_evaluation": {
-                "evaluation_id": "b4-bounded-agent-real-v1",
-                "provider": "fixture-provider",
-                "model": "fixture-model",
-                "score_split": "forward_hidden",
-                "report_sha256": "a" * 64,
-            },
-            "summary": {"sample_count": 2, "human_reviewed": True},
-            "quality_claim_gate": {
-                "eligible": True,
-                "decision": "eligible_as_offline_fixed_fixture_human_evidence",
-            },
-        },
+    report_path = (
+        _write_answer_quality_calibration_report(tmp_path)
+        if report_kind == "calibration"
+        else _write_answer_quality_candidate_report(tmp_path)
     )
     mlflow = _FakeMLflow()
 
     publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
 
     run = mlflow.runs[0]
-    assert run.tags["nbtriage.evaluation_scope"] == "offline_fixed_fixture"
-    assert (
-        run.tags["nbtriage.evaluation_decision"]
-        == "eligible_as_offline_fixed_fixture_human_evidence"
+    expected_scope = (
+        "rubric_calibration" if report_kind == "calibration" else "offline_fixed_fixture"
     )
+    assert run.tags["nbtriage.evaluation_scope"] == expected_scope
     assert "nbtriage.promotion_decision" not in run.tags
-    assert run.params["nbtriage.source_evaluation.provider"] == "fixture-provider"
-    assert run.params["nbtriage.source_evaluation.model"] == "fixture-model"
-    assert run.params["nbtriage.source_evaluation.score_split"] == "forward_hidden"
+    if report_kind == "candidate":
+        assert (
+            run.tags["nbtriage.evaluation_decision"]
+            == "eligible_as_offline_fixed_fixture_human_evidence"
+        )
+        assert run.params["nbtriage.source_evaluation.provider"] == "fixture-provider"
+        assert run.params["nbtriage.source_evaluation.model"] == "fixture-model"
+        assert run.params["nbtriage.source_evaluation.score_split"] == "forward_hidden"
+
+
+@pytest.mark.parametrize(
+    ("target", "field", "value"),
+    [
+        ("root", "quality_claim_gate", {"eligible": True, "decision": "forged"}),
+        ("source", "rubric_path", None),
+        ("source", "rubric_path", 1),
+        ("source", "fixtures_sha256", "0" * 64),
+        ("source", "fixture_revision", "nbtriage-answer-quality-fixtures-sha256:" + "0" * 64),
+        ("root", "source_evaluation", {"promotion_gate_passed": True}),
+    ],
+)
+def test_answer_quality_publish_rejects_tampering_before_mlflow_call(
+    tmp_path: Path,
+    target: str,
+    field: str,
+    value: object,
+) -> None:
+    report_path = _write_answer_quality_calibration_report(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    if target == "source":
+        payload["source"][field] = value
+    else:
+        payload[field] = value
+    _write_json(report_path, payload)
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+@pytest.mark.parametrize("source_field", ["rubric_path", "fixtures_path", "annotations_path"])
+def test_answer_quality_publish_rejects_missing_source_file_before_mlflow_call(
+    tmp_path: Path,
+    source_field: str,
+) -> None:
+    report_path = _write_answer_quality_calibration_report(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["source"][source_field] = str(tmp_path / "missing.json")
+    _write_json(report_path, payload)
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+def test_answer_quality_candidate_rejects_missing_source_report_before_mlflow_call(
+    tmp_path: Path,
+) -> None:
+    report_path = _write_answer_quality_candidate_report(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["source"]["source_report_path"] = str(tmp_path / "missing-b4-report.json")
+    _write_json(report_path, payload)
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+def test_answer_quality_candidate_rejects_source_projection_tampering_before_mlflow_call(
+    tmp_path: Path,
+) -> None:
+    report_path = _write_answer_quality_candidate_report(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["source_evaluation"]["promotion_gate_passed"] = False
+    _write_json(report_path, payload)
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
 
 
 def test_real_report_publishes_only_with_matching_completed_audit(tmp_path: Path) -> None:

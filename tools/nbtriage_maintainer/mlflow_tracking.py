@@ -14,6 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tools.nbtriage_maintainer.answer_quality_evaluation import (
+    ANSWER_QUALITY_EVALUATION_ID,
+    evaluate_answer_quality,
+)
+
 DEFAULT_MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 DEFAULT_MLFLOW_EXPERIMENT = "nbtriage/evaluations"
 
@@ -197,6 +202,8 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
 
     if evaluation_id in _B0_B1_EVALUATION_IDS:
         _validate_b0_b1_provenance(payload)
+    if evaluation_id == ANSWER_QUALITY_EVALUATION_ID:
+        _validate_answer_quality_reproducibility(payload)
 
     return _LoadedArtifact(
         path=path,
@@ -204,6 +211,52 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
         payload=payload,
         sha256=hashlib.sha256(raw).hexdigest(),
     )
+
+
+def _validate_answer_quality_reproducibility(payload: dict[str, Any]) -> None:
+    source = payload.get("source")
+    source_fields = {
+        "rubric_path",
+        "fixtures_path",
+        "annotations_path",
+        "source_report_path",
+    }
+    if not isinstance(source, dict) or not source_fields <= set(source):
+        raise MLflowTrackingError("answer-quality report is not reproducible")
+
+    rubric_path = source.get("rubric_path")
+    fixtures_path = source.get("fixtures_path")
+    annotations_path = source.get("annotations_path")
+    source_report = source.get("source_report_path")
+    if (
+        not isinstance(payload.get("generated_at"), str)
+        or not payload["generated_at"]
+        or not isinstance(rubric_path, str)
+        or not rubric_path
+        or not isinstance(fixtures_path, str)
+        or not fixtures_path
+        or not isinstance(annotations_path, str)
+        or not annotations_path
+        or (source_report is not None and (not isinstance(source_report, str) or not source_report))
+    ):
+        raise MLflowTrackingError("answer-quality report is not reproducible")
+
+    try:
+        reproduced = evaluate_answer_quality(
+            Path(rubric_path),
+            Path(fixtures_path),
+            Path(annotations_path),
+            source_report_path=Path(source_report) if source_report is not None else None,
+        )
+    except Exception as error:
+        raise MLflowTrackingError("answer-quality report is not reproducible") from error
+
+    expected = dict(payload)
+    actual = dict(reproduced)
+    expected.pop("generated_at", None)
+    actual.pop("generated_at", None)
+    if expected != actual:
+        raise MLflowTrackingError("answer-quality report is not reproducible")
 
 
 def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:
