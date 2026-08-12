@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 import json
@@ -18,6 +19,9 @@ from tools.nbtriage_maintainer.answer_quality_evaluation import (
     ANSWER_QUALITY_EVALUATION_ID,
     evaluate_answer_quality,
 )
+from tools.nbtriage_maintainer.evidence_policy import B3_EVIDENCE_POLICY_ID
+from tools.nbtriage_maintainer.evidence_policy_evaluation import evaluate_b3_evidence_policy
+from tools.nbtriage_maintainer.safety_evaluation import S3_EVALUATION_ID, evaluate_s3
 
 DEFAULT_MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 DEFAULT_MLFLOW_EXPERIMENT = "nbtriage/evaluations"
@@ -204,6 +208,10 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
         _validate_b0_b1_provenance(payload)
     if evaluation_id == ANSWER_QUALITY_EVALUATION_ID:
         _validate_answer_quality_reproducibility(payload)
+    if evaluation_id == S3_EVALUATION_ID:
+        _validate_s3_reproducibility(payload)
+    if evaluation_id == B3_EVIDENCE_POLICY_ID:
+        _validate_b3_evidence_policy_reproducibility(payload)
 
     return _LoadedArtifact(
         path=path,
@@ -257,6 +265,55 @@ def _validate_answer_quality_reproducibility(payload: dict[str, Any]) -> None:
     actual.pop("generated_at", None)
     if expected != actual:
         raise MLflowTrackingError("answer-quality report is not reproducible")
+
+
+def _validate_s3_reproducibility(payload: dict[str, Any]) -> None:
+    fixture = payload.get("fixture")
+    fixture_path = fixture.get("path") if isinstance(fixture, dict) else None
+    if not isinstance(fixture_path, str) or not fixture_path:
+        raise MLflowTrackingError("S3 report is not reproducible")
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise MLflowTrackingError(
+            "S3 report cannot be reproduced from a synchronous publisher while an event loop is running"
+        )
+
+    try:
+        reproduced = asyncio.run(evaluate_s3(Path(fixture_path)))
+    except Exception as error:
+        raise MLflowTrackingError("S3 report is not reproducible") from error
+    _require_reproduced_report(payload, reproduced, report_name="S3")
+
+
+def _validate_b3_evidence_policy_reproducibility(payload: dict[str, Any]) -> None:
+    source = payload.get("source")
+    prediction_report = source.get("prediction_report") if isinstance(source, dict) else None
+    if not isinstance(prediction_report, str) or not prediction_report:
+        raise MLflowTrackingError("B3 evidence-policy report is not reproducible")
+
+    try:
+        reproduced = evaluate_b3_evidence_policy(Path(prediction_report))
+    except Exception as error:
+        raise MLflowTrackingError("B3 evidence-policy report is not reproducible") from error
+    _require_reproduced_report(payload, reproduced, report_name="B3 evidence-policy")
+
+
+def _require_reproduced_report(
+    payload: dict[str, Any],
+    reproduced: dict[str, Any],
+    *,
+    report_name: str,
+) -> None:
+    expected = dict(payload)
+    actual = dict(reproduced)
+    expected.pop("generated_at", None)
+    actual.pop("generated_at", None)
+    if expected != actual:
+        raise MLflowTrackingError(f"{report_name} report is not reproducible")
 
 
 def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:

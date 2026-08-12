@@ -18,11 +18,13 @@ from tools.nbtriage_maintainer.answer_quality_evaluation import (
     evaluate_answer_quality,
 )
 from tools.nbtriage_maintainer.answer_review_export import build_b4_answer_quality_review
+from tools.nbtriage_maintainer.evidence_policy_evaluation import evaluate_b3_evidence_policy
 from tools.nbtriage_maintainer.mlflow_tracking import (
     MLflowPublication,
     MLflowTrackingError,
     publish_evaluation_to_mlflow,
 )
+from tools.nbtriage_maintainer.safety_evaluation import evaluate_s3
 
 ROOT = Path(__file__).resolve().parents[1]
 ANSWER_QUALITY_RUBRIC = ROOT / "evals" / "rubrics" / "answer-quality-v1.json"
@@ -32,6 +34,10 @@ ANSWER_QUALITY_FIXTURES = (
 ANSWER_QUALITY_ANNOTATIONS = ROOT / "evals" / "curation" / "answer-quality" / "calibration-v1.json"
 B4_FIXTURES = ROOT / "evals" / "datasets" / "fixtures" / "b4-bounded-agent-v1.json"
 B4_SPLIT = ROOT / "evals" / "datasets" / "splits" / "b4-gate-v1.json"
+S3_FIXTURES = ROOT / "evals" / "datasets" / "fixtures" / "s3-adversarial-v1.json"
+B3_POLICY_FIXTURES = (
+    ROOT / "evals" / "datasets" / "fixtures" / "b3-evidence-policy-validation-v1.json"
+)
 
 
 class _FakeRunContext:
@@ -217,6 +223,20 @@ def _write_answer_quality_candidate_report(tmp_path: Path) -> Path:
     report_path = tmp_path / "answer-quality-candidate.json"
     _write_json(report_path, report)
     return report_path
+
+
+def _write_s3_report(tmp_path: Path) -> Path:
+    report = asyncio.run(evaluate_s3(S3_FIXTURES))
+    path = tmp_path / "s3.json"
+    _write_json(path, report)
+    return path
+
+
+def _write_b3_evidence_policy_report(tmp_path: Path) -> Path:
+    report = evaluate_b3_evidence_policy(B3_POLICY_FIXTURES)
+    path = tmp_path / "b3-evidence-policy.json"
+    _write_json(path, report)
+    return path
 
 
 def _assert_mlflow_untouched(mlflow: _FakeMLflow) -> None:
@@ -448,6 +468,67 @@ def test_answer_quality_candidate_rejects_source_projection_tampering_before_mlf
     report_path = _write_answer_quality_candidate_report(tmp_path)
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     payload["source_evaluation"]["promotion_gate_passed"] = False
+    _write_json(report_path, payload)
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+@pytest.mark.parametrize("report_kind", ["s3", "b3_evidence_policy"])
+def test_offline_known_report_publishes_only_after_reproduction(
+    tmp_path: Path,
+    report_kind: str,
+) -> None:
+    report_path = (
+        _write_s3_report(tmp_path)
+        if report_kind == "s3"
+        else _write_b3_evidence_policy_report(tmp_path)
+    )
+    mlflow = _FakeMLflow()
+
+    publication = publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    assert publication.created is True
+    assert len(mlflow.runs) == 1
+
+
+@pytest.mark.parametrize("report_kind", ["s3", "b3_evidence_policy"])
+def test_offline_known_report_rejects_tampering_before_mlflow_call(
+    tmp_path: Path,
+    report_kind: str,
+) -> None:
+    report_path = (
+        _write_s3_report(tmp_path)
+        if report_kind == "s3"
+        else _write_b3_evidence_policy_report(tmp_path)
+    )
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["summary"]["case_count"] = 999
+    _write_json(report_path, payload)
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
+@pytest.mark.parametrize("report_kind", ["s3", "b3_evidence_policy"])
+def test_offline_known_report_rejects_missing_source_before_mlflow_call(
+    tmp_path: Path,
+    report_kind: str,
+) -> None:
+    report_path = (
+        _write_s3_report(tmp_path)
+        if report_kind == "s3"
+        else _write_b3_evidence_policy_report(tmp_path)
+    )
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    source = payload["fixture"] if report_kind == "s3" else payload["source"]
+    source["path" if report_kind == "s3" else "prediction_report"] = str(tmp_path / "missing.json")
     _write_json(report_path, payload)
     mlflow = _FakeMLflow()
 
