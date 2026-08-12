@@ -866,6 +866,7 @@ def build_capability_index(path: Path, snapshot: CapabilitySnapshot) -> None:
             (
                 ("schema_version", str(CAPABILITY_INDEX_SCHEMA_VERSION)),
                 ("snapshot_generation", snapshot.generation),
+                ("snapshot_partial", "1" if snapshot.manifest.partial else "0"),
             ),
         )
         for record in snapshot.records:

@@ -17,6 +17,9 @@ from nonebot_plugin_alconna import (
 )
 
 from nonebot_plugin_triage import plugin_config
+from nonebot_plugin_triage.capability_shadow import (
+    format_maintainer_capability_guidance,
+)
 from nonebot_plugin_triage.incident_queries import format_incident_lookup
 from nonebot_plugin_triage.live_reports import LiveReportRequest
 from nonebot_plugin_triage.runtime import create_plugin_runtime
@@ -25,6 +28,7 @@ from nonebot_plugin_triage.support_intake import (
     classify_support_request,
     collect_visible_alconna_capabilities,
     format_capability_guidance,
+    matching_public_capabilities,
     register_public_alconna_capability,
 )
 from nonebot_plugin_triage.trials import (
@@ -127,6 +131,30 @@ def _empty_support_prompt() -> str:
     return f"请在 {plugin_config.nbtriage_command} 后描述想了解的功能或遇到的问题。"
 
 
+async def _capability_guidance(bot: Bot, event: Event, content: str) -> str:
+    capabilities = await collect_visible_alconna_capabilities(
+        bot,
+        event,
+        visibility_timeout_seconds=(plugin_config.nbtriage_capability_visibility_timeout_seconds),
+    )
+    if matching_public_capabilities(content, capabilities):
+        return format_capability_guidance(content, capabilities)
+
+    shadow = plugin_runtime.capability_shadow
+    if shadow is not None:
+        try:
+            is_maintainer = bool(await SUPERUSER(bot, event))
+        except Exception:
+            logger.warning("NoneBot Triage SUPERUSER capability check failed")
+            is_maintainer = False
+        if is_maintainer:
+            result = await shadow.search_for_maintainer(content)
+            if result is not None and result.hits:
+                return format_maintainer_capability_guidance(result)
+
+    return format_capability_guidance(content, capabilities)
+
+
 @support_matcher.handle()
 async def handle_support(
     bot: Bot,
@@ -155,15 +183,8 @@ async def handle_support(
     if request.intent is SupportIntent.EMPTY:
         await support_matcher.finish(UniMessage.text(_empty_support_prompt()))
     if request.intent is SupportIntent.CAPABILITY_GUIDANCE:
-        capabilities = await collect_visible_alconna_capabilities(
-            bot,
-            event,
-            visibility_timeout_seconds=(
-                plugin_config.nbtriage_capability_visibility_timeout_seconds
-            ),
-        )
         await support_matcher.finish(
-            UniMessage.text(format_capability_guidance(request.content, capabilities))
+            UniMessage.text(await _capability_guidance(bot, event, request.content))
         )
     if request.intent is SupportIntent.REPORT_PROBLEM:
         result = plugin_runtime.report_service.handle(_report_request(bot, event, original, target))

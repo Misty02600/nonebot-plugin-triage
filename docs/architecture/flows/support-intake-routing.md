@@ -11,7 +11,8 @@ triage + request text + optional Reply
 场景、长度、入口限流和最小上下文边界
                  ↓
 目标意图边界 → strict IntakeSignals
-   ├─ capability_guidance → 已登记公开能力 → 说明用法；不建 incident
+   ├─ capability_guidance → 显式 public 命中 → 说明用法；不建 incident
+   │                      └─ SUPERUSER + 影子索引 → 带披露标签的候选；不建 incident
    ├─ usage_error         → 解释错误或追问；不建 incident
    ├─ suspected_incident  → 可选 Reply 关联 → LiveIncident + 窄回执
    ├─ out_of_scope        → 说明范围；不建 incident
@@ -31,8 +32,10 @@ triage + request text + optional Reply
 - Reply 只读取第一个结构化 `id`，不读取 `msg` / `origin`；
 - Reply 缺失或引用过期不妨碍求助；疑似故障会明确标记为未关联运行证据，不猜测其他消息；
 - 所有求助先经过不保存平台身份的轻量 HMAC 限流；疑似故障再经过独立的建单限流；
-- 能力说明采用显式公开 Provider。未登记、`CommandMeta.hide=True` 或停用的 Alconna 命令不展示，命令 `parse()`、behavior、
-  executor 和 handler 不会为回答问题而重新执行；
+- 普通用户能力说明采用显式公开 Provider。未登记、`CommandMeta.hide=True` 或停用的 Alconna 命令不展示；
+  SUPERUSER 在模型外鉴权通过后可检索影子的 `public / review / restricted`，但必须保留候选和执行资格未知提示；
+  影子字段在回显前中和 mention 与 Unicode 控制字符；两条路径都不会为回答问题重新执行命令 `parse()`、
+  behavior、executor、Rule、Permission 或 handler；
 - 私聊当前拒绝；普通用户不能读取 incident 摘要，查询、反馈和统计仍由 `SUPERUSER` 权限保护。
 
 ## 领域分流顺序
@@ -47,5 +50,6 @@ triage + request text + optional Reply
 
 - [ADR-0003：统一能力导航与故障入口](../../adr/0003-unified-capability-guidance-and-incident-intake.md)
 - [ADR-0020：triage 自然语言入口与可选 Reply](../../adr/0020-use-triage-command-for-natural-language-support.md)
+- [ADR-0022：SUPERUSER 能力影子候选检索](../../adr/0022-limit-capability-shadow-guidance-to-superusers.md)
 - [Alconna 能力与解析回执](alconna-capability-and-parse-receipts.md)
 - [运行观察入口](runtime-observation-intake.md)

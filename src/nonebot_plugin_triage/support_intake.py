@@ -232,6 +232,14 @@ def format_capability_guidance(
     return "\n".join(lines)
 
 
+def matching_public_capabilities(
+    query: str,
+    capabilities: tuple[PublicCapability, ...],
+) -> tuple[PublicCapability, ...]:
+    """返回查询明确命中的显式公开能力，供高置信来源优先回答。"""
+    return _matching_capabilities(query, capabilities)
+
+
 async def _provider_is_visible(
     provider: _CapabilityProvider,
     bot: Bot,

@@ -13,7 +13,10 @@
          ├─ MsgTarget → 入口 HMAC 限流 → 拒绝私聊
          ├─ OriginalUniMsg → 只取第一个 Reply.id
          └─ 当前确定性首轮意图边界
-              ├─ 功能 / 用法 → 公开能力说明或澄清 → UniMessage
+              ├─ 功能 / 用法
+              │    ├─ 显式 public 命中 → 公开能力说明 → UniMessage
+              │    ├─ SUPERUSER + 已就绪影子 → 带披露标签的候选 → UniMessage
+              │    └─ 其余 → 公开能力 fallback 或澄清 → UniMessage
               ├─ 不确定     → 单次澄清 → UniMessage
               └─ 疑似故障
                    ├─ Reply 命中 → capture 最小运行证据
@@ -56,6 +59,7 @@
 | 边界 | 实现 |
 |---|---|
 | `triage` Matcher、自然语言首轮分流与公开能力 | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support_intake.py` |
+| SUPERUSER 鉴权后的影子候选检索 | `src/nonebot_plugin_triage/capability_shadow.py` |
 | 通用入站引用与 Target scope | `src/nonebot_plugin_triage/universal_references.py` |
 | OneBot V11 出站 Provider | `src/nonebot_plugin_triage/onebot_v11_references.py` |
 | HMAC 引用索引 | `src/nbtriage/message_references.py` |
@@ -67,3 +71,4 @@
 - [ADR-0006：跨平台 Alconna 入口与引用 Provider](../../adr/0006-cross-platform-alconna-entry-and-reference-providers.md)
 - [ADR-0014：观察型生产 trial](../../adr/0014-use-observation-first-production-trials.md)
 - [ADR-0020：triage 自然语言入口与可选 Reply](../../adr/0020-use-triage-command-for-natural-language-support.md)
+- [ADR-0022：只向 SUPERUSER 接入能力影子候选检索](../../adr/0022-limit-capability-shadow-guidance-to-superusers.md)

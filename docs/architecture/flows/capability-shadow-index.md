@@ -2,8 +2,8 @@
 
 ## 这条流程保证什么
 
-影子索引用来回答“当前 Bot 有哪些可供后续检索的能力证据”，不回答“这个用户现在一定能执行什么”。它
-默认关闭，也尚未接入 `triage` 回复。
+影子索引用来回答“当前 Bot 有哪些能力证据”，不回答“这个用户现在一定能执行什么”。它默认关闭；配置后
+会为 SUPERUSER 的定向 `triage` 能力问题提供带披露标签的候选，普通用户仍只读取显式公开 Provider。
 
 ## 外部参与者和触发条件
 
@@ -24,7 +24,7 @@
                          ↓
           原子构建本地 SQLite FTS5 索引
                          ↓
-   默认 public / 显式 review / 鉴权后 restricted
+   默认 public / SUPERUSER 鉴权后 review + restricted
 ```
 
 ## 稳定的状态变化
@@ -48,15 +48,18 @@
 ## 失败时的语义
 
 - 某来源失败时快照标记 `partial` 并记录稳定错误码，不能把缺失结果解释为“该插件没有能力”。
-- 版本、源码或运行时结构变化后，旧 generation 只能视为历史派生数据；初版通过重启重新生成，不承诺热
-  加载自动刷新。
-- `review`、`restricted`、`opaque`、文档声明或过去回执都不能升级为当前执行授权。未来若接入用户回复，
-  必须先在模型上下文之外完成披露过滤与 `restricted` 鉴权，再对少量候选做独立的上下文执行资格判断。
-- 当前群聊尚未读取影子索引，因此 `SUPERUSER` 也暂时不能通过 `triage` 查询 `restricted` 帮助；持久化只为
-  后续受控接入保留证据，不表示已经开放。
+- `partial` 随索引 metadata 保存；旧索引缺少该字段时在线回复标记完整性未知，不推断为 `false`。
+- 版本、源码或运行时结构变化后，旧 generation 只能视为历史派生数据；启动刷新失败但保留上一份成功构建的索引
+  时，维护者回复必须标为 stale。初版通过重启重新生成，不承诺热加载自动刷新。
+- `review`、`restricted`、`opaque`、文档声明或过去回执都不能升级为当前执行授权。当前回复会在模型上下文
+  之外完成披露过滤与 `restricted` 鉴权，但不会求值第三方 Permission、Rule、handler 或当前执行资格。
+- 群聊 `triage` 只在 NoneBot `SUPERUSER` 检查通过后读取全部披露层；回复会区分已登记公开、未审核候选和
+  维护者可见受限能力。普通用户不会读取 `review` / `restricted`，模型也不会在过滤前看到它们。
+- 影子字段是第三方不可信文本；进入群消息前会折叠空白、限制长度、移除 Unicode 控制字符并中和 mention。
 
 ## 相关决定
 
 - [ADR-0021：用部署本地影子索引整理 Bot 能力证据](../../adr/0021-use-deployment-local-capability-shadow-index.md)
 - [ADR-0019：将 RAG 语料作为独立版本化知识包分发](../../adr/0019-distribute-rag-corpus-as-versioned-knowledge-pack.md)
+- [ADR-0022：只向 SUPERUSER 接入能力影子候选检索](../../adr/0022-limit-capability-shadow-guidance-to-superusers.md)
 - [可选帮助数据源与复用边界](../help-source-adapters.md)

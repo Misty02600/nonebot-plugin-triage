@@ -74,13 +74,16 @@
 - 自动测试确认源码摘要排除 `.env` 与运行数据、不保存绝对本机路径；普通 Matcher 与 Alconna 可被发现但
   不执行；SUPERUSER、`hide=True` 与停用 Alconna 作为 `restricted` 持久化但不进入默认检索；短中文功能
   问法可以命中目标能力；构建发布失败会保留旧索引并区分 observed / served generation。
-- 尚未落实：通用 HelpPluginSource、operator exclude policy、热加载增量失效、群聊 `SUPERUSER` 帮助入口，
-  以及把影子检索结果接入 Agent / `triage` 回复。
+- 尚未落实：通用 HelpPluginSource、operator exclude policy、热加载增量失效、普通用户 review 审批，以及把
+  影子检索结果接入模型 Agent。ADR-0022 已把确定性候选回复接到群聊 `SUPERUSER` 的 `triage` 入口。
 - 已完成帮助插件生态复核，确认第一阶段直接使用 NoneBot / Alconna 只读运行时信息；PicMenu、TreeHelp 与
   结构化帮助文件只作为可选适配或算法参考，不引入会执行模板、回调或第三方命令逻辑的采集路径。
 
 ## 替代关系
 
+- 第 6 条的“第一阶段不接入回复”和群聊 SUPERUSER 尚未接入边界，已被
+  [ADR-0022](0022-limit-capability-shadow-guidance-to-superusers.md) 部分替代；普通用户仍只读取已批准
+  public，review / restricted 的证据与执行资格边界不变。
 - 部分替代 [ADR-0003](0003-unified-capability-guidance-and-incident-intake.md) 的 D-003：显式 Provider 不再是
   普通 Matcher 的唯一接入方式，但其安全披露职责保留。
 - 补充 [ADR-0016](0016-keep-maintainer-evaluation-tooling-out-of-install-surface.md)：运行时所需代码进入

@@ -23,3 +23,4 @@
 | [ADR-0019](0019-distribute-rag-corpus-as-versioned-knowledge-pack.md) | 已采纳 | 基础发行包不内置 RAG 语料；产品需要时再发布独立、可选、版本化的离线知识包 |
 | [ADR-0020](0020-use-triage-command-for-natural-language-support.md) | 已采纳 | 用必选 `triage` 指令承接自然语言求助；`@Bot` 与 Reply 均为可选上下文 |
 | [ADR-0021](0021-use-deployment-local-capability-shadow-index.md) | 已采纳 | 用字段级证据构建默认关闭的部署本地能力影子索引，先评估再接入回复 |
+| [ADR-0022](0022-limit-capability-shadow-guidance-to-superusers.md) | 已采纳 | 只在模型外 SUPERUSER 鉴权后把影子候选接入 triage 维护者回复 |

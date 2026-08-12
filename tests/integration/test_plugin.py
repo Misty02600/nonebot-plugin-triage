@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -227,6 +228,130 @@ async def test_support_matcher_accepts_optional_at_without_creating_incident(
         )
         ctx.should_finished(support_matcher)
     assert len(plugin_runtime.incidents) == incident_count
+
+
+@pytest.mark.parametrize(
+    ("user_id", "permission_fails", "search_unavailable", "expected"),
+    [
+        (
+            200,
+            False,
+            False,
+            "搜图（维护者可见受限能力；来源：YetAnotherPicSearch）\n"
+            "说明：搜索图片出处\n"
+            "用法：索引没有可靠用法，请核对当前插件源码、README 或插件自带帮助。\n"
+            "约束：存在无法安全静态判断的规则或 handler 条件。\n"
+            "发现或可见不等于当前可执行；最终仍由原插件的权限、配置、场景和外部状态判断。",
+        ),
+        (
+            214,
+            False,
+            False,
+            "我目前能说明这些 Alconna 功能：\n"
+            "- triage：说明功能用法、纠正指令或受理故障\n"
+            "告诉我具体功能名，我再给你用法。",
+        ),
+        (
+            200,
+            True,
+            False,
+            "我目前能说明这些 Alconna 功能：\n"
+            "- triage：说明功能用法、纠正指令或受理故障\n"
+            "告诉我具体功能名，我再给你用法。",
+        ),
+        (
+            200,
+            False,
+            True,
+            "我目前能说明这些 Alconna 功能：\n"
+            "- triage：说明功能用法、纠正指令或受理故障\n"
+            "告诉我具体功能名，我再给你用法。",
+        ),
+    ],
+)
+async def test_shadow_capability_guidance_is_limited_to_superusers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    user_id: int,
+    permission_fails: bool,
+    search_unavailable: bool,
+    expected: str,
+) -> None:
+    from nonebot import get_driver
+    from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
+    from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
+
+    from nbtriage.capabilities import (
+        CapabilityRecord,
+        CapabilitySnapshot,
+        Claim,
+        ClaimBasis,
+        Constraint,
+        ConstraintEvaluability,
+        Disclosure,
+        RecordState,
+    )
+    from nonebot_plugin_triage import handlers
+    from nonebot_plugin_triage.capability_shadow import CapabilityShadowService
+
+    record = CapabilityRecord(
+        capability_id="command:image",
+        owner="YetAnotherPicSearch",
+        kind="command",
+        disclosure=Disclosure.RESTRICTED,
+        state=RecordState.CANDIDATE,
+        claims=(
+            Claim("command.header", "搜图", ClaimBasis.OBSERVED),
+            Claim("description", "搜索图片出处", ClaimBasis.DECLARED),
+        ),
+        constraints=(
+            Constraint(
+                constraint_id="constraint:handler",
+                kind="handlers",
+                operation="opaque",
+                evaluability=ConstraintEvaluability.OPAQUE,
+            ),
+        ),
+    )
+    shadow = CapabilityShadowService(
+        tmp_path / "capabilities.sqlite3",
+        snapshot_builder=lambda **_: CapabilitySnapshot.create((record,)),
+    )
+    shadow.refresh()
+    permission_warnings: list[tuple[str, tuple[object, ...]]] = []
+    if permission_fails:
+        private_text = "PRIVATE_AUTHORIZATION_FAILURE"
+
+        async def fail_permission(*_: object, **__: object) -> bool:
+            raise RuntimeError(private_text)
+
+        class RecordingLogger:
+            def warning(self, message: str, *args: object) -> None:
+                permission_warnings.append((message, args))
+
+        monkeypatch.setattr(handlers, "SUPERUSER", fail_permission)
+        monkeypatch.setattr(handlers, "logger", RecordingLogger())
+    if search_unavailable:
+
+        async def unavailable_search(*_: object, **__: object) -> None:
+            return None
+
+        monkeypatch.setattr(shadow, "search_for_maintainer", unavailable_search)
+    monkeypatch.setattr(
+        handlers,
+        "plugin_runtime",
+        replace(handlers.plugin_runtime, capability_shadow=shadow),
+    )
+    bot = OneBotV11Bot(
+        adapter=OneBotV11Adapter(get_driver()),
+        self_id="1",
+    )
+    event = fake_group_message_event_v11(user_id=user_id)
+
+    assert await handlers._capability_guidance(bot, event, "搜图功能怎么用") == expected
+    if permission_fails:
+        assert permission_warnings == [("NoneBot Triage SUPERUSER capability check failed", ())]
+        assert private_text not in repr(permission_warnings)
 
 
 @pytest.mark.parametrize(

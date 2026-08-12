@@ -1,7 +1,7 @@
 # 流程：Alconna 公开能力与解析回执
 
 当前运行入口已经支持显式公开能力 Provider。默认关闭的部署本地影子索引会读取已经加载的 Alconna 与
-普通 Matcher，但尚不参与用户回复；解析回执仍是仓库级实验，位于
+普通 Matcher，并在 SUPERUSER 通过模型外鉴权后提供带披露标签的候选；解析回执仍是仓库级实验，位于
 `tools/nbtriage_maintainer/alconna_capabilities.py`，不进入插件 wheel。
 
 ## 这条流程保证什么
@@ -27,9 +27,9 @@
 `triage` 求助先过轻量入口限流；当前 Triage 只登记自己的普通用户入口，其他插件需要主动接入 Provider
 后才会出现在说明中。
 
-这里描述的是当前在线回复，不是终局发现策略。影子索引可以把未登记的第三方命令保存为 `review` 候选，
-把 `SUPERUSER`、`CommandMeta.hide=True` 和内部管理命令保存为 `restricted`；两类记录都不会自动出现在
-群聊回答里。当前群聊尚未接入影子索引，`SUPERUSER` 的受限帮助检索也还没有开放。
+影子索引可以把未登记的第三方命令保存为 `review` 候选，把 `SUPERUSER`、`CommandMeta.hide=True` 和内部
+管理命令保存为 `restricted`。普通用户不会读取二者；SUPERUSER 可在显式 Provider 未命中时检索全部披露
+层，但回复只复述已有字段，并明确候选、受限、opaque 和执行资格未知。
 
 ## 部署本地影子快照
 
@@ -100,7 +100,7 @@ NoneBot Alconna 的公开 `Extension.parse_wrapper` 是后续接入候选，但�
 ## 当前未完成部分
 
 - 尚未为丰富解析回执注册真实 NoneBot extension 或只读 rule hook；`triage` Matcher 已是当前运行入口；
-- 部署本地影子索引尚未接入运行入口回答；当前群聊仍只提供窄的显式公开能力说明；
+- 普通用户尚无部署本地 review 审批策略；影子候选只接入 SUPERUSER 的确定性维护者回复；
 - 真实解析回执尚未接入运行入口；
 - 没有代用户执行命令；
 - 没有推断 `prefix_error`、权限、会话上下文、适配器不支持或能力停用回执；
@@ -110,4 +110,5 @@ NoneBot Alconna 的公开 `Extension.parse_wrapper` 是后续接入候选，但�
 ## 相关决定与计划
 
 - [ADR-0003：统一能力导航与故障入口](../../adr/0003-unified-capability-guidance-and-incident-intake.md)
+- [ADR-0022：SUPERUSER 能力影子候选检索](../../adr/0022-limit-capability-shadow-guidance-to-superusers.md)
 - [显式支持入口分流](support-intake-routing.md)
