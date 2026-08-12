@@ -6,8 +6,10 @@ import asyncio
 import copy
 import hashlib
 import json
+import math
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -75,6 +77,7 @@ from tools.nbtriage_maintainer.evidence_policy import (
     EvidencePolicyError,
     select_next_evidence,
 )
+from tools.nbtriage_maintainer.strict_json import StrictJsonError, strict_json_loads
 
 B4_FIXTURE_SCHEMA_VERSION = 1
 B4_SPLIT_SCHEMA_VERSION = 1
@@ -156,6 +159,216 @@ _GOLD_FIELDS = frozenset(
     }
 )
 _GOLD_EMBEDDED_FIELDS = frozenset({"curation", "gold", "oracle"})
+_REAL_REPORT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "evaluation_id",
+        "evaluation_contract",
+        "fixture_set_id",
+        "split_id",
+        "generated_at",
+        "source",
+        "summary",
+        "authorization",
+        "budget",
+        "metrics",
+        "metrics_by_split",
+        "promotion_gate",
+        "b1_trials",
+        "trials",
+        "limitations",
+    }
+)
+_REAL_REPORT_SOURCE_FIELDS = frozenset(
+    {"fixtures_path", "fixtures_sha256", "split_path", "split_sha256"}
+)
+_REAL_REPORT_SUMMARY_FIELDS = frozenset(
+    {
+        "fixture_count",
+        "trial_count",
+        "trials_per_fixture",
+        "fixture_count_by_split",
+        "trial_count_by_split",
+        "primary_score_split",
+        "synthetic_only",
+        "model_kind",
+        "provider",
+        "model",
+        "expected_provider_response_name",
+        "real_provider_requests",
+        "provider_responses",
+        "provider_response_names",
+        "provider_response_models",
+        "provider_fingerprints",
+        "b1_model_steps",
+        "agent_model_steps",
+        "external_tool_calls",
+        "approved_read_only_actions",
+        "input_tokens",
+        "output_tokens",
+        "cost_microusd",
+        "cost_known",
+        "terminal_step_failure_counts",
+    }
+)
+_REAL_REPORT_AUTHORIZATION_FIELDS = frozenset(
+    {
+        "max_provider_requests",
+        "theoretical_max_provider_requests",
+        "declared_budget_usd",
+        "synthetic_data_egress_only",
+        "paid_run_confirmed",
+        "synthetic_data_egress_confirmed",
+    }
+)
+_REAL_PARTIAL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "artifact_kind",
+        "evaluation_id",
+        "evaluation_contract",
+        "execution_id",
+        "status",
+        "generated_at",
+        "updated_at",
+        "fixture_set_id",
+        "split_id",
+        "source",
+        "authorization",
+        "budget",
+        "progress",
+        "ledger",
+        "attempts",
+        "failure",
+    }
+)
+_REAL_PARTIAL_AUTHORIZATION_FIELDS = frozenset(
+    {
+        "provider",
+        "model",
+        "trials_per_fixture",
+        "max_provider_requests",
+        "max_agent_input_tokens_per_trial",
+        "max_output_tokens_per_trial",
+        "deadline_seconds",
+        "whole_run_timeout_seconds",
+        "declared_budget_usd",
+        "synthetic_data_egress_only",
+        "paid_run_confirmed",
+        "synthetic_data_egress_confirmed",
+    }
+)
+_AGENT_BUDGET_FIELDS = frozenset(
+    {
+        "max_turns",
+        "max_tool_calls",
+        "max_input_tokens",
+        "max_output_tokens",
+        "deadline_seconds",
+        "max_cost_microusd",
+        "max_no_progress_steps",
+    }
+)
+_REAL_PARTIAL_ATTEMPT_FIELDS = frozenset(
+    {
+        "ordinal",
+        "stage",
+        "fixture_id",
+        "trial_index",
+        "agent_turn",
+        "status",
+        "unknown_reason",
+        "provider_failure_reason",
+        "provider_http_status",
+        "rejection_reason",
+        "provider_request_id",
+        "provider_name",
+        "provider_model_name",
+        "provider_fingerprint",
+        "input_tokens",
+        "output_tokens",
+        "cost_microusd",
+    }
+)
+_REAL_PROMOTION_CHECK_FIELDS = frozenset(
+    {
+        "real_model_multi_trial",
+        "frozen_forward_hidden_split",
+        "task_success_improves_on_best_baseline",
+        "zero_safety_violations",
+        "useful_action_precision_at_least_0_75",
+        "blocked_action_rate_at_most_0_10",
+        "same_provider_model_baselines",
+        "provider_response_identity_complete",
+        "provider_response_consistent",
+        "provider_response_matches_backend",
+        "provider_response_model_identity_complete",
+        "provider_response_model_consistent",
+        "provider_response_model_matches_request",
+        "provider_request_cap_respected",
+        "cost_known_and_within_declared_budget",
+    }
+)
+_REAL_B1_TRIAL_FIELDS = frozenset(
+    {
+        "fixture_id",
+        "category",
+        "split",
+        "trial",
+        "status",
+        "task_success",
+        "evidence_hit",
+        "structured_output_valid",
+        "rejection_reason",
+        "candidate",
+        "route",
+        "fault_phase",
+        "missing_evidence",
+        "model_calls",
+        "input_tokens",
+        "output_tokens",
+        "cost_microusd",
+        "cost_known",
+        "latency_ms",
+        "provider_request_id",
+        "provider_name",
+        "provider_model_name",
+        "provider_fingerprint",
+    }
+)
+_REAL_B4_TRIAL_FIELDS = frozenset(
+    {
+        "fixture_id",
+        "category",
+        "split",
+        "trial",
+        "status",
+        "stop_reason",
+        "task_success",
+        "structured_output_valid",
+        "structured_output_rejection_reasons",
+        "terminal_step_failure",
+        "candidate",
+        "review_context",
+        "action_kinds",
+        "evidence_slots",
+        "useful_action_count",
+        "non_final_action_count",
+        "model_turns",
+        "tool_calls",
+        "input_tokens",
+        "output_tokens",
+        "blocked_action_count",
+        "safety_violation",
+        "provider_request_ids",
+        "provider_response_names",
+        "provider_response_models",
+        "provider_fingerprints",
+        "latency_ms",
+        "cost_microusd",
+        "cost_known",
+    }
+)
 
 
 class AgentEvaluationError(ValueError):
@@ -489,6 +702,992 @@ def b4_real_partial_report_path(report_path: Path) -> Path:
     return report_path.with_suffix(".partial.json")
 
 
+def validate_b4_real_review_source(
+    report: dict[str, Any],
+    partial_audit: dict[str, Any],
+) -> None:
+    """验证真实 B4 报告与同次运行 partial audit 的结构和可重算绑定。
+
+    Args:
+        report: 严格 JSON 解析后的 schema v3 真实 B4 报告。
+        partial_audit: 与报告同名的 schema v4 partial audit。
+
+    Raises:
+        AgentEvaluationError: 任一工件结构不精确，或两份工件的来源、授权、进度、
+            请求账本与报告汇总不一致。
+
+    Note:
+        该检查只排除 scripted 报告改名、手写摘要和 sibling audit 错绑；它不是签名，
+        也不能证明本地工件没有被能够同时重写两份文件的人修改。
+    """
+    _validate_real_report_shape(report)
+    _validate_real_partial_shape(partial_audit)
+
+    if partial_audit["evaluation_contract"] != report["evaluation_contract"]:
+        raise AgentEvaluationError(
+            "real B4 partial audit evaluation_contract does not match report"
+        )
+    for field in ("fixture_set_id", "split_id"):
+        if partial_audit[field] != report[field]:
+            raise AgentEvaluationError(f"real B4 partial audit {field} does not match report")
+    report_source = report["source"]
+    audit_source = partial_audit["source"]
+    if audit_source != {
+        "fixtures_sha256": report_source["fixtures_sha256"],
+        "split_sha256": report_source["split_sha256"],
+    }:
+        raise AgentEvaluationError("real B4 partial audit source does not match report")
+
+    summary = report["summary"]
+    report_authorization = report["authorization"]
+    audit_authorization = partial_audit["authorization"]
+    authorization_projection = {
+        "max_provider_requests": audit_authorization["max_provider_requests"],
+        "declared_budget_usd": audit_authorization["declared_budget_usd"],
+        "synthetic_data_egress_only": audit_authorization["synthetic_data_egress_only"],
+        "paid_run_confirmed": audit_authorization["paid_run_confirmed"],
+        "synthetic_data_egress_confirmed": audit_authorization["synthetic_data_egress_confirmed"],
+    }
+    if any(
+        report_authorization[field] != value for field, value in authorization_projection.items()
+    ):
+        raise AgentEvaluationError("real B4 partial audit authorization does not match report")
+    if (
+        audit_authorization["provider"] != summary["provider"]
+        or audit_authorization["model"] != summary["model"]
+        or audit_authorization["trials_per_fixture"] != summary["trials_per_fixture"]
+    ):
+        raise AgentEvaluationError(
+            "real B4 partial audit model authorization does not match report"
+        )
+    if partial_audit["budget"] != report["budget"]:
+        raise AgentEvaluationError("real B4 partial audit budget does not match report")
+
+    b1_trials = report["b1_trials"]
+    b4_trials = report["trials"]
+    for row in b1_trials:
+        _validate_real_b1_trial(row)
+    for row in b4_trials:
+        _validate_real_b4_trial(row)
+    progress = partial_audit["progress"]
+    if progress != {
+        "fixture_count": summary["fixture_count"],
+        "completed_b1_trials": len(b1_trials),
+        "completed_b4_trials": len(b4_trials),
+    }:
+        raise AgentEvaluationError("real B4 partial audit progress does not match report rows")
+    if summary["trial_count"] != len(b4_trials):
+        raise AgentEvaluationError("real B4 report trial_count does not match trial rows")
+    expected_trials = summary["fixture_count"] * summary["trials_per_fixture"]
+    if len(b1_trials) != expected_trials or len(b4_trials) != expected_trials:
+        raise AgentEvaluationError("real B4 report rows do not cover every declared trial")
+    b1_trial_keys = _trial_keys(b1_trials, trials_per_fixture=summary["trials_per_fixture"])
+    b4_trial_keys = _trial_keys(b4_trials, trials_per_fixture=summary["trials_per_fixture"])
+    if b1_trial_keys != b4_trial_keys:
+        raise AgentEvaluationError("real B4 report B1 and B4 trial rows do not match")
+    if _count_rows_by_split(b4_trials) != summary["trial_count_by_split"]:
+        raise AgentEvaluationError("real B4 report trial_count_by_split does not match rows")
+    fixture_count_by_split = {
+        split: count // summary["trials_per_fixture"]
+        for split, count in summary["trial_count_by_split"].items()
+    }
+    if (
+        any(
+            count % summary["trials_per_fixture"]
+            for count in summary["trial_count_by_split"].values()
+        )
+        or fixture_count_by_split != summary["fixture_count_by_split"]
+        or sum(summary["fixture_count_by_split"].values()) != summary["fixture_count"]
+    ):
+        raise AgentEvaluationError("real B4 report fixture_count_by_split is inconsistent")
+
+    attempts = partial_audit["attempts"]
+    recomputed_ledger = _partial_ledger_from_attempts(attempts)
+    if partial_audit["ledger"] != recomputed_ledger:
+        raise AgentEvaluationError("real B4 partial audit ledger does not match attempts")
+    ledger = partial_audit["ledger"]
+    input_tokens = sum(attempt["input_tokens"] for attempt in attempts)
+    output_tokens = sum(attempt["output_tokens"] for attempt in attempts)
+    b1_attempts = [attempt for attempt in attempts if attempt["stage"] == "b1_request"]
+    b4_attempts = [attempt for attempt in attempts if attempt["stage"] == "b4_request"]
+    b1_attempts_by_key: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for attempt in b1_attempts:
+        b1_attempts_by_key.setdefault((attempt["fixture_id"], attempt["trial_index"]), []).append(
+            attempt
+        )
+    expected_b1_attempt_keys = {
+        (row["fixture_id"], row["trial"]) for row in b1_trials if row["model_calls"] > 0
+    }
+    if set(b1_attempts_by_key) != expected_b1_attempt_keys:
+        raise AgentEvaluationError("real B4 partial audit B1 attempts do not cover model-call rows")
+    b4_attempt_keys = {(attempt["fixture_id"], attempt["trial_index"]) for attempt in b4_attempts}
+    expected_b4_attempt_keys = {
+        (row["fixture_id"], row["trial"]) for row in b4_trials if row["model_turns"] > 0
+    }
+    if b4_attempt_keys != expected_b4_attempt_keys:
+        raise AgentEvaluationError("real B4 partial audit B4 attempts do not cover model-turn rows")
+    b1_by_key = {(row["fixture_id"], row["trial"]): row for row in b1_trials}
+    for key, row in b1_by_key.items():
+        trial_attempts = b1_attempts_by_key.get(key, [])
+        if len(trial_attempts) != row["model_calls"] or len(trial_attempts) > 1:
+            raise AgentEvaluationError("real B4 partial audit B1 attempt count does not match row")
+        if not trial_attempts:
+            continue
+        attempt = trial_attempts[0]
+        if (
+            attempt["input_tokens"] != row["input_tokens"]
+            or attempt["output_tokens"] != row["output_tokens"]
+            or attempt["cost_microusd"] != row["cost_microusd"]
+            or attempt["provider_request_id"] != row["provider_request_id"]
+            or attempt["provider_name"] != row["provider_name"]
+            or attempt["provider_model_name"] != row["provider_model_name"]
+            or attempt["provider_fingerprint"] != row["provider_fingerprint"]
+            or (attempt["status"] == "response_rejected_accounted")
+            != (row["status"] == "output_rejected")
+            or attempt["rejection_reason"] != row["rejection_reason"]
+        ):
+            raise AgentEvaluationError("real B4 partial audit B1 attempt does not match report row")
+    b4_attempts_by_key: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for attempt in b4_attempts:
+        b4_attempts_by_key.setdefault((attempt["fixture_id"], attempt["trial_index"]), []).append(
+            attempt
+        )
+    b4_by_key = {(row["fixture_id"], row["trial"]): row for row in b4_trials}
+    for key, row in b4_by_key.items():
+        trial_attempts = b4_attempts_by_key.get(key, [])
+        turns = [attempt["agent_turn"] for attempt in trial_attempts]
+        request_ids = [
+            attempt["provider_request_id"]
+            for attempt in trial_attempts
+            if attempt["provider_request_id"] is not None
+        ]
+        names = sorted({attempt["provider_name"] for attempt in trial_attempts})
+        models = sorted({attempt["provider_model_name"] for attempt in trial_attempts})
+        fingerprints = sorted(
+            {
+                attempt["provider_fingerprint"]
+                for attempt in trial_attempts
+                if attempt["provider_fingerprint"] is not None
+            }
+        )
+        rejection_reasons = sorted(
+            {
+                attempt["rejection_reason"]
+                for attempt in trial_attempts
+                if attempt["rejection_reason"] is not None
+            }
+        )
+        if (
+            len(trial_attempts) != row["model_turns"]
+            or turns != list(range(1, len(trial_attempts) + 1))
+            or sum(attempt["input_tokens"] for attempt in trial_attempts) != row["input_tokens"]
+            or sum(attempt["output_tokens"] for attempt in trial_attempts) != row["output_tokens"]
+            or sum(attempt["cost_microusd"] for attempt in trial_attempts) != row["cost_microusd"]
+            or request_ids != row["provider_request_ids"]
+            or names != row["provider_response_names"]
+            or models != row["provider_response_models"]
+            or fingerprints != row["provider_fingerprints"]
+            or rejection_reasons != row["structured_output_rejection_reasons"]
+            or row["structured_output_valid"] != (not rejection_reasons)
+        ):
+            raise AgentEvaluationError("real B4 partial audit B4 attempts do not match report row")
+    response_names = sorted({attempt["provider_name"] for attempt in attempts})
+    response_models = sorted({attempt["provider_model_name"] for attempt in attempts})
+    response_fingerprints = sorted(
+        {
+            attempt["provider_fingerprint"]
+            for attempt in attempts
+            if attempt["provider_fingerprint"] is not None
+        }
+    )
+    if (
+        ledger["request_attempts"] != summary["real_provider_requests"]
+        or ledger["provider_responses"] != summary["provider_responses"]
+        or ledger["known_cost_microusd"] != summary["cost_microusd"]
+        or ledger["cost_known"] != summary["cost_known"]
+        or input_tokens != summary["input_tokens"]
+        or output_tokens != summary["output_tokens"]
+        or len(b1_attempts) != summary["b1_model_steps"]
+        or len(b4_attempts) != summary["agent_model_steps"]
+        or response_names != summary["provider_response_names"]
+        or response_models != summary["provider_response_models"]
+        or response_fingerprints != summary["provider_fingerprints"]
+        or sum(row["tool_calls"] for row in b4_trials) != summary["approved_read_only_actions"]
+        or summary["external_tool_calls"] != 0
+        or _terminal_step_failure_counts(b4_trials) != summary["terminal_step_failure_counts"]
+    ):
+        raise AgentEvaluationError("real B4 partial audit ledger does not match report summary")
+    if (
+        summary["expected_provider_response_name"] != _provider_system_id(summary["provider"])
+        or response_names != [summary["expected_provider_response_name"]]
+        or response_models != [summary["model"]]
+    ):
+        raise AgentEvaluationError("real B4 partial audit Provider identities do not match report")
+    if ledger["request_attempts"] > report_authorization["max_provider_requests"]:
+        raise AgentEvaluationError("real B4 partial audit exceeds the authorized request limit")
+    if summary["cost_microusd"] > report["budget"]["max_cost_microusd"]:
+        raise AgentEvaluationError("real B4 report exceeds its declared cost budget")
+    theoretical_requests = expected_trials * (1 + report["budget"]["max_turns"])
+    if (
+        report_authorization["theoretical_max_provider_requests"] != theoretical_requests
+        or report_authorization["max_provider_requests"] < theoretical_requests
+        or audit_authorization["max_agent_input_tokens_per_trial"]
+        != report["budget"]["max_input_tokens"]
+        or audit_authorization["max_output_tokens_per_trial"]
+        != report["budget"]["max_output_tokens"]
+        or audit_authorization["deadline_seconds"] != report["budget"]["deadline_seconds"]
+        or _usd_to_microusd(audit_authorization["declared_budget_usd"])
+        != report["budget"]["max_cost_microusd"]
+    ):
+        raise AgentEvaluationError("real B4 authorization does not match the run budget")
+    _validate_recomputed_metrics(report, b1_trials=b1_trials, b4_trials=b4_trials)
+
+
+def load_b4_real_review_source(
+    report_path: Path,
+) -> tuple[bytes, dict[str, Any], Path, bytes, dict[str, Any]]:
+    """严格加载并验证真实 B4 报告及其同名 completed partial audit。"""
+    report_raw, report = _load_strict_object(report_path, "real B4 report")
+    partial_path = b4_real_partial_report_path(report_path)
+    partial_raw, partial = _load_strict_object(partial_path, "real B4 partial audit")
+    validate_b4_real_review_source(report, partial)
+    _validate_real_report_frozen_sources(report)
+    return report_raw, report, partial_path, partial_raw, partial
+
+
+def _load_strict_object(path: Path, label: str) -> tuple[bytes, dict[str, Any]]:
+    try:
+        raw = path.read_bytes()
+        payload = strict_json_loads(raw)
+    except (OSError, StrictJsonError) as error:
+        raise AgentEvaluationError(f"failed to load {label}") from error
+    if not isinstance(payload, dict):
+        raise AgentEvaluationError(f"{label} must be a JSON object")
+    return raw, payload
+
+
+def _validate_real_report_frozen_sources(report: dict[str, Any]) -> None:
+    source = report["source"]
+    fixtures_raw, fixtures = _load_fixtures(Path(source["fixtures_path"]))
+    split = _load_evaluation_split(Path(source["split_path"]), fixtures)
+    if (
+        hashlib.sha256(fixtures_raw).hexdigest() != source["fixtures_sha256"]
+        or hashlib.sha256(split.raw).hexdigest() != source["split_sha256"]
+    ):
+        raise AgentEvaluationError("real B4 frozen source content does not match report digest")
+    if (
+        fixtures["fixture_set_id"] != report["fixture_set_id"]
+        or split.split_id != report["split_id"]
+    ):
+        raise AgentEvaluationError("real B4 frozen source identity does not match report")
+    fixture_by_id = {fixture["fixture_id"]: fixture for fixture in fixtures["fixtures"]}
+    expected_b1: list[dict[str, Any]] = []
+    expected_b3: list[dict[str, Any]] = []
+    for row in report["b1_trials"]:
+        fixture = fixture_by_id.get(row["fixture_id"])
+        if (
+            fixture is None
+            or row["category"] != fixture["category"]
+            or row["split"] != split.split_by_fixture_id[row["fixture_id"]]
+        ):
+            raise AgentEvaluationError("real B4 B1 trial identity does not match frozen sources")
+        gold = fixture["gold"]
+        if row["status"] == "output_rejected":
+            b1_score = _rejected_b1_score()
+            b3_score = _unavailable_b3_score()
+        else:
+            projection = {
+                "route": row["route"],
+                "fault_phase": row["fault_phase"],
+                "missing_evidence": row["missing_evidence"],
+            }
+            b1_score = _score_b1(projection, gold)
+            b3_score = _score_b3(projection, gold)
+        if (
+            row["task_success"] != b1_score["task_success"]
+            or row["evidence_hit"] != b1_score["evidence_hit"]
+        ):
+            raise AgentEvaluationError("real B4 B1 trial score does not match frozen Gold")
+        expected_b1.append({"split": row["split"], **b1_score})
+        expected_b3.append({"split": row["split"], **b3_score})
+    for row in report["trials"]:
+        fixture = fixture_by_id.get(row["fixture_id"])
+        if (
+            fixture is None
+            or row["category"] != fixture["category"]
+            or row["split"] != split.split_by_fixture_id[row["fixture_id"]]
+        ):
+            raise AgentEvaluationError("real B4 trial identity does not match frozen sources")
+    expected_metrics = {
+        "b1": _aggregate_real_baseline(expected_b1, len(fixtures["fixtures"])),
+        "b3": _aggregate_real_baseline(expected_b3, len(fixtures["fixtures"])),
+    }
+    if any(
+        report["metrics"][baseline] != metrics for baseline, metrics in expected_metrics.items()
+    ):
+        raise AgentEvaluationError("real B4 baseline metrics do not match frozen sources")
+    for split_name, fixture_ids in split.fixture_ids_by_split.items():
+        selected_b1 = [row for row in expected_b1 if row["split"] == split_name]
+        selected_b3 = [row for row in expected_b3 if row["split"] == split_name]
+        expected_split = {
+            "b1": _aggregate_real_baseline(selected_b1, len(fixture_ids)),
+            "b3": _aggregate_real_baseline(selected_b3, len(fixture_ids)),
+        }
+        if any(
+            report["metrics_by_split"][split_name][baseline] != metrics
+            for baseline, metrics in expected_split.items()
+        ):
+            raise AgentEvaluationError("real B4 baseline split metrics do not match frozen sources")
+
+
+def _validate_real_report_shape(report: dict[str, Any]) -> None:
+    if set(report) != _REAL_REPORT_FIELDS:
+        raise AgentEvaluationError("real B4 report fields are invalid")
+    if (
+        report.get("schema_version") != B4_EVALUATION_SCHEMA_VERSION
+        or report.get("evaluation_id") != B4_REAL_EVALUATION_ID
+    ):
+        raise AgentEvaluationError("real B4 report identity is invalid")
+    _require_non_empty_string(report, "fixture_set_id", "real B4 report")
+    _require_non_empty_string(report, "split_id", "real B4 report")
+    _require_timestamp(report, "generated_at", "real B4 report")
+    _validate_evaluation_contract(report.get("evaluation_contract"))
+    source = _require_exact_object(report, "source", _REAL_REPORT_SOURCE_FIELDS, "real B4 report")
+    for field in ("fixtures_path", "split_path"):
+        _require_non_empty_string(source, field, "real B4 report source")
+    for field in ("fixtures_sha256", "split_sha256"):
+        if not _is_sha256(source[field]):
+            raise AgentEvaluationError(f"real B4 report source {field} is invalid")
+    summary = _require_exact_object(
+        report, "summary", _REAL_REPORT_SUMMARY_FIELDS, "real B4 report"
+    )
+    _validate_real_summary(summary)
+    authorization = _require_exact_object(
+        report,
+        "authorization",
+        _REAL_REPORT_AUTHORIZATION_FIELDS,
+        "real B4 report",
+    )
+    _validate_real_authorization(authorization)
+    _validate_budget(report.get("budget"), "real B4 report")
+    for field in ("metrics", "metrics_by_split", "promotion_gate"):
+        if not isinstance(report[field], dict):
+            raise AgentEvaluationError(f"real B4 report {field} is invalid")
+    if set(report["metrics"]) != {"b1", "b3", "b4"}:
+        raise AgentEvaluationError("real B4 report metrics fields are invalid")
+    for metric in report["metrics"].values():
+        if not isinstance(metric, dict):
+            raise AgentEvaluationError("real B4 report metrics are invalid")
+    split_names = set(summary["fixture_count_by_split"])
+    if not split_names or set(report["metrics_by_split"]) != split_names:
+        raise AgentEvaluationError("real B4 report split metrics are invalid")
+    if not all(isinstance(metric, dict) for metric in report["metrics_by_split"].values()):
+        raise AgentEvaluationError("real B4 report split metrics are invalid")
+    promotion_gate = report["promotion_gate"]
+    if (
+        set(promotion_gate) != {"promotion_eligible", "score_split", "passed", "checks", "decision"}
+        or not isinstance(promotion_gate.get("passed"), bool)
+        or not isinstance(promotion_gate.get("checks"), dict)
+        or set(promotion_gate.get("checks", {})) != _REAL_PROMOTION_CHECK_FIELDS
+        or promotion_gate.get("promotion_eligible") is not True
+        or promotion_gate.get("score_split") != summary["primary_score_split"]
+        or promotion_gate["checks"].get("real_model_multi_trial") is not True
+        or promotion_gate["passed"] != all(promotion_gate["checks"].values())
+        or any(not isinstance(value, bool) for value in promotion_gate["checks"].values())
+        or promotion_gate.get("decision")
+        != (
+            "eligible_for_offline_integration_design_review"
+            if promotion_gate["passed"]
+            else "not_eligible_real_model_gate_failed"
+        )
+    ):
+        raise AgentEvaluationError("real B4 report promotion gate is invalid")
+    for field in ("b1_trials", "trials", "limitations"):
+        if not isinstance(report[field], list):
+            raise AgentEvaluationError(f"real B4 report {field} is invalid")
+    if not all(isinstance(row, dict) for row in (*report["b1_trials"], *report["trials"])):
+        raise AgentEvaluationError("real B4 report trial rows are invalid")
+    if not report["limitations"] or not all(
+        isinstance(item, str) and item.strip() for item in report["limitations"]
+    ):
+        raise AgentEvaluationError("real B4 report limitations are invalid")
+
+
+def _validate_real_partial_shape(partial: dict[str, Any]) -> None:
+    if set(partial) != _REAL_PARTIAL_FIELDS:
+        raise AgentEvaluationError("real B4 partial audit fields are invalid")
+    if (
+        partial.get("schema_version") != B4_REAL_PARTIAL_SCHEMA_VERSION
+        or partial.get("artifact_kind") != B4_REAL_PARTIAL_ARTIFACT_KIND
+        or partial.get("evaluation_id") != B4_REAL_EVALUATION_ID
+        or partial.get("status") != "completed"
+        or partial.get("failure") is not None
+    ):
+        raise AgentEvaluationError("real B4 partial audit identity or terminal status is invalid")
+    for field in ("execution_id", "fixture_set_id", "split_id"):
+        _require_non_empty_string(partial, field, "real B4 partial audit")
+    for field in ("generated_at", "updated_at"):
+        _require_timestamp(partial, field, "real B4 partial audit")
+    _validate_evaluation_contract(partial.get("evaluation_contract"))
+    source = _require_exact_object(
+        partial,
+        "source",
+        frozenset({"fixtures_sha256", "split_sha256"}),
+        "real B4 partial audit",
+    )
+    if not all(_is_sha256(source[field]) for field in source):
+        raise AgentEvaluationError("real B4 partial audit source is invalid")
+    authorization = _require_exact_object(
+        partial,
+        "authorization",
+        _REAL_PARTIAL_AUTHORIZATION_FIELDS,
+        "real B4 partial audit",
+    )
+    _validate_partial_authorization(authorization)
+    _validate_budget(partial.get("budget"), "real B4 partial audit")
+    progress = _require_exact_object(
+        partial,
+        "progress",
+        frozenset({"fixture_count", "completed_b1_trials", "completed_b4_trials"}),
+        "real B4 partial audit",
+    )
+    for field in progress:
+        _require_non_negative_int(progress, field, "real B4 partial audit progress")
+    ledger = _require_exact_object(
+        partial,
+        "ledger",
+        frozenset(
+            {
+                "request_attempts",
+                "provider_responses",
+                "known_cost_microusd",
+                "cost_known",
+                "unknown_cost_attempts",
+            }
+        ),
+        "real B4 partial audit",
+    )
+    for field in (
+        "request_attempts",
+        "provider_responses",
+        "known_cost_microusd",
+        "unknown_cost_attempts",
+    ):
+        _require_non_negative_int(ledger, field, "real B4 partial audit ledger")
+    if not isinstance(ledger["cost_known"], bool):
+        raise AgentEvaluationError("real B4 partial audit ledger cost_known is invalid")
+    attempts = partial.get("attempts")
+    if not isinstance(attempts, list) or not attempts:
+        raise AgentEvaluationError("real B4 partial audit attempts are invalid")
+    for ordinal, attempt in enumerate(attempts, start=1):
+        _validate_completed_partial_attempt(attempt, ordinal=ordinal)
+
+
+def _validate_real_summary(summary: dict[str, Any]) -> None:
+    for field in (
+        "fixture_count",
+        "trial_count",
+        "trials_per_fixture",
+        "real_provider_requests",
+        "provider_responses",
+        "b1_model_steps",
+        "agent_model_steps",
+        "external_tool_calls",
+        "approved_read_only_actions",
+        "input_tokens",
+        "output_tokens",
+        "cost_microusd",
+    ):
+        _require_non_negative_int(summary, field, "real B4 report summary")
+    if summary["fixture_count"] < 1 or summary["trials_per_fixture"] < 2:
+        raise AgentEvaluationError("real B4 report summary run dimensions are invalid")
+    if (
+        summary.get("synthetic_only") is not True
+        or summary.get("model_kind") != "real"
+        or summary.get("primary_score_split") != "forward_hidden"
+        or not isinstance(summary.get("cost_known"), bool)
+    ):
+        raise AgentEvaluationError("real B4 report summary identity is invalid")
+    for field in ("provider", "model", "expected_provider_response_name"):
+        _require_non_empty_string(summary, field, "real B4 report summary")
+    for field in ("provider_response_names", "provider_response_models", "provider_fingerprints"):
+        values = summary[field]
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) or not value for value in values
+        ):
+            raise AgentEvaluationError(f"real B4 report summary {field} is invalid")
+    for field in ("fixture_count_by_split", "trial_count_by_split", "terminal_step_failure_counts"):
+        values = summary[field]
+        if not isinstance(values, dict) or not values:
+            raise AgentEvaluationError(f"real B4 report summary {field} is invalid")
+        if any(not isinstance(key, str) or not key for key in values):
+            raise AgentEvaluationError(f"real B4 report summary {field} is invalid")
+        for key in values:
+            _require_non_negative_int(values, key, f"real B4 report summary {field}")
+    if set(summary["fixture_count_by_split"]) != set(summary["trial_count_by_split"]):
+        raise AgentEvaluationError("real B4 report split summaries do not match")
+
+
+def _validate_real_authorization(authorization: dict[str, Any]) -> None:
+    for field in ("max_provider_requests", "theoretical_max_provider_requests"):
+        _require_positive_int(authorization, field, "real B4 report authorization")
+    budget = authorization.get("declared_budget_usd")
+    if not _is_positive_number(budget):
+        raise AgentEvaluationError("real B4 report declared budget is invalid")
+    for field in (
+        "synthetic_data_egress_only",
+        "paid_run_confirmed",
+        "synthetic_data_egress_confirmed",
+    ):
+        if authorization.get(field) is not True:
+            raise AgentEvaluationError(f"real B4 report authorization {field} is invalid")
+
+
+def _validate_partial_authorization(authorization: dict[str, Any]) -> None:
+    for field in ("provider", "model"):
+        _require_non_empty_string(authorization, field, "real B4 partial audit authorization")
+    for field in (
+        "trials_per_fixture",
+        "max_provider_requests",
+        "max_agent_input_tokens_per_trial",
+        "max_output_tokens_per_trial",
+    ):
+        _require_positive_int(authorization, field, "real B4 partial audit authorization")
+    if authorization["trials_per_fixture"] < 2:
+        raise AgentEvaluationError("real B4 partial audit trials_per_fixture is invalid")
+    for field in ("deadline_seconds", "whole_run_timeout_seconds", "declared_budget_usd"):
+        if not _is_positive_number(authorization.get(field)):
+            raise AgentEvaluationError(f"real B4 partial audit authorization {field} is invalid")
+    for field in (
+        "synthetic_data_egress_only",
+        "paid_run_confirmed",
+        "synthetic_data_egress_confirmed",
+    ):
+        if authorization.get(field) is not True:
+            raise AgentEvaluationError(f"real B4 partial audit authorization {field} is invalid")
+
+
+def _validate_budget(payload: Any, label: str) -> None:
+    if not isinstance(payload, dict) or set(payload) != _AGENT_BUDGET_FIELDS:
+        raise AgentEvaluationError(f"{label} budget fields are invalid")
+    for field in (
+        "max_turns",
+        "max_tool_calls",
+        "max_input_tokens",
+        "max_output_tokens",
+        "max_cost_microusd",
+        "max_no_progress_steps",
+    ):
+        _require_positive_int(payload, field, f"{label} budget")
+    if not _is_positive_number(payload.get("deadline_seconds")):
+        raise AgentEvaluationError(f"{label} budget deadline_seconds is invalid")
+
+
+def _validate_evaluation_contract(payload: Any) -> None:
+    if not isinstance(payload, dict) or set(payload) != {
+        "prompt_ids",
+        "schema_ids",
+        "policy_ids",
+        "code_revision",
+    }:
+        raise AgentEvaluationError("real B4 evaluation_contract fields are invalid")
+    for field in ("prompt_ids", "schema_ids", "policy_ids"):
+        values = payload[field]
+        if (
+            not isinstance(values, dict)
+            or not values
+            or any(
+                not isinstance(key, str) or not key or not isinstance(value, str) or not value
+                for key, value in values.items()
+            )
+        ):
+            raise AgentEvaluationError("real B4 evaluation_contract values are invalid")
+    revision = payload["code_revision"]
+    prefix = "nbtriage-source-sha256:"
+    if (
+        not isinstance(revision, str)
+        or not revision.startswith(prefix)
+        or not _is_sha256(revision.removeprefix(prefix))
+    ):
+        raise AgentEvaluationError("real B4 evaluation_contract code_revision is invalid")
+
+
+def _validate_completed_partial_attempt(payload: Any, *, ordinal: int) -> None:
+    if not isinstance(payload, dict) or set(payload) != _REAL_PARTIAL_ATTEMPT_FIELDS:
+        raise AgentEvaluationError("real B4 partial audit attempt fields are invalid")
+    if payload.get("ordinal") != ordinal or payload.get("stage") not in {
+        "b1_request",
+        "b4_request",
+    }:
+        raise AgentEvaluationError("real B4 partial audit attempt identity is invalid")
+    if payload.get("status") not in {"response_accounted", "response_rejected_accounted"}:
+        raise AgentEvaluationError("real B4 partial audit contains an incomplete attempt")
+    for field in ("fixture_id", "provider_name", "provider_model_name"):
+        _require_non_empty_string(payload, field, "real B4 partial audit attempt")
+    _require_positive_int(payload, "trial_index", "real B4 partial audit attempt")
+    if payload["stage"] == "b1_request":
+        if payload["agent_turn"] is not None:
+            raise AgentEvaluationError("real B4 partial audit B1 attempt has an agent turn")
+    else:
+        _require_positive_int(payload, "agent_turn", "real B4 partial audit attempt")
+    for field in ("input_tokens", "output_tokens", "cost_microusd"):
+        _require_non_negative_int(payload, field, "real B4 partial audit attempt")
+    for field in ("unknown_reason", "provider_failure_reason", "provider_http_status"):
+        if payload[field] is not None:
+            raise AgentEvaluationError("real B4 partial audit completed attempt has failure detail")
+    rejected = payload["status"] == "response_rejected_accounted"
+    if rejected != isinstance(payload["rejection_reason"], str):
+        raise AgentEvaluationError("real B4 partial audit attempt rejection is invalid")
+    if rejected and payload["rejection_reason"] not in _PARTIAL_REJECTION_REASONS:
+        raise AgentEvaluationError("real B4 partial audit attempt rejection is invalid")
+    for field in ("provider_request_id", "provider_fingerprint"):
+        if payload[field] is not None and (
+            not isinstance(payload[field], str) or not payload[field]
+        ):
+            raise AgentEvaluationError(f"real B4 partial audit attempt {field} is invalid")
+
+
+def _validate_real_b1_trial(row: dict[str, Any]) -> None:
+    if set(row) != _REAL_B1_TRIAL_FIELDS:
+        raise AgentEvaluationError("real B4 B1 trial fields are invalid")
+    for field in ("fixture_id", "category", "split"):
+        _require_non_empty_string(row, field, "real B4 B1 trial")
+    _require_positive_int(row, "trial", "real B4 B1 trial")
+    for field in ("model_calls", "input_tokens", "output_tokens", "cost_microusd", "latency_ms"):
+        _require_non_negative_int(row, field, "real B4 B1 trial")
+    for field in ("task_success", "evidence_hit", "structured_output_valid", "cost_known"):
+        if not isinstance(row[field], bool):
+            raise AgentEvaluationError(f"real B4 B1 trial {field} is invalid")
+    if row["status"] not in {"completed", "output_rejected"}:
+        raise AgentEvaluationError("real B4 B1 trial status is invalid")
+    rejected = row["status"] == "output_rejected"
+    if rejected != (row["structured_output_valid"] is False):
+        raise AgentEvaluationError("real B4 B1 trial rejection state is inconsistent")
+    if rejected != isinstance(row["rejection_reason"], str):
+        raise AgentEvaluationError("real B4 B1 trial rejection reason is invalid")
+    if rejected and row["rejection_reason"] not in {
+        reason.value for reason in B1ResponseRejectionReason
+    }:
+        raise AgentEvaluationError("real B4 B1 trial rejection reason is invalid")
+    if rejected:
+        if (
+            row["candidate"] is not None
+            or row["route"] is not None
+            or row["fault_phase"] is not None
+        ):
+            raise AgentEvaluationError("real B4 rejected B1 trial contains a candidate")
+    else:
+        _validate_candidate(row["candidate"], "real B4 B1 trial")
+        _require_non_empty_string(row, "route", "real B4 B1 trial")
+        _require_non_empty_string(row, "fault_phase", "real B4 B1 trial")
+    missing_evidence = row["missing_evidence"]
+    if not isinstance(missing_evidence, list) or any(
+        not isinstance(value, str) or not value for value in missing_evidence
+    ):
+        raise AgentEvaluationError("real B4 B1 trial missing_evidence is invalid")
+    for field in (
+        "provider_request_id",
+        "provider_name",
+        "provider_model_name",
+        "provider_fingerprint",
+    ):
+        if row[field] is not None and (not isinstance(row[field], str) or not row[field]):
+            raise AgentEvaluationError(f"real B4 B1 trial {field} is invalid")
+
+
+def _validate_real_b4_trial(row: dict[str, Any]) -> None:
+    if set(row) != _REAL_B4_TRIAL_FIELDS:
+        raise AgentEvaluationError("real B4 trial fields are invalid")
+    for field in ("fixture_id", "category", "split", "status", "stop_reason"):
+        _require_non_empty_string(row, field, "real B4 trial")
+    _require_positive_int(row, "trial", "real B4 trial")
+    for field in (
+        "useful_action_count",
+        "non_final_action_count",
+        "model_turns",
+        "tool_calls",
+        "input_tokens",
+        "output_tokens",
+        "blocked_action_count",
+        "latency_ms",
+        "cost_microusd",
+    ):
+        _require_non_negative_int(row, field, "real B4 trial")
+    for field in ("task_success", "structured_output_valid", "safety_violation", "cost_known"):
+        if not isinstance(row[field], bool):
+            raise AgentEvaluationError(f"real B4 trial {field} is invalid")
+    if row["status"] not in {status.value for status in AgentRunStatus}:
+        raise AgentEvaluationError("real B4 trial status is invalid")
+    if row["stop_reason"] not in {reason.value for reason in AgentStopReason}:
+        raise AgentEvaluationError("real B4 trial stop_reason is invalid")
+    for field in (
+        "structured_output_rejection_reasons",
+        "action_kinds",
+        "evidence_slots",
+        "provider_request_ids",
+        "provider_response_names",
+        "provider_response_models",
+        "provider_fingerprints",
+    ):
+        values = row[field]
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) or not value for value in values
+        ):
+            raise AgentEvaluationError(f"real B4 trial {field} is invalid")
+    if row["candidate"] is None:
+        if row["review_context"] is not None:
+            raise AgentEvaluationError("real B4 trial has review context without a candidate")
+    else:
+        _validate_candidate(row["candidate"], "real B4 trial")
+        if not isinstance(row["review_context"], dict):
+            raise AgentEvaluationError("real B4 trial review_context is invalid")
+    terminal_failure = row["terminal_step_failure"]
+    if terminal_failure is not None and not isinstance(terminal_failure, dict):
+        raise AgentEvaluationError("real B4 trial terminal_step_failure is invalid")
+
+
+def _validate_candidate(payload: Any, label: str) -> None:
+    if not isinstance(payload, dict) or set(payload) != {"answer", "citations"}:
+        raise AgentEvaluationError(f"{label} candidate fields are invalid")
+    _require_non_empty_string(payload, "answer", f"{label} candidate")
+    citations = payload["citations"]
+    if not isinstance(citations, list) or any(
+        not isinstance(value, str) or not value for value in citations
+    ):
+        raise AgentEvaluationError(f"{label} candidate citations are invalid")
+
+
+def _validate_recomputed_metrics(
+    report: dict[str, Any],
+    *,
+    b1_trials: list[dict[str, Any]],
+    b4_trials: list[dict[str, Any]],
+) -> None:
+    b1_scores = [_b1_score_from_report_row(row) for row in b1_trials]
+    expected_b1 = _aggregate_real_baseline(b1_scores, report["summary"]["fixture_count"])
+    expected_b4 = _aggregate_b4(b4_trials)
+    if report["metrics"]["b1"] != expected_b1 or report["metrics"]["b4"] != expected_b4:
+        raise AgentEvaluationError("real B4 report metrics do not match trial rows")
+    split_fixture_counts = report["summary"]["fixture_count_by_split"]
+    expected_by_split: dict[str, dict[str, Any]] = {}
+    for split, fixture_count in split_fixture_counts.items():
+        selected_b1 = [row for row in b1_scores if row["split"] == split]
+        selected_b4 = [row for row in b4_trials if row["split"] == split]
+        expected_by_split[split] = {
+            "b1": _aggregate_real_baseline(selected_b1, fixture_count),
+            "b3": report["metrics_by_split"][split]["b3"],
+            "b4": _aggregate_b4(selected_b4),
+        }
+    for split, expected in expected_by_split.items():
+        if (
+            report["metrics_by_split"][split]["b1"] != expected["b1"]
+            or report["metrics_by_split"][split]["b4"] != expected["b4"]
+        ):
+            raise AgentEvaluationError("real B4 report split metrics do not match trial rows")
+    if report["metrics"]["b3"] != _aggregate_split_baseline_metrics(
+        report["metrics_by_split"],
+        fixture_count=report["summary"]["fixture_count"],
+        baseline="b3",
+    ):
+        raise AgentEvaluationError("real B4 report B3 metrics do not match split metrics")
+    expected_gate = _promotion_gate(
+        expected_by_split[report["summary"]["primary_score_split"]],
+        promotion_eligible=True,
+        score_split=report["summary"]["primary_score_split"],
+    )
+    expected_gate["checks"].update(
+        {
+            "same_provider_model_baselines": True,
+            "provider_response_identity_complete": True,
+            "provider_response_consistent": True,
+            "provider_response_matches_backend": True,
+            "provider_response_model_identity_complete": True,
+            "provider_response_model_consistent": True,
+            "provider_response_model_matches_request": True,
+            "provider_request_cap_respected": (
+                report["summary"]["real_provider_requests"]
+                <= report["authorization"]["max_provider_requests"]
+            ),
+            "cost_known_and_within_declared_budget": (
+                report["summary"]["cost_known"]
+                and report["summary"]["cost_microusd"] <= report["budget"]["max_cost_microusd"]
+            ),
+        }
+    )
+    expected_gate["passed"] = all(expected_gate["checks"].values())
+    expected_gate["decision"] = (
+        "eligible_for_offline_integration_design_review"
+        if expected_gate["passed"]
+        else "not_eligible_real_model_gate_failed"
+    )
+    if report["promotion_gate"] != expected_gate:
+        raise AgentEvaluationError("real B4 promotion gate does not match report evidence")
+
+
+def _b1_score_from_report_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "split": row["split"],
+        "task_success": row["task_success"],
+        "evidence_hit": row["evidence_hit"],
+        "structured_output_valid": row["structured_output_valid"],
+        "model_turns": 0 if row["route"] == "abstain" else 1,
+        "tool_calls": 0,
+    }
+
+
+def _aggregate_split_baseline_metrics(
+    metrics_by_split: dict[str, dict[str, Any]],
+    *,
+    fixture_count: int,
+    baseline: str,
+) -> dict[str, Any]:
+    split_metrics = [metrics[baseline] for metrics in metrics_by_split.values()]
+    expected_fields = {
+        "case_count",
+        "trial_count",
+        "task_success_rate",
+        "evidence_hit_rate",
+        "average_model_turns",
+        "average_tool_calls",
+        "input_available_rate",
+    }
+    if any(
+        not isinstance(metrics, dict) or set(metrics) != expected_fields
+        for metrics in split_metrics
+    ):
+        raise AgentEvaluationError("real B4 B3 split metrics fields are invalid")
+    trial_count = sum(metrics["trial_count"] for metrics in split_metrics)
+    if trial_count < 1:
+        raise AgentEvaluationError("real B4 B3 split metrics trial count is invalid")
+    for metrics in split_metrics:
+        for field in ("case_count", "trial_count"):
+            _require_non_negative_int(metrics, field, "real B4 B3 split metrics")
+        for field in expected_fields - {"case_count", "trial_count"}:
+            value = metrics[field]
+            if (
+                not isinstance(value, int | float)
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+            ):
+                raise AgentEvaluationError("real B4 B3 split metrics value is invalid")
+    aggregate: dict[str, Any] = {
+        "case_count": fixture_count,
+        "trial_count": trial_count,
+    }
+    for field in expected_fields - {"case_count", "trial_count"}:
+        aggregate[field] = (
+            sum(metrics[field] * metrics["trial_count"] for metrics in split_metrics) / trial_count
+        )
+    return aggregate
+
+
+def _partial_ledger_from_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    costs = [attempt["cost_microusd"] for attempt in attempts]
+    return {
+        "request_attempts": len(attempts),
+        "provider_responses": len(attempts),
+        "known_cost_microusd": sum(costs),
+        "cost_known": True,
+        "unknown_cost_attempts": 0,
+    }
+
+
+def _count_rows_by_split(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        split = row.get("split")
+        if not isinstance(split, str) or not split:
+            raise AgentEvaluationError("real B4 report trial split is invalid")
+        counts[split] = counts.get(split, 0) + 1
+    return counts
+
+
+def _trial_keys(
+    rows: list[dict[str, Any]],
+    *,
+    trials_per_fixture: int,
+) -> set[tuple[str, str, int]]:
+    keys: set[tuple[str, str, int]] = set()
+    for row in rows:
+        fixture_id = row.get("fixture_id")
+        split = row.get("split")
+        trial = row.get("trial")
+        if (
+            not isinstance(fixture_id, str)
+            or not fixture_id
+            or not isinstance(split, str)
+            or not split
+            or not isinstance(trial, int)
+            or isinstance(trial, bool)
+            or not 1 <= trial <= trials_per_fixture
+        ):
+            raise AgentEvaluationError("real B4 report trial identity is invalid")
+        key = (fixture_id, split, trial)
+        if key in keys:
+            raise AgentEvaluationError("real B4 report contains duplicate trial rows")
+        keys.add(key)
+    return keys
+
+
+def _require_exact_object(
+    payload: dict[str, Any],
+    field: str,
+    fields: frozenset[str],
+    label: str,
+) -> dict[str, Any]:
+    value = payload.get(field)
+    if not isinstance(value, dict) or set(value) != fields:
+        raise AgentEvaluationError(f"{label} {field} fields are invalid")
+    return value
+
+
+def _require_non_empty_string(payload: dict[str, Any], field: str, label: str) -> None:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise AgentEvaluationError(f"{label} {field} is invalid")
+
+
+def _require_timestamp(payload: dict[str, Any], field: str, label: str) -> None:
+    value = payload.get(field)
+    if not isinstance(value, str):
+        raise AgentEvaluationError(f"{label} {field} is invalid")
+    try:
+        timestamp = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise AgentEvaluationError(f"{label} {field} is invalid") from error
+    if timestamp.tzinfo is None:
+        raise AgentEvaluationError(f"{label} {field} is invalid")
+
+
+def _require_non_negative_int(payload: dict[str, Any], field: str, label: str) -> None:
+    value = payload.get(field)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise AgentEvaluationError(f"{label} {field} is invalid")
+
+
+def _require_positive_int(payload: dict[str, Any], field: str, label: str) -> None:
+    _require_non_negative_int(payload, field, label)
+    if payload[field] < 1:
+        raise AgentEvaluationError(f"{label} {field} is invalid")
+
+
+def _is_positive_number(value: Any) -> bool:
+    return (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def _partial_attempt(payload: dict[str, Any], ordinal: int) -> dict[str, Any]:
     attempts = payload["attempts"]
     if not 1 <= ordinal <= len(attempts):
@@ -543,10 +1742,10 @@ class _ProviderRequestLedger:
     response_count: int = 0
     cost_microusd: int = 0
     cost_known: bool = True
-    provider_names: list[str] = field(default_factory=list)
-    provider_model_names: list[str] = field(default_factory=list)
-    provider_fingerprints: list[str] = field(default_factory=list)
-    responses: list[_ProviderResponseRecord] = field(default_factory=list)
+    provider_names: list[str] = dataclass_field(default_factory=list)
+    provider_model_names: list[str] = dataclass_field(default_factory=list)
+    provider_fingerprints: list[str] = dataclass_field(default_factory=list)
+    responses: list[_ProviderResponseRecord] = dataclass_field(default_factory=list)
 
     def reserve(
         self,

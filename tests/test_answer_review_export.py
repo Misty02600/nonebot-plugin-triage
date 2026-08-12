@@ -1,10 +1,14 @@
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 from tools.nbtriage_maintainer.agent_evaluation import (
     B4_REAL_EVALUATION_ID,
+    RealGatePartialAudit,
+    b4_real_partial_report_path,
+    evaluate_b4_real_fixtures,
     evaluate_b4_scripted_fixtures,
 )
 from tools.nbtriage_maintainer.answer_quality_evaluation import (
@@ -19,29 +23,126 @@ from tools.nbtriage_maintainer.answer_review_export import (
 )
 from tools.nbtriage_maintainer.cli import main
 
+from nbtriage.bounded_agent import (
+    AgentStepRequest,
+    AgentStepResponse,
+    AgentStepUsage,
+    parse_agent_action,
+)
+from nbtriage.rag import B1ModelRequest, B1ModelResponse
+
 ROOT = Path(__file__).resolve().parents[1]
 B4_FIXTURES = ROOT / "evals" / "datasets" / "fixtures" / "b4-bounded-agent-v1.json"
 B4_SPLIT = ROOT / "evals" / "datasets" / "splits" / "b4-gate-v1.json"
 RUBRIC = ROOT / "evals" / "rubrics" / "answer-quality-v1.json"
 
 
-def _real_report(path: Path, *, promotion_passed: bool = True) -> Path:
-    report = asyncio.run(evaluate_b4_scripted_fixtures(B4_FIXTURES, B4_SPLIT))
-    report["evaluation_id"] = B4_REAL_EVALUATION_ID
-    report["summary"].update(
+def _b1_output(case_id: str) -> str:
+    values = {
+        "b4-runtime-case": ("handle", ["logs", "reproduction_steps"]),
+        "b4-support-case": ("boot", ["component_versions", "logs"]),
+        "b4-evidence-case": ("connect", ["configuration", "logs"]),
+    }
+    phase, missing = values[case_id]
+    return json.dumps(
         {
-            "model_kind": "real",
-            "provider": "fixture-provider",
-            "model": "fixture-model",
-            "trials_per_fixture": 2,
-        }
+            "version_values": ["3.12"] if case_id == "b4-runtime-case" else [],
+            "missing_evidence": missing,
+            "symptoms": ["timeout_or_disconnect" if phase == "connect" else "exception"],
+            "fault_phase": phase,
+            "candidate_owners": ["adapter" if phase == "connect" else "plugin"],
+            "route": "needs_evidence",
+            "answer": "需要更多证据。",
+            "citations": [],
+        },
+        ensure_ascii=False,
     )
-    report["promotion_gate"]["checks"]["real_model_multi_trial"] = True
+
+
+class _ReviewB1Client:
+    async def generate(self, request: B1ModelRequest) -> B1ModelResponse:
+        return B1ModelResponse(
+            output_text=_b1_output(request.case_input["case_id"]),
+            input_tokens=50,
+            output_tokens=20,
+            cost_microusd=100,
+            provider_request_id="b1-review-fixture",
+            provider_name="fixture-provider",
+            provider_model_name="fixture-model",
+            provider_fingerprint="fixture-fingerprint",
+            latency_ms=2,
+        )
+
+
+class _ReviewAgentClient:
+    def __init__(self, actions_by_case: dict[str, list[dict]]) -> None:
+        self._actions_by_case = actions_by_case
+
+    async def choose_action(self, request: AgentStepRequest) -> AgentStepResponse:
+        action = parse_agent_action(self._actions_by_case[request.case_id][len(request.trajectory)])
+        return AgentStepResponse(
+            action=action,
+            usage=AgentStepUsage(
+                provider_requests=1,
+                input_tokens=100,
+                output_tokens=25,
+                cost_microusd=100,
+            ),
+            provider_request_id=f"agent-{request.case_id}-{len(request.trajectory) + 1}",
+            provider_name="fixture-provider",
+            provider_model_name="fixture-model",
+            provider_fingerprint="fixture-fingerprint",
+            latency_ms=3,
+        )
+
+
+def _real_report(path: Path, *, promotion_passed: bool = True) -> Path:
+    payload = json.loads(B4_FIXTURES.read_text(encoding="utf-8"))
+    actions_by_case = {
+        fixture["case"]["case_id"]: fixture["b4_trials"][0]["actions"]
+        for fixture in payload["fixtures"]
+    }
+    partial = RealGatePartialAudit.create(
+        b4_real_partial_report_path(path),
+        provider="fixture-provider",
+        model="fixture-model",
+        trials_per_fixture=2,
+        max_provider_requests=40,
+        max_agent_input_tokens_per_trial=4000,
+        max_output_tokens_per_trial=1000,
+        deadline_seconds=5,
+        whole_run_timeout_seconds=900,
+        declared_budget_usd=1.0,
+        paid_run_confirmed=True,
+        synthetic_data_egress_confirmed=True,
+    )
+    report = asyncio.run(
+        evaluate_b4_real_fixtures(
+            B4_FIXTURES,
+            B4_SPLIT,
+            b1_client_factory=_ReviewB1Client,
+            agent_client_factory=lambda: _ReviewAgentClient(actions_by_case),
+            provider="fixture-provider",
+            model="fixture-model",
+            trials_per_fixture=2,
+            max_provider_requests=40,
+            max_agent_input_tokens_per_trial=4000,
+            max_output_tokens_per_trial=1000,
+            deadline_seconds=5,
+            declared_budget_usd=1.0,
+            paid_run_confirmed=True,
+            synthetic_data_egress_confirmed=True,
+            partial_audit=partial,
+        )
+    )
     report["promotion_gate"]["passed"] = promotion_passed
-    report["promotion_gate"]["decision"] = (
-        "eligible_for_fixture" if promotion_passed else "not_eligible_real_model_gate_failed"
-    )
+    if promotion_passed:
+        report["promotion_gate"]["decision"] = "eligible_for_offline_integration_design_review"
+    else:
+        report["promotion_gate"]["checks"]["task_success_improves_on_best_baseline"] = False
+        report["promotion_gate"]["decision"] = "not_eligible_real_model_gate_failed"
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    partial.complete()
     return path
 
 
@@ -102,8 +203,15 @@ def test_export_builds_forward_hidden_offline_review_package(tmp_path: Path) -> 
     assert samples["source_evaluation"]["score_split"] == "forward_hidden"
     assert samples["source_evaluation"]["real_model_multi_trial"] is True
     assert samples["source_evaluation"]["promotion_gate_passed"] is True
+    audit_path = b4_real_partial_report_path(report_path).resolve()
+    assert Path(samples["source_evaluation"]["audit_path"]) == audit_path
+    assert (
+        samples["source_evaluation"]["audit_sha256"]
+        == hashlib.sha256(audit_path.read_bytes()).hexdigest()
+    )
     assert [item["sample_id"] for item in samples["fixtures"]] == [
-        "b4-evidence-interruption--b4-trial-1"
+        "b4-evidence-interruption--b4-trial-1",
+        "b4-evidence-interruption--b4-trial-2",
     ]
     sample = samples["fixtures"][0]
     assert sample["candidate"]["answer"] == "补充回执确认连接关闭异常来自适配器路径。"
@@ -128,11 +236,11 @@ def test_export_rejects_nonfinite_value_in_source_report(tmp_path: Path) -> None
     raw = report_path.read_text(encoding="utf-8")
     report_path.write_text(raw[:-2] + ',\n  "nonfinite": NaN\n}\n', encoding="utf-8")
 
-    with pytest.raises(AnswerReviewExportError, match="failed to load B4 evaluation report"):
+    with pytest.raises(AnswerReviewExportError, match="failed to load real B4 report"):
         build_b4_answer_quality_review(report_path, B4_FIXTURES, B4_SPLIT, RUBRIC)
 
 
-def test_export_ignores_terminal_step_failures_and_keeps_completed_only(
+def test_export_rejects_report_with_unaccounted_terminal_step_failure(
     tmp_path: Path,
 ) -> None:
     report_path = _real_report(tmp_path / "b4-real.json")
@@ -160,18 +268,21 @@ def test_export_ignores_terminal_step_failures_and_keeps_completed_only(
         "latency_ms": 1,
     }
     report["trials"].append(failed)
+    report["summary"]["trial_count"] += 1
+    report["summary"]["trial_count_by_split"]["forward_hidden"] += 1
+    partial_path = b4_real_partial_report_path(report_path)
+    partial = json.loads(partial_path.read_text(encoding="utf-8"))
+    partial["progress"]["completed_b4_trials"] += 1
     report_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+    partial_path.write_text(json.dumps(partial, ensure_ascii=False), encoding="utf-8")
 
-    samples, _ = build_b4_answer_quality_review(
-        report_path,
-        B4_FIXTURES,
-        B4_SPLIT,
-        RUBRIC,
-    )
-
-    assert [item["sample_id"] for item in samples["fixtures"]] == [
-        "b4-evidence-interruption--b4-trial-1"
-    ]
+    with pytest.raises(AnswerReviewExportError, match="rows do not cover every declared trial"):
+        build_b4_answer_quality_review(
+            report_path,
+            B4_FIXTURES,
+            B4_SPLIT,
+            RUBRIC,
+        )
 
 
 def test_pending_review_template_cannot_be_scored(tmp_path: Path) -> None:
@@ -319,22 +430,11 @@ def test_completed_review_requires_strict_source_code_revision(
         )
 
 
-def test_human_scores_cannot_override_failed_source_b4_gate(tmp_path: Path) -> None:
-    report_path, samples_path, annotations_path = _write_review_package(
-        tmp_path,
-        promotion_passed=False,
-    )
-    _complete_annotations(annotations_path)
+def test_export_rejects_source_gate_changed_without_evidence(tmp_path: Path) -> None:
+    report_path = _real_report(tmp_path / "failed-real.json", promotion_passed=False)
 
-    report = evaluate_answer_quality(
-        RUBRIC,
-        samples_path,
-        annotations_path,
-        source_report_path=report_path,
-    )
-
-    assert report["quality_claim_gate"]["eligible"] is False
-    assert report["quality_claim_gate"]["decision"] == "not_eligible_source_b4_gate_failed"
+    with pytest.raises(AnswerReviewExportError, match="promotion gate does not match"):
+        build_b4_answer_quality_review(report_path, B4_FIXTURES, B4_SPLIT, RUBRIC)
 
 
 def test_export_rejects_scripted_or_mismatched_source(tmp_path: Path) -> None:
@@ -351,6 +451,94 @@ def test_export_rejects_scripted_or_mismatched_source(tmp_path: Path) -> None:
     tampered_path.write_text(json.dumps(tampered), encoding="utf-8")
     with pytest.raises(AnswerReviewExportError, match="different fixtures"):
         build_b4_answer_quality_review(real_path, tampered_path, B4_SPLIT, RUBRIC)
+
+
+def test_export_rejects_relabelled_scripted_report_even_with_sibling_audit(
+    tmp_path: Path,
+) -> None:
+    real_path = _real_report(tmp_path / "real.json")
+    scripted = asyncio.run(evaluate_b4_scripted_fixtures(B4_FIXTURES, B4_SPLIT))
+    scripted["evaluation_id"] = B4_REAL_EVALUATION_ID
+    real_path.write_text(json.dumps(scripted), encoding="utf-8")
+
+    with pytest.raises(AnswerReviewExportError, match="report fields are invalid"):
+        build_b4_answer_quality_review(real_path, B4_FIXTURES, B4_SPLIT, RUBRIC)
+
+
+def test_export_rejects_handwritten_real_report_and_partial(tmp_path: Path) -> None:
+    report_path = tmp_path / "handwritten.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "evaluation_id": B4_REAL_EVALUATION_ID,
+                "summary": {"model_kind": "real"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    b4_real_partial_report_path(report_path).write_text(
+        json.dumps(
+            {
+                "schema_version": 4,
+                "artifact_kind": "b4-real-partial",
+                "evaluation_id": B4_REAL_EVALUATION_ID,
+                "status": "completed",
+                "failure": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AnswerReviewExportError, match="report fields are invalid"):
+        build_b4_answer_quality_review(report_path, B4_FIXTURES, B4_SPLIT, RUBRIC)
+
+
+def test_export_rejects_mismatched_completed_partial_audit(tmp_path: Path) -> None:
+    report_path = _real_report(tmp_path / "real.json")
+    partial_path = b4_real_partial_report_path(report_path)
+    partial = json.loads(partial_path.read_text(encoding="utf-8"))
+    partial["authorization"]["model"] = "other-model"
+    partial_path.write_text(json.dumps(partial), encoding="utf-8")
+
+    with pytest.raises(AnswerReviewExportError, match="model authorization does not match"):
+        build_b4_answer_quality_review(report_path, B4_FIXTURES, B4_SPLIT, RUBRIC)
+
+
+@pytest.mark.parametrize(
+    ("target", "mutate", "message"),
+    [
+        (
+            "report",
+            lambda payload: payload["b1_trials"][0].update(category="other-category"),
+            "identity does not match frozen sources",
+        ),
+        (
+            "report",
+            lambda payload: payload["trials"][0]["provider_request_ids"].append("forged"),
+            "attempts do not match report row",
+        ),
+        (
+            "partial",
+            lambda payload: payload["attempts"][1].update(agent_turn=99),
+            "attempts do not match report row",
+        ),
+    ],
+)
+def test_export_rejects_report_partial_projection_drift(
+    tmp_path: Path,
+    target: str,
+    mutate,
+    message: str,
+) -> None:
+    report_path = _real_report(tmp_path / "real.json")
+    target_path = report_path if target == "report" else b4_real_partial_report_path(report_path)
+    payload = json.loads(target_path.read_text(encoding="utf-8"))
+    mutate(payload)
+    target_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(AnswerReviewExportError, match=message):
+        build_b4_answer_quality_review(report_path, B4_FIXTURES, B4_SPLIT, RUBRIC)
 
 
 def test_export_cli_writes_new_local_package_without_overwrite(tmp_path: Path) -> None:
