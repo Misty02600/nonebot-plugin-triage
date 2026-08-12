@@ -19,7 +19,7 @@ from tools.nbtriage_maintainer.sessions import (
     create_session_from_report,
 )
 
-from nbtriage.evidence_receipts import parse_evidence_receipt
+from nbtriage.evidence_receipts import create_evidence_receipt
 
 
 def _receipt(
@@ -38,9 +38,9 @@ def _receipt(
             "line_count": 20,
         },
     }
-    return parse_evidence_receipt(
+    return create_evidence_receipt(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "receipt_id": receipt_id,
             "session_id": session_id,
             "case_id": case_id,
@@ -327,6 +327,27 @@ def test_evidence_session_round_trips_without_raw_material(tmp_path: Path) -> No
     assert store.load("session-1") == updated
     assert "raw_body" not in payload
     assert "content_sha256" in payload
+    assert "receipt_revision" in payload
+
+
+def test_session_store_rejects_legacy_schema_without_receipt_lineage(tmp_path: Path) -> None:
+    report_path = _prediction_report(
+        tmp_path / "report.json",
+        "needs_evidence",
+        missing_evidence=["reproduction_steps"],
+    )
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    updated = attach_evidence_receipt(
+        session, _receipt("reproduction_steps", receipt_id="receipt-1")
+    )
+    store = FileSessionStore(tmp_path / "sessions")
+    path = store.create(updated)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 3
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SessionStoreError, match="unsupported session schema_version"):
+        store.load("session-1")
 
 
 def test_session_store_rejects_tampered_receipt_order(tmp_path: Path) -> None:
@@ -350,7 +371,7 @@ def test_session_store_rejects_tampered_receipt_order(tmp_path: Path) -> None:
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(SessionStoreError, match="order violates B3 policy"):
+    with pytest.raises(SessionStoreError, match="receipt_revision does not match"):
         store.load("session-1")
 
 
@@ -694,6 +715,7 @@ def test_file_session_store_wraps_timestamp_overflow(tmp_path: Path) -> None:
         ("receipt_id", "receipt-forged"),
         ("slot", "logs"),
         ("content_sha256", "f" * 64),
+        ("receipt_revision", "nbtriage-evidence-receipt-sha256:" + "f" * 64),
         ("byte_count", 999),
     ],
 )

@@ -8,7 +8,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from nbtriage.evidence_receipts import EvidenceReceiptError, parse_evidence_receipt
+from nbtriage.evidence_receipts import (
+    EvidenceReceiptError,
+    create_evidence_receipt,
+    parse_evidence_receipt,
+)
 from nbtriage.rag import ALLOWED_EVIDENCE_SLOTS
 
 
@@ -29,7 +33,13 @@ def evaluate_b3_evidence_receipts(fixtures_path: Path) -> dict[str, Any]:
         request = fixture["request"]
         error_category = None
         try:
-            receipt = parse_evidence_receipt(fixture["receipt"])
+            receipt_payload = fixture["receipt"]
+            receipt = (
+                create_evidence_receipt(receipt_payload)
+                if receipt_payload.get("schema_version") == 2
+                and "receipt_revision" not in receipt_payload
+                else parse_evidence_receipt(receipt_payload)
+            )
             if (
                 receipt.session_id != request["session_id"]
                 or receipt.case_id != request["case_id"]

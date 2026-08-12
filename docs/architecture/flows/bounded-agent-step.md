@@ -25,7 +25,7 @@ flowchart TD
     K --> O
     O --> T["追加结构化 trajectory 与 usage"]
     T --> S
-    H -->|"合格回执恢复；不重放 action"| O
+    H -->|"schema v2 合格回执恢复<br/>重算 receipt_revision；不重放 action"| O
     F --> C["completed"]
 ```
 
@@ -48,10 +48,14 @@ flowchart TD
   Provider 支持 strict tool definition 时显式启用；DeepSeek Responses 当前 `strict=false`，不会跳过
   Pydantic 与领域层的本地二次校验；
 - 持久状态不包含 Pydantic AI message history、原始日志、秘密、身份、Gold 或私有 Chain-of-Thought；
+- `request_evidence` 成功 observation 保存 receipt / run / Case / slot、原始材料指纹、字节数、规范化 facts
+  与域分隔 `receipt_revision`；`AgentRunState.schema_version=2` 在读取时重算版本，拒绝旧 observation 或
+  不同步改写。该版本不包含原始内容且不是签名，不能证明 facts 与外部材料真实一致；
 - 重复 action、连续无进展、token/cost/deadline/turn/tool 超限、取消和模型错误都有稳定停止原因；
 - Provider 请求、响应后拒绝或本地 step 失败继续使用 `MODEL_ERROR`，不伪造一条合法 action trajectory；
-  `AgentRunState.schema_version=1` 通过可选 `terminal_step_failure` 向后兼容地补充终态分类。旧 state 缺少该
-  字段时仍按 `None` 读取；新记录只允许出现在 `STOPPED + MODEL_ERROR`。响应后拒绝保存稳定 rejection reason、
+  `terminal_step_failure` 曾在 `AgentRunState.schema_version=1` 中以可选字段向后兼容地补充终态分类；当前
+  schema v2 仍保留该可选字段，但因回执 observation 谱系升级而不再读取旧 state。新记录只允许出现在
+  `STOPPED + MODEL_ERROR`。响应后拒绝保存稳定 rejection reason、
   本步 usage、request ID、Provider identity 与 latency；Provider 请求失败只保存稳定 failure reason 与可选
   HTTP status；四类失败都保存本地测得的 latency，本地 validation / step error 除类别和 latency 外不保存
   其他细节，任何异常文本都不进入领域状态；

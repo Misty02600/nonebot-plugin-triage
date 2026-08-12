@@ -15,6 +15,7 @@ from uuid import uuid4
 from nbtriage.evidence_receipts import (
     EvidenceReceipt,
     EvidenceReceiptError,
+    evidence_receipt_revision,
     parse_evidence_receipt,
 )
 from tools.nbtriage_maintainer.evidence_policy import EvidencePolicyError, select_next_evidence
@@ -23,7 +24,7 @@ from tools.nbtriage_maintainer.runtime_results import (
     runtime_result_validation_error,
 )
 
-SESSION_SCHEMA_VERSION = 3
+SESSION_SCHEMA_VERSION = 4
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 ROUTE_ACTIONS = {
@@ -337,6 +338,10 @@ def attach_evidence_receipt(
     Raises:
         SessionStateError: 会话状态、绑定、槽位或回执唯一性不满足契约。
     """
+    try:
+        normalized_receipt = parse_evidence_receipt(receipt.to_dict())
+    except EvidenceReceiptError as error:
+        raise SessionStateError("evidence receipt failed validation") from error
     if (
         session.route != "needs_evidence"
         or session.status != "awaiting_evidence"
@@ -344,13 +349,16 @@ def attach_evidence_receipt(
         or session.action.status != "proposed"
     ):
         raise SessionStateError("evidence receipt requires an awaiting_evidence action")
-    if receipt.session_id != session.session_id or receipt.case_id != session.case_id:
+    if (
+        normalized_receipt.session_id != session.session_id
+        or normalized_receipt.case_id != session.case_id
+    ):
         raise SessionStateError("evidence receipt is bound to a different session or case")
-    if [receipt.slot] != session.action.requested_evidence:
+    if [normalized_receipt.slot] != session.action.requested_evidence:
         raise SessionStateError("evidence receipt slot does not match the current request")
-    if any(item.receipt_id == receipt.receipt_id for item in session.evidence_receipts):
+    if any(item.receipt_id == normalized_receipt.receipt_id for item in session.evidence_receipts):
         raise SessionStateError("evidence receipt_id has already been accepted")
-    if any(item.slot == receipt.slot for item in session.evidence_receipts):
+    if any(item.slot == normalized_receipt.slot for item in session.evidence_receipts):
         raise SessionStateError("evidence slot has already been accepted")
 
     timestamp = occurred_at or datetime.now(UTC).isoformat()
@@ -358,16 +366,17 @@ def attach_evidence_receipt(
         sequence=len(session.events) + 1,
         event_type="evidence_received",
         occurred_at=timestamp,
-        actor=receipt.submitted_by,
+        actor=normalized_receipt.submitted_by,
         details={
             "action_id": session.action.action_id,
-            "receipt_id": receipt.receipt_id,
-            "slot": receipt.slot,
-            "content_sha256": receipt.content_sha256,
-            "byte_count": receipt.byte_count,
+            "receipt_id": normalized_receipt.receipt_id,
+            "slot": normalized_receipt.slot,
+            "content_sha256": normalized_receipt.content_sha256,
+            "receipt_revision": normalized_receipt.receipt_revision,
+            "byte_count": normalized_receipt.byte_count,
         },
     )
-    receipts = [*session.evidence_receipts, receipt]
+    receipts = [*session.evidence_receipts, normalized_receipt]
     remaining = _remaining_evidence_candidates(session.prediction, receipts)
     selected = _select_evidence_from_candidates(session.prediction, remaining)
     if selected is None:
@@ -378,7 +387,7 @@ def attach_evidence_receipt(
             action=replace(
                 session.action,
                 status="completed",
-                result=_receipt_action_result(receipt),
+                result=_receipt_action_result(normalized_receipt),
             ),
             evidence_receipts=receipts,
             events=[*session.events, accepted_event],
@@ -614,9 +623,11 @@ def _validate_evidence_session(session: SupportSession) -> None:
     remaining = list(candidates)
     for receipt in session.evidence_receipts:
         try:
-            parse_evidence_receipt(receipt.to_dict())
+            normalized = parse_evidence_receipt(receipt.to_dict())
         except EvidenceReceiptError as error:
             raise SessionStoreError(f"invalid persisted evidence receipt: {error}") from error
+        if normalized.receipt_revision != evidence_receipt_revision(normalized):
+            raise SessionStoreError("persisted evidence receipt revision does not match content")
         if receipt.session_id != session.session_id or receipt.case_id != session.case_id:
             raise SessionStoreError("persisted evidence receipt binding does not match session")
         if receipt.receipt_id in receipt_ids or receipt.slot in received_slots:
@@ -668,6 +679,7 @@ def _validate_evidence_event_chain(
             "receipt_id": receipt.receipt_id,
             "slot": receipt.slot,
             "content_sha256": receipt.content_sha256,
+            "receipt_revision": receipt.receipt_revision,
             "byte_count": receipt.byte_count,
         }
         if (
@@ -742,6 +754,7 @@ def _receipt_action_result(receipt: EvidenceReceipt) -> dict[str, Any]:
         "receipt_id": receipt.receipt_id,
         "slot": receipt.slot,
         "content_sha256": receipt.content_sha256,
+        "receipt_revision": receipt.receipt_revision,
         "byte_count": receipt.byte_count,
     }
 

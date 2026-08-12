@@ -40,7 +40,7 @@ from nbtriage.bounded_agent import (
     RequestEvidenceAction,
     parse_agent_action,
 )
-from nbtriage.evidence_receipts import EvidenceReceipt, parse_evidence_receipt
+from nbtriage.evidence_receipts import EvidenceReceipt, create_evidence_receipt
 from nbtriage.model_contracts import (
     B1_OUTPUT_SCHEMA_ID,
     B1ProviderError,
@@ -2380,13 +2380,13 @@ def _receipts_for_run(
         if not isinstance(template, dict):
             raise AgentEvaluationError("evidence receipt template must be an object")
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "receipt_id": f"receipt-{index}",
             "session_id": run_id,
             "case_id": case_id,
             **template,
         }
-        receipt = parse_evidence_receipt(payload)
+        receipt = create_evidence_receipt(payload)
         if receipt.slot in receipts:
             raise AgentEvaluationError("evidence receipt template slots must be unique")
         receipts[receipt.slot] = receipt

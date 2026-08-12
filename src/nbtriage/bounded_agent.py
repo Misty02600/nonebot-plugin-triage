@@ -24,9 +24,13 @@ from pydantic import (
 
 from nbtriage.baselines import SECRET_PATTERNS
 from nbtriage.evidence_receipts import (
+    EVIDENCE_RECEIPT_REVISION_PREFIX,
+    EVIDENCE_RECEIPT_SCHEMA_VERSION,
     EvidenceReceipt,
     EvidenceReceiptError,
+    evidence_receipt_revision,
     parse_evidence_receipt,
+    receipt_revision_for_observation,
 )
 from nbtriage.provider_failures import ProviderFailureReason, classify_provider_http_status
 from nbtriage.rag import (
@@ -44,7 +48,7 @@ from nbtriage.runtime_observations import (
 )
 from nbtriage.safety import detect_case_safety_risks
 
-AGENT_RUN_SCHEMA_VERSION = 1
+AGENT_RUN_SCHEMA_VERSION = 2
 AGENT_STEP_SCHEMA_VERSION = 1
 AGENT_PROMPT_ID = "b4-bounded-evidence-v1"
 AGENT_ACTION_SCHEMA_ID = "b4-agent-action-v1"
@@ -426,7 +430,7 @@ class AgentDiagnosis(_AgentModel):
 
 
 class AgentRunState(_AgentModel):
-    schema_version: Literal[1] = AGENT_RUN_SCHEMA_VERSION
+    schema_version: Literal[2] = AGENT_RUN_SCHEMA_VERSION
     run_id: str
     case_id: str
     provider: str
@@ -440,6 +444,44 @@ class AgentRunState(_AgentModel):
     outcome: AgentDiagnosis | None = None
     safety_risks: tuple[str, ...] = ()
     terminal_step_failure: AgentTerminalStepFailure | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_unbound_receipt_observations(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        trajectory = value.get("trajectory")
+        if not isinstance(trajectory, (list, tuple)):
+            return value
+        for step in trajectory:
+            if not isinstance(step, Mapping):
+                continue
+            observation = step.get("observation")
+            if not isinstance(observation, Mapping):
+                continue
+            kind = observation.get("kind")
+            status = observation.get("status")
+            content = observation.get("content")
+            if (
+                kind == AgentActionKind.REQUEST_EVIDENCE.value
+                and status == ObservationStatus.OK.value
+            ):
+                if not isinstance(content, Mapping):
+                    raise ValueError("successful evidence receipt observation is invalid")
+                declared_revision = content.get("receipt_revision")
+                if not isinstance(declared_revision, str):
+                    raise ValueError(
+                        "successful evidence receipt observation requires receipt_revision"
+                    )
+                try:
+                    expected_revision = _observation_receipt_revision(content)
+                except EvidenceReceiptError as error:
+                    raise ValueError(
+                        "successful evidence receipt observation is invalid"
+                    ) from error
+                if declared_revision != expected_revision:
+                    raise ValueError("evidence receipt observation revision does not match content")
+        return value
 
     @model_validator(mode="after")
     def validate_terminal_state(self) -> AgentRunState:
@@ -1136,6 +1178,9 @@ def _receipt_observation(
         or normalized.slot != action.slot
     ):
         raise AgentPolicyError("evidence receipt binding does not match the Agent request")
+    receipt_revision = evidence_receipt_revision(normalized)
+    if normalized.receipt_revision != receipt_revision:
+        raise AgentPolicyError("evidence receipt revision does not match its normalized content")
     return NormalizedObservation(
         action_id=_action_id(action),
         kind=AgentActionKind.REQUEST_EVIDENCE,
@@ -1143,7 +1188,10 @@ def _receipt_observation(
         content={
             "slot": normalized.slot,
             "receipt_id": normalized.receipt_id,
+            "session_id": normalized.session_id,
+            "case_id": normalized.case_id,
             "content_sha256": normalized.content_sha256,
+            "receipt_revision": receipt_revision,
             "byte_count": normalized.byte_count,
             "facts": normalized.facts,
         },
@@ -1263,6 +1311,44 @@ def _receipt_for_slot(
     if environment.evidence_receipts is None:
         return None
     return environment.evidence_receipts.get(slot)
+
+
+def _observation_receipt_revision(content: Mapping[str, Any]) -> str:
+    expected_fields = {
+        "slot",
+        "receipt_id",
+        "session_id",
+        "case_id",
+        "content_sha256",
+        "receipt_revision",
+        "byte_count",
+        "facts",
+    }
+    if set(content) != expected_fields:
+        raise EvidenceReceiptError("evidence receipt observation fields are invalid")
+    declared_revision = content.get("receipt_revision")
+    if (
+        not isinstance(declared_revision, str)
+        or not declared_revision.startswith(EVIDENCE_RECEIPT_REVISION_PREFIX)
+        or len(declared_revision.removeprefix(EVIDENCE_RECEIPT_REVISION_PREFIX)) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in declared_revision.removeprefix(EVIDENCE_RECEIPT_REVISION_PREFIX)
+        )
+    ):
+        raise EvidenceReceiptError("evidence receipt observation revision is invalid")
+    return receipt_revision_for_observation(
+        {
+            "schema_version": EVIDENCE_RECEIPT_SCHEMA_VERSION,
+            "receipt_id": content["receipt_id"],
+            "session_id": content["session_id"],
+            "case_id": content["case_id"],
+            "slot": content["slot"],
+            "content_sha256": content["content_sha256"],
+            "byte_count": content["byte_count"],
+            "facts": content["facts"],
+        }
+    )
 
 
 def _case_id(case: dict[str, Any]) -> str:

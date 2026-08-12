@@ -5,6 +5,8 @@ import pytest
 
 from nbtriage.evidence_receipts import (
     EvidenceReceiptError,
+    create_evidence_receipt,
+    evidence_receipt_revision,
     load_evidence_receipt,
     parse_evidence_receipt,
 )
@@ -43,7 +45,7 @@ VALID_FACTS = {
 
 def receipt_payload(slot: str, *, receipt_id: str = "receipt-1") -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "receipt_id": receipt_id,
         "session_id": "session-1",
         "case_id": "case-1",
@@ -59,11 +61,12 @@ def receipt_payload(slot: str, *, receipt_id: str = "receipt-1") -> dict:
 
 @pytest.mark.parametrize("slot", sorted(VALID_FACTS))
 def test_all_evidence_slots_accept_bounded_redacted_facts(slot: str) -> None:
-    receipt = parse_evidence_receipt(receipt_payload(slot))
+    receipt = create_evidence_receipt(receipt_payload(slot))
 
     assert receipt.slot == slot
     assert receipt.redacted is True
     assert receipt.facts == VALID_FACTS[slot]
+    assert receipt.receipt_revision == evidence_receipt_revision(receipt)
 
 
 @pytest.mark.parametrize(
@@ -82,7 +85,7 @@ def test_receipt_rejects_unsafe_or_unbounded_shape(mutation, message: str) -> No
     mutation(payload)
 
     with pytest.raises(EvidenceReceiptError, match=message):
-        parse_evidence_receipt(payload)
+        create_evidence_receipt(payload)
 
 
 def test_receipt_rejects_suspected_secret_without_echoing_it() -> None:
@@ -91,7 +94,7 @@ def test_receipt_rejects_suspected_secret_without_echoing_it() -> None:
     payload["facts"] = {"steps": ["Create a clean environment", secret]}
 
     with pytest.raises(EvidenceReceiptError) as raised:
-        parse_evidence_receipt(payload)
+        create_evidence_receipt(payload)
 
     assert "suspected secret" in str(raised.value)
     assert secret not in str(raised.value)
@@ -102,13 +105,58 @@ def test_configuration_requires_values_to_be_redacted() -> None:
     payload["facts"] = {"keys": ["driver"], "values_redacted": False}
 
     with pytest.raises(EvidenceReceiptError, match="values_redacted must be true"):
+        create_evidence_receipt(payload)
+
+
+def test_receipt_revision_changes_with_facts_under_the_same_raw_digest() -> None:
+    first_payload = receipt_payload("logs")
+    changed_payload = receipt_payload("logs")
+    changed_payload["facts"] = {**changed_payload["facts"], "line_count": 49}
+
+    first = create_evidence_receipt(first_payload)
+    changed = create_evidence_receipt(changed_payload)
+
+    assert first.content_sha256 == changed.content_sha256
+    assert first.receipt_revision != changed.receipt_revision
+
+
+def test_receipt_revision_is_stable_across_json_key_order() -> None:
+    payload = receipt_payload("logs")
+    reordered = dict(reversed(list(payload.items())))
+    reordered["facts"] = dict(reversed(list(payload["facts"].items())))
+
+    assert (
+        create_evidence_receipt(payload).receipt_revision
+        == create_evidence_receipt(reordered).receipt_revision
+    )
+
+
+def test_declared_receipt_revision_rejects_synchronized_shape_tampering() -> None:
+    receipt = create_evidence_receipt(receipt_payload("logs"))
+    payload = receipt.to_dict()
+    payload["facts"]["line_count"] = 49
+
+    with pytest.raises(EvidenceReceiptError, match="does not match"):
         parse_evidence_receipt(payload)
+
+
+def test_legacy_receipt_is_upgraded_but_current_schema_requires_revision() -> None:
+    legacy = receipt_payload("logs")
+    legacy["schema_version"] = 1
+
+    upgraded = parse_evidence_receipt(legacy)
+
+    assert upgraded.schema_version == 2
+    assert upgraded.receipt_revision == evidence_receipt_revision(upgraded)
+    with pytest.raises(EvidenceReceiptError, match="missing receipt fields"):
+        parse_evidence_receipt(receipt_payload("logs"))
 
 
 def test_load_evidence_receipt_round_trips_json(tmp_path: Path) -> None:
     path = tmp_path / "receipt.json"
-    path.write_text(json.dumps(receipt_payload("python_version")), encoding="utf-8")
+    expected = create_evidence_receipt(receipt_payload("python_version"))
+    path.write_text(json.dumps(expected.to_dict()), encoding="utf-8")
 
     receipt = load_evidence_receipt(path)
 
-    assert receipt.to_dict() == receipt_payload("python_version")
+    assert receipt == expected

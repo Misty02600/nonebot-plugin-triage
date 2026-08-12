@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import re
 from collections.abc import Callable
@@ -11,7 +13,10 @@ from typing import Any
 from nbtriage.baselines import SECRET_PATTERNS
 from nbtriage.rag import ALLOWED_EVIDENCE_SLOTS
 
-EVIDENCE_RECEIPT_SCHEMA_VERSION = 1
+EVIDENCE_RECEIPT_SCHEMA_VERSION = 2
+LEGACY_EVIDENCE_RECEIPT_SCHEMA_VERSION = 1
+EVIDENCE_RECEIPT_REVISION_PREFIX = "nbtriage-evidence-receipt-sha256:"
+EVIDENCE_RECEIPT_REVISION_DOMAIN = b"nbtriage-evidence-receipt-v1\0"
 OPAQUE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 VERSION_PATTERN = re.compile(r"^\d+\.\d+(?:\.\d+)?(?:[abrc]\d+)?$", re.IGNORECASE)
@@ -29,7 +34,7 @@ ADDITIONAL_SECRET_PATTERNS = (
     re.compile(r"(?i)authorization\s*[:=]\s*['\"]?bearer\s+\S+"),
 )
 
-TOP_LEVEL_FIELDS = {
+RECEIPT_CONTENT_FIELDS = {
     "schema_version",
     "receipt_id",
     "session_id",
@@ -42,6 +47,17 @@ TOP_LEVEL_FIELDS = {
     "byte_count",
     "facts",
 }
+RECEIPT_REVISION_FIELDS = {
+    "schema_version",
+    "receipt_id",
+    "session_id",
+    "case_id",
+    "slot",
+    "content_sha256",
+    "byte_count",
+    "facts",
+}
+TOP_LEVEL_FIELDS = {*RECEIPT_CONTENT_FIELDS, "receipt_revision"}
 
 
 class EvidenceReceiptError(ValueError):
@@ -61,6 +77,7 @@ class EvidenceReceipt:
     content_sha256: str
     byte_count: int
     facts: dict[str, Any]
+    receipt_revision: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -72,6 +89,30 @@ def load_evidence_receipt(path: Path) -> EvidenceReceipt:
     except (OSError, json.JSONDecodeError) as error:
         raise EvidenceReceiptError(f"failed to load evidence receipt {path}: {error}") from error
     return parse_evidence_receipt(payload)
+
+
+def create_evidence_receipt(payload: Any) -> EvidenceReceipt:
+    """从受限内容创建带规范化版本的证据回执。
+
+    Args:
+        payload: 不含 `receipt_revision` 的回执内容；字段和事实摘要必须通过完整校验。
+
+    Returns:
+        带域分隔规范化内容版本的不可变回执。
+
+    Raises:
+        EvidenceReceiptError: schema、脱敏声明、摘要字段或敏感值检查失败。
+
+    Note:
+        `receipt_revision` 是内容地址，不是签名；它不能证明摘要真实来自
+        `content_sha256` 指向的原始材料。
+    """
+    normalized = _normalize_receipt_content(
+        payload,
+        expected_fields=RECEIPT_CONTENT_FIELDS,
+        accepted_schema_version=EVIDENCE_RECEIPT_SCHEMA_VERSION,
+    )
+    return _receipt_from_content(normalized)
 
 
 def parse_evidence_receipt(payload: Any) -> EvidenceReceipt:
@@ -88,26 +129,108 @@ def parse_evidence_receipt(payload: Any) -> EvidenceReceipt:
     """
     if not isinstance(payload, dict):
         raise EvidenceReceiptError("evidence receipt must be an object")
-    unknown_fields = set(payload) - TOP_LEVEL_FIELDS
-    missing_fields = TOP_LEVEL_FIELDS - set(payload)
+    source_schema_version = payload.get("schema_version")
+    if source_schema_version == LEGACY_EVIDENCE_RECEIPT_SCHEMA_VERSION:
+        normalized = _normalize_receipt_content(
+            payload,
+            expected_fields=RECEIPT_CONTENT_FIELDS,
+            accepted_schema_version=LEGACY_EVIDENCE_RECEIPT_SCHEMA_VERSION,
+        )
+        return _receipt_from_content(normalized)
+    if source_schema_version != EVIDENCE_RECEIPT_SCHEMA_VERSION:
+        raise EvidenceReceiptError("unsupported evidence receipt schema_version")
+    normalized = _normalize_receipt_content(
+        payload,
+        expected_fields=TOP_LEVEL_FIELDS,
+        accepted_schema_version=EVIDENCE_RECEIPT_SCHEMA_VERSION,
+    )
+    declared_revision = _receipt_revision(payload.get("receipt_revision"))
+    expected_revision = receipt_revision_for_observation(
+        {key: value for key, value in normalized.items() if key in RECEIPT_REVISION_FIELDS}
+    )
+    if not hmac.compare_digest(declared_revision, expected_revision):
+        raise EvidenceReceiptError(
+            "receipt_revision does not match normalized evidence receipt content"
+        )
+    return _receipt_from_content(normalized, receipt_revision=declared_revision)
+
+
+def evidence_receipt_revision(receipt: EvidenceReceipt) -> str:
+    """重新计算回执规范化内容的域分隔版本。"""
+    return receipt_revision_for_observation(
+        {
+            "schema_version": receipt.schema_version,
+            "receipt_id": receipt.receipt_id,
+            "session_id": receipt.session_id,
+            "case_id": receipt.case_id,
+            "slot": receipt.slot,
+            "content_sha256": receipt.content_sha256,
+            "byte_count": receipt.byte_count,
+            "facts": receipt.facts,
+        }
+    )
+
+
+def receipt_revision_for_content(payload: Any) -> str:
+    """为受限回执内容计算域分隔版本，不接受已声明的版本字段。"""
+    normalized = _normalize_receipt_content(
+        payload,
+        expected_fields=RECEIPT_CONTENT_FIELDS,
+        accepted_schema_version=EVIDENCE_RECEIPT_SCHEMA_VERSION,
+    )
+    return receipt_revision_for_observation(
+        {key: value for key, value in normalized.items() if key in RECEIPT_REVISION_FIELDS}
+    )
+
+
+def receipt_revision_for_observation(payload: Any) -> str:
+    """根据 Agent observation 保存的回执绑定与规范化事实重算版本。"""
+    if not isinstance(payload, dict) or set(payload) != RECEIPT_REVISION_FIELDS:
+        raise EvidenceReceiptError("evidence receipt observation fields are invalid")
+    if payload.get("schema_version") != EVIDENCE_RECEIPT_SCHEMA_VERSION:
+        raise EvidenceReceiptError("unsupported evidence receipt schema_version")
+    slot = _enum_string(payload.get("slot"), "slot", ALLOWED_EVIDENCE_SLOTS)
+    facts = payload.get("facts")
+    if not isinstance(facts, dict):
+        raise EvidenceReceiptError("facts must be an object")
+    normalized_facts = FACT_VALIDATORS[slot](facts)
+    _reject_suspected_secret(normalized_facts)
+    return _content_revision(
+        {
+            "schema_version": EVIDENCE_RECEIPT_SCHEMA_VERSION,
+            "receipt_id": _opaque_id(payload.get("receipt_id"), "receipt_id"),
+            "session_id": _opaque_id(payload.get("session_id"), "session_id"),
+            "case_id": _opaque_id(payload.get("case_id"), "case_id"),
+            "slot": slot,
+            "content_sha256": _sha256(payload.get("content_sha256")),
+            "byte_count": _byte_count(payload.get("byte_count")),
+            "facts": normalized_facts,
+        }
+    )
+
+
+def _normalize_receipt_content(
+    payload: Any,
+    *,
+    expected_fields: set[str],
+    accepted_schema_version: int,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise EvidenceReceiptError("evidence receipt must be an object")
+    unknown_fields = set(payload) - expected_fields
+    missing_fields = expected_fields - set(payload)
     if unknown_fields:
         raise EvidenceReceiptError(f"unsupported receipt fields: {sorted(unknown_fields)}")
     if missing_fields:
         raise EvidenceReceiptError(f"missing receipt fields: {sorted(missing_fields)}")
-    if payload.get("schema_version") != EVIDENCE_RECEIPT_SCHEMA_VERSION:
+    if payload.get("schema_version") != accepted_schema_version:
         raise EvidenceReceiptError("unsupported evidence receipt schema_version")
 
     slot = _enum_string(payload.get("slot"), "slot", ALLOWED_EVIDENCE_SLOTS)
     redacted = payload.get("redacted")
     if redacted is not True:
         raise EvidenceReceiptError("evidence receipt must declare redacted=true")
-    byte_count = payload.get("byte_count")
-    if (
-        not isinstance(byte_count, int)
-        or isinstance(byte_count, bool)
-        or not 1 <= byte_count <= 1_000_000_000_000
-    ):
-        raise EvidenceReceiptError("byte_count must be an integer between 1 and 1000000000000")
+    byte_count = _byte_count(payload.get("byte_count"))
 
     collected_at = _short_string(payload.get("collected_at"), "collected_at", max_length=64)
     try:
@@ -121,24 +244,78 @@ def parse_evidence_receipt(payload: Any) -> EvidenceReceipt:
     if not isinstance(facts, dict):
         raise EvidenceReceiptError("facts must be an object")
     normalized_facts = FACT_VALIDATORS[slot](facts)
-    serialized_facts = json.dumps(normalized_facts, ensure_ascii=False, sort_keys=True)
+    _reject_suspected_secret(normalized_facts)
+
+    return {
+        "schema_version": accepted_schema_version,
+        "receipt_id": _opaque_id(payload.get("receipt_id"), "receipt_id"),
+        "session_id": _opaque_id(payload.get("session_id"), "session_id"),
+        "case_id": _opaque_id(payload.get("case_id"), "case_id"),
+        "slot": slot,
+        "submitted_by": _short_string(payload.get("submitted_by"), "submitted_by"),
+        "collected_at": collected_at,
+        "redacted": True,
+        "content_sha256": _sha256(payload.get("content_sha256")),
+        "byte_count": byte_count,
+        "facts": normalized_facts,
+    }
+
+
+def _receipt_from_content(
+    content: dict[str, Any],
+    *,
+    receipt_revision: str | None = None,
+) -> EvidenceReceipt:
+    revision_content = {
+        key: value for key, value in content.items() if key in RECEIPT_REVISION_FIELDS
+    }
+    revision_content["schema_version"] = EVIDENCE_RECEIPT_SCHEMA_VERSION
+    return EvidenceReceipt(
+        schema_version=EVIDENCE_RECEIPT_SCHEMA_VERSION,
+        receipt_id=content["receipt_id"],
+        session_id=content["session_id"],
+        case_id=content["case_id"],
+        slot=content["slot"],
+        submitted_by=content["submitted_by"],
+        collected_at=content["collected_at"],
+        redacted=content["redacted"],
+        content_sha256=content["content_sha256"],
+        byte_count=content["byte_count"],
+        facts=content["facts"],
+        receipt_revision=receipt_revision or _content_revision(revision_content),
+    )
+
+
+def _content_revision(content: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        content,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    digest = hashlib.sha256(EVIDENCE_RECEIPT_REVISION_DOMAIN)
+    digest.update(canonical)
+    return f"{EVIDENCE_RECEIPT_REVISION_PREFIX}{digest.hexdigest()}"
+
+
+def _receipt_revision(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith(EVIDENCE_RECEIPT_REVISION_PREFIX)
+        or not SHA256_PATTERN.fullmatch(value.removeprefix(EVIDENCE_RECEIPT_REVISION_PREFIX))
+    ):
+        raise EvidenceReceiptError(
+            "receipt_revision must be a nbtriage evidence receipt SHA-256 revision"
+        )
+    return value
+
+
+def _reject_suspected_secret(facts: dict[str, Any]) -> None:
+    serialized_facts = json.dumps(facts, ensure_ascii=False, sort_keys=True)
     secret_patterns = (*SECRET_PATTERNS, *ADDITIONAL_SECRET_PATTERNS)
     if any(pattern.search(serialized_facts) for pattern in secret_patterns):
         raise EvidenceReceiptError("facts contain a suspected secret value")
-
-    return EvidenceReceipt(
-        schema_version=EVIDENCE_RECEIPT_SCHEMA_VERSION,
-        receipt_id=_opaque_id(payload.get("receipt_id"), "receipt_id"),
-        session_id=_opaque_id(payload.get("session_id"), "session_id"),
-        case_id=_opaque_id(payload.get("case_id"), "case_id"),
-        slot=slot,
-        submitted_by=_short_string(payload.get("submitted_by"), "submitted_by"),
-        collected_at=collected_at,
-        redacted=True,
-        content_sha256=_sha256(payload.get("content_sha256")),
-        byte_count=byte_count,
-        facts=normalized_facts,
-    )
 
 
 def _validate_python_version(facts: dict[str, Any]) -> dict[str, Any]:
@@ -324,4 +501,10 @@ def _string_list(
 def _positive_int(value: Any, field_name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise EvidenceReceiptError(f"{field_name} must be a positive integer")
+    return value
+
+
+def _byte_count(value: Any) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 1_000_000_000_000:
+        raise EvidenceReceiptError("byte_count must be an integer between 1 and 1000000000000")
     return value

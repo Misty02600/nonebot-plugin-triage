@@ -134,6 +134,10 @@ tool retry、deferred tool 与 message history。关键事实是：Pydantic AI �
   request / Provider identity 与 latency；Provider 请求失败仅保存稳定 failure reason、可选 HTTP status 与
   latency；本地 validation / step error 仅保存类别与 latency，异常文本不落盘。B4 report 仍为 schema v3，
   并在 trial 与 summary 中暴露该兼容字段和四类计数；partial audit 仍由既有独立合同拥有请求级 checkpoint；
+- 2026-08-13：证据回执 schema v2 增加域分隔 `receipt_revision`，绑定 receipt / run / Case / slot、原始材料
+  指纹、字节数和规范化 facts；会话 schema v4 与 `AgentRunState.schema_version=2` 将该版本贯穿事件、action
+  result 和成功 observation，并在读取时重算。旧回执可在解析边界规范升级，旧会话与旧 Agent state
+  失败关闭；该版本是内容地址而非签名，不证明摘要真实来自外部原始材料；
 - NoneBot 插件的零模型入口和空资格注册表保持不变，两次 test-only smoke 都没有把任何组合晋级为支持。
 
 ## 相关文档与证据
