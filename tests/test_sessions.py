@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 from tools.nbtriage_maintainer.cli import main
-from tools.nbtriage_maintainer.runtime_results import RuntimeAssessment
+from tools.nbtriage_maintainer.runtime_results import RuntimeAssessment, assess_runtime_result
 from tools.nbtriage_maintainer.sessions import (
     FileSessionStore,
     SessionStateError,
@@ -385,6 +385,53 @@ def test_runtime_assessment_with_errors_does_not_advance_session(tmp_path: Path)
 
     with pytest.raises(SessionStateError, match="invalid runtime assessment"):
         attach_runtime_assessment(approved, assessment)
+
+
+@pytest.mark.parametrize(
+    ("status", "reason_fields"),
+    [
+        ("validated", {}),
+        ("failed", {"failure_reason": "probe assertion did not match"}),
+        (
+            "blocked",
+            {
+                "blocking_reason": "runner unavailable",
+                "required_runner": "Linux runner",
+            },
+        ),
+    ],
+)
+def test_attach_accepts_every_valid_runtime_result_assessment(
+    tmp_path: Path,
+    status: str,
+    reason_fields: dict[str, str],
+) -> None:
+    report_path = _prediction_report(tmp_path / "report.json", "verify")
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    approved = approve_session(session, "maintainer")
+    result = {
+        "case_id": "case-1",
+        "status": status,
+        "probe_id": "probe-1",
+        "buggy_ref": "buggy",
+        "fixed_ref": "fixed",
+        "buggy_oracle_matched": True,
+        "fixed_oracle_matched": True,
+        "buggy_observation": "target failure",
+        "fixed_observation": "successful exit",
+        **reason_fields,
+    }
+    case = {
+        "case_id": "case-1",
+        "curation": {"oracle": {"buggy_ref": "buggy", "fixed_ref": "fixed"}},
+    }
+    assessment = assess_runtime_result(result, case)
+
+    assert assessment.errors == []
+    updated = attach_runtime_assessment(approved, assessment)
+
+    assert updated.action.result is not None
+    assert updated.action.result["decision"] == status
 
 
 @pytest.mark.parametrize(

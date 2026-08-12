@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 RUNTIME_STATUSES = {"validated", "failed", "blocked"}
+RUNTIME_RESULT_FIELDS = frozenset(
+    {
+        "decision",
+        "probe_id",
+        "buggy_ref",
+        "fixed_ref",
+        "blocking_reason",
+        "failure_reason",
+        "required_runner",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -21,6 +33,58 @@ class RuntimeAssessment:
     blocking_reason: str | None = None
     failure_reason: str | None = None
     required_runner: str | None = None
+
+
+def runtime_result_validation_error(result: Mapping[str, Any]) -> str | None:
+    """验证 RuntimeAssessment 持久化稳定字段的结构和组合语义。
+
+    Args:
+        result: 只包含会话持久化所需七个稳定字段的映射。
+
+    Returns:
+        首个稳定验证错误；结构和字段组合合法时返回 ``None``。
+    """
+    if set(result) != RUNTIME_RESULT_FIELDS:
+        return "fields do not match the runtime result schema"
+
+    decision = result.get("decision")
+    if not isinstance(decision, str) or decision not in RUNTIME_STATUSES:
+        return "decision must be validated, failed, or blocked"
+    for field in ("probe_id", "buggy_ref", "fixed_ref"):
+        value = result.get(field)
+        normalized = _non_empty_string(value)
+        if normalized is None:
+            return f"{field} is required"
+        if value != normalized:
+            return f"{field} must be a normalized string"
+
+    blocking_reason = _non_empty_string(result.get("blocking_reason"))
+    failure_reason = _non_empty_string(result.get("failure_reason"))
+    required_runner = _non_empty_string(result.get("required_runner"))
+    optional_values = {
+        "blocking_reason": blocking_reason,
+        "failure_reason": failure_reason,
+        "required_runner": required_runner,
+    }
+    for field, normalized in optional_values.items():
+        value = result.get(field)
+        if value is not None and (not isinstance(value, str) or value != normalized):
+            return f"{field} must be null or a non-empty normalized string"
+
+    if decision == "validated":
+        if any(value is not None for value in optional_values.values()):
+            return "validated result cannot contain failure or blocking reasons"
+    elif decision == "failed":
+        if failure_reason is None:
+            return "failure_reason is required for failed result"
+        if blocking_reason is not None or required_runner is not None:
+            return "failed result cannot contain blocking fields"
+    else:
+        if blocking_reason is None or required_runner is None:
+            return "blocking_reason and required_runner are required for blocked result"
+        if failure_reason is not None:
+            return "blocked result cannot contain failure_reason"
+    return None
 
 
 def evaluate_runtime_results(
@@ -102,10 +166,17 @@ def assess_runtime_result(
             if fixed_ref != _non_empty_string(oracle.get("fixed_ref")):
                 errors.append("fixed_ref does not match SupportCase Oracle")
 
-    if status not in RUNTIME_STATUSES:
-        errors.append("status must be validated, failed, or blocked")
-    if not probe_id:
-        errors.append("probe_id is required")
+    stable_result = {
+        "decision": status,
+        "probe_id": probe_id,
+        "buggy_ref": buggy_ref,
+        "fixed_ref": fixed_ref,
+        "blocking_reason": blocking_reason,
+        "failure_reason": failure_reason,
+        "required_runner": required_runner,
+    }
+    if validation_error := runtime_result_validation_error(stable_result):
+        errors.append(validation_error)
 
     if status == "validated":
         if result.get("buggy_oracle_matched") is not True:
@@ -116,15 +187,6 @@ def assess_runtime_result(
             errors.append("buggy_observation is required for validated result")
         if not _non_empty_string(result.get("fixed_observation")):
             errors.append("fixed_observation is required for validated result")
-    elif status == "failed":
-        if not failure_reason:
-            errors.append("failure_reason is required for failed result")
-    elif status == "blocked":
-        if not blocking_reason:
-            errors.append("blocking_reason is required for blocked result")
-        if not required_runner:
-            errors.append("required_runner is required for blocked result")
-
     return RuntimeAssessment(
         case_id=case_id,
         decision="invalid" if errors else status or "invalid",

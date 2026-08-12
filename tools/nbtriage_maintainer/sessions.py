@@ -18,7 +18,10 @@ from nbtriage.evidence_receipts import (
     parse_evidence_receipt,
 )
 from tools.nbtriage_maintainer.evidence_policy import EvidencePolicyError, select_next_evidence
-from tools.nbtriage_maintainer.runtime_results import RuntimeAssessment
+from tools.nbtriage_maintainer.runtime_results import (
+    RuntimeAssessment,
+    runtime_result_validation_error,
+)
 
 SESSION_SCHEMA_VERSION = 2
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -28,16 +31,6 @@ ROUTE_ACTIONS = {
     "verify": ("run_oracle", "awaiting_approval", "awaiting_approval", True),
     "escalate": ("escalate", "escalated", "completed", False),
     "abstain": ("refuse", "refused", "completed", False),
-}
-
-RUNTIME_RESULT_FIELDS = {
-    "decision",
-    "probe_id",
-    "buggy_ref",
-    "fixed_ref",
-    "blocking_reason",
-    "failure_reason",
-    "required_runner",
 }
 
 
@@ -440,7 +433,7 @@ def attach_runtime_assessment(
         "failure_reason": assessment.failure_reason,
         "required_runner": assessment.required_runner,
     }
-    validation_error = _runtime_result_validation_error(result)
+    validation_error = runtime_result_validation_error(result)
     if validation_error is not None:
         raise SessionStateError(f"invalid runtime assessment: {validation_error}")
     next_status = "completed" if assessment.decision == "validated" else "blocked"
@@ -580,7 +573,7 @@ def _validate_verify_event_chain(session: SupportSession) -> None:
         result = session.action.result
         if result is None:
             raise SessionStoreError("terminal verify session is missing its runtime result")
-        validation_error = _runtime_result_validation_error(result)
+        validation_error = runtime_result_validation_error(result)
         if validation_error is not None:
             raise SessionStoreError(f"invalid persisted runtime result: {validation_error}")
         decision = result.get("decision")
@@ -605,54 +598,6 @@ def _aware_timestamp(value: Any, field: str) -> datetime:
         return parsed.astimezone(UTC)
     except (OverflowError, ValueError) as error:
         raise SessionStoreError(f"{field} must be a timezone-aware ISO timestamp") from error
-
-
-def _runtime_result_validation_error(result: dict[str, Any]) -> str | None:
-    if set(result) != RUNTIME_RESULT_FIELDS:
-        return "fields do not match the runtime result schema"
-
-    decision = result.get("decision")
-    if not isinstance(decision, str) or decision not in {"validated", "failed", "blocked"}:
-        return "decision must be validated, failed, or blocked"
-    for field in ("probe_id", "buggy_ref", "fixed_ref"):
-        value = result.get(field)
-        normalized = _normalized_optional_string(value)
-        if normalized is None:
-            return f"{field} is required"
-        if value != normalized:
-            return f"{field} must be a normalized string"
-
-    blocking_reason = _normalized_optional_string(result.get("blocking_reason"))
-    failure_reason = _normalized_optional_string(result.get("failure_reason"))
-    required_runner = _normalized_optional_string(result.get("required_runner"))
-    optional_values = {
-        "blocking_reason": blocking_reason,
-        "failure_reason": failure_reason,
-        "required_runner": required_runner,
-    }
-    for field, normalized in optional_values.items():
-        value = result.get(field)
-        if value is not None and (not isinstance(value, str) or value != normalized):
-            return f"{field} must be null or a non-empty normalized string"
-
-    if decision == "validated":
-        if any(value is not None for value in optional_values.values()):
-            return "validated result cannot contain failure or blocking reasons"
-    elif decision == "failed":
-        if failure_reason is None:
-            return "failure_reason is required for failed result"
-        if blocking_reason is not None or required_runner is not None:
-            return "failed result cannot contain blocking fields"
-    else:
-        if blocking_reason is None or required_runner is None:
-            return "blocking_reason and required_runner are required for blocked result"
-        if failure_reason is not None:
-            return "blocked result cannot contain failure_reason"
-    return None
-
-
-def _normalized_optional_string(value: Any) -> str | None:
-    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def _validate_evidence_session(session: SupportSession) -> None:
