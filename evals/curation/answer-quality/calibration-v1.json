@@ -1,9 +1,10 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "annotation_set_id": "answer-quality-calibration-oracle-v1",
   "fixture_set_id": "answer-quality-calibration-v1",
   "fixture_revision": "nbtriage-answer-quality-fixtures-sha256:340cfa86909176cc7bb6912ea4f493a787f3768d9ffac8a2c69dcabd14a10484",
   "rubric_id": "answer-quality-v1",
+  "rubric_revision": "nbtriage-answer-quality-rubric-sha256:a238938a03893faddc4f9e699b2ba519a565dc5b59d3a3ca46637a90fe992664",
   "review": {
     "kind": "synthetic_calibration_oracle",
     "reviewer_id": "calibration-fixture-author",

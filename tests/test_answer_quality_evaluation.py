@@ -77,6 +77,44 @@ def test_answer_quality_rejects_incomplete_annotation_coverage(tmp_path: Path) -
         evaluate_answer_quality(RUBRIC, FIXTURES, annotations)
 
 
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [("thresholds", "min_axis_mean"), ("axes", "groundedness")],
+)
+def test_answer_quality_rejects_annotations_for_changed_rubric_content(
+    tmp_path: Path,
+    section: str,
+    field: str,
+) -> None:
+    payload = json.loads(RUBRIC.read_text(encoding="utf-8"))
+    if section == "thresholds":
+        payload[section][field] = 1.75
+    else:
+        payload[section][field]["anchors"]["2"] += " 已篡改。"
+    rubric = tmp_path / "changed-rubric.json"
+    rubric.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(AnswerQualityEvaluationError, match="different rubric content"):
+        evaluate_answer_quality(rubric, FIXTURES, ANNOTATIONS)
+
+
+def test_answer_quality_canonical_revisions_ignore_json_layout(tmp_path: Path) -> None:
+    rubric = tmp_path / "rubric.json"
+    fixtures = tmp_path / "fixtures.json"
+    rubric.write_text(
+        json.dumps(json.loads(RUBRIC.read_text(encoding="utf-8")), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    fixtures.write_text(
+        json.dumps(json.loads(FIXTURES.read_text(encoding="utf-8")), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    report = evaluate_answer_quality(rubric, fixtures, ANNOTATIONS)
+
+    assert report["calibration_gate"]["passed"] is True
+
+
 @pytest.mark.parametrize("field", ["answer", "context"])
 def test_answer_quality_rejects_annotations_for_changed_fixture_content(
     tmp_path: Path,

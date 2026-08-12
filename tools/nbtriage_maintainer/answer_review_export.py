@@ -15,6 +15,7 @@ from tools.nbtriage_maintainer.answer_quality_evaluation import (
     ANSWER_QUALITY_AXES,
     ANSWER_QUALITY_RUBRIC_ID,
     answer_quality_fixture_revision,
+    answer_quality_rubric_revision,
 )
 
 ANSWER_QUALITY_FIXTURE_SCHEMA_VERSION = 2
@@ -50,9 +51,47 @@ def build_b4_answer_quality_review(
         或原始 Provider 响应。
     """
     report_raw, report = _load_object(evaluation_report_path, "B4 evaluation report")
+    _, rubric = _load_object(rubric_path, "answer quality rubric")
+    return build_b4_answer_quality_review_payloads(
+        report_raw=report_raw,
+        report=report,
+        fixtures_path=fixtures_path,
+        split_path=split_path,
+        rubric=rubric,
+    )
+
+
+def build_b4_answer_quality_review_payloads(
+    *,
+    report_raw: bytes,
+    report: dict[str, Any],
+    fixtures_path: Path,
+    split_path: Path,
+    rubric: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """从已读 B4 报告与可复核来源重建唯一人工评审投影。
+
+    Args:
+        report_raw: B4 报告原始字节，用于生成稳定来源身份。
+        report: 从同一原始字节解析出的 B4 报告对象。
+        fixtures_path: B4 报告声明绑定的 Fixture 文件。
+        split_path: B4 报告声明绑定的 split 文件。
+        rubric: 当前人工评分合同。
+
+    Returns:
+        可评分候选 Fixture 和待填写的 schema v3 标注模板。
+
+    Raises:
+        AnswerReviewExportError: 原始字节与解析对象不一致，或 B4 来源与投影合同无效。
+    """
+    try:
+        raw_report = json.loads(report_raw)
+    except json.JSONDecodeError as error:
+        raise AnswerReviewExportError("B4 evaluation report raw bytes are invalid") from error
+    if raw_report != report:
+        raise AnswerReviewExportError("B4 evaluation report bytes do not match its payload")
     fixtures_raw, fixtures = _load_object(fixtures_path, "B4 fixtures")
     split_raw, split = _load_object(split_path, "B4 split")
-    _, rubric = _load_object(rubric_path, "answer quality rubric")
 
     _validate_source_contract(
         report,
@@ -104,6 +143,10 @@ def build_b4_answer_quality_review(
         "trials_per_fixture": summary["trials_per_fixture"],
         "real_model_multi_trial": summary["trials_per_fixture"] >= 2,
         "promotion_gate_passed": report["promotion_gate"]["passed"],
+        "fixtures_path": str(fixtures_path.resolve()),
+        "fixtures_sha256": hashlib.sha256(fixtures_raw).hexdigest(),
+        "split_path": str(split_path.resolve()),
+        "split_sha256": hashlib.sha256(split_raw).hexdigest(),
     }
     samples = {
         "schema_version": ANSWER_QUALITY_FIXTURE_SCHEMA_VERSION,
@@ -116,11 +159,12 @@ def build_b4_answer_quality_review(
         "fixtures": review_samples,
     }
     annotations = {
-        "schema_version": 2,
+        "schema_version": 3,
         "annotation_set_id": f"{fixture_set_id}-human-v1",
         "fixture_set_id": fixture_set_id,
         "fixture_revision": answer_quality_fixture_revision(samples),
         "rubric_id": ANSWER_QUALITY_RUBRIC_ID,
+        "rubric_revision": answer_quality_rubric_revision(rubric),
         "review": {
             "kind": "pending_human_review",
             "reviewer_id": "",

@@ -10,6 +10,7 @@ from tools.nbtriage_maintainer.agent_evaluation import (
 from tools.nbtriage_maintainer.answer_quality_evaluation import (
     ANSWER_QUALITY_AXES,
     AnswerQualityEvaluationError,
+    answer_quality_fixture_revision,
     evaluate_answer_quality,
 )
 from tools.nbtriage_maintainer.answer_review_export import (
@@ -108,8 +109,9 @@ def test_export_builds_forward_hidden_offline_review_package(tmp_path: Path) -> 
     assert sample["candidate"]["answer"] == "补充回执确认连接关闭异常来自适配器路径。"
     assert sample["context"]["evidence"][0]["evidence_id"] == "receipt:logs"
     assert annotations["review"]["kind"] == "pending_human_review"
-    assert annotations["schema_version"] == 2
+    assert annotations["schema_version"] == 3
     assert annotations["fixture_revision"].startswith("nbtriage-answer-quality-fixtures-sha256:")
+    assert annotations["rubric_revision"].startswith("nbtriage-answer-quality-rubric-sha256:")
     assert annotations["annotations"][0]["scores"] == dict.fromkeys(ANSWER_QUALITY_AXES)
 
     serialized = json.dumps((samples, annotations), ensure_ascii=False)
@@ -207,6 +209,104 @@ def test_completed_review_requires_the_original_source_report(tmp_path: Path) ->
             samples_path,
             annotations_path,
             source_report_path=source_report_path,
+        )
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("candidate", "answer"),
+        ("context", "required_answer_points"),
+        ("context", "evidence"),
+    ],
+)
+def test_completed_review_replays_candidate_projection(
+    tmp_path: Path,
+    section: str,
+    field: str,
+) -> None:
+    report_path, samples_path, annotations_path = _write_review_package(tmp_path)
+    _complete_annotations(annotations_path)
+    payload = json.loads(samples_path.read_text(encoding="utf-8"))
+    target = payload["fixtures"][0][section]
+    if field == "answer":
+        target[field] = "人工包中的回答已被替换。"
+    elif field == "required_answer_points":
+        target[field][0] = "人工包中的评分要点已被替换。"
+    else:
+        target[field][0]["facts"][0] = "人工包中的证据事实已被替换。"
+    samples_path.write_text(json.dumps(payload), encoding="utf-8")
+    annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+    annotations["fixture_revision"] = answer_quality_fixture_revision(payload)
+    annotations_path.write_text(json.dumps(annotations), encoding="utf-8")
+
+    with pytest.raises(AnswerQualityEvaluationError, match="replayed B4 projection"):
+        evaluate_answer_quality(
+            RUBRIC,
+            samples_path,
+            annotations_path,
+            source_report_path=report_path,
+        )
+
+
+@pytest.mark.parametrize("source_kind", ["fixtures", "split"])
+def test_completed_review_rejects_changed_b4_projection_source(
+    tmp_path: Path,
+    source_kind: str,
+) -> None:
+    report_path, samples_path, annotations_path = _write_review_package(tmp_path)
+    _complete_annotations(annotations_path)
+    samples = json.loads(samples_path.read_text(encoding="utf-8"))
+    source_path = Path(samples["source_evaluation"][f"{source_kind}_path"])
+    replacement = tmp_path / f"changed-{source_kind}.json"
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    if source_kind == "fixtures":
+        payload["fixtures"][0]["case"]["source"]["title"] += " changed"
+    else:
+        payload["split_id"] += "-changed"
+    replacement.write_text(json.dumps(payload), encoding="utf-8")
+    samples["source_evaluation"][f"{source_kind}_path"] = str(replacement)
+    samples_path.write_text(json.dumps(samples), encoding="utf-8")
+    annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+    annotations["fixture_revision"] = answer_quality_fixture_revision(samples)
+    annotations_path.write_text(json.dumps(annotations), encoding="utf-8")
+
+    with pytest.raises(AnswerQualityEvaluationError, match=r"cannot be replayed|digest"):
+        evaluate_answer_quality(
+            RUBRIC,
+            samples_path,
+            annotations_path,
+            source_report_path=report_path,
+        )
+
+
+@pytest.mark.parametrize(
+    "revision",
+    [
+        "nbtriage-source-sha256:",
+        "nbtriage-source-sha256:not-a-digest",
+        "nbtriage-source-sha256:" + "a" * 65,
+    ],
+)
+def test_completed_review_requires_strict_source_code_revision(
+    tmp_path: Path,
+    revision: str,
+) -> None:
+    report_path, samples_path, annotations_path = _write_review_package(tmp_path)
+    _complete_annotations(annotations_path)
+    samples = json.loads(samples_path.read_text(encoding="utf-8"))
+    samples["source_evaluation"]["evaluation_contract"]["code_revision"] = revision
+    samples_path.write_text(json.dumps(samples), encoding="utf-8")
+    annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+    annotations["fixture_revision"] = answer_quality_fixture_revision(samples)
+    annotations_path.write_text(json.dumps(annotations), encoding="utf-8")
+
+    with pytest.raises(AnswerQualityEvaluationError, match="evaluation_contract is invalid"):
+        evaluate_answer_quality(
+            RUBRIC,
+            samples_path,
+            annotations_path,
+            source_report_path=report_path,
         )
 
 

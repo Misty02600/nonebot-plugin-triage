@@ -12,6 +12,7 @@ ANSWER_QUALITY_EVALUATION_ID = "answer-quality-human-rubric-v2"
 ANSWER_QUALITY_RUBRIC_ID = "answer-quality-v1"
 ANSWER_QUALITY_OFFLINE_SCOPE = "offline_fixed_fixture"
 ANSWER_QUALITY_FIXTURE_REVISION_PREFIX = "nbtriage-answer-quality-fixtures-sha256:"
+ANSWER_QUALITY_RUBRIC_REVISION_PREFIX = "nbtriage-answer-quality-rubric-sha256:"
 ANSWER_QUALITY_AXES = (
     "groundedness",
     "completeness",
@@ -26,7 +27,7 @@ class AnswerQualityEvaluationError(ValueError):
     pass
 
 
-def answer_quality_fixture_revision(payload: dict[str, Any]) -> str:
+def _canonical_revision(payload: dict[str, Any], *, domain: bytes, prefix: str) -> str:
     canonical = json.dumps(
         payload,
         ensure_ascii=False,
@@ -34,9 +35,25 @@ def answer_quality_fixture_revision(payload: dict[str, Any]) -> str:
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
-    digest = hashlib.sha256(b"nbtriage-answer-quality-fixtures-v1\0")
+    digest = hashlib.sha256(domain)
     digest.update(canonical)
-    return ANSWER_QUALITY_FIXTURE_REVISION_PREFIX + digest.hexdigest()
+    return prefix + digest.hexdigest()
+
+
+def answer_quality_fixture_revision(payload: dict[str, Any]) -> str:
+    return _canonical_revision(
+        payload,
+        domain=b"nbtriage-answer-quality-fixtures-v1\0",
+        prefix=ANSWER_QUALITY_FIXTURE_REVISION_PREFIX,
+    )
+
+
+def answer_quality_rubric_revision(payload: dict[str, Any]) -> str:
+    return _canonical_revision(
+        payload,
+        domain=b"nbtriage-answer-quality-rubric-v1\0",
+        prefix=ANSWER_QUALITY_RUBRIC_REVISION_PREFIX,
+    )
 
 
 def evaluate_answer_quality(
@@ -70,18 +87,24 @@ def evaluate_answer_quality(
     samples = _validate_fixtures(fixtures)
     try:
         fixture_revision = answer_quality_fixture_revision(fixtures)
+        rubric_revision = answer_quality_rubric_revision(rubric)
     except (TypeError, ValueError) as error:
         raise AnswerQualityEvaluationError("fixture content cannot be canonicalized") from error
     judgments = _validate_annotations(
         annotations,
         fixture_set_id=fixtures["fixture_set_id"],
         fixture_revision=fixture_revision,
+        rubric_revision=rubric_revision,
         sample_ids=set(samples),
         scale_minimum=scale_minimum,
         scale_maximum=scale_maximum,
     )
     _validate_contract_binding(rubric, fixtures, annotations)
-    source_report_reference = _validate_source_report_binding(fixtures, source_report_path)
+    source_report_reference = _validate_source_report_binding(
+        rubric,
+        fixtures,
+        source_report_path,
+    )
 
     rows = []
     axis_totals = dict.fromkeys(ANSWER_QUALITY_AXES, 0)
@@ -168,6 +191,7 @@ def evaluate_answer_quality(
         "source": {
             "rubric_path": str(rubric_path),
             "rubric_sha256": hashlib.sha256(rubric_raw).hexdigest(),
+            "rubric_revision": rubric_revision,
             "fixtures_path": str(fixtures_path),
             "fixtures_sha256": hashlib.sha256(fixtures_raw).hexdigest(),
             "fixture_revision": fixture_revision,
@@ -411,6 +435,10 @@ def _validate_source_evaluation(payload: dict[str, Any]) -> None:
         "trials_per_fixture",
         "real_model_multi_trial",
         "promotion_gate_passed",
+        "fixtures_path",
+        "fixtures_sha256",
+        "split_path",
+        "split_sha256",
     }
     if not isinstance(source, dict) or set(source) != required:
         raise AnswerQualityEvaluationError("candidate quality source_evaluation is invalid")
@@ -425,7 +453,15 @@ def _validate_source_evaluation(payload: dict[str, Any]) -> None:
         or any(character not in "0123456789abcdef" for character in report_sha256)
     ):
         raise AnswerQualityEvaluationError("source report_sha256 is invalid")
-    for field in ("generated_at", "fixture_set_id", "split_id", "provider", "model"):
+    for field in (
+        "generated_at",
+        "fixture_set_id",
+        "split_id",
+        "provider",
+        "model",
+        "fixtures_path",
+        "split_path",
+    ):
         if not isinstance(source[field], str) or not source[field].strip():
             raise AnswerQualityEvaluationError(f"source {field} must be non-empty")
     try:
@@ -440,7 +476,7 @@ def _validate_source_evaluation(payload: dict[str, Any]) -> None:
     if (
         not isinstance(contract, dict)
         or not isinstance(contract.get("code_revision"), str)
-        or not contract["code_revision"].startswith("nbtriage-source-sha256:")
+        or not _is_revision(contract["code_revision"], prefix="nbtriage-source-sha256:")
     ):
         raise AnswerQualityEvaluationError("source evaluation_contract is invalid")
     if source["score_split"] != "forward_hidden" or source["model_kind"] != "real":
@@ -458,10 +494,13 @@ def _validate_source_evaluation(payload: dict[str, Any]) -> None:
         )
     if not isinstance(source["promotion_gate_passed"], bool):
         raise AnswerQualityEvaluationError("source promotion_gate_passed must be boolean")
+    for field in ("fixtures_sha256", "split_sha256"):
+        if not _is_sha256(source[field]):
+            raise AnswerQualityEvaluationError(f"source {field} is invalid")
 
 
 def _validate_source_report_binding(
-    fixtures: dict[str, Any], source_report_path: Path | None
+    rubric: dict[str, Any], fixtures: dict[str, Any], source_report_path: Path | None
 ) -> tuple[str | None, str | None]:
     if fixtures["purpose"] == "rubric_calibration":
         if source_report_path is not None:
@@ -502,6 +541,31 @@ def _validate_source_report_binding(
     }
     if any(source[field] != value for field, value in expected.items()):
         raise AnswerQualityEvaluationError("source B4 report projection does not match fixtures")
+    from tools.nbtriage_maintainer.answer_review_export import (
+        AnswerReviewExportError,
+        build_b4_answer_quality_review_payloads,
+    )
+
+    fixtures_source_path = Path(source["fixtures_path"])
+    split_source_path = Path(source["split_path"])
+    try:
+        replayed, _ = build_b4_answer_quality_review_payloads(
+            report_raw=report_raw,
+            report=report,
+            fixtures_path=fixtures_source_path,
+            split_path=split_source_path,
+            rubric=rubric,
+        )
+    except AnswerReviewExportError as error:
+        raise AnswerQualityEvaluationError(
+            f"candidate source projection cannot be replayed: {error}"
+        ) from error
+    if source["fixtures_sha256"] != _file_sha256(fixtures_source_path, "source B4 fixtures"):
+        raise AnswerQualityEvaluationError("source B4 fixtures do not match their digest")
+    if source["split_sha256"] != _file_sha256(split_source_path, "source B4 split"):
+        raise AnswerQualityEvaluationError("source B4 split does not match its digest")
+    if replayed != fixtures:
+        raise AnswerQualityEvaluationError("candidate fixtures do not match replayed B4 projection")
     return str(source_report_path), hashlib.sha256(report_raw).hexdigest()
 
 
@@ -510,6 +574,7 @@ def _validate_annotations(
     *,
     fixture_set_id: str,
     fixture_revision: str,
+    rubric_revision: str,
     sample_ids: set[str],
     scale_minimum: int,
     scale_maximum: int,
@@ -519,18 +584,21 @@ def _validate_annotations(
         "annotation_set_id",
         "fixture_set_id",
         "fixture_revision",
+        "rubric_revision",
         "rubric_id",
         "review",
         "annotations",
     }
-    if set(payload) != required or payload.get("schema_version") != 2:
-        raise AnswerQualityEvaluationError("annotation set must be a schema_version 2 contract")
+    if set(payload) != required or payload.get("schema_version") != 3:
+        raise AnswerQualityEvaluationError("annotation set must be a schema_version 3 contract")
     if not isinstance(payload.get("annotation_set_id"), str) or not payload["annotation_set_id"]:
         raise AnswerQualityEvaluationError("annotation_set_id must be non-empty")
     if payload.get("fixture_set_id") != fixture_set_id:
         raise AnswerQualityEvaluationError("annotations are bound to a different fixture set")
     if payload.get("fixture_revision") != fixture_revision:
         raise AnswerQualityEvaluationError("annotations are bound to different fixture content")
+    if payload.get("rubric_revision") != rubric_revision:
+        raise AnswerQualityEvaluationError("annotations are bound to different rubric content")
     if payload.get("rubric_id") != ANSWER_QUALITY_RUBRIC_ID:
         raise AnswerQualityEvaluationError("annotation rubric_id is not supported")
     review = payload.get("review")
@@ -639,6 +707,25 @@ def _non_empty_string_list(value: Any, *, allow_empty: bool) -> bool:
     if not all(isinstance(item, str) and bool(item.strip()) for item in value):
         return False
     return len(value) == len(set(value))
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _is_revision(value: Any, *, prefix: str) -> bool:
+    return isinstance(value, str) and value.startswith(prefix) and _is_sha256(value[len(prefix) :])
+
+
+def _file_sha256(path: Path, label: str) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as error:
+        raise AnswerQualityEvaluationError(f"failed to load {label} {path}: {error}") from error
 
 
 def _ratio(numerator: int, denominator: int) -> float:
