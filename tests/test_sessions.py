@@ -242,6 +242,9 @@ def test_evidence_receipts_advance_one_frozen_candidate_at_a_time(tmp_path: Path
     assert [event.sequence for event in exhausted.events] == list(
         range(1, len(exhausted.events) + 1)
     )
+    store = FileSessionStore(tmp_path / "sessions")
+    store.create(exhausted)
+    assert store.load("session-1") == exhausted
 
 
 def test_evidence_receipt_requires_current_session_and_slot(tmp_path: Path) -> None:
@@ -367,6 +370,61 @@ def test_invalid_runtime_assessment_does_not_advance_session(tmp_path: Path) -> 
     assert len(approved.events) == 3
 
 
+def test_runtime_assessment_with_errors_does_not_advance_session(tmp_path: Path) -> None:
+    report_path = _prediction_report(tmp_path / "report.json", "verify")
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    approved = approve_session(session, "maintainer")
+    assessment = RuntimeAssessment(
+        case_id="case-1",
+        decision="validated",
+        buggy_ref="buggy",
+        fixed_ref="fixed",
+        probe_id="probe-1",
+        errors=["buggy Oracle did not match"],
+    )
+
+    with pytest.raises(SessionStateError, match="invalid runtime assessment"):
+        attach_runtime_assessment(approved, assessment)
+
+
+@pytest.mark.parametrize(
+    ("decision", "probe_id", "blocking_reason", "failure_reason", "required_runner"),
+    [
+        ("validated", None, None, None, None),
+        ("validated", "probe-1", None, "unexpected failure", None),
+        ("failed", "probe-1", None, None, None),
+        ("failed", "probe-1", "unexpected block", "failed", "runner"),
+        ("blocked", "probe-1", None, None, "runner"),
+        ("blocked", "probe-1", "blocked", "unexpected failure", "runner"),
+    ],
+)
+def test_runtime_assessment_requires_consistent_result_fields(
+    tmp_path: Path,
+    decision: str,
+    probe_id: str | None,
+    blocking_reason: str | None,
+    failure_reason: str | None,
+    required_runner: str | None,
+) -> None:
+    report_path = _prediction_report(tmp_path / "report.json", "verify")
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    approved = approve_session(session, "maintainer")
+    assessment = RuntimeAssessment(
+        case_id="case-1",
+        decision=decision,
+        buggy_ref="buggy",
+        fixed_ref="fixed",
+        probe_id=probe_id,
+        errors=[],
+        blocking_reason=blocking_reason,
+        failure_reason=failure_reason,
+        required_runner=required_runner,
+    )
+
+    with pytest.raises(SessionStateError, match="invalid runtime assessment"):
+        attach_runtime_assessment(approved, assessment)
+
+
 def test_file_session_store_round_trips_and_refuses_overwrite(tmp_path: Path) -> None:
     report_path = _prediction_report(tmp_path / "report.json", "needs_evidence")
     session = create_session_from_report(report_path, "case-1", session_id="session-1")
@@ -463,6 +521,48 @@ def test_file_session_store_rejects_runtime_result_without_matching_event(
         store.load("session-1")
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("probe_id", None, "probe_id is required"),
+        (
+            "failure_reason",
+            "forged failure",
+            "validated result cannot contain failure or blocking reasons",
+        ),
+    ],
+)
+def test_file_session_store_rejects_matching_forged_runtime_result(
+    tmp_path: Path,
+    field: str,
+    value: str | None,
+    error: str,
+) -> None:
+    report_path = _prediction_report(tmp_path / "report.json", "verify")
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    approved = approve_session(session, "maintainer")
+    completed = attach_runtime_assessment(
+        approved,
+        RuntimeAssessment(
+            case_id="case-1",
+            decision="validated",
+            buggy_ref="buggy",
+            fixed_ref="fixed",
+            probe_id="probe-1",
+            errors=[],
+        ),
+    )
+    store = FileSessionStore(tmp_path / "sessions")
+    path = store.create(completed)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["action"]["result"][field] = value
+    payload["events"][3]["details"][field] = value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SessionStoreError, match=error):
+        store.load("session-1")
+
+
 def test_file_session_store_rejects_extra_verify_event(tmp_path: Path) -> None:
     report_path = _prediction_report(tmp_path / "report.json", "verify")
     session = create_session_from_report(report_path, "case-1", session_id="session-1")
@@ -500,6 +600,126 @@ def test_file_session_store_rejects_non_monotonic_event_time(tmp_path: Path) -> 
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(SessionStoreError, match="non-decreasing"):
+        store.load("session-1")
+
+
+def test_file_session_store_wraps_timestamp_overflow(tmp_path: Path) -> None:
+    report_path = _prediction_report(tmp_path / "report.json", "verify")
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    store = FileSessionStore(tmp_path / "sessions")
+    path = store.create(session)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    extreme_timestamp = "0001-01-01T00:00:00+23:59"
+    payload["created_at"] = extreme_timestamp
+    payload["updated_at"] = extreme_timestamp
+    for event in payload["events"]:
+        event["occurred_at"] = extreme_timestamp
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SessionStoreError, match="timezone-aware ISO timestamp"):
+        store.load("session-1")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("actor", "forged"),
+        ("action_id", "action-forged"),
+        ("receipt_id", "receipt-forged"),
+        ("slot", "logs"),
+        ("content_sha256", "f" * 64),
+        ("byte_count", 999),
+    ],
+)
+def test_file_session_store_rejects_forged_evidence_event(
+    tmp_path: Path,
+    field: str,
+    value: str | int,
+) -> None:
+    report_path = _prediction_report(
+        tmp_path / "report.json",
+        "needs_evidence",
+        missing_evidence=["logs", "reproduction_steps"],
+    )
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    updated = attach_evidence_receipt(
+        session,
+        _receipt("reproduction_steps", receipt_id="receipt-1"),
+    )
+    store = FileSessionStore(tmp_path / "sessions")
+    path = store.create(updated)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if field == "actor":
+        payload["events"][2]["actor"] = value
+    else:
+        payload["events"][2]["details"][field] = value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SessionStoreError, match="evidence_received event"):
+        store.load("session-1")
+
+
+def test_file_session_store_rejects_missing_evidence_proposal_event(tmp_path: Path) -> None:
+    report_path = _prediction_report(
+        tmp_path / "report.json",
+        "needs_evidence",
+        missing_evidence=["logs", "reproduction_steps"],
+    )
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    updated = attach_evidence_receipt(
+        session,
+        _receipt("reproduction_steps", receipt_id="receipt-1"),
+    )
+    store = FileSessionStore(tmp_path / "sessions")
+    path = store.create(updated)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["events"].pop()
+    payload["updated_at"] = payload["events"][-1]["occurred_at"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SessionStoreError, match="missing its proposed event"):
+        store.load("session-1")
+
+
+def test_file_session_store_rejects_forged_evidence_proposal_event(tmp_path: Path) -> None:
+    report_path = _prediction_report(
+        tmp_path / "report.json",
+        "needs_evidence",
+        missing_evidence=["logs", "reproduction_steps"],
+    )
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    updated = attach_evidence_receipt(
+        session,
+        _receipt("reproduction_steps", receipt_id="receipt-1"),
+    )
+    store = FileSessionStore(tmp_path / "sessions")
+    path = store.create(updated)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["events"][3]["actor"] = "forged-policy"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SessionStoreError, match="action_proposed event"):
+        store.load("session-1")
+
+
+def test_file_session_store_rejects_extra_evidence_event(tmp_path: Path) -> None:
+    report_path = _prediction_report(tmp_path / "report.json", "needs_evidence")
+    session = create_session_from_report(report_path, "case-1", session_id="session-1")
+    store = FileSessionStore(tmp_path / "sessions")
+    path = store.create(session)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["events"].append(
+        {
+            "sequence": 3,
+            "event_type": "runtime_result_attached",
+            "occurred_at": payload["updated_at"],
+            "actor": "forged",
+            "details": {"decision": "validated"},
+        }
+    )
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SessionStoreError, match="unexpected event"):
         store.load("session-1")
 
 

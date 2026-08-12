@@ -30,6 +30,16 @@ ROUTE_ACTIONS = {
     "abstain": ("refuse", "refused", "completed", False),
 }
 
+RUNTIME_RESULT_FIELDS = {
+    "decision",
+    "probe_id",
+    "buggy_ref",
+    "fixed_ref",
+    "blocking_reason",
+    "failure_reason",
+    "required_runner",
+}
+
 
 class SessionError(ValueError):
     pass
@@ -417,7 +427,7 @@ def attach_runtime_assessment(
         raise SessionStateError("runtime result requires an approved run_oracle action")
     if assessment.case_id != session.case_id:
         raise SessionStateError("runtime result case_id does not match the session")
-    if assessment.decision not in {"validated", "failed", "blocked"}:
+    if assessment.errors:
         raise SessionStateError("invalid runtime assessment cannot be attached")
     timestamp = occurred_at or datetime.now(UTC).isoformat()
     resolved_actor = _required_string(actor, "actor")
@@ -430,6 +440,9 @@ def attach_runtime_assessment(
         "failure_reason": assessment.failure_reason,
         "required_runner": assessment.required_runner,
     }
+    validation_error = _runtime_result_validation_error(result)
+    if validation_error is not None:
+        raise SessionStateError(f"invalid runtime assessment: {validation_error}")
     next_status = "completed" if assessment.decision == "validated" else "blocked"
     next_action_status = "completed" if assessment.decision == "validated" else "blocked"
     event = SessionEvent(
@@ -567,6 +580,9 @@ def _validate_verify_event_chain(session: SupportSession) -> None:
         result = session.action.result
         if result is None:
             raise SessionStoreError("terminal verify session is missing its runtime result")
+        validation_error = _runtime_result_validation_error(result)
+        if validation_error is not None:
+            raise SessionStoreError(f"invalid persisted runtime result: {validation_error}")
         decision = result.get("decision")
         if session.status == "completed" and decision != "validated":
             raise SessionStoreError("completed verify session requires a validated result")
@@ -584,11 +600,59 @@ def _aware_timestamp(value: Any, field: str) -> datetime:
         raise SessionStoreError(f"{field} must be a timezone-aware ISO timestamp")
     try:
         parsed = datetime.fromisoformat(value)
-    except ValueError as error:
+        if parsed.utcoffset() is None:
+            raise ValueError("timestamp has no UTC offset")
+        return parsed.astimezone(UTC)
+    except (OverflowError, ValueError) as error:
         raise SessionStoreError(f"{field} must be a timezone-aware ISO timestamp") from error
-    if parsed.utcoffset() is None:
-        raise SessionStoreError(f"{field} must be a timezone-aware ISO timestamp")
-    return parsed.astimezone(UTC)
+
+
+def _runtime_result_validation_error(result: dict[str, Any]) -> str | None:
+    if set(result) != RUNTIME_RESULT_FIELDS:
+        return "fields do not match the runtime result schema"
+
+    decision = result.get("decision")
+    if not isinstance(decision, str) or decision not in {"validated", "failed", "blocked"}:
+        return "decision must be validated, failed, or blocked"
+    for field in ("probe_id", "buggy_ref", "fixed_ref"):
+        value = result.get(field)
+        normalized = _normalized_optional_string(value)
+        if normalized is None:
+            return f"{field} is required"
+        if value != normalized:
+            return f"{field} must be a normalized string"
+
+    blocking_reason = _normalized_optional_string(result.get("blocking_reason"))
+    failure_reason = _normalized_optional_string(result.get("failure_reason"))
+    required_runner = _normalized_optional_string(result.get("required_runner"))
+    optional_values = {
+        "blocking_reason": blocking_reason,
+        "failure_reason": failure_reason,
+        "required_runner": required_runner,
+    }
+    for field, normalized in optional_values.items():
+        value = result.get(field)
+        if value is not None and (not isinstance(value, str) or value != normalized):
+            return f"{field} must be null or a non-empty normalized string"
+
+    if decision == "validated":
+        if any(value is not None for value in optional_values.values()):
+            return "validated result cannot contain failure or blocking reasons"
+    elif decision == "failed":
+        if failure_reason is None:
+            return "failure_reason is required for failed result"
+        if blocking_reason is not None or required_runner is not None:
+            return "failed result cannot contain blocking fields"
+    else:
+        if blocking_reason is None or required_runner is None:
+            return "blocking_reason and required_runner are required for blocked result"
+        if failure_reason is not None:
+            return "blocked result cannot contain failure_reason"
+    return None
+
+
+def _normalized_optional_string(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def _validate_evidence_session(session: SupportSession) -> None:
@@ -616,15 +680,7 @@ def _validate_evidence_session(session: SupportSession) -> None:
         received_slots.add(receipt.slot)
         remaining.remove(receipt.slot)
 
-    evidence_events = [event for event in session.events if event.event_type == "evidence_received"]
-    if len(evidence_events) != len(session.evidence_receipts):
-        raise SessionStoreError("evidence receipt count does not match the event log")
-    for receipt, event in zip(session.evidence_receipts, evidence_events, strict=True):
-        if (
-            event.details.get("receipt_id") != receipt.receipt_id
-            or event.details.get("slot") != receipt.slot
-        ):
-            raise SessionStoreError("evidence receipt metadata does not match the event log")
+    _validate_evidence_event_chain(session, candidates)
 
     selected = _select_evidence_from_candidates(session.prediction, remaining)
     if selected is not None:
@@ -647,6 +703,51 @@ def _validate_evidence_session(session: SupportSession) -> None:
         raise SessionStoreError("requested evidence does not match the frozen B3 policy")
     if session.action.result != expected_result:
         raise SessionStoreError("evidence action result does not match the accepted receipt")
+
+
+def _validate_evidence_event_chain(
+    session: SupportSession,
+    candidates: list[str],
+) -> None:
+    event_index = 2
+    remaining = list(candidates)
+    for receipt_index, receipt in enumerate(session.evidence_receipts, start=1):
+        if event_index >= len(session.events):
+            raise SessionStoreError("evidence receipt is missing its event")
+        received_event = session.events[event_index]
+        expected_details = {
+            "action_id": f"action-{receipt_index}",
+            "receipt_id": receipt.receipt_id,
+            "slot": receipt.slot,
+            "content_sha256": receipt.content_sha256,
+            "byte_count": receipt.byte_count,
+        }
+        if (
+            received_event.event_type != "evidence_received"
+            or received_event.actor != receipt.submitted_by
+            or received_event.details != expected_details
+        ):
+            raise SessionStoreError("evidence_received event does not match the accepted receipt")
+        event_index += 1
+        remaining.remove(receipt.slot)
+
+        selected = _select_evidence_from_candidates(session.prediction, remaining)
+        if selected is None:
+            continue
+        if event_index >= len(session.events):
+            raise SessionStoreError("next evidence action is missing its proposed event")
+        proposed_event = session.events[event_index]
+        if (
+            proposed_event.event_type != "action_proposed"
+            or proposed_event.actor != "b3-evidence-policy"
+            or proposed_event.details
+            != {"kind": "request_evidence", "approval_required": False, "slot": selected}
+        ):
+            raise SessionStoreError("next action_proposed event does not match the evidence policy")
+        event_index += 1
+
+    if event_index != len(session.events):
+        raise SessionStoreError("needs_evidence session contains an unexpected event")
 
 
 def _read_bytes(path: Path) -> bytes:
