@@ -116,8 +116,7 @@ def test_train_retriever_filters_repository_before_limit() -> None:
 
 def test_train_retriever_repository_scope_keeps_limit_bounded() -> None:
     train_cases = [
-        _case(f"same-{index}", "shared symptom", repository="target")
-        for index in range(3)
+        _case(f"same-{index}", "shared symptom", repository="target") for index in range(3)
     ]
     query = _case("query-case", "shared symptom", repository="target")
 
