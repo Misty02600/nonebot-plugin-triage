@@ -123,6 +123,24 @@ def _scripted_report() -> dict[str, Any]:
     }
 
 
+def _b1_report() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "evaluation_id": "b1-rag-only-v1",
+        "evaluation_contract": {
+            "code_revision": f"nbtriage-source-sha256:{'c' * 64}",
+        },
+        "split_id": "data-gate-v1",
+        "source": {
+            "split_sha256": "a" * 64,
+            "case_corpus_sha256": "b" * 64,
+            "case_corpus_scope": "train_and_scored_splits",
+            "case_count": 32,
+        },
+        "summary": {"provider": "fixture-provider", "model": "fixture-model"},
+    }
+
+
 def test_publish_maps_stable_fields_and_preserves_exact_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -175,6 +193,75 @@ def test_publish_is_idempotent_for_the_same_bundle(tmp_path: Path) -> None:
     assert second.created is False
     assert second.run_id == first.run_id
     assert len(mlflow.runs) == 1
+
+
+def test_b1_publish_maps_evaluator_provenance_separately_from_publisher_git(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = tmp_path / "b1.json"
+    _write_json(report_path, _b1_report())
+    mlflow = _FakeMLflow()
+    monkeypatch.setattr(
+        "tools.nbtriage_maintainer.mlflow_tracking._publisher_git_state",
+        lambda: ("publisher-revision", True),
+    )
+
+    publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    run = mlflow.runs[0]
+    assert run.tags["nbtriage.source.split_sha256"] == "a" * 64
+    assert run.tags["nbtriage.source.case_corpus_sha256"] == "b" * 64
+    assert run.tags["nbtriage.publisher.git_sha"] == "publisher-revision"
+    assert run.params["nbtriage.evaluation_contract.code_revision"] == (
+        f"nbtriage-source-sha256:{'c' * 64}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "field", "value"),
+    [
+        ("root", "source", None),
+        ("source", "split_sha256", "not-a-digest"),
+        ("source", "case_corpus_sha256", "A" * 64),
+        ("source", "case_corpus_scope", "all_cases"),
+        ("source", "case_count", True),
+        ("contract", "code_revision", "git:main"),
+    ],
+)
+def test_b1_publish_rejects_missing_or_invalid_provenance(
+    tmp_path: Path,
+    target: str,
+    field: str,
+    value: object,
+) -> None:
+    payload = _b1_report()
+    if target == "root":
+        if value is None:
+            del payload[field]
+        else:
+            payload[field] = value
+    elif target == "source":
+        payload["source"][field] = value
+    else:
+        payload["evaluation_contract"][field] = value
+    report_path = tmp_path / "b1-invalid.json"
+    _write_json(report_path, payload)
+
+    with pytest.raises(MLflowTrackingError, match="B0/B1"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=_FakeMLflow())
+
+
+def test_non_b0_b1_report_remains_compatible_without_provenance(tmp_path: Path) -> None:
+    report_path = tmp_path / "legacy-other-evaluation.json"
+    _write_json(
+        report_path,
+        {"schema_version": 1, "evaluation_id": "legacy-other-v1", "summary": {}},
+    )
+
+    publication = publish_evaluation_to_mlflow(report_path, mlflow_module=_FakeMLflow())
+
+    assert publication.created is True
 
 
 def test_answer_quality_report_preserves_offline_scope_and_source_model(

@@ -20,6 +20,7 @@ DEFAULT_MLFLOW_EXPERIMENT = "nbtriage/evaluations"
 _B4_REAL_EVALUATION_ID = "b4-bounded-agent-real-v1"
 _B4_REAL_PARTIAL_KIND = "b4-real-partial"
 _B4_REAL_ABORT_KIND = "b4-real-run-abort-observation"
+_B0_B1_EVALUATION_IDS = frozenset({"b0-checklist-v1", "b1-rag-only-v1"})
 _TERMINAL_PARTIAL_STATUSES = frozenset({"aborted", "completed"})
 _METRIC_ROOTS = (
     "summary",
@@ -194,12 +195,55 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
                 "b4-real-partial must be completed or aborted before publication"
             )
 
+    if evaluation_id in _B0_B1_EVALUATION_IDS:
+        _validate_b0_b1_provenance(payload)
+
     return _LoadedArtifact(
         path=path,
         raw=raw,
         payload=payload,
         sha256=hashlib.sha256(raw).hexdigest(),
     )
+
+
+def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:
+    source = payload.get("source")
+    if not isinstance(source, dict):
+        raise MLflowTrackingError("B0/B1 evaluation artifact must contain source provenance")
+    required_source_fields = {
+        "split_sha256",
+        "case_corpus_sha256",
+        "case_corpus_scope",
+        "case_count",
+    }
+    if set(source) != required_source_fields:
+        raise MLflowTrackingError("B0/B1 evaluation source provenance is invalid")
+    for field in ("split_sha256", "case_corpus_sha256"):
+        value = source.get(field)
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise MLflowTrackingError("B0/B1 evaluation source hashes must be lowercase SHA-256")
+    expected_scope = (
+        "scored_splits"
+        if payload.get("evaluation_id") == "b0-checklist-v1"
+        else "train_and_scored_splits"
+    )
+    if source.get("case_corpus_scope") != expected_scope:
+        raise MLflowTrackingError("B0/B1 evaluation case corpus scope is invalid")
+    case_count = source.get("case_count")
+    if not isinstance(case_count, int) or isinstance(case_count, bool) or case_count < 1:
+        raise MLflowTrackingError("B0/B1 evaluation case count is invalid")
+
+    contract = payload.get("evaluation_contract")
+    if not isinstance(contract, dict) or set(contract) != {"code_revision"}:
+        raise MLflowTrackingError("B0/B1 evaluation contract is invalid")
+    revision = contract.get("code_revision")
+    prefix = "nbtriage-source-sha256:"
+    if (
+        not isinstance(revision, str)
+        or not revision.startswith(prefix)
+        or re.fullmatch(r"[0-9a-f]{64}", revision.removeprefix(prefix)) is None
+    ):
+        raise MLflowTrackingError("B0/B1 evaluation code revision is invalid")
 
 
 def _load_related_audit(artifact: _LoadedArtifact) -> _LoadedArtifact | None:

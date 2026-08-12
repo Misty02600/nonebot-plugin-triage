@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 
@@ -101,6 +102,11 @@ def test_evaluate_b0_reports_frozen_splits_and_missing_s3(tmp_path: Path) -> Non
 
     report = evaluate_b0(cases_dir, split_path)
 
+    assert report["source"]["split_sha256"] == hashlib.sha256(split_path.read_bytes()).hexdigest()
+    assert report["source"]["case_corpus_scope"] == "scored_splits"
+    assert report["source"]["case_count"] == 3
+    assert len(report["source"]["case_corpus_sha256"]) == 64
+    assert report["evaluation_contract"]["code_revision"].startswith("nbtriage-source-sha256:")
     assert report["summary"] == {
         "case_count": 3,
         "train_count": 1,
@@ -362,7 +368,53 @@ def test_evaluate_b1_can_run_validation_without_exposing_heldout(tmp_path: Path)
     assert report["summary"]["heldout_count"] == 0
     assert set(report["metrics_by_split"]) == {"validation"}
     assert {row["split"] for row in report["predictions"]} == {"validation"}
+    assert report["source"]["case_corpus_scope"] == "train_and_scored_splits"
+    assert report["source"]["case_count"] == 2
     assert client.calls == 1
+
+
+def test_b1_validation_corpus_ignores_heldout_but_binds_train_and_target(
+    tmp_path: Path,
+) -> None:
+    cases_dir, split_path = _fixture(tmp_path)
+
+    def evaluate() -> dict[str, object]:
+        return asyncio.run(
+            evaluate_b1(
+                cases_dir,
+                split_path,
+                client=FixtureB1Client(),
+                model="fixture-model",
+                cache_dir=tmp_path / "cache",
+                score_splits=("validation",),
+            )
+        )["source"]
+
+    initial = evaluate()
+    heldout_path = cases_dir / "heldout-case.json"
+    heldout_path.write_bytes(heldout_path.read_bytes() + b" \n")
+    after_heldout_change = evaluate()
+    train_path = cases_dir / "train-case.json"
+    train_path.write_bytes(train_path.read_bytes() + b" \n")
+    after_train_change = evaluate()
+
+    assert after_heldout_change["case_corpus_sha256"] == initial["case_corpus_sha256"]
+    assert after_train_change["case_corpus_sha256"] != initial["case_corpus_sha256"]
+
+
+def test_evaluation_rejects_source_revision_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cases_dir, split_path = _fixture(tmp_path)
+    revisions = iter(("nbtriage-source-sha256:" + "a" * 64, "nbtriage-source-sha256:" + "b" * 64))
+    monkeypatch.setattr(
+        "tools.nbtriage_maintainer.evaluation._current_evaluation_code_revision",
+        lambda: next(revisions),
+    )
+
+    with pytest.raises(EvaluationError, match="source changed during"):
+        evaluate_b0(cases_dir, split_path)
 
 
 def test_evaluate_b1_rejects_empty_score_splits_before_model_calls(tmp_path: Path) -> None:

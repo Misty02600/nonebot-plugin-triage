@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections import Counter
@@ -19,6 +20,11 @@ from nbtriage.rag import (
     B1ResponseCache,
     B1Runner,
     TrainCaseRetriever,
+)
+from tools.nbtriage_maintainer.evaluation_provenance import (
+    EvaluationProvenanceError,
+    case_corpus_sha256,
+    evaluation_code_revision,
 )
 
 ROUTE_BY_MODE = {
@@ -92,6 +98,8 @@ class EvaluationDataset:
     split_id: str
     split_case_ids: dict[str, list[str]]
     cases: dict[str, dict[str, Any]]
+    split_raw: bytes
+    case_raw_by_id: dict[str, bytes]
 
 
 @dataclass
@@ -126,6 +134,7 @@ class MultiLabelCounts:
 
 
 def evaluate_b0(cases_dir: Path, split_path: Path) -> dict[str, Any]:
+    code_revision = _current_evaluation_code_revision()
     dataset = load_evaluation_dataset(cases_dir, split_path)
     train_cases = [dataset.cases[case_id] for case_id in dataset.split_case_ids.get("train", [])]
     search_index = B0SearchIndex(train_cases)
@@ -136,7 +145,7 @@ def evaluate_b0(cases_dir: Path, split_path: Path) -> dict[str, Any]:
         )
         for case_id in sorted(dataset.cases)
     }
-    return _build_evaluation_report(
+    report = _build_evaluation_report(
         dataset,
         predictions,
         evaluation_id="b0-checklist-v1",
@@ -152,7 +161,10 @@ def evaluate_b0(cases_dir: Path, split_path: Path) -> dict[str, Any]:
             "Version metrics compare normalized version values, not "
             "package-to-version association accuracy.",
         ],
+        code_revision=code_revision,
     )
+    _ensure_evaluation_code_unchanged(code_revision)
+    return report
 
 
 async def evaluate_b1(
@@ -183,6 +195,7 @@ async def evaluate_b1(
         EvaluationError: split 或 Case 工件无效。
         B1Error: 模型输出或响应缓存无效。
     """
+    code_revision = _current_evaluation_code_revision()
     dataset = load_evaluation_dataset(cases_dir, split_path)
     selected_splits = tuple(dataset.split_case_ids) if score_splits is None else score_splits
     unknown_splits = set(selected_splits) - set(dataset.split_case_ids)
@@ -210,7 +223,7 @@ async def evaluate_b1(
     provider_response_count = sum(
         prediction.provider_request_id is not None for prediction in predictions.values()
     )
-    return _build_evaluation_report(
+    report = _build_evaluation_report(
         dataset,
         predictions,
         evaluation_id="b1-rag-only-v1",
@@ -239,11 +252,14 @@ async def evaluate_b1(
             "duplicate Recall@5 is not applicable and unsafe-refusal coverage is insufficient.",
             "Version metrics compare normalized values, not package-to-version association.",
         ],
+        code_revision=code_revision,
     )
+    _ensure_evaluation_code_unchanged(code_revision)
+    return report
 
 
 def load_evaluation_dataset(cases_dir: Path, split_path: Path) -> EvaluationDataset:
-    split_payload = _load_object(split_path)
+    split_raw, split_payload = _load_object(split_path)
     split_id = split_payload.get("split_id")
     if not isinstance(split_id, str) or not split_id:
         raise EvaluationError("split manifest must contain split_id")
@@ -263,8 +279,8 @@ def load_evaluation_dataset(cases_dir: Path, split_path: Path) -> EvaluationData
         assigned_case_ids.update(case_ids)
 
     needed_case_ids = {case_id for case_ids in split_case_ids.values() for case_id in case_ids}
-    cases = _load_cases(cases_dir, needed_case_ids)
-    return EvaluationDataset(split_id, split_case_ids, cases)
+    cases, case_raw_by_id = _load_cases(cases_dir, needed_case_ids)
+    return EvaluationDataset(split_id, split_case_ids, cases, split_raw, case_raw_by_id)
 
 
 def _build_evaluation_report(
@@ -275,6 +291,7 @@ def _build_evaluation_report(
     run_summary: dict[str, Any],
     limitations: list[str],
     score_split_names: tuple[str, ...] | None = None,
+    code_revision: str,
 ) -> dict[str, Any]:
     selected_splits = (
         tuple(dataset.split_case_ids) if score_split_names is None else score_split_names
@@ -285,6 +302,12 @@ def _build_evaluation_report(
     missing_predictions = evaluated_case_ids - set(predictions)
     if missing_predictions:
         raise EvaluationError(f"predictions missing case IDs: {sorted(missing_predictions)}")
+
+    corpus_case_ids = set(evaluated_case_ids)
+    corpus_scope = "scored_splits"
+    if evaluation_id == "b1-rag-only-v1":
+        corpus_case_ids.update(dataset.split_case_ids.get("train", []))
+        corpus_scope = "train_and_scored_splits"
 
     split_reports = {}
     prediction_rows = []
@@ -311,8 +334,18 @@ def _build_evaluation_report(
     return {
         "schema_version": 1,
         "evaluation_id": evaluation_id,
+        "evaluation_contract": {"code_revision": code_revision},
         "split_id": dataset.split_id,
         "generated_at": datetime.now(UTC).isoformat(),
+        "source": {
+            "split_sha256": hashlib.sha256(dataset.split_raw).hexdigest(),
+            "case_corpus_sha256": case_corpus_sha256(
+                dataset.case_raw_by_id,
+                corpus_case_ids,
+            ),
+            "case_corpus_scope": corpus_scope,
+            "case_count": len(corpus_case_ids),
+        },
         "summary": {
             "case_count": len(evaluated_case_ids),
             "train_count": (
@@ -506,13 +539,17 @@ def _gold_missing_evidence(curation: dict[str, Any]) -> set[str]:
     return gaps
 
 
-def _load_cases(cases_dir: Path, needed_case_ids: set[str]) -> dict[str, dict[str, Any]]:
+def _load_cases(
+    cases_dir: Path,
+    needed_case_ids: set[str],
+) -> tuple[dict[str, dict[str, Any]], dict[str, bytes]]:
     cases = {}
+    raw_by_id = {}
     for case_id in needed_case_ids:
         path = cases_dir / f"{case_id}.json"
         if not path.is_file():
             raise EvaluationError(f"missing generated SupportCase: {path}")
-        payload = _load_object(path)
+        raw, payload = _load_object(path)
         if payload.get("case_id") != case_id:
             raise EvaluationError(f"case_id mismatch in {path}")
         if not isinstance(payload.get("source"), dict) or not isinstance(
@@ -520,7 +557,8 @@ def _load_cases(cases_dir: Path, needed_case_ids: set[str]) -> dict[str, dict[st
         ):
             raise EvaluationError(f"invalid SupportCase structure: {path}")
         cases[case_id] = payload
-    return cases
+        raw_by_id[case_id] = raw
+    return cases, raw_by_id
 
 
 def _split_case_ids(entries: Any) -> list[str]:
@@ -541,14 +579,27 @@ def _split_case_ids(entries: Any) -> list[str]:
     return case_ids
 
 
-def _load_object(path: Path) -> dict[str, Any]:
+def _load_object(path: Path) -> tuple[bytes, dict[str, Any]]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        raw = path.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise EvaluationError(f"failed to load {path}: {error}") from error
     if not isinstance(payload, dict):
         raise EvaluationError(f"top-level JSON value must be an object: {path}")
-    return payload
+    return raw, payload
+
+
+def _current_evaluation_code_revision() -> str:
+    try:
+        return evaluation_code_revision(Path(__file__).resolve().parents[2])
+    except EvaluationProvenanceError as error:
+        raise EvaluationError(str(error)) from error
+
+
+def _ensure_evaluation_code_unchanged(expected_revision: str) -> None:
+    if _current_evaluation_code_revision() != expected_revision:
+        raise EvaluationError("evaluation source changed during the B0/B1 run")
 
 
 def _source_text(case: dict[str, Any]) -> str:
