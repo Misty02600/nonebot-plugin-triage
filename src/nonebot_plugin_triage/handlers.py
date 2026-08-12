@@ -50,7 +50,6 @@ from nonebot_plugin_triage.support_intake import (
     register_public_alconna_capability,
 )
 from nonebot_plugin_triage.thread_references import (
-    NBTRIAGE_THREAD_BINDING_STATE_KEY,
     InitialThreadBinding,
     PendingContinuationBinding,
     PreparedContinuationBinding,
@@ -300,7 +299,10 @@ def _set_outgoing_thread(
     event: Event,
     thread: SupportThreadRecord,
 ) -> None:
-    matcher.state[NBTRIAGE_THREAD_BINDING_STATE_KEY] = _thread_binding(thread, event)
+    plugin_runtime.thread_reference_bridge.set_outgoing_binding(
+        matcher.state,
+        _thread_binding(thread, event),
+    )
 
 
 def _set_pending_continuation(
@@ -308,9 +310,12 @@ def _set_pending_continuation(
     event: Event,
     lease: SupportTurnLease,
 ) -> None:
-    matcher.state[NBTRIAGE_THREAD_BINDING_STATE_KEY] = PendingContinuationBinding(
-        lease.token,
-        event.get_user_id(),
+    plugin_runtime.thread_reference_bridge.set_outgoing_binding(
+        matcher.state,
+        PendingContinuationBinding(
+            lease.token,
+            event.get_user_id(),
+        ),
     )
 
 
@@ -322,16 +327,19 @@ def _prepare_continuation(
     kind: ThreadKind,
     topic_refs: tuple[str, ...],
 ) -> None:
-    matcher.state[NBTRIAGE_THREAD_BINDING_STATE_KEY] = PreparedContinuationBinding(
-        lease.token,
-        event.get_user_id(),
-        kind,
-        topic_refs,
+    plugin_runtime.thread_reference_bridge.set_outgoing_binding(
+        matcher.state,
+        PreparedContinuationBinding(
+            lease.token,
+            event.get_user_id(),
+            kind,
+            topic_refs,
+        ),
     )
 
 
 def _close_continuation(matcher: Matcher, lease: SupportTurnLease) -> None:
-    matcher.state.pop(NBTRIAGE_THREAD_BINDING_STATE_KEY, None)
+    plugin_runtime.thread_reference_bridge.discard_outgoing_binding(matcher.state)
     plugin_runtime.thread_reference_bridge.close_turn(lease.token)
 
 
