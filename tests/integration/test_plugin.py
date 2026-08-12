@@ -1012,6 +1012,7 @@ async def test_public_shadow_capability_guidance_is_available_to_regular_user(
             runtime_modules=runtime_modules,
             revision_builder=revision_builder,
         )
+
     record = CapabilityRecord(
         capability_id="command:image",
         owner="YetAnotherPicSearch",
