@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
+from contextlib import suppress
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from tools.nbtriage_maintainer.collector import load_manifest
 from tools.nbtriage_maintainer.github import parse_issue_url
@@ -16,10 +19,21 @@ class AnnotationError(ValueError):
     pass
 
 
+_CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
+
+
 @dataclass(frozen=True)
 class AppliedAnnotation:
     case_id: str
     case_path: Path
+
+
+@dataclass(frozen=True)
+class _PreparedAnnotation:
+    case_id: str
+    case_path: Path
+    original: bytes
+    updated: bytes
 
 
 def apply_annotations(annotation_path: Path, cases_dir: Path) -> list[AppliedAnnotation]:
@@ -45,13 +59,14 @@ def apply_annotations(annotation_path: Path, cases_dir: Path) -> list[AppliedAnn
     allowed_fields = {item.name for item in fields(CaseCuration)}
     allowed_oracle_fields = {item.name for item in fields(OracleDraft)}
     seen = set()
-    results = []
+    prepared: list[_PreparedAnnotation] = []
+    resolved_cases_dir = cases_dir.resolve()
     for index, annotation in enumerate(annotations):
         if not isinstance(annotation, dict):
             raise AnnotationError(f"annotation {index} must be an object")
         case_id = annotation.get("case_id")
         curation = annotation.get("curation")
-        if not isinstance(case_id, str) or not case_id.strip():
+        if not isinstance(case_id, str) or _CASE_ID_PATTERN.fullmatch(case_id) is None:
             raise AnnotationError(f"annotation {index} has an invalid case_id")
         if case_id in seen:
             raise AnnotationError(f"duplicate annotation case_id: {case_id}")
@@ -71,8 +86,10 @@ def apply_annotations(annotation_path: Path, cases_dir: Path) -> list[AppliedAnn
                 )
         seen.add(case_id)
 
-        case_path = cases_dir / f"{case_id}.json"
-        case = _read_json(case_path, "case")
+        case_path = (resolved_cases_dir / f"{case_id}.json").resolve()
+        if case_path.parent != resolved_cases_dir:
+            raise AnnotationError(f"annotation {index} has an invalid case_id")
+        original, case = _read_json_bytes(case_path, "case")
         if case.get("case_id") != case_id or not isinstance(case.get("curation"), dict):
             raise AnnotationError(f"case artifact does not match annotation: {case_path}")
         merged = dict(case["curation"])
@@ -88,9 +105,17 @@ def apply_annotations(annotation_path: Path, cases_dir: Path) -> list[AppliedAnn
             else:
                 merged[key] = value
         case["curation"] = merged
-        _write_json(case_path, case)
-        results.append(AppliedAnnotation(case_id, case_path))
-    return results
+        prepared.append(
+            _PreparedAnnotation(
+                case_id=case_id,
+                case_path=case_path,
+                original=original,
+                updated=_json_bytes(case),
+            )
+        )
+
+    _commit_annotation_batch(prepared)
+    return [AppliedAnnotation(item.case_id, item.case_path) for item in prepared]
 
 
 def export_annotations(
@@ -135,15 +160,20 @@ def export_annotations(
 
 
 def _read_json(path: Path, label: str) -> dict[str, Any]:
+    return _read_json_bytes(path, label)[1]
+
+
+def _read_json_bytes(path: Path, label: str) -> tuple[bytes, dict[str, Any]]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
     except FileNotFoundError as error:
         raise AnnotationError(f"{label} not found: {path}") from error
-    except json.JSONDecodeError as error:
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise AnnotationError(f"{label} is not valid JSON: {path}: {error}") from error
     if not isinstance(payload, dict):
         raise AnnotationError(f"{label} must contain a JSON object: {path}")
-    return payload
+    return raw, payload
 
 
 def _has_content(value: Any) -> bool:
@@ -157,7 +187,59 @@ def _has_content(value: Any) -> bool:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    content = _json_bytes(payload)
     temporary = path.with_suffix(f"{path.suffix}.tmp")
-    temporary.write_text(content, encoding="utf-8")
+    temporary.write_bytes(content)
     temporary.replace(path)
+
+
+def _json_bytes(payload: dict[str, Any]) -> bytes:
+    return (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def _commit_annotation_batch(prepared: list[_PreparedAnnotation]) -> None:
+    staged: list[tuple[_PreparedAnnotation, Path, Path]] = []
+    replaced: list[tuple[_PreparedAnnotation, Path]] = []
+    try:
+        for item in prepared:
+            token = uuid4().hex
+            new_path = item.case_path.with_name(
+                f".{item.case_path.name}.annotation-new-{token}.tmp"
+            )
+            backup_path = item.case_path.with_name(
+                f".{item.case_path.name}.annotation-backup-{token}.tmp"
+            )
+            staged.append((item, new_path, backup_path))
+            _write_new_bytes(new_path, item.updated)
+            _write_new_bytes(backup_path, item.original)
+
+        for item, new_path, backup_path in staged:
+            if item.case_path.read_bytes() != item.original:
+                raise AnnotationError("case artifact changed while applying annotation batch")
+            new_path.replace(item.case_path)
+            replaced.append((item, backup_path))
+    except (AnnotationError, OSError) as error:
+        rollback_failed = False
+        for item, backup_path in reversed(replaced):
+            try:
+                backup_path.replace(item.case_path)
+            except OSError:
+                rollback_failed = True
+        if rollback_failed:
+            raise AnnotationError(
+                "annotation batch commit failed and rollback was incomplete"
+            ) from error
+        if isinstance(error, AnnotationError):
+            raise
+        raise AnnotationError("annotation batch commit failed") from error
+    finally:
+        for _, new_path, backup_path in staged:
+            with suppress(OSError):
+                new_path.unlink()
+            with suppress(OSError):
+                backup_path.unlink()
+
+
+def _write_new_bytes(path: Path, content: bytes) -> None:
+    with path.open("xb") as file:
+        file.write(content)
