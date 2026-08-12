@@ -6,6 +6,7 @@ from functools import wraps
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from nbtriage.bounded_agent import (
     AgentAction,
@@ -16,10 +17,16 @@ from nbtriage.bounded_agent import (
     AgentRunState,
     AgentRunStatus,
     AgentStepClient,
+    AgentStepError,
+    AgentStepRejectionReason,
     AgentStepRequest,
+    AgentStepRequestError,
     AgentStepResponse,
+    AgentStepResponseError,
     AgentStepUsage,
     AgentStopReason,
+    AgentTerminalStepFailure,
+    AgentTerminalStepFailureCategory,
     BoundedAgentRunner,
     FinishDiagnosisAction,
     ReadRuntimeEvidenceAction,
@@ -31,6 +38,7 @@ from nbtriage.bounded_agent import (
     parse_agent_action,
 )
 from nbtriage.evidence_receipts import EvidenceReceipt
+from nbtriage.provider_failures import ProviderFailureReason
 from nbtriage.rag import TrainCaseRetriever
 from nbtriage.runtime_observations import (
     ObservationKind,
@@ -630,6 +638,107 @@ async def test_unknown_cost_fails_closed_when_cost_budget_is_enabled() -> None:
     assert state.outcome is None
 
 
+@pytest.mark.parametrize(
+    ("raised", "expected_category"),
+    [
+        (
+            AgentStepRequestError(
+                "SECRET request detail",
+                failure_reason=ProviderFailureReason.RATE_LIMITED,
+                http_status=429,
+            ),
+            AgentTerminalStepFailureCategory.PROVIDER_REQUEST_FAILED,
+        ),
+        (
+            AgentStepError("SECRET local step detail"),
+            AgentTerminalStepFailureCategory.LOCAL_STEP_ERROR,
+        ),
+        (
+            ValueError("SECRET local validation detail"),
+            AgentTerminalStepFailureCategory.LOCAL_VALIDATION_FAILED,
+        ),
+    ],
+)
+@async_test
+async def test_terminal_step_failures_keep_stable_sanitized_categories(
+    raised: Exception,
+    expected_category: AgentTerminalStepFailureCategory,
+) -> None:
+    class _FailingClient:
+        async def choose_action(self, request: AgentStepRequest) -> AgentStepResponse:
+            del request
+            raise raised
+
+    state = await BoundedAgentRunner(
+        lambda: _FailingClient(),
+        provider="fake",
+        model="fake-agent",
+        budget=_budget(),
+    ).start(_environment(), run_id="run-failed")
+
+    assert state.stop_reason is AgentStopReason.MODEL_ERROR
+    assert state.trajectory == ()
+    assert state.terminal_step_failure is not None
+    assert state.terminal_step_failure.category is expected_category
+    assert state.terminal_step_failure.latency_ms >= 0
+    failure = state.terminal_step_failure.model_dump(mode="json")
+    if expected_category is AgentTerminalStepFailureCategory.PROVIDER_REQUEST_FAILED:
+        assert failure["provider_failure_reason"] == "rate_limited"
+        assert failure["provider_http_status"] == 429
+    else:
+        assert failure["provider_failure_reason"] is None
+        assert failure["provider_http_status"] is None
+    assert "SECRET" not in json_text(state.to_dict())
+
+
+@async_test
+async def test_response_rejection_preserves_usage_and_sanitized_provider_identity() -> None:
+    step_usage = AgentStepUsage(
+        provider_requests=1,
+        input_tokens=17,
+        output_tokens=4,
+        cost_microusd=23,
+    )
+
+    class _RejectedClient:
+        async def choose_action(self, request: AgentStepRequest) -> AgentStepResponse:
+            del request
+            raise AgentStepResponseError(
+                "SECRET rejected response body",
+                rejection_reason=AgentStepRejectionReason.TOOL_ARGUMENTS,
+                usage=step_usage,
+                provider_request_id="response-1",
+                provider_name="fake-provider",
+                provider_model_name="fake-agent",
+                provider_fingerprint="fingerprint-1",
+            )
+
+    state = await BoundedAgentRunner(
+        lambda: _RejectedClient(),
+        provider="fake",
+        model="fake-agent",
+        budget=_budget(),
+    ).start(_environment(), run_id="run-rejected")
+
+    assert state.stop_reason is AgentStopReason.MODEL_ERROR
+    assert state.trajectory == ()
+    assert state.usage.model_turns == 1
+    assert state.usage.input_tokens == 17
+    assert state.usage.output_tokens == 4
+    assert state.usage.cost_microusd == 23
+    assert state.usage.cost_known is True
+    failure = state.terminal_step_failure
+    assert failure is not None
+    assert failure.category is AgentTerminalStepFailureCategory.RESPONSE_REJECTED
+    assert failure.rejection_reason is AgentStepRejectionReason.TOOL_ARGUMENTS
+    assert failure.usage == step_usage
+    assert failure.provider_request_id == "response-1"
+    assert failure.provider_name == "fake-provider"
+    assert failure.provider_model_name == "fake-agent"
+    assert failure.provider_fingerprint == "fingerprint-1"
+    assert "SECRET" not in json_text(state.to_dict())
+
+
 @async_test
 async def test_safety_guard_stops_before_client_and_invalid_citation_is_rejected() -> None:
     safety_case = _case()
@@ -660,6 +769,86 @@ async def test_agent_state_round_trips_without_framework_messages_or_private_rea
     assert "ModelRequest" not in serialized
     assert "ToolCallPart" not in serialized
     assert "chain_of_thought" not in serialized
+
+
+def test_agent_state_accepts_legacy_payload_without_terminal_step_failure() -> None:
+    completed = asyncio.run(
+        _runner(_Script([_finish()])).start(_environment(), run_id="legacy-completed")
+    )
+    state = AgentRunState(
+        run_id="legacy-model-error",
+        case_id="case-1",
+        provider="fake",
+        model="fake-agent",
+        status=AgentRunStatus.STOPPED,
+        stop_reason=AgentStopReason.MODEL_ERROR,
+        budget=_budget(),
+        usage=completed.usage.model_copy(
+            update={
+                "model_turns": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost_microusd": 0,
+                "active_elapsed_ms": 0,
+            }
+        ),
+        trajectory=(),
+    )
+    payload = state.to_dict()
+    payload.pop("terminal_step_failure")
+
+    restored = AgentRunState.model_validate(payload)
+
+    assert restored.schema_version == 1
+    assert restored.stop_reason is AgentStopReason.MODEL_ERROR
+    assert restored.terminal_step_failure is None
+
+
+def test_terminal_step_failure_is_strict_frozen_and_only_valid_for_model_error() -> None:
+    failure = AgentTerminalStepFailure(
+        category=AgentTerminalStepFailureCategory.LOCAL_STEP_ERROR,
+        latency_ms=1,
+    )
+    with pytest.raises(ValidationError):
+        failure.category = AgentTerminalStepFailureCategory.LOCAL_VALIDATION_FAILED
+    with pytest.raises(ValueError):
+        AgentTerminalStepFailure.model_validate(
+            {
+                "category": "response_rejected",
+                "rejection_reason": "tool_arguments",
+                "usage": {
+                    "provider_requests": "1",
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "cost_microusd": 1,
+                },
+                "latency_ms": 1,
+            }
+        )
+
+    completed = _runner(_Script([_finish()]))
+    state = asyncio.run(completed.start(_environment(), run_id="run-completed"))
+    payload = state.to_dict()
+    payload["terminal_step_failure"] = failure.model_dump(mode="json")
+    with pytest.raises(ValueError, match="stopped model-error"):
+        AgentRunState.model_validate(payload)
+
+
+def test_provider_request_failure_allows_missing_status_and_rejects_mismatch() -> None:
+    without_status = AgentTerminalStepFailure(
+        category=AgentTerminalStepFailureCategory.PROVIDER_REQUEST_FAILED,
+        provider_failure_reason=ProviderFailureReason.TRANSPORT_ERROR,
+        latency_ms=1,
+    )
+
+    assert without_status.provider_http_status is None
+    with pytest.raises(ValueError, match="HTTP details"):
+        AgentTerminalStepFailure(
+            category=AgentTerminalStepFailureCategory.PROVIDER_REQUEST_FAILED,
+            provider_failure_reason=ProviderFailureReason.RATE_LIMITED,
+            provider_http_status=500,
+            latency_ms=1,
+        )
 
 
 def test_project_action_schema_rejects_unknown_tools_and_extra_arguments() -> None:

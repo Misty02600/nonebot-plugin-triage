@@ -262,6 +262,12 @@ def test_scripted_b4_gate_is_explicitly_not_promotion_eligible() -> None:
         "scripted_model_steps": 11,
         "external_tool_calls": 0,
         "approved_read_only_actions": 6,
+        "terminal_step_failure_counts": {
+            "response_rejected": 0,
+            "provider_request_failed": 0,
+            "local_validation_failed": 0,
+            "local_step_error": 0,
+        },
     }
     assert report["metrics"]["b4"]["task_success_rate"] == 0.875
     assert report["metrics"]["b4"]["structured_output_valid_rate"] == 1.0
@@ -412,6 +418,12 @@ def test_real_gate_compares_same_model_trials_and_accounts_for_authorization() -
         "output_tokens": 420,
         "cost_microusd": 1800,
         "cost_known": True,
+        "terminal_step_failure_counts": {
+            "response_rejected": 0,
+            "provider_request_failed": 0,
+            "local_validation_failed": 0,
+            "local_step_error": 0,
+        },
     }
     assert report["authorization"]["theoretical_max_provider_requests"] == 40
     assert report["metrics"]["b1"]["task_success_rate"] == 0.25
@@ -762,6 +774,36 @@ def test_real_gate_accounts_for_locally_rejected_provider_responses(
     assert len(rejected_rows) == 6
     assert all(row["cost_microusd"] == 100 for row in rejected_rows)
     assert all(row["cost_known"] is True for row in rejected_rows)
+    assert report["schema_version"] == 3
+    assert report["summary"]["terminal_step_failure_counts"] == {
+        "response_rejected": 6,
+        "provider_request_failed": 0,
+        "local_validation_failed": 0,
+        "local_step_error": 0,
+    }
+    assert {row["terminal_step_failure"]["category"] for row in rejected_rows} == {
+        "response_rejected"
+    }
+    assert {row["terminal_step_failure"]["rejection_reason"] for row in rejected_rows} == {
+        "tool_arguments"
+    }
+    assert all(
+        row["terminal_step_failure"]["usage"]
+        == {
+            "provider_requests": 1,
+            "input_tokens": 100,
+            "output_tokens": 25,
+            "cost_microusd": 100,
+        }
+        for row in rejected_rows
+    )
+    assert all(
+        row["terminal_step_failure"]["provider_request_id"] == "agent-rejected"
+        for row in rejected_rows
+    )
+    assert "fixture response failed local action validation" not in json.dumps(
+        report, ensure_ascii=False
+    )
     partial = json.loads(partial_path.read_text(encoding="utf-8"))
     assert partial["schema_version"] == 4
     rejected_attempts = [

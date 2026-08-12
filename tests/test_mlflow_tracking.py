@@ -110,6 +110,12 @@ def _scripted_report() -> dict[str, Any]:
             "fixture_count": 4,
             "model_kind": "scripted",
             "synthetic_only": True,
+            "terminal_step_failure_counts": {
+                "response_rejected": 2,
+                "provider_request_failed": 1,
+                "local_validation_failed": 0,
+                "local_step_error": 3,
+            },
         },
         "metrics": {"b4": {"task_success_rate": 0.75}},
         "promotion_gate": {"passed": False, "decision": "scripted_only"},
@@ -139,6 +145,10 @@ def test_publish_maps_stable_fields_and_preserves_exact_artifact(
     assert run.params["nbtriage.evaluation_contract.prompt_ids.b1"] == "b1-rag-only-v3"
     assert run.metrics["summary.fixture_count"] == 4.0
     assert run.metrics["summary.synthetic_only"] == 1.0
+    assert run.metrics["summary.terminal_step_failure_counts.response_rejected"] == 2.0
+    assert run.metrics["summary.terminal_step_failure_counts.provider_request_failed"] == 1.0
+    assert run.metrics["summary.terminal_step_failure_counts.local_validation_failed"] == 0.0
+    assert run.metrics["summary.terminal_step_failure_counts.local_step_error"] == 3.0
     assert run.metrics["metrics.b4.task_success_rate"] == 0.75
     assert run.metrics["promotion_gate.passed"] == 0.0
     assert all(not key.startswith("predictions") for key in run.metrics)

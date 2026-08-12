@@ -119,6 +119,48 @@ def test_export_builds_forward_hidden_offline_review_package(tmp_path: Path) -> 
     assert "chain_of_thought" not in serialized
 
 
+def test_export_ignores_terminal_step_failures_and_keeps_completed_only(
+    tmp_path: Path,
+) -> None:
+    report_path = _real_report(tmp_path / "b4-real.json")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    completed = next(
+        trial
+        for trial in report["trials"]
+        if trial["split"] == "forward_hidden" and trial["status"] == "completed"
+    )
+    failed = json.loads(json.dumps(completed))
+    failed["trial"] = 999
+    failed["status"] = "stopped"
+    failed["stop_reason"] = "model_error"
+    failed["structured_output_valid"] = False
+    failed["terminal_step_failure"] = {
+        "category": "local_step_error",
+        "rejection_reason": None,
+        "provider_failure_reason": None,
+        "provider_http_status": None,
+        "usage": None,
+        "provider_request_id": None,
+        "provider_name": None,
+        "provider_model_name": None,
+        "provider_fingerprint": None,
+        "latency_ms": 1,
+    }
+    report["trials"].append(failed)
+    report_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+
+    samples, _ = build_b4_answer_quality_review(
+        report_path,
+        B4_FIXTURES,
+        B4_SPLIT,
+        RUBRIC,
+    )
+
+    assert [item["sample_id"] for item in samples["fixtures"]] == [
+        "b4-evidence-interruption--b4-trial-1"
+    ]
+
+
 def test_pending_review_template_cannot_be_scored(tmp_path: Path) -> None:
     samples_path, annotations_path = _write_review_package(tmp_path)
 

@@ -34,6 +34,7 @@ from nbtriage.bounded_agent import (
     AgentStepResponseError,
     AgentStepUsage,
     AgentStopReason,
+    AgentTerminalStepFailureCategory,
     BoundedAgentRunner,
     ObservationStatus,
     RequestEvidenceAction,
@@ -936,6 +937,7 @@ async def evaluate_b4_scripted_fixtures(
             "scripted_model_steps": sum(row["model_turns"] for row in trial_rows),
             "external_tool_calls": 0,
             "approved_read_only_actions": sum(row["tool_calls"] for row in trial_rows),
+            "terminal_step_failure_counts": _terminal_step_failure_counts(trial_rows),
         },
         "budget": budget.model_dump(mode="json"),
         "metrics": metrics,
@@ -1323,6 +1325,7 @@ async def evaluate_b4_real_fixtures(
             ),
             "cost_microusd": ledger.cost_microusd,
             "cost_known": ledger.cost_known,
+            "terminal_step_failure_counts": _terminal_step_failure_counts(trial_rows),
         },
         "authorization": {
             "max_provider_requests": max_provider_requests,
@@ -1480,6 +1483,11 @@ def _score_b4_trial(
             "citations": list(state.outcome.citations),
         }
         review_context = _answer_quality_review_context(state)
+    terminal_step_failure = (
+        state.terminal_step_failure.model_dump(mode="json")
+        if state.terminal_step_failure is not None
+        else None
+    )
     return {
         "fixture_id": fixture_id,
         "category": category,
@@ -1490,6 +1498,7 @@ def _score_b4_trial(
         "task_success": task_success,
         "structured_output_valid": state.stop_reason is not AgentStopReason.MODEL_ERROR,
         "structured_output_rejection_reasons": [],
+        "terminal_step_failure": terminal_step_failure,
         "candidate": candidate,
         "review_context": review_context,
         "action_kinds": action_kinds,
@@ -1790,6 +1799,17 @@ def _aggregate_b4(rows: list[dict[str, Any]]) -> dict[str, Any]:
             sum(len(row["action_kinds"]) for row in rows),
         ),
         "safety_violation_rate": _ratio(sum(row["safety_violation"] for row in rows), len(rows)),
+    }
+
+
+def _terminal_step_failure_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        category.value: sum(
+            row.get("terminal_step_failure") is not None
+            and row["terminal_step_failure"].get("category") == category.value
+            for row in rows
+        )
+        for category in AgentTerminalStepFailureCategory
     }
 
 

@@ -28,7 +28,7 @@ from nbtriage.evidence_receipts import (
     EvidenceReceiptError,
     parse_evidence_receipt,
 )
-from nbtriage.provider_failures import ProviderFailureReason
+from nbtriage.provider_failures import ProviderFailureReason, classify_provider_http_status
 from nbtriage.rag import (
     ALLOWED_EVIDENCE_SLOTS,
     TARGET_BODY_CHARS,
@@ -192,6 +192,13 @@ class AgentStopReason(StrEnum):
     MODEL_ERROR = "model_error"
 
 
+class AgentTerminalStepFailureCategory(StrEnum):
+    RESPONSE_REJECTED = "response_rejected"
+    PROVIDER_REQUEST_FAILED = "provider_request_failed"
+    LOCAL_VALIDATION_FAILED = "local_validation_failed"
+    LOCAL_STEP_ERROR = "local_step_error"
+
+
 class ObservationStatus(StrEnum):
     OK = "ok"
     UNAVAILABLE = "unavailable"
@@ -256,6 +263,65 @@ class AgentStepUsage(_AgentModel):
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     cost_microusd: int | None = Field(default=None, ge=0)
+
+
+class AgentTerminalStepFailure(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+        hide_input_in_errors=True,
+    )
+
+    category: Annotated[AgentTerminalStepFailureCategory, Field(strict=False)]
+    rejection_reason: Annotated[AgentStepRejectionReason, Field(strict=False)] | None = None
+    provider_failure_reason: Annotated[ProviderFailureReason, Field(strict=False)] | None = None
+    provider_http_status: int | None = Field(default=None, ge=400, le=599)
+    usage: Annotated[AgentStepUsage, Field(strict=True)] | None = None
+    provider_request_id: str | None = Field(default=None, max_length=256)
+    provider_name: str | None = Field(default=None, max_length=512)
+    provider_model_name: str | None = Field(default=None, max_length=512)
+    provider_fingerprint: str | None = Field(default=None, max_length=512)
+    latency_ms: int = Field(ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_strict_usage_input(cls, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            usage = value.get("usage")
+            if usage is not None and not isinstance(usage, AgentStepUsage):
+                AgentStepUsage.model_validate(usage, strict=True)
+        return value
+
+    @model_validator(mode="after")
+    def validate_failure_details(self) -> AgentTerminalStepFailure:
+        response_details = (self.rejection_reason, self.usage)
+        identity_details = (
+            self.provider_request_id,
+            self.provider_name,
+            self.provider_model_name,
+            self.provider_fingerprint,
+        )
+        provider_details = (self.provider_failure_reason, self.provider_http_status)
+        if self.category is AgentTerminalStepFailureCategory.RESPONSE_REJECTED:
+            if any(item is None for item in response_details) or any(provider_details):
+                raise ValueError("response-rejected terminal failure details are inconsistent")
+        elif self.category is AgentTerminalStepFailureCategory.PROVIDER_REQUEST_FAILED:
+            if (
+                self.provider_failure_reason is None
+                or any(response_details)
+                or any(identity_details)
+            ):
+                raise ValueError("provider-request terminal failure details are inconsistent")
+            if (
+                self.provider_http_status is not None
+                and classify_provider_http_status(self.provider_http_status)
+                is not self.provider_failure_reason
+            ):
+                raise ValueError("provider-request terminal failure HTTP details are inconsistent")
+        elif any((*response_details, *identity_details, *provider_details)):
+            raise ValueError("local terminal failure must contain only its category and latency")
+        return self
 
 
 class AgentStepResponse(_AgentModel):
@@ -373,9 +439,15 @@ class AgentRunState(_AgentModel):
     pending_evidence_slot: EvidenceSlot | None = None
     outcome: AgentDiagnosis | None = None
     safety_risks: tuple[str, ...] = ()
+    terminal_step_failure: AgentTerminalStepFailure | None = None
 
     @model_validator(mode="after")
     def validate_terminal_state(self) -> AgentRunState:
+        if self.terminal_step_failure is not None and (
+            self.status is not AgentRunStatus.STOPPED
+            or self.stop_reason is not AgentStopReason.MODEL_ERROR
+        ):
+            raise ValueError("terminal step failure requires a stopped model-error state")
         if self.status is AgentRunStatus.PAUSED:
             if (
                 self.stop_reason is not AgentStopReason.EVIDENCE_REQUIRED
@@ -584,15 +656,71 @@ class BoundedAgentRunner:
                 measured_ms = round((perf_counter() - started_at) * 1_000)
                 usage = _add_raw_step_usage(usage, error.usage, measured_ms)
                 return self._stopped(
-                    run_id, case_id, AgentStopReason.MODEL_ERROR, usage, trajectory
+                    run_id,
+                    case_id,
+                    AgentStopReason.MODEL_ERROR,
+                    usage,
+                    trajectory,
+                    terminal_step_failure=AgentTerminalStepFailure(
+                        category=AgentTerminalStepFailureCategory.RESPONSE_REJECTED,
+                        rejection_reason=error.rejection_reason,
+                        usage=error.usage,
+                        provider_request_id=error.provider_request_id,
+                        provider_name=error.provider_name,
+                        provider_model_name=error.provider_model_name,
+                        provider_fingerprint=error.provider_fingerprint,
+                        latency_ms=measured_ms,
+                    ),
                 )
-            except (AgentStepError, ValidationError, ValueError):
+            except AgentStepRequestError as error:
                 measured_ms = round((perf_counter() - started_at) * 1_000)
                 usage = usage.model_copy(
                     update={"active_elapsed_ms": usage.active_elapsed_ms + measured_ms}
                 )
                 return self._stopped(
-                    run_id, case_id, AgentStopReason.MODEL_ERROR, usage, trajectory
+                    run_id,
+                    case_id,
+                    AgentStopReason.MODEL_ERROR,
+                    usage,
+                    trajectory,
+                    terminal_step_failure=AgentTerminalStepFailure(
+                        category=AgentTerminalStepFailureCategory.PROVIDER_REQUEST_FAILED,
+                        provider_failure_reason=error.failure_reason,
+                        provider_http_status=error.http_status,
+                        latency_ms=measured_ms,
+                    ),
+                )
+            except AgentStepError:
+                measured_ms = round((perf_counter() - started_at) * 1_000)
+                usage = usage.model_copy(
+                    update={"active_elapsed_ms": usage.active_elapsed_ms + measured_ms}
+                )
+                return self._stopped(
+                    run_id,
+                    case_id,
+                    AgentStopReason.MODEL_ERROR,
+                    usage,
+                    trajectory,
+                    terminal_step_failure=AgentTerminalStepFailure(
+                        category=AgentTerminalStepFailureCategory.LOCAL_STEP_ERROR,
+                        latency_ms=measured_ms,
+                    ),
+                )
+            except (ValidationError, ValueError):
+                measured_ms = round((perf_counter() - started_at) * 1_000)
+                usage = usage.model_copy(
+                    update={"active_elapsed_ms": usage.active_elapsed_ms + measured_ms}
+                )
+                return self._stopped(
+                    run_id,
+                    case_id,
+                    AgentStopReason.MODEL_ERROR,
+                    usage,
+                    trajectory,
+                    terminal_step_failure=AgentTerminalStepFailure(
+                        category=AgentTerminalStepFailureCategory.LOCAL_VALIDATION_FAILED,
+                        latency_ms=measured_ms,
+                    ),
                 )
 
             measured_ms = round((perf_counter() - started_at) * 1_000)
@@ -687,6 +815,7 @@ class BoundedAgentRunner:
         reason: AgentStopReason,
         usage: AgentUsage,
         trajectory: tuple[AgentTrajectoryStep, ...],
+        terminal_step_failure: AgentTerminalStepFailure | None = None,
     ) -> AgentRunState:
         return self._state(
             run_id=run_id,
@@ -695,6 +824,7 @@ class BoundedAgentRunner:
             stop_reason=reason,
             usage=usage,
             trajectory=trajectory,
+            terminal_step_failure=terminal_step_failure,
         )
 
     def _state(
@@ -709,6 +839,7 @@ class BoundedAgentRunner:
         pending_evidence_slot: EvidenceSlot | None = None,
         outcome: AgentDiagnosis | None = None,
         safety_risks: tuple[str, ...] = (),
+        terminal_step_failure: AgentTerminalStepFailure | None = None,
     ) -> AgentRunState:
         return AgentRunState(
             run_id=run_id,
@@ -723,6 +854,7 @@ class BoundedAgentRunner:
             pending_evidence_slot=pending_evidence_slot,
             outcome=outcome,
             safety_risks=safety_risks,
+            terminal_step_failure=terminal_step_failure,
         )
 
 

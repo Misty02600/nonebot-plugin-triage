@@ -15,7 +15,8 @@ flowchart TD
     M --> U["响应后原子 checkpoint<br/>identity / usage / cost<br/>或稳定 unknown reason<br/>Provider 类别 + 可选 HTTP status"]
     U --> D["唯一 CallDeferred<br/>不在框架内执行工具"]
     D --> V{"项目 schema + policy<br/>二次校验"}
-    V -->|"非法、文本或多调用"| Z
+    V -->|"非法、文本或多调用"| TF["MODEL_ERROR + terminal_step_failure<br/>稳定失败类别与脱敏审计字段"]
+    TF --> Z
     V -->|"read_runtime_evidence"| R["白名单 RuntimeEvidenceBundle view"]
     V -->|"retrieve_support_evidence"| K["train-only 本地检索"]
     V -->|"request_evidence"| H["暂停：等待绑定 run/case/slot<br/>的脱敏 EvidenceReceipt"]
@@ -48,6 +49,12 @@ flowchart TD
   Pydantic 与领域层的本地二次校验；
 - 持久状态不包含 Pydantic AI message history、原始日志、秘密、身份、Gold 或私有 Chain-of-Thought；
 - 重复 action、连续无进展、token/cost/deadline/turn/tool 超限、取消和模型错误都有稳定停止原因；
+- Provider 请求、响应后拒绝或本地 step 失败继续使用 `MODEL_ERROR`，不伪造一条合法 action trajectory；
+  `AgentRunState.schema_version=1` 通过可选 `terminal_step_failure` 向后兼容地补充终态分类。旧 state 缺少该
+  字段时仍按 `None` 读取；新记录只允许出现在 `STOPPED + MODEL_ERROR`。响应后拒绝保存稳定 rejection reason、
+  本步 usage、request ID、Provider identity 与 latency；Provider 请求失败只保存稳定 failure reason 与可选
+  HTTP status；四类失败都保存本地测得的 latency，本地 validation / step error 除类别和 latency 外不保存
+  其他细节，任何异常文本都不进入领域状态；
 - Provider 已返回但 action 在框架 / 本地后验校验失败时，adapter 通过 `capture_run_messages()` 取得最后一个
   `ModelResponse`，仍将该响应的 token、费用和身份写入 trial；若请求已保留却没有 Provider 响应或无法取得
   usage，则费用未知并停止真实 Gate；返回 Provider / model 身份缺失或与 backend / 请求不符不得晋级；

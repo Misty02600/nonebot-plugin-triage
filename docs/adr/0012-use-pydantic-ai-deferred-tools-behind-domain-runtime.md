@@ -129,6 +129,11 @@ tool retry、deferred tool 与 message history。关键事实是：Pydantic AI �
   在 deferred 前校验，领域 parser 在返回后复核；文本、多调用、越权和非法参数仍失败关闭。一个 4000-token
   control 已用两次请求完成 runtime observation → finish。该实现是本 ADR“唯一 deferred call + 领域拥有
   授权”的落实，不更改 Accepted 决定，也不把测试 transport 晋级为产品 Provider；
+- 2026-08-13：`AgentRunState.schema_version=1` 以默认 `None` 的可选 `terminal_step_failure` 补齐终态失败
+  归因，不改变 `MODEL_ERROR`、trajectory 或旧 state 读取。响应后拒绝仅保存稳定 rejection reason、usage、
+  request / Provider identity 与 latency；Provider 请求失败仅保存稳定 failure reason、可选 HTTP status 与
+  latency；本地 validation / step error 仅保存类别与 latency，异常文本不落盘。B4 report 仍为 schema v3，
+  并在 trial 与 summary 中暴露该兼容字段和四类计数；partial audit 仍由既有独立合同拥有请求级 checkpoint；
 - NoneBot 插件的零模型入口和空资格注册表保持不变，两次 test-only smoke 都没有把任何组合晋级为支持。
 
 ## 相关文档与证据
