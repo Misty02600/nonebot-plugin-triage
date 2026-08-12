@@ -35,8 +35,9 @@
 5. JSONL 继续使用大小轮转。现有默认 `10 MiB`、5 个备份意味着活动文件加备份名义上最多约 `60 MiB`；
    活动 trial 的 TTL 不等于磁盘日志按时间删除。若以后需要按天留存，必须另加显式清理策略和测试，不能
    假设 LocalStore 会自动删除数据。
-6. 迁移后的 maintainer `summarize-trials` 不猜测部署路径，要求显式 `--log`。部署者通过 `nb localstore`
-   查看实际目录后选择文件；插件内现有 `SUPERUSER` 统计命令继续只返回活动聚合。
+6. 迁移后的 maintainer `summarize-trials` 不猜测部署路径，要求显式 `--log-path`。默认布局可从
+   `nb localstore data` 显示的 base data dir 定位插件子目录；使用插件级目录覆盖时以
+   `LOCALSTORE_PLUGIN_DATA_DIR` 配置值为准。插件内现有 `SUPERUSER` 统计命令继续只返回活动聚合。
 7. LocalStore 数据不会自动上传到项目维护者的 MLflow。需要分享时必须由部署者主动导出、在本地脱敏并
    检查后再提交；自动遥测或中央回传不属于本 ADR。
 8. MLflow experiment、离线评测报告、模型 trace、`data/`、`artifacts/` 和 `evals/` 都不是插件实例状态，
@@ -61,16 +62,20 @@
 
 - 基础安装会增加一个很小的 LocalStore 运行依赖；`off` 模式仍不创建 trial 文件；
 - 首次公开发布前可直接删除旧路径配置，不需要公开迁移兼容；已有本地开发日志由维护者自行保留或删除，
-  不自动搬运，以免把未知内容复制进新数据目录；
+  不自动搬运、合并或读取，以免把未知内容复制进新数据目录；
+- LocalStore 的插件 data dir 是当前 Bot 进程解析出的部署路径，不是多进程共享日志协议；多 worker 必须让
+  每个进程解析到各自独占的数据目录，或改由宿主集中日志系统承接结构化事件；
 - 单元测试应给路径解析注入临时目录，避免依赖开发机 LocalStore；NoneBot 集成测试再验证调用者插件目录、
   `off` 零写入和 `observe` 轮转边界。
 
 ## 落实与确认
 
-- 实施情况：未开始；项目作者于 2026-08-10 明确采纳本 ADR。当前代码仍默认写
-  `logs/nbtriage-trials.jsonl`，`pyproject.toml` 没有 LocalStore 依赖。
-- 目标实现：`src/nonebot_plugin_triage/trials.py::create_trial_service`、
-  `src/nonebot_plugin_triage/config.py::NBTriageConfig`、`pyproject.toml` 及对应配置、trial 和包元数据测试。
+- 实施情况：已完成。基础依赖固定为 `nonebot-plugin-localstore>=0.7.4,<0.8`；
+  `src/nonebot_plugin_triage/trials.py::create_trial_service` 只在 `observe` 分支解析固定
+  `trial-events.jsonl`，默认 `off` 不调用 resolver，也不创建 LocalStore 目录；路径解析或目录创建失败时
+  `observe` 插件初始化失败关闭，不回退到旧相对路径。尚未发布的 `nbtriage_trial_log_path` 已从插件配置
+  删除；若配置仍出现该旧键，初始化会给出不回显旧值的迁移错误，避免部署者误以为新事件仍写入旧位置。
+  维护者汇总 CLI 也要求显式 `--log-path`；旧 `logs/nbtriage-trials.jsonl` 不迁移。
 
 ## 相关文档
 

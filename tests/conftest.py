@@ -7,6 +7,8 @@ import pytest
 from nonebot.adapters.onebot.v11 import Adapter
 
 os.environ["ENVIRONMENT"] = "test"
+# 隔离维护者本地 `.env` 中可能残留的已删除 trial 路径；迁移错误由配置单测直接覆盖。
+os.environ["NBTRIAGE_TRIAL_LOG_PATH"] = ""
 
 
 def pytest_configure() -> None:

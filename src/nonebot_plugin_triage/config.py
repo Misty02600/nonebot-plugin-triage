@@ -34,7 +34,7 @@ class NBTriageConfig(BaseModel):
     nbtriage_query_command: CommandName = "报错查询"
     nbtriage_feedback_command: CommandName = "报错反馈"
     nbtriage_trial_stats_command: CommandName = "报错统计"
-    nbtriage_priority: int = Field(default=10, ge=2, le=100)
+    nbtriage_priority: int = Field(default=10, ge=1, le=100)
     nbtriage_query_priority: int = Field(default=10, ge=1, le=100)
     nbtriage_request_max_chars: int = Field(default=2_000, ge=1, le=8_000)
     nbtriage_support_cooldown_seconds: int = Field(default=2, ge=1, le=86_400)
@@ -70,10 +70,6 @@ class NBTriageConfig(BaseModel):
         le=604_800,
     )
     nbtriage_trial_mode: TrialModeName = "off"
-    nbtriage_trial_log_path: Annotated[
-        str,
-        StringConstraints(strip_whitespace=True, min_length=1, max_length=1_024),
-    ] = "logs/nbtriage-trials.jsonl"
     nbtriage_trial_log_max_bytes: int = Field(
         default=10 * 1_024 * 1_024,
         ge=65_536,
@@ -100,6 +96,11 @@ class NBTriageConfig(BaseModel):
     @classmethod
     def reject_forbidden_model_settings(cls, data: Any) -> Any:
         if isinstance(data, Mapping):
+            if data.get("nbtriage_trial_log_path") not in (None, ""):
+                raise ValueError(
+                    "nbtriage_trial_log_path was removed; configure "
+                    "LOCALSTORE_PLUGIN_DATA_DIR and pass summarize-trials --log-path instead"
+                )
             forbidden = {
                 "nbtriage_model_api_key",
                 "nbtriage_model_base_url",
@@ -120,8 +121,6 @@ class NBTriageConfig(BaseModel):
         }
         if len(commands) != 4:
             raise ValueError("triage, query, feedback and trial stats commands must be different")
-        if self.nbtriage_trial_log_path.startswith(("\\\\", "//")):
-            raise ValueError("trial log path must be local, not a UNC path")
         if self.nbtriage_capability_shadow_path is not None and (
             self.nbtriage_capability_shadow_path.startswith(("\\\\", "//"))
         ):

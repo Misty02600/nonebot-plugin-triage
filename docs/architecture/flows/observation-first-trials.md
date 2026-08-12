@@ -56,9 +56,10 @@ trial 不是后台错误抓取器，也不是一般问答统计。只有 `triage
 - correlation ID、API 参数 / 返回值、异常消息与 traceback 文本；
 - API Key、Token、Cookie、配置值、私有 Chain-of-Thought。
 
-JSONL 只支持单 Bot 进程内线程并发，按字节上限轮转并保留固定份数。多 worker 部署不得共享该文件；应将
-结构化事件交给宿主的集中日志系统，或为每个进程配置独立路径。日志写失败只增加 drop counter，不改变
-报障受理结果。
+JSONL 只支持单 Bot 进程内线程并发，按字节上限轮转并保留固定份数。`observe` 使用当前 triage 插件的
+LocalStore data dir 下固定 `trial-events.jsonl`；多 worker 部署不得共享同一个 data dir，应让每个进程
+解析到各自独占的 LocalStore data dir，或将结构化事件交给宿主的集中日志系统。日志写失败只增加 drop
+counter，不改变报障受理结果。
 
 `just maintainer summarize-trials` 严格校验固定字段、schema、策略版本、事件语义与单行上限，按 event ID 去除轮转
 重复，并只输出聚合计数。冲突重复、截断、超长或未知版本行计为 corrupt；汇总不会返回任何事件标识、失败
@@ -68,9 +69,11 @@ JSONL 只支持单 Bot 进程内线程并发，按字节上限轮转并保留固
 
 ```dotenv
 NBTRIAGE_TRIAL_MODE=observe
-NBTRIAGE_TRIAL_LOG_PATH=logs/nbtriage-trials.jsonl
 NBTRIAGE_TRIAL_LOG_MAX_BYTES=10485760
 NBTRIAGE_TRIAL_LOG_BACKUP_COUNT=5
+
+# 可选：JSON 对象，按插件 ID 覆盖 LocalStore data dir
+LOCALSTORE_PLUGIN_DATA_DIR={"nonebot_plugin_triage":"/var/lib/nonebot/triage-worker-1"}
 ```
 
 - 普通用户：`triage <求助内容>`，`@Bot` 可选；只有故障分支进入 trial；
@@ -83,7 +86,8 @@ NBTRIAGE_TRIAL_LOG_BACKUP_COUNT=5
 
 ## 上线前提与 smoke
 
-- 单个 Bot 进程独占一个日志路径；多 worker 必须分别配置路径或接入宿主集中日志；
+- 单个 Bot 进程独占一个 LocalStore data dir；多 worker 必须分别覆盖
+  `LOCALSTORE_PLUGIN_DATA_DIR` 中的 `nonebot_plugin_triage` 路径，或接入宿主集中日志；
 - 日志目录对 Bot 运行账号可写、对无关本机账号不可读，并由宿主仓库忽略；
 - `NBTRIAGE_MODEL_ENABLED=false` 保持不变，observe 不需要 Provider API Key；
 - 磁盘至少容纳 `max_bytes × (backup_count + 1)`，默认有界窗口约 60 MiB；
@@ -98,13 +102,21 @@ NBTRIAGE_TRIAL_LOG_BACKUP_COUNT=5
 
 ```powershell
 just maintainer summarize-trials `
-  --log-path logs/nbtriage-trials.jsonl `
+  --log-path <实际 triage 插件 data dir>/trial-events.jsonl `
   --backup-count 5
 ```
 
 汇总器同时读取当前文件和编号备份，按 event ID 去重，只输出窗口计数、覆盖率、入口延迟、时间范围、mode
 与策略版本。损坏、截断、超长、冲突重复或未知版本行计入 `corrupt_line_count`；相同轮转重复行计入
 `duplicate_event_count`。单次汇总最多接受 1 GiB 和 250,000 个不同 event，超过上限失败关闭。
+
+`summarize-trials` 仍要求部署者显式传入 `--log-path`，不会自行读取 Bot 的 LocalStore 配置或猜测目录。默认
+布局下，插件 data dir 是 `nb localstore data` 显示的 base data dir 下的 `nonebot_plugin_triage/`；若配置了
+`LOCALSTORE_PLUGIN_DATA_DIR` 的插件级覆盖，则实际目录就是该配置值，不再额外追加插件 ID。
+旧 `NBTRIAGE_TRIAL_LOG_PATH` 不再生效；插件会在配置解析时明确拒绝该键并提示上述迁移入口，而不是静默
+改写到另一个文件。
+迁移前产生的 `logs/nbtriage-trials.jsonl` 不会自动搬运、合并或纳入新文件；如需分析，维护者必须显式把
+旧文件作为独立输入，并自行完成隐私与来源复核。
 
 把 `NBTRIAGE_TRIAL_MODE` 改回 `off` 并按宿主流程重启，即停止新 trial 和日志写入；triage 故障分流、incident
 查询、限流与引用关联仍继续工作。日志写入失败时公开报障保持可用并增加 drop；corrupt 增长时检查多进程

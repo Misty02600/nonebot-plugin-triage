@@ -191,7 +191,8 @@ def build_parser() -> argparse.ArgumentParser:
     trial_summary_parser.add_argument(
         "--log-path",
         type=Path,
-        default=Path("logs/nbtriage-trials.jsonl"),
+        required=True,
+        help="Explicit trial JSONL path; the CLI does not resolve Bot LocalStore settings.",
     )
     trial_summary_parser.add_argument(
         "--backup-count",

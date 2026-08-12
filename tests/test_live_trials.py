@@ -350,6 +350,14 @@ def test_trial_log_summary_missing_file_fails_without_echoing_path(
     assert "secret-customer" not in captured.err
 
 
+def test_trial_log_summary_requires_explicit_log_path(capsys) -> None:
+    with pytest.raises(SystemExit) as error:
+        main(["summarize-trials"])
+
+    assert error.value.code == 2
+    assert "--log-path" in capsys.readouterr().err
+
+
 def test_trial_log_summary_enforces_total_byte_and_event_limits(
     tmp_path,
     monkeypatch,

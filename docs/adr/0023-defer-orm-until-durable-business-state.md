@@ -43,14 +43,14 @@ Session 和迁移基础设施。
 ## 带来的影响
 
 - 当前实现不因本 ADR 增加依赖、数据库表或迁移脚本；
-- ADR-0018 的 LocalStore 落实仍是独立的当前工作，不等待 ORM；
+- ADR-0018 的 LocalStore 迁移已作为独立工作落实，没有等待或引入 ORM；
 - 第一个权威业务状态进入运行面前，需要重新确认数据模型、事务边界、保留 / 删除策略、后端和兼容测试；
 - 若采用 `nonebot-plugin-orm`，必须验证本项目支持的 Python、NoneBot、数据库驱动和迁移升降级组合。
 
 ## 落实与确认
 
 - 当前分层存储已由内存缓冲、轮转 JSONL 和专用 SQLite FTS5 索引分别实现；ADR-0018 的 LocalStore 路径
-  迁移尚未落实。
+  迁移已落实，trial 审计文件固定由 LocalStore 解析插件 data dir。
 - 当前没有 `nonebot-plugin-orm` 运行依赖、业务 ORM Model 或迁移脚本。
 
 ## 相关文档

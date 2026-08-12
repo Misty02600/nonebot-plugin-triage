@@ -100,8 +100,7 @@ def test_support_thread_config_has_bounded_compatible_defaults() -> None:
     assert config.nbtriage_thread_idle_seconds == 900
     assert config.nbtriage_thread_absolute_seconds == 1_800
 
-    with pytest.raises(ValidationError):
-        NBTriageConfig(nbtriage_priority=1)
+    assert NBTriageConfig(nbtriage_priority=1).nbtriage_priority == 1
     with pytest.raises(ValidationError):
         NBTriageConfig(nbtriage_thread_max_entries=100_001)
     with pytest.raises(ValidationError, match="absolute lifetime"):
@@ -109,3 +108,13 @@ def test_support_thread_config_has_bounded_compatible_defaults() -> None:
             nbtriage_thread_idle_seconds=901,
             nbtriage_thread_absolute_seconds=900,
         )
+
+
+def test_trial_log_path_is_owned_by_localstore_not_plugin_config() -> None:
+    legacy_path = "logs/legacy-customer-trials.jsonl"
+
+    with pytest.raises(ValidationError, match="LOCALSTORE_PLUGIN_DATA_DIR") as error:
+        NBTriageConfig.model_validate({"nbtriage_trial_log_path": legacy_path})
+
+    assert "nbtriage_trial_log_path" not in NBTriageConfig.model_fields
+    assert legacy_path not in str(error.value)

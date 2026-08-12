@@ -46,7 +46,7 @@ plugins = ["nonebot_plugin_triage"]
 | 配置项                         | 默认值                       | 说明                              |
 | ------------------------------ | ---------------------------- | --------------------------------- |
 | `NBTRIAGE_COMMAND`                  | `triage`                     | 普通用户自然语言入口              |
-| `NBTRIAGE_PRIORITY`                 | `10`                         | 首次入口优先级，必须为 `2..100`   |
+| `NBTRIAGE_PRIORITY`                 | `10`                         | `triage` 入口优先级               |
 | `NBTRIAGE_REQUEST_MAX_CHARS`        | `2000`                       | 单次求助文字上限                  |
 | `NBTRIAGE_SUPPORT_COOLDOWN_SECONDS` | `2`                          | 同一用户连续求助的最短间隔        |
 | `NBTRIAGE_REPORT_COOLDOWN_SECONDS`  | `30`                         | 同一用户连续建立故障记录的最短间隔 |
@@ -54,7 +54,6 @@ plugins = ["nonebot_plugin_triage"]
 | `NBTRIAGE_FEEDBACK_COMMAND`         | `报错反馈`                   | 维护者反馈命令                    |
 | `NBTRIAGE_TRIAL_STATS_COMMAND`      | `报错统计`                   | 维护者试运行统计命令              |
 | `NBTRIAGE_TRIAL_MODE`               | `off`                        | 可设为 `observe` 开启本地观察日志 |
-| `NBTRIAGE_TRIAL_LOG_PATH`           | `logs/nbtriage-trials.jsonl` | `observe` 模式的本地日志路径      |
 | `NBTRIAGE_CAPABILITY_SHADOW_PATH`   | 未设置                       | 可选的本地能力影子 SQLite 路径    |
 | `NBTRIAGE_MODEL_ENABLED`            | `false`                      | 当前请保持关闭                    |
 | `NBTRIAGE_RESTRICTED_CONFIG`        | `[]`                         | 模型不得读取的顶层 NoneBot 配置键 |
@@ -62,8 +61,10 @@ plugins = ["nonebot_plugin_triage"]
 | `NBTRIAGE_THREAD_ABSOLUTE_SECONDS`  | `1800`                       | Thread 不可延长的最长有效期       |
 | `NBTRIAGE_THREAD_MAX_ENTRIES`       | `4096`                       | 单进程短期 Thread 容量上限         |
 
-精确 Reply 续问 Matcher 使用 `NBTRIAGE_PRIORITY - 1`，所以该配置不再接受 `1`。曾显式设置
-`NBTRIAGE_PRIORITY=1` 的部署需要改为至少 `2`；未设置时继续使用默认值 `10`。
+`observe` 模式的审计事件固定写入 LocalStore 为本插件解析出的 data 目录下
+`trial-events.jsonl`；部署者如需更换目录，使用 LocalStore 的 `LOCALSTORE_PLUGIN_DATA_DIR`，插件不再提供
+独立日志路径配置。旧 `NBTRIAGE_TRIAL_LOG_PATH` 会在初始化时给出迁移错误；既有
+`logs/nbtriage-trials.jsonl` 不会自动迁移、合并或读取。
 
 `NBTRIAGE_RESTRICTED_CONFIG` 使用 JSON 数组，键名大小写不敏感；写入嵌套键时会按顶层整项限制。例如：
 

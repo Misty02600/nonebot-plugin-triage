@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 
 def _run_plugin_script(script: str) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["NBTRIAGE_TRIAL_LOG_PATH"] = ""
     return subprocess.run(
         [sys.executable, "-c", script],
         cwd=Path(__file__).parents[2],
+        env=environment,
         check=False,
         capture_output=True,
         text=True,
