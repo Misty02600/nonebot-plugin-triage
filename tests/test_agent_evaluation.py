@@ -1,12 +1,15 @@
 import asyncio
+import copy
 import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import tools.nbtriage_maintainer.agent_evaluation as agent_evaluation
 from tools.nbtriage_maintainer.agent_evaluation import (
     AgentEvaluationError,
     RealGatePartialAudit,
+    _evaluation_source_digest,
     b4_real_partial_report_path,
     evaluate_b4_real_fixtures,
     evaluate_b4_scripted_fixtures,
@@ -33,6 +36,89 @@ from nbtriage.rag import B1ModelResponse
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "evals" / "datasets" / "fixtures" / "b4-bounded-agent-v1.json"
 SPLIT = ROOT / "evals" / "datasets" / "splits" / "b4-gate-v1.json"
+
+
+def test_evaluation_source_digest_covers_core_and_maintainer_code(tmp_path: Path) -> None:
+    core = tmp_path / "src" / "nbtriage"
+    maintainer = tmp_path / "tools" / "nbtriage_maintainer"
+    core.mkdir(parents=True)
+    maintainer.mkdir(parents=True)
+    core_file = core / "bounded_agent.py"
+    maintainer_file = maintainer / "agent_evaluation.py"
+    core_file.write_text("CORE = 1\n", encoding="utf-8")
+    maintainer_file.write_text("TOOLS = 1\n", encoding="utf-8")
+
+    initial = _evaluation_source_digest(tmp_path)
+    core_file.write_text("CORE = 2\n", encoding="utf-8")
+    after_core_change = _evaluation_source_digest(tmp_path)
+    maintainer_file.write_text("TOOLS = 2\n", encoding="utf-8")
+    after_maintainer_change = _evaluation_source_digest(tmp_path)
+
+    assert initial != after_core_change
+    assert after_core_change != after_maintainer_change
+
+
+def test_evaluation_source_digest_binds_relative_path(tmp_path: Path) -> None:
+    core = tmp_path / "src" / "nbtriage"
+    maintainer = tmp_path / "tools" / "nbtriage_maintainer"
+    core.mkdir(parents=True)
+    maintainer.mkdir(parents=True)
+    original = core / "bounded_agent.py"
+    renamed = core / "agent_runtime.py"
+    original.write_text("VALUE = 1\n", encoding="utf-8")
+    (maintainer / "agent_evaluation.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    before_rename = _evaluation_source_digest(tmp_path)
+    original.rename(renamed)
+
+    assert _evaluation_source_digest(tmp_path) != before_rename
+
+
+def test_evaluation_source_digest_is_independent_of_absolute_root(tmp_path: Path) -> None:
+    roots = (tmp_path / "first", tmp_path / "second")
+    for root in roots:
+        core = root / "src" / "nbtriage"
+        maintainer = root / "tools" / "nbtriage_maintainer"
+        core.mkdir(parents=True)
+        maintainer.mkdir(parents=True)
+        (core / "bounded_agent.py").write_text("CORE = 1\n", encoding="utf-8")
+        (maintainer / "agent_evaluation.py").write_text("TOOLS = 1\n", encoding="utf-8")
+
+    assert _evaluation_source_digest(roots[0]) == _evaluation_source_digest(roots[1])
+
+
+def test_evaluation_source_digest_excludes_product_and_data_files(tmp_path: Path) -> None:
+    core = tmp_path / "src" / "nbtriage"
+    plugin = tmp_path / "src" / "nonebot_plugin_triage"
+    maintainer = tmp_path / "tools" / "nbtriage_maintainer"
+    fixture = tmp_path / "evals" / "datasets" / "fixtures"
+    core.mkdir(parents=True)
+    plugin.mkdir(parents=True)
+    maintainer.mkdir(parents=True)
+    fixture.mkdir(parents=True)
+    (core / "bounded_agent.py").write_text("CORE = 1\n", encoding="utf-8")
+    (maintainer / "agent_evaluation.py").write_text("TOOLS = 1\n", encoding="utf-8")
+
+    initial = _evaluation_source_digest(tmp_path)
+    (plugin / "handlers.py").write_text("PLUGIN = 1\n", encoding="utf-8")
+    (fixture / "b4.json").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+
+    assert _evaluation_source_digest(tmp_path) == initial
+
+
+def test_evaluation_source_digest_requires_complete_source_roots(tmp_path: Path) -> None:
+    (tmp_path / "tools" / "nbtriage_maintainer").mkdir(parents=True)
+    with pytest.raises(AgentEvaluationError, match="source directory is unavailable"):
+        _evaluation_source_digest(tmp_path)
+
+    (tmp_path / "src" / "nbtriage").mkdir(parents=True)
+    (tmp_path / "tools" / "nbtriage_maintainer" / "agent_evaluation.py").write_text(
+        "VALUE = 1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(AgentEvaluationError, match="contains no Python files"):
+        _evaluation_source_digest(tmp_path)
 
 
 def _b1_output(case_id: str) -> str:
@@ -421,6 +507,53 @@ def test_real_gate_partial_audit_checkpoints_requests_and_contract(
     assert "case_input" not in serialized
     assert "retrieved_evidence" not in serialized
     assert "GOLD-" not in serialized
+
+
+def test_real_gate_rejects_source_change_after_partial_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    partial_audit = _partial_audit(tmp_path / "real.partial.json")
+    initial_contract = partial_audit.payload["evaluation_contract"]
+    changed_contract = copy.deepcopy(initial_contract)
+    changed_contract["code_revision"] = f"nbtriage-source-sha256:{'f' * 64}"
+    calls = 0
+
+    def changing_contract() -> dict:
+        nonlocal calls
+        calls += 1
+        return copy.deepcopy(changed_contract)
+
+    monkeypatch.setattr(agent_evaluation, "_evaluation_contract", changing_contract)
+    payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    actions_by_case = {
+        fixture["case"]["case_id"]: fixture["b4_trials"][0]["actions"]
+        for fixture in payload["fixtures"]
+    }
+
+    with pytest.raises(AgentEvaluationError, match="source changed"):
+        asyncio.run(
+            evaluate_b4_real_fixtures(
+                FIXTURES,
+                SPLIT,
+                b1_client_factory=_RealGateB1Client,
+                agent_client_factory=lambda: _RealGateAgentClient(actions_by_case),
+                provider="fixture-provider",
+                model="fixture-model",
+                trials_per_fixture=2,
+                max_provider_requests=40,
+                max_agent_input_tokens_per_trial=4000,
+                max_output_tokens_per_trial=1000,
+                deadline_seconds=5,
+                declared_budget_usd=1.0,
+                paid_run_confirmed=True,
+                synthetic_data_egress_confirmed=True,
+                partial_audit=partial_audit,
+            )
+        )
+
+    assert calls == 1
+    assert partial_audit.payload["evaluation_contract"] == initial_contract
 
 
 def test_partial_audit_checkpoint_failure_prevents_provider_request(

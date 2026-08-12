@@ -1268,10 +1268,16 @@ async def evaluate_b4_real_fixtures(
         if promotion_gate["passed"]
         else "not_eligible_real_model_gate_failed"
     )
+    evaluation_contract = _evaluation_contract()
+    if (
+        partial_audit is not None
+        and partial_audit.payload["evaluation_contract"] != evaluation_contract
+    ):
+        raise AgentEvaluationError("evaluation source changed during the real B4 Gate")
     return {
         "schema_version": B4_EVALUATION_SCHEMA_VERSION,
         "evaluation_id": B4_REAL_EVALUATION_ID,
-        "evaluation_contract": _evaluation_contract(),
+        "evaluation_contract": evaluation_contract,
         "fixture_set_id": payload["fixture_set_id"],
         "split_id": split.split_id,
         "generated_at": datetime.now(UTC).isoformat(),
@@ -1853,17 +1859,7 @@ def _promotion_gate(
 
 
 def _evaluation_contract() -> dict[str, Any]:
-    source_root = Path(__file__).resolve().parent
-    digest = hashlib.sha256()
-    for source_path in sorted(
-        source_root.rglob("*.py"),
-        key=lambda path: path.relative_to(source_root).as_posix(),
-    ):
-        relative_path = source_path.relative_to(source_root).as_posix()
-        digest.update(relative_path.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(source_path.read_bytes())
-        digest.update(b"\0")
+    digest = _evaluation_source_digest(Path(__file__).resolve().parents[2])
     return {
         "prompt_ids": {"b1": B1_PROMPT_ID, "b4": AGENT_PROMPT_ID},
         "schema_ids": {
@@ -1876,8 +1872,61 @@ def _evaluation_contract() -> dict[str, Any]:
             "b3": B3_EVIDENCE_POLICY_ID,
             "b4": AGENT_POLICY_ID,
         },
-        "code_revision": f"nbtriage-source-sha256:{digest.hexdigest()}",
+        "code_revision": f"nbtriage-source-sha256:{digest}",
     }
+
+
+def _evaluation_source_digest(repository_root: Path) -> str:
+    """计算真实 B4 评测代码闭包的稳定摘要。
+
+    Args:
+        repository_root: 包含 ``src/nbtriage`` 与维护者工具包的仓库根目录。
+
+    Returns:
+        同时绑定规范相对路径和文件内容的 SHA-256 十六进制摘要。
+
+    Raises:
+        AgentEvaluationError: 必需源码目录缺失、不是目录或无法完整读取时抛出。
+
+    Note:
+        评测编排会直接执行领域核心和维护者工具；只哈希其中一侧会让报告在
+        另一侧代码变化后错误复用旧 revision。这里故意覆盖两个 Python 包，
+        而不把测试、Fixture、报告或本地工件混入代码身份。
+    """
+    normalized_root = Path(repository_root).resolve()
+    source_roots = (
+        normalized_root / "src" / "nbtriage",
+        normalized_root / "tools" / "nbtriage_maintainer",
+    )
+    digest = hashlib.sha256()
+    try:
+        source_paths: list[Path] = []
+        for source_root in source_roots:
+            if not source_root.is_dir():
+                raise AgentEvaluationError(
+                    f"evaluation source directory is unavailable: {source_root}"
+                )
+            tree_paths = list(source_root.rglob("*.py"))
+            if not tree_paths:
+                raise AgentEvaluationError(
+                    f"evaluation source directory contains no Python files: {source_root}"
+                )
+            source_paths.extend(tree_paths)
+        ordered_paths = sorted(
+            source_paths,
+            key=lambda path: path.relative_to(normalized_root).as_posix(),
+        )
+        for source_path in ordered_paths:
+            relative_path = source_path.relative_to(normalized_root).as_posix()
+            digest.update(relative_path.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(source_path.read_bytes())
+            digest.update(b"\0")
+    except AgentEvaluationError:
+        raise
+    except (OSError, ValueError) as error:
+        raise AgentEvaluationError(f"failed to hash evaluation source closure: {error}") from error
+    return digest.hexdigest()
 
 
 def _load_evaluation_split(
