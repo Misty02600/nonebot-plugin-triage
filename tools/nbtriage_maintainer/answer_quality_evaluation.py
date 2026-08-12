@@ -13,6 +13,10 @@ ANSWER_QUALITY_RUBRIC_ID = "answer-quality-v1"
 ANSWER_QUALITY_OFFLINE_SCOPE = "offline_fixed_fixture"
 ANSWER_QUALITY_FIXTURE_REVISION_PREFIX = "nbtriage-answer-quality-fixtures-sha256:"
 ANSWER_QUALITY_RUBRIC_REVISION_PREFIX = "nbtriage-answer-quality-rubric-sha256:"
+ANSWER_QUALITY_RUBRIC_REVISION = (
+    "nbtriage-answer-quality-rubric-sha256:"
+    "a238938a03893faddc4f9e699b2ba519a565dc5b59d3a3ca46637a90fe992664"
+)
 ANSWER_QUALITY_AXES = (
     "groundedness",
     "completeness",
@@ -90,6 +94,8 @@ def evaluate_answer_quality(
         rubric_revision = answer_quality_rubric_revision(rubric)
     except (TypeError, ValueError) as error:
         raise AnswerQualityEvaluationError("fixture content cannot be canonicalized") from error
+    if rubric_revision != ANSWER_QUALITY_RUBRIC_REVISION:
+        raise AnswerQualityEvaluationError("unsupported answer quality rubric revision")
     judgments = _validate_annotations(
         annotations,
         fixture_set_id=fixtures["fixture_set_id"],

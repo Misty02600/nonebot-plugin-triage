@@ -5,6 +5,7 @@ import pytest
 from tools.nbtriage_maintainer.answer_quality_evaluation import (
     ANSWER_QUALITY_AXES,
     AnswerQualityEvaluationError,
+    answer_quality_rubric_revision,
     evaluate_answer_quality,
 )
 from tools.nbtriage_maintainer.cli import main
@@ -94,8 +95,34 @@ def test_answer_quality_rejects_annotations_for_changed_rubric_content(
     rubric = tmp_path / "changed-rubric.json"
     rubric.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(AnswerQualityEvaluationError, match="different rubric content"):
+    with pytest.raises(AnswerQualityEvaluationError, match="unsupported answer quality rubric"):
         evaluate_answer_quality(rubric, FIXTURES, ANNOTATIONS)
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [("thresholds", "min_axis_mean"), ("axes", "groundedness")],
+)
+def test_answer_quality_rejects_synchronously_resigned_rubric(
+    tmp_path: Path,
+    section: str,
+    field: str,
+) -> None:
+    rubric_payload = json.loads(RUBRIC.read_text(encoding="utf-8"))
+    if section == "thresholds":
+        rubric_payload[section][field] = 0
+    else:
+        rubric_payload[section][field]["anchors"]["2"] = "被替换的宽松满分锚点。"
+    rubric = tmp_path / "resigned-rubric.json"
+    rubric.write_text(json.dumps(rubric_payload, ensure_ascii=False), encoding="utf-8")
+
+    annotations_payload = json.loads(ANNOTATIONS.read_text(encoding="utf-8"))
+    annotations_payload["rubric_revision"] = answer_quality_rubric_revision(rubric_payload)
+    annotations = tmp_path / "resigned-annotations.json"
+    annotations.write_text(json.dumps(annotations_payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(AnswerQualityEvaluationError, match="unsupported answer quality rubric"):
+        evaluate_answer_quality(rubric, FIXTURES, annotations)
 
 
 def test_answer_quality_canonical_revisions_ignore_json_layout(tmp_path: Path) -> None:
