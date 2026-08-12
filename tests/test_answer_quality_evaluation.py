@@ -78,6 +78,22 @@ def test_answer_quality_rejects_incomplete_annotation_coverage(tmp_path: Path) -
         evaluate_answer_quality(RUBRIC, FIXTURES, annotations)
 
 
+def test_answer_quality_rejects_duplicate_annotation_keys(tmp_path: Path) -> None:
+    annotations = tmp_path / "duplicate-annotations.json"
+    raw = ANNOTATIONS.read_text(encoding="utf-8")
+    annotations.write_text(
+        raw.replace(
+            '"schema_version": 3,',
+            '"schema_version": 3,\n  "schema_version": 3,',
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AnswerQualityEvaluationError, match="failed to load"):
+        evaluate_answer_quality(RUBRIC, FIXTURES, annotations)
+
+
 @pytest.mark.parametrize(
     ("section", "field"),
     [("thresholds", "min_axis_mean"), ("axes", "groundedness")],

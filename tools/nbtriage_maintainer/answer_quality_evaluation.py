@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from tools.nbtriage_maintainer.strict_json import StrictJsonError, strict_json_loads
+
 ANSWER_QUALITY_EVALUATION_ID = "answer-quality-human-rubric-v2"
 ANSWER_QUALITY_RUBRIC_ID = "answer-quality-v1"
 ANSWER_QUALITY_OFFLINE_SCOPE = "offline_fixed_fixture"
@@ -241,8 +243,8 @@ def evaluate_answer_quality(
 def _load_object(path: Path, label: str) -> tuple[bytes, dict[str, Any]]:
     try:
         raw = path.read_bytes()
-        payload = json.loads(raw)
-    except (OSError, json.JSONDecodeError) as error:
+        payload = strict_json_loads(raw)
+    except (OSError, StrictJsonError) as error:
         raise AnswerQualityEvaluationError(f"failed to load {label} {path}: {error}") from error
     if not isinstance(payload, dict):
         raise AnswerQualityEvaluationError(f"{label} must be a JSON object")

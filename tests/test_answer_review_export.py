@@ -123,6 +123,15 @@ def test_export_builds_forward_hidden_offline_review_package(tmp_path: Path) -> 
     assert "chain_of_thought" not in serialized
 
 
+def test_export_rejects_nonfinite_value_in_source_report(tmp_path: Path) -> None:
+    report_path = _real_report(tmp_path / "b4-real.json")
+    raw = report_path.read_text(encoding="utf-8")
+    report_path.write_text(raw[:-2] + ',\n  "nonfinite": NaN\n}\n', encoding="utf-8")
+
+    with pytest.raises(AnswerReviewExportError, match="failed to load B4 evaluation report"):
+        build_b4_answer_quality_review(report_path, B4_FIXTURES, B4_SPLIT, RUBRIC)
+
+
 def test_export_ignores_terminal_step_failures_and_keeps_completed_only(
     tmp_path: Path,
 ) -> None:

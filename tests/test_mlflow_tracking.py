@@ -392,6 +392,20 @@ def test_publish_rejects_duplicate_json_keys_before_mlflow_call(tmp_path: Path) 
     _assert_mlflow_untouched(mlflow)
 
 
+def test_publish_rejects_nonfinite_json_number_before_mlflow_call(tmp_path: Path) -> None:
+    report_path = tmp_path / "nonfinite.json"
+    report_path.write_text(
+        '{"schema_version":1,"evaluation_id":"legacy-other-v1","summary":{"rate":NaN}}',
+        encoding="utf-8",
+    )
+    mlflow = _FakeMLflow()
+
+    with pytest.raises(MLflowTrackingError, match="valid UTF-8 JSON"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
+
+    _assert_mlflow_untouched(mlflow)
+
+
 @pytest.mark.parametrize("generated_at", ["not-a-time", "2026-08-13T12:00:00"])
 def test_publish_rejects_invalid_or_naive_generated_at_before_mlflow_call(
     tmp_path: Path,

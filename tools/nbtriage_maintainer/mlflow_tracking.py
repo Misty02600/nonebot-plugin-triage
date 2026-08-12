@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib
-import json
 import math
 import os
 import re
@@ -27,6 +26,7 @@ from tools.nbtriage_maintainer.evidence_receipt_evaluation import (
     evaluate_b3_evidence_receipts,
 )
 from tools.nbtriage_maintainer.safety_evaluation import S3_EVALUATION_ID, evaluate_s3
+from tools.nbtriage_maintainer.strict_json import StrictJsonError, strict_json_loads
 
 DEFAULT_MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 DEFAULT_MLFLOW_EXPERIMENT = "nbtriage/evaluations"
@@ -54,10 +54,6 @@ _BUNDLE_TAG = "nbtriage.bundle_sha256"
 
 
 class MLflowTrackingError(ValueError):
-    pass
-
-
-class _DuplicateJsonKeyError(ValueError):
     pass
 
 
@@ -193,11 +189,8 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
     except OSError as error:
         raise MLflowTrackingError(f"evaluation artifact could not be read: {path}") from error
     try:
-        payload = json.loads(
-            raw.decode("utf-8"),
-            object_pairs_hook=_object_without_duplicate_keys,
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError, _DuplicateJsonKeyError) as error:
+        payload = strict_json_loads(raw)
+    except StrictJsonError as error:
         raise MLflowTrackingError("evaluation artifact must be valid UTF-8 JSON") from error
     if not isinstance(payload, dict):
         raise MLflowTrackingError("evaluation artifact must contain one JSON object")
@@ -235,15 +228,6 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
         payload=payload,
         sha256=hashlib.sha256(raw).hexdigest(),
     )
-
-
-def _object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise _DuplicateJsonKeyError("duplicate JSON object key")
-        result[key] = value
-    return result
 
 
 def _validate_generated_at(value: Any) -> None:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +16,7 @@ from tools.nbtriage_maintainer.answer_quality_evaluation import (
     answer_quality_fixture_revision,
     answer_quality_rubric_revision,
 )
+from tools.nbtriage_maintainer.strict_json import StrictJsonError, strict_json_loads
 
 ANSWER_QUALITY_FIXTURE_SCHEMA_VERSION = 2
 ANSWER_QUALITY_EVALUATION_SCOPE = "offline_fixed_fixture"
@@ -85,8 +85,8 @@ def build_b4_answer_quality_review_payloads(
         AnswerReviewExportError: 原始字节与解析对象不一致，或 B4 来源与投影合同无效。
     """
     try:
-        raw_report = json.loads(report_raw)
-    except json.JSONDecodeError as error:
+        raw_report = strict_json_loads(report_raw)
+    except StrictJsonError as error:
         raise AnswerReviewExportError("B4 evaluation report raw bytes are invalid") from error
     if raw_report != report:
         raise AnswerReviewExportError("B4 evaluation report bytes do not match its payload")
@@ -431,8 +431,8 @@ def _required_answer_points(gold: Any) -> list[str]:
 def _load_object(path: Path, label: str) -> tuple[bytes, dict[str, Any]]:
     try:
         raw = path.read_bytes()
-        payload = json.loads(raw)
-    except (OSError, json.JSONDecodeError) as error:
+        payload = strict_json_loads(raw)
+    except (OSError, StrictJsonError) as error:
         raise AnswerReviewExportError(f"failed to load {label} {path}: {error}") from error
     if not isinstance(payload, dict):
         raise AnswerReviewExportError(f"{label} must be a JSON object")
