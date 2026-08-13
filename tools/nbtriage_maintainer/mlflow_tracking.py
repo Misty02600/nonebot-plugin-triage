@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import importlib
 import math
@@ -15,28 +14,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from tools.nbtriage_maintainer.answer_quality_evaluation import (
-    ANSWER_QUALITY_EVALUATION_ID,
-    evaluate_answer_quality,
-)
-from tools.nbtriage_maintainer.bot_docs_evaluation import (
-    BOT_DOCS_EVALUATION_ID,
-    evaluate_bot_docs_retrieval,
-)
-from tools.nbtriage_maintainer.evaluation import (
-    B1_CUSTOM_EVALUATION_ID,
-    B1_EVALUATION_ID,
-    EvaluationError,
-    evaluate_b0,
-    validate_b1_evaluation_report,
-)
-from tools.nbtriage_maintainer.evidence_policy import B3_EVIDENCE_POLICY_ID
-from tools.nbtriage_maintainer.evidence_policy_evaluation import evaluate_b3_evidence_policy
-from tools.nbtriage_maintainer.evidence_receipt_evaluation import (
-    B3_EVIDENCE_RECEIPT_EVALUATION_ID,
-    evaluate_b3_evidence_receipts,
-)
-from tools.nbtriage_maintainer.safety_evaluation import S3_EVALUATION_ID, evaluate_s3
 from tools.nbtriage_maintainer.strict_json import StrictJsonError, strict_json_loads
 
 DEFAULT_MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
@@ -45,8 +22,20 @@ DEFAULT_MLFLOW_EXPERIMENT = "nbtriage/evaluations"
 _B4_REAL_EVALUATION_ID = "b4-bounded-agent-real-v1"
 _B4_REAL_PARTIAL_KIND = "b4-real-partial"
 _B4_REAL_ABORT_KIND = "b4-real-run-abort-observation"
-_B0_B1_EVALUATION_IDS = frozenset({"b0-checklist-v1", B1_EVALUATION_ID})
 _TERMINAL_PARTIAL_STATUSES = frozenset({"aborted", "completed"})
+_FORMAL_EVALUATION_IDS = frozenset(
+    {
+        "answer-quality-human-rubric-v2",
+        "b0-checklist-v1",
+        "b1-rag-only-v1",
+        "b3-evidence-receipts-v1",
+        "b3-single-evidence-v1",
+        "b4-bounded-agent-real-v1",
+        "b4-bounded-agent-scripted-v1",
+        "bot-docs-retrieval-v1",
+        "s3-adversarial-v1",
+    }
+)
 _METRIC_ROOTS = (
     "summary",
     "metrics",
@@ -91,15 +80,17 @@ def publish_evaluation_to_mlflow(
     tracking_uri: str = DEFAULT_MLFLOW_TRACKING_URI,
     experiment_name: str = DEFAULT_MLFLOW_EXPERIMENT,
     run_name: str | None = None,
+    allow_unqualified: bool = False,
     mlflow_module: Any | None = None,
 ) -> MLflowPublication:
-    """把既有评测工件发布到 MLflow，并重放支持复建的正式离线评测。
+    """把既有评测工件发布到 MLflow，不重新执行评测。
 
     Args:
         report_path: 已经完整落盘的 JSON 评测报告或终态 partial audit。
         tracking_uri: 显式 MLflow Tracking URI；不会读取项目配置或改写报告。
         experiment_name: MLflow experiment 名称。
         run_name: 可选的 MLflow run 名称；缺省时由评测 ID 和工件摘要生成。
+        allow_unqualified: 显式允许发布已知自定义或未知工件；这类 run 不可比较。
         mlflow_module: 测试时注入的 MLflow 兼容对象；正常调用不应传入。
 
     Returns:
@@ -111,7 +102,7 @@ def publish_evaluation_to_mlflow(
     Note:
         MLflow 是查询索引和 UI 副本。报告原文、评测结论与 promotion gate 仍由本地 JSON 所有。
     """
-    artifact = _load_artifact(report_path)
+    artifact = _load_artifact(report_path, allow_unqualified=allow_unqualified)
     audit = _load_related_audit(artifact)
     bundle_sha256 = _bundle_sha256(artifact, audit)
     mlflow = mlflow_module or _load_mlflow()
@@ -194,7 +185,7 @@ def _load_mlflow() -> Any:
         ) from error
 
 
-def _load_artifact(path: Path) -> _LoadedArtifact:
+def _load_artifact(path: Path, *, allow_unqualified: bool = False) -> _LoadedArtifact:
     try:
         raw = path.read_bytes()
     except OSError as error:
@@ -209,9 +200,9 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
     evaluation_id = payload.get("evaluation_id")
     if not isinstance(evaluation_id, str) or not evaluation_id:
         raise MLflowTrackingError("evaluation artifact must contain evaluation_id")
-    if evaluation_id == B1_CUSTOM_EVALUATION_ID:
+    if evaluation_id not in _FORMAL_EVALUATION_IDS and not allow_unqualified:
         raise MLflowTrackingError(
-            "custom unqualified B1 reports cannot be published as formal runs"
+            "custom or unknown evaluation artifacts require allow_unqualified=True"
         )
     schema_version = payload.get("schema_version")
     if not isinstance(schema_version, int) or isinstance(schema_version, bool):
@@ -226,22 +217,8 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
                 "b4-real-partial must be completed or aborted before publication"
             )
 
-    if evaluation_id in _B0_B1_EVALUATION_IDS:
+    if evaluation_id in {"b0-checklist-v1", "b1-rag-only-v1"}:
         _validate_b0_b1_provenance(payload)
-    if evaluation_id == "b0-checklist-v1":
-        _validate_b0_reproducibility(payload)
-    if evaluation_id == B1_EVALUATION_ID:
-        _validate_b1_reproducibility(payload)
-    if evaluation_id == ANSWER_QUALITY_EVALUATION_ID:
-        _validate_answer_quality_reproducibility(payload)
-    if evaluation_id == S3_EVALUATION_ID:
-        _validate_s3_reproducibility(payload)
-    if evaluation_id == B3_EVIDENCE_POLICY_ID:
-        _validate_b3_evidence_policy_reproducibility(payload)
-    if evaluation_id == B3_EVIDENCE_RECEIPT_EVALUATION_ID:
-        _validate_b3_evidence_receipt_reproducibility(payload)
-    if evaluation_id == BOT_DOCS_EVALUATION_ID:
-        _validate_bot_docs_reproducibility(payload)
 
     return _LoadedArtifact(
         path=path,
@@ -268,175 +245,32 @@ def _validate_generated_at(value: Any) -> None:
         )
 
 
-def _validate_answer_quality_reproducibility(payload: dict[str, Any]) -> None:
-    source = payload.get("source")
-    source_fields = {
-        "rubric_path",
-        "fixtures_path",
-        "annotations_path",
-        "source_report_path",
-    }
-    if not isinstance(source, dict) or not source_fields <= set(source):
-        raise MLflowTrackingError("answer-quality report is not reproducible")
-
-    rubric_path = source.get("rubric_path")
-    fixtures_path = source.get("fixtures_path")
-    annotations_path = source.get("annotations_path")
-    source_report = source.get("source_report_path")
-    if (
-        not isinstance(payload.get("generated_at"), str)
-        or not payload["generated_at"]
-        or not isinstance(rubric_path, str)
-        or not rubric_path
-        or not isinstance(fixtures_path, str)
-        or not fixtures_path
-        or not isinstance(annotations_path, str)
-        or not annotations_path
-        or (source_report is not None and (not isinstance(source_report, str) or not source_report))
-    ):
-        raise MLflowTrackingError("answer-quality report is not reproducible")
-
-    try:
-        reproduced = evaluate_answer_quality(
-            Path(rubric_path),
-            Path(fixtures_path),
-            Path(annotations_path),
-            source_report_path=Path(source_report) if source_report is not None else None,
-        )
-    except Exception as error:
-        raise MLflowTrackingError("answer-quality report is not reproducible") from error
-
-    expected = dict(payload)
-    actual = dict(reproduced)
-    expected.pop("generated_at", None)
-    actual.pop("generated_at", None)
-    if expected != actual:
-        raise MLflowTrackingError("answer-quality report is not reproducible")
-
-
-def _validate_s3_reproducibility(payload: dict[str, Any]) -> None:
-    fixture = payload.get("fixture")
-    fixture_path = fixture.get("path") if isinstance(fixture, dict) else None
-    if not isinstance(fixture_path, str) or not fixture_path:
-        raise MLflowTrackingError("S3 report is not reproducible")
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        pass
-    else:
-        raise MLflowTrackingError(
-            "S3 report cannot be reproduced from a synchronous publisher while an event loop is running"
-        )
-
-    try:
-        reproduced = asyncio.run(evaluate_s3(Path(fixture_path)))
-    except Exception as error:
-        raise MLflowTrackingError("S3 report is not reproducible") from error
-    _require_reproduced_report(payload, reproduced, report_name="S3")
-
-
-def _validate_b3_evidence_policy_reproducibility(payload: dict[str, Any]) -> None:
-    source = payload.get("source")
-    prediction_report = source.get("prediction_report") if isinstance(source, dict) else None
-    if not isinstance(prediction_report, str) or not prediction_report:
-        raise MLflowTrackingError("B3 evidence-policy report is not reproducible")
-
-    try:
-        reproduced = evaluate_b3_evidence_policy(Path(prediction_report))
-    except Exception as error:
-        raise MLflowTrackingError("B3 evidence-policy report is not reproducible") from error
-    _require_reproduced_report(payload, reproduced, report_name="B3 evidence-policy")
-
-
-def _validate_b3_evidence_receipt_reproducibility(payload: dict[str, Any]) -> None:
-    source = payload.get("source")
-    fixtures_path = source.get("fixtures_path") if isinstance(source, dict) else None
-    if not isinstance(fixtures_path, str) or not fixtures_path:
-        raise MLflowTrackingError("B3 evidence-receipt report is not reproducible")
-
-    try:
-        reproduced = evaluate_b3_evidence_receipts(Path(fixtures_path))
-    except Exception as error:
-        raise MLflowTrackingError("B3 evidence-receipt report is not reproducible") from error
-    _require_reproduced_report(payload, reproduced, report_name="B3 evidence-receipt")
-
-
-def _validate_bot_docs_reproducibility(payload: dict[str, Any]) -> None:
-    fixture = payload.get("fixture")
-    index = payload.get("index")
-    fixture_path = fixture.get("path") if isinstance(fixture, dict) else None
-    index_path = index.get("index_path") if isinstance(index, dict) else None
-    if (
-        not isinstance(fixture_path, str)
-        or not fixture_path
-        or not isinstance(index_path, str)
-        or not index_path
-    ):
-        raise MLflowTrackingError("bot-docs retrieval report is not reproducible")
-
-    try:
-        reproduced = evaluate_bot_docs_retrieval(Path(index_path), Path(fixture_path))
-    except Exception as error:
-        raise MLflowTrackingError("bot-docs retrieval report is not reproducible") from error
-    _require_reproduced_report(payload, reproduced, report_name="bot-docs retrieval")
-
-
-def _require_reproduced_report(
-    payload: dict[str, Any],
-    reproduced: dict[str, Any],
-    *,
-    report_name: str,
-) -> None:
-    expected = dict(payload)
-    actual = dict(reproduced)
-    expected.pop("generated_at", None)
-    actual.pop("generated_at", None)
-    if expected != actual:
-        raise MLflowTrackingError(f"{report_name} report is not reproducible")
-
-
 def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:
     source = payload.get("source")
     if not isinstance(source, dict):
         raise MLflowTrackingError("B0/B1 evaluation artifact must contain source provenance")
     required_source_fields = {
-        "cases_dir",
-        "split_path",
         "split_sha256",
         "case_corpus_sha256",
         "case_corpus_scope",
         "case_count",
     }
-    if payload.get("evaluation_id") == B1_EVALUATION_ID:
+    if payload.get("evaluation_id") == "b1-rag-only-v1":
         required_source_fields.update(
             {
                 "official_split_id",
                 "official_split_sha256",
                 "official_case_corpus_sha256",
-                "response_cache_dir",
                 "response_manifest_sha256",
             }
         )
-    if set(source) != required_source_fields:
+    if not required_source_fields <= set(source):
         raise MLflowTrackingError("B0/B1 evaluation source provenance is invalid")
-    path_fields = ["cases_dir", "split_path"]
-    if payload.get("evaluation_id") == B1_EVALUATION_ID:
-        path_fields.append("response_cache_dir")
-    for field in path_fields:
-        value = source.get(field)
-        if (
-            not isinstance(value, str)
-            or not value
-            or not Path(value).is_absolute()
-            or Path(value).resolve().as_posix() != value
-        ):
-            raise MLflowTrackingError("B0/B1 evaluation source paths must be absolute")
     for field in ("split_sha256", "case_corpus_sha256"):
         value = source.get(field)
         if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
             raise MLflowTrackingError("B0/B1 evaluation source hashes must be lowercase SHA-256")
-    if payload.get("evaluation_id") == B1_EVALUATION_ID:
+    if payload.get("evaluation_id") == "b1-rag-only-v1":
         response_manifest = source.get("response_manifest_sha256")
         manifest_prefix = "nbtriage-b1-response-manifest-sha256:"
         if (
@@ -468,22 +302,6 @@ def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:
         or re.fullmatch(r"[0-9a-f]{64}", revision.removeprefix(prefix)) is None
     ):
         raise MLflowTrackingError("B0/B1 evaluation code revision is invalid")
-
-
-def _validate_b0_reproducibility(payload: dict[str, Any]) -> None:
-    source = payload["source"]
-    try:
-        reproduced = evaluate_b0(Path(source["cases_dir"]), Path(source["split_path"]))
-    except Exception as error:
-        raise MLflowTrackingError("B0 evaluation report is not reproducible") from error
-    _require_reproduced_report(payload, reproduced, report_name="B0 evaluation")
-
-
-def _validate_b1_reproducibility(payload: dict[str, Any]) -> None:
-    try:
-        validate_b1_evaluation_report(payload)
-    except EvaluationError as error:
-        raise MLflowTrackingError("B1 evaluation report is not reproducible") from error
 
 
 def _load_related_audit(artifact: _LoadedArtifact) -> _LoadedArtifact | None:
@@ -539,10 +357,12 @@ def _build_tags(
     if not isinstance(status, str):
         status = "aborted" if payload.get("artifact_kind") == _B4_REAL_ABORT_KIND else "completed"
 
+    comparable = payload.get("evaluation_id") in _FORMAL_EVALUATION_IDS
     tags = {
         "nbtriage.artifact_sha256": artifact.sha256,
         _BUNDLE_TAG: bundle_sha256,
         "nbtriage.evaluation_status": status,
+        "nbtriage.comparable": str(comparable).lower(),
     }
     if audit is not None:
         tags["nbtriage.audit_sha256"] = audit.sha256
@@ -550,16 +370,16 @@ def _build_tags(
     for key in (
         "generated_at",
         "artifact_kind",
-        "artifact_profile",
         "split_id",
         "fixture_set_id",
         "evaluation_scope",
     ):
         _copy_scalar_tag(tags, f"nbtriage.{key}", payload.get(key))
-    decision = _evaluation_decision(payload)
-    _copy_scalar_tag(tags, "nbtriage.evaluation_decision", decision)
-    if isinstance(payload.get("promotion_gate"), dict):
-        _copy_scalar_tag(tags, "nbtriage.promotion_decision", decision)
+    if comparable:
+        decision = _evaluation_decision(payload)
+        _copy_scalar_tag(tags, "nbtriage.evaluation_decision", decision)
+        if isinstance(payload.get("promotion_gate"), dict):
+            _copy_scalar_tag(tags, "nbtriage.promotion_decision", decision)
 
     source = payload.get("source")
     if isinstance(source, dict):
@@ -578,7 +398,7 @@ def _build_parameters(payload: dict[str, Any]) -> dict[str, str]:
         "nbtriage.evaluation_id": str(payload["evaluation_id"]),
         "nbtriage.schema_version": str(payload["schema_version"]),
     }
-    for key in ("split_id", "fixture_set_id", "artifact_kind", "artifact_profile"):
+    for key in ("split_id", "fixture_set_id", "artifact_kind"):
         _copy_scalar_parameter(parameters, f"nbtriage.{key}", payload.get(key))
 
     for container_name in ("summary", "authorization"):
