@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,16 +19,23 @@ from uuid import uuid4
 from nbtriage.baselines import B0SearchIndex, extract_version_values, predict_b0
 from nbtriage.rag import (
     B1_PROMPT_ID,
+    B1Error,
     B1ModelClient,
+    B1ModelResponse,
+    B1Prediction,
     B1ResponseCache,
     B1Runner,
     TrainCaseRetriever,
+    build_b1_request,
+    parse_b1_output,
 )
+from nbtriage.safety import detect_case_safety_risks
 from tools.nbtriage_maintainer.evaluation_provenance import (
     EvaluationProvenanceError,
     case_corpus_sha256,
     evaluation_code_revision,
 )
+from tools.nbtriage_maintainer.strict_json import StrictJsonError, strict_json_loads
 
 ROUTE_BY_MODE = {
     "nonebug_exec": "verify",
@@ -78,6 +86,127 @@ GAP_KEYWORDS = {
     "raw_close_evidence": ("close code", "close reason", "关闭码", "关闭原因"),
 }
 _CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
+B1_EVALUATION_ID = "b1-rag-only-v1"
+B1_CUSTOM_EVALUATION_ID = "b1-rag-only-custom-unqualified-v1"
+_B1_OFFICIAL_SPLIT_ID = "data-gate-v1"
+_B1_OFFICIAL_SPLIT_SHA256 = "ce2a95a98665efb012b3b4cdc0bbd4d07e8a82dd6916b80c4f0fa0c843853a24"
+_B1_OFFICIAL_CORPUS_SHA256_BY_SCORE_SPLIT = {
+    "validation": "1c8cfc15189bb53c526197901c339156539d7311f75212785e5bf87fa2e47482",
+    "heldout": "55926a03423f0f012dd5d5e4ee75a1510545b27e1ce7ef739a4598d33755c12b",
+}
+_B1_OFFICIAL_MAX_OUTPUT_TOKENS = 1024
+_B1_OFFICIAL_BUDGET_USD_BY_SCORE_SPLIT = {
+    "validation": 0.1,
+    "heldout": 0.05,
+}
+_B1_RESPONSE_MANIFEST_DOMAIN = b"nbtriage-b1-response-manifest-v1\0"
+_B1_RESPONSE_MANIFEST_PREFIX = "nbtriage-b1-response-manifest-sha256:"
+_B1_FORMAL_PROVIDER_NAMES = {
+    "deepseek-responses": frozenset({"deepseek-responses"}),
+}
+_B1_LIMITATIONS = [
+    "B1 uses source-only target input and train-only retrieved cases; "
+    "curation and Gold are passed only to the shared scorer.",
+    "Model output can reflect pretraining exposure to historical public Issues; "
+    "a forward hidden set or counterfactual fixtures are still required.",
+    "The v1 corpus has no duplicate root-cause groups or qualified S3 cases, so "
+    "duplicate Recall@5 is not applicable and unsafe-refusal coverage is insufficient.",
+    "Version metrics compare normalized values, not package-to-version association.",
+    "Response-cache content addressing proves internal consistency, not signature "
+    "authenticity; a report and forged cache changed together remain outside this gate's "
+    "trust claim.",
+    "execution_observation is self-reported and unverified; model-call and cache-hit "
+    "counts are not part of the reproducible quality claim.",
+]
+_B1_ROOT_FIELDS = {
+    "schema_version",
+    "evaluation_id",
+    "evaluation_qualification",
+    "evaluation_contract",
+    "split_id",
+    "generated_at",
+    "source",
+    "summary",
+    "execution_observation",
+    "metrics_by_split",
+    "predictions",
+    "limitations",
+}
+_B1_SOURCE_FIELDS = {
+    "cases_dir",
+    "split_path",
+    "split_sha256",
+    "case_corpus_sha256",
+    "case_corpus_scope",
+    "case_count",
+    "official_split_id",
+    "official_split_sha256",
+    "official_case_corpus_sha256",
+    "response_cache_dir",
+    "response_manifest_sha256",
+}
+_B1_SUMMARY_FIELDS = {
+    "case_count",
+    "train_count",
+    "validation_count",
+    "heldout_count",
+    "provider",
+    "model",
+    "prompt_id",
+    "generation_config",
+    "score_splits",
+    "declared_budget_usd",
+    "provider_response_count",
+    "input_tokens",
+    "output_tokens",
+    "latency_ms",
+    "external_tool_calls",
+}
+_B1_EXECUTION_OBSERVATION_FIELDS = {
+    "verification",
+    "model_calls",
+    "cache_hits",
+}
+_B1_ROW_FIELDS = {"split", "case_id", "support_level", "gold", "prediction"}
+_B1_GOLD_FIELDS = {
+    "route",
+    "fault_phase",
+    "symptoms",
+    "candidate_owners",
+    "missing_evidence",
+    "source_version_values",
+}
+_B1_PREDICTION_FIELDS = {
+    "case_id",
+    "baseline_id",
+    "version_values",
+    "missing_evidence",
+    "symptoms",
+    "fault_phase",
+    "candidate_owners",
+    "route",
+    "answer",
+    "citations",
+    "retrieved_evidence",
+    "secret_risk_detected",
+    "safety_risks",
+    "input_tokens",
+    "output_tokens",
+    "latency_ms",
+}
+_B1_RESPONSE_REQUIRED_FIELDS = {
+    "output_text",
+    "input_tokens",
+    "output_tokens",
+    "provider_request_id",
+    "latency_ms",
+}
+_B1_RESPONSE_OPTIONAL_FIELDS = {
+    "cost_microusd",
+    "provider_name",
+    "provider_model_name",
+    "provider_fingerprint",
+}
 
 
 class EvaluationReportPublishError(OSError):
@@ -105,13 +234,26 @@ class EvaluationError(ValueError):
 
 
 class EvaluationPrediction(Protocol):
-    case_id: str
-    version_values: list[str]
-    missing_evidence: list[str]
-    symptoms: list[str]
-    fault_phase: str
-    candidate_owners: list[str]
-    route: str
+    @property
+    def case_id(self) -> str: ...
+
+    @property
+    def version_values(self) -> list[str]: ...
+
+    @property
+    def missing_evidence(self) -> list[str]: ...
+
+    @property
+    def symptoms(self) -> list[str]: ...
+
+    @property
+    def fault_phase(self) -> str: ...
+
+    @property
+    def candidate_owners(self) -> list[str]: ...
+
+    @property
+    def route(self) -> str: ...
 
     def to_dict(self) -> dict[str, Any]: ...
 
@@ -229,11 +371,12 @@ async def evaluate_b1(
     if not selected_splits:
         raise EvaluationError("score_splits must not be empty")
     train_cases = [dataset.cases[case_id] for case_id in dataset.split_case_ids.get("train", [])]
+    resolved_cache_dir = cache_dir.resolve()
     runner = B1Runner(
         client,
         model,
         TrainCaseRetriever(train_cases),
-        B1ResponseCache(cache_dir),
+        B1ResponseCache(resolved_cache_dir),
         provider=provider,
         generation_config=generation_config,
     )
@@ -248,10 +391,24 @@ async def evaluate_b1(
     provider_response_count = sum(
         prediction.provider_request_id is not None for prediction in predictions.values()
     )
+    split_sha256 = hashlib.sha256(dataset.split_raw).hexdigest()
+    corpus_case_ids = set(dataset.split_case_ids.get("train", [])) | evaluated_case_ids
+    corpus_sha256 = case_corpus_sha256(dataset.case_raw_by_id, corpus_case_ids)
+    is_official = _is_b1_official_dataset(
+        dataset,
+        selected_splits=selected_splits,
+        split_sha256=split_sha256,
+        corpus_sha256=corpus_sha256,
+        provider=provider,
+        model=model,
+        generation_config=generation_config or {},
+        declared_budget_usd=declared_budget_usd,
+    )
+    evaluation_id = B1_EVALUATION_ID if is_official else B1_CUSTOM_EVALUATION_ID
     report = _build_evaluation_report(
         dataset,
         predictions,
-        evaluation_id="b1-rag-only-v1",
+        evaluation_id=evaluation_id,
         score_split_names=selected_splits,
         run_summary={
             "provider": provider,
@@ -260,27 +417,327 @@ async def evaluate_b1(
             "generation_config": generation_config or {},
             "score_splits": list(selected_splits),
             "declared_budget_usd": declared_budget_usd,
-            "model_calls": model_calls,
-            "cache_hits": cache_hits,
             "provider_response_count": provider_response_count,
             "input_tokens": sum(prediction.input_tokens for prediction in predictions.values()),
             "output_tokens": sum(prediction.output_tokens for prediction in predictions.values()),
             "latency_ms": sum(prediction.latency_ms for prediction in predictions.values()),
             "external_tool_calls": 0,
         },
-        limitations=[
-            "B1 uses source-only target input and train-only retrieved cases; "
-            "curation and Gold are passed only to the shared scorer.",
-            "Model output can reflect pretraining exposure to historical public Issues; "
-            "a forward hidden set or counterfactual fixtures are still required.",
-            "The v1 corpus has no duplicate root-cause groups or qualified S3 cases, so "
-            "duplicate Recall@5 is not applicable and unsafe-refusal coverage is insufficient.",
-            "Version metrics compare normalized values, not package-to-version association.",
-        ],
+        limitations=_B1_LIMITATIONS,
         code_revision=code_revision,
     )
+    report["schema_version"] = 2
+    report["evaluation_qualification"] = (
+        "official_frozen_dataset" if is_official else "custom_unqualified"
+    )
+    report["execution_observation"] = {
+        "verification": "self_reported_unverified",
+        "model_calls": model_calls,
+        "cache_hits": cache_hits,
+    }
+    report["source"].update(
+        {
+            "official_split_id": _B1_OFFICIAL_SPLIT_ID,
+            "official_split_sha256": _B1_OFFICIAL_SPLIT_SHA256,
+            "official_case_corpus_sha256": _B1_OFFICIAL_CORPUS_SHA256_BY_SCORE_SPLIT.get(
+                selected_splits[0]
+            )
+            if len(selected_splits) == 1
+            else None,
+            "response_cache_dir": resolved_cache_dir.as_posix(),
+            "response_manifest_sha256": _b1_response_manifest_sha256(
+                dataset,
+                selected_splits=selected_splits,
+                provider=provider,
+                model=model,
+                generation_config=generation_config or {},
+                cache_dir=resolved_cache_dir,
+            ),
+        }
+    )
+    for row in report["predictions"]:
+        row["prediction"].pop("provider_request_id", None)
+        row["prediction"].pop("cache_hit", None)
+        row["prediction"].pop("model_calls", None)
     _ensure_evaluation_code_unchanged(code_revision)
+    if is_official:
+        validate_b1_evaluation_report(report)
     return report
+
+
+def validate_b1_evaluation_report(report: dict[str, Any]) -> None:
+    """严格重放一份 B1 正式报告及其本地响应缓存。
+
+    此校验只建立报告、冻结输入和内容寻址缓存之间的内部一致性，不提供供应商签名真实性。
+    """
+    _require_exact_fields(report, _B1_ROOT_FIELDS, "B1 report")
+    if (
+        report.get("schema_version") != 2
+        or report.get("evaluation_id") != B1_EVALUATION_ID
+        or report.get("evaluation_qualification") != "official_frozen_dataset"
+    ):
+        raise EvaluationError("B1 report identity is invalid")
+    source = _require_object(report.get("source"), "B1 source")
+    summary = _require_object(report.get("summary"), "B1 summary")
+    execution_observation = _require_object(
+        report.get("execution_observation"), "B1 execution observation"
+    )
+    _require_exact_fields(source, _B1_SOURCE_FIELDS, "B1 source")
+    _require_exact_fields(summary, _B1_SUMMARY_FIELDS, "B1 summary")
+    _require_exact_fields(
+        execution_observation,
+        _B1_EXECUTION_OBSERVATION_FIELDS,
+        "B1 execution observation",
+    )
+    predictions = report.get("predictions")
+    if not isinstance(predictions, list):
+        raise EvaluationError("B1 predictions must be an array")
+    for row in predictions:
+        row_object = _require_object(row, "B1 prediction row")
+        _require_exact_fields(row_object, _B1_ROW_FIELDS, "B1 prediction row")
+        _require_exact_fields(
+            _require_object(row_object.get("gold"), "B1 prediction gold"),
+            _B1_GOLD_FIELDS,
+            "B1 prediction gold",
+        )
+        _require_exact_fields(
+            _require_object(row_object.get("prediction"), "B1 prediction"),
+            _B1_PREDICTION_FIELDS,
+            "B1 prediction",
+        )
+
+    provider = summary.get("provider")
+    model = summary.get("model")
+    generation_config = summary.get("generation_config")
+    raw_score_splits = summary.get("score_splits")
+    if provider not in _B1_FORMAL_PROVIDER_NAMES:
+        raise EvaluationError("B1 formal report provider is unsupported")
+    if not isinstance(model, str) or not model.strip():
+        raise EvaluationError("B1 formal report model is invalid")
+    if not isinstance(generation_config, dict):
+        raise EvaluationError("B1 formal report generation_config is invalid")
+    if (
+        not isinstance(raw_score_splits, list)
+        or not raw_score_splits
+        or any(not isinstance(item, str) or not item for item in raw_score_splits)
+        or len(set(raw_score_splits)) != len(raw_score_splits)
+    ):
+        raise EvaluationError("B1 formal report score_splits are invalid")
+    score_splits = tuple(raw_score_splits)
+    _validate_b1_formal_contract(
+        provider=provider,
+        model=model,
+        generation_config=generation_config,
+        score_splits=score_splits,
+        declared_budget_usd=summary.get("declared_budget_usd"),
+    )
+    _validate_b1_observations(summary, execution_observation, predictions)
+    generated_at = report.get("generated_at")
+    if not isinstance(generated_at, str):
+        raise EvaluationError("B1 generated_at is invalid")
+    try:
+        timestamp = datetime.fromisoformat(generated_at)
+    except ValueError as error:
+        raise EvaluationError("B1 generated_at is invalid") from error
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise EvaluationError("B1 generated_at must include a timezone")
+
+    cases_dir = _canonical_absolute_path(source.get("cases_dir"), "B1 cases_dir")
+    split_path = _canonical_absolute_path(source.get("split_path"), "B1 split_path")
+    cache_dir = _canonical_absolute_path(source.get("response_cache_dir"), "B1 response_cache_dir")
+    dataset = load_evaluation_dataset(cases_dir, split_path)
+    actual_split_sha256 = hashlib.sha256(dataset.split_raw).hexdigest()
+    actual_corpus_sha256 = case_corpus_sha256(
+        dataset.case_raw_by_id,
+        set(dataset.split_case_ids.get("train", []))
+        | {
+            case_id
+            for split_name in score_splits
+            for case_id in dataset.split_case_ids.get(split_name, [])
+        },
+    )
+    if not _is_b1_official_dataset(
+        dataset,
+        selected_splits=score_splits,
+        split_sha256=actual_split_sha256,
+        corpus_sha256=actual_corpus_sha256,
+        provider=provider,
+        model=model,
+        generation_config=generation_config,
+        declared_budget_usd=summary.get("declared_budget_usd"),
+    ):
+        raise EvaluationError("B1 formal report does not use the frozen official dataset")
+    reproduced_predictions, manifest_sha256 = _replay_b1_predictions(
+        dataset,
+        selected_splits=score_splits,
+        provider=provider,
+        model=model,
+        generation_config=generation_config,
+        cache_dir=cache_dir,
+    )
+    code_revision = _require_code_revision(report.get("evaluation_contract"))
+    if code_revision != _current_evaluation_code_revision():
+        raise EvaluationError("B1 evaluation code revision is not current")
+    run_summary = {
+        "provider": provider,
+        "model": model,
+        "prompt_id": B1_PROMPT_ID,
+        "generation_config": generation_config,
+        "score_splits": list(score_splits),
+        "declared_budget_usd": summary.get("declared_budget_usd"),
+        "provider_response_count": sum(
+            prediction.provider_request_id is not None
+            for prediction in reproduced_predictions.values()
+        ),
+        "input_tokens": sum(
+            prediction.input_tokens for prediction in reproduced_predictions.values()
+        ),
+        "output_tokens": sum(
+            prediction.output_tokens for prediction in reproduced_predictions.values()
+        ),
+        "latency_ms": sum(prediction.latency_ms for prediction in reproduced_predictions.values()),
+        "external_tool_calls": 0,
+    }
+    reproduced = _build_evaluation_report(
+        dataset,
+        reproduced_predictions,
+        evaluation_id=B1_EVALUATION_ID,
+        score_split_names=score_splits,
+        run_summary=run_summary,
+        limitations=_B1_LIMITATIONS,
+        code_revision=code_revision,
+    )
+    reproduced["schema_version"] = 2
+    reproduced["evaluation_qualification"] = "official_frozen_dataset"
+    reproduced["execution_observation"] = execution_observation
+    reproduced["generated_at"] = report.get("generated_at")
+    reproduced["source"].update(
+        {
+            "official_split_id": _B1_OFFICIAL_SPLIT_ID,
+            "official_split_sha256": _B1_OFFICIAL_SPLIT_SHA256,
+            "official_case_corpus_sha256": _B1_OFFICIAL_CORPUS_SHA256_BY_SCORE_SPLIT[
+                score_splits[0]
+            ],
+            "response_cache_dir": cache_dir.as_posix(),
+            "response_manifest_sha256": manifest_sha256,
+        }
+    )
+    for row in reproduced["predictions"]:
+        row["prediction"].pop("provider_request_id", None)
+        row["prediction"].pop("cache_hit", None)
+        row["prediction"].pop("model_calls", None)
+    if _canonical_evaluation_payload(report) != _canonical_evaluation_payload(reproduced):
+        raise EvaluationError("B1 evaluation report is not reproducible")
+
+
+def _validate_b1_formal_contract(
+    *,
+    provider: str,
+    model: str,
+    generation_config: dict[str, Any],
+    score_splits: tuple[str, ...],
+    declared_budget_usd: Any,
+) -> None:
+    if len(score_splits) != 1 or score_splits[0] not in {"validation", "heldout"}:
+        raise EvaluationError("B1 formal report must score one frozen gate split")
+    if (
+        not isinstance(declared_budget_usd, (int, float))
+        or isinstance(declared_budget_usd, bool)
+        or not math.isfinite(declared_budget_usd)
+        or declared_budget_usd <= 0
+    ):
+        raise EvaluationError("B1 formal report declared budget is invalid")
+    if declared_budget_usd != _B1_OFFICIAL_BUDGET_USD_BY_SCORE_SPLIT[score_splits[0]]:
+        raise EvaluationError("B1 formal report declared budget does not match the frozen profile")
+    max_output_tokens = generation_config.get("max_output_tokens")
+    if (
+        not isinstance(max_output_tokens, int)
+        or isinstance(max_output_tokens, bool)
+        or max_output_tokens != _B1_OFFICIAL_MAX_OUTPUT_TOKENS
+    ):
+        raise EvaluationError("B1 formal report output-token limit is invalid")
+    if (
+        provider != "deepseek-responses"
+        or model != "deepseek-v4-flash"
+        or set(generation_config) != {"max_output_tokens", "reasoning_effort", "temperature"}
+        or generation_config.get("reasoning_effort") != "none"
+        or isinstance(generation_config.get("temperature"), bool)
+        or generation_config.get("temperature") != 0
+    ):
+        raise EvaluationError("DeepSeek B1 generation contract is invalid")
+
+
+def _is_b1_official_dataset(
+    dataset: EvaluationDataset,
+    *,
+    selected_splits: tuple[str, ...],
+    split_sha256: str,
+    corpus_sha256: str,
+    provider: str,
+    model: str,
+    generation_config: dict[str, Any],
+    declared_budget_usd: Any,
+) -> bool:
+    if (
+        dataset.split_id != _B1_OFFICIAL_SPLIT_ID
+        or split_sha256 != _B1_OFFICIAL_SPLIT_SHA256
+        or len(selected_splits) != 1
+        or corpus_sha256 != _B1_OFFICIAL_CORPUS_SHA256_BY_SCORE_SPLIT.get(selected_splits[0])
+    ):
+        return False
+    try:
+        _validate_b1_formal_contract(
+            provider=provider,
+            model=model,
+            generation_config=generation_config,
+            score_splits=selected_splits,
+            declared_budget_usd=declared_budget_usd,
+        )
+    except EvaluationError:
+        return False
+    return True
+
+
+def _validate_b1_observations(
+    summary: dict[str, Any],
+    execution_observation: dict[str, Any],
+    prediction_rows: list[Any],
+) -> None:
+    nonnegative_fields = (
+        "case_count",
+        "train_count",
+        "validation_count",
+        "heldout_count",
+        "provider_response_count",
+        "input_tokens",
+        "output_tokens",
+        "latency_ms",
+        "external_tool_calls",
+    )
+    for field_name in nonnegative_fields:
+        value = summary.get(field_name)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise EvaluationError("B1 summary counters are invalid")
+    if summary.get("prompt_id") != B1_PROMPT_ID or summary.get("external_tool_calls") != 0:
+        raise EvaluationError("B1 formal report execution contract is invalid")
+    case_count = summary["case_count"]
+    if len(prediction_rows) != case_count:
+        raise EvaluationError("B1 prediction row count is invalid")
+    seen_case_ids: set[str] = set()
+    for row in prediction_rows:
+        prediction = row["prediction"]
+        case_id = row.get("case_id")
+        if not isinstance(case_id, str) or not case_id or case_id in seen_case_ids:
+            raise EvaluationError("B1 prediction case IDs are invalid")
+        seen_case_ids.add(case_id)
+        if prediction.get("case_id") != case_id:
+            raise EvaluationError("B1 prediction case identity is invalid")
+    if execution_observation.get("verification") != "self_reported_unverified":
+        raise EvaluationError("B1 execution observation verification is invalid")
+    for field_name in ("model_calls", "cache_hits"):
+        value = execution_observation.get(field_name)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise EvaluationError("B1 execution observation counters are invalid")
 
 
 def load_evaluation_dataset(cases_dir: Path, split_path: Path) -> EvaluationDataset:
@@ -318,9 +775,205 @@ def load_evaluation_dataset(cases_dir: Path, split_path: Path) -> EvaluationData
     )
 
 
+def _b1_response_manifest_sha256(
+    dataset: EvaluationDataset,
+    *,
+    selected_splits: tuple[str, ...],
+    provider: str,
+    model: str,
+    generation_config: dict[str, Any],
+    cache_dir: Path,
+) -> str:
+    train_cases = [dataset.cases[case_id] for case_id in dataset.split_case_ids.get("train", [])]
+    retriever = TrainCaseRetriever(train_cases)
+    evaluated_case_ids = {
+        case_id for split_name in selected_splits for case_id in dataset.split_case_ids[split_name]
+    }
+    entries = []
+    for case_id in sorted(evaluated_case_ids):
+        case = dataset.cases[case_id]
+        if detect_case_safety_risks(case):
+            continue
+        request = build_b1_request(
+            case,
+            retriever.retrieve(case),
+            model=model,
+            provider=provider,
+            generation_config=generation_config,
+        )
+        cache_path = cache_dir / f"{request.cache_key}.json"
+        try:
+            raw = cache_path.read_bytes()
+        except OSError as error:
+            raise EvaluationError("B1 response cache is missing after evaluation") from error
+        entries.append((case_id, request.cache_key, raw))
+    return _response_manifest_sha256(entries)
+
+
+def _replay_b1_predictions(
+    dataset: EvaluationDataset,
+    *,
+    selected_splits: tuple[str, ...],
+    provider: str,
+    model: str,
+    generation_config: dict[str, Any],
+    cache_dir: Path,
+) -> tuple[dict[str, B1Prediction], str]:
+    train_cases = [dataset.cases[case_id] for case_id in dataset.split_case_ids.get("train", [])]
+    retriever = TrainCaseRetriever(train_cases)
+    evaluated_case_ids = {
+        case_id for split_name in selected_splits for case_id in dataset.split_case_ids[split_name]
+    }
+    predictions: dict[str, B1Prediction] = {}
+    manifest_entries: list[tuple[str, str, bytes]] = []
+    for case_id in sorted(evaluated_case_ids):
+        case = dataset.cases[case_id]
+        safety_risks = detect_case_safety_risks(case)
+        if safety_risks:
+            raise EvaluationError(
+                "B1 formal reports containing local safety-refusal rows are unsupported"
+            )
+        evidence = retriever.retrieve(case)
+        request = build_b1_request(
+            case,
+            evidence,
+            model=model,
+            provider=provider,
+            generation_config=generation_config,
+        )
+        cache_path = cache_dir / f"{request.cache_key}.json"
+        try:
+            raw = cache_path.read_bytes()
+            payload = strict_json_loads(raw)
+        except (OSError, StrictJsonError) as error:
+            raise EvaluationError("B1 response cache is missing or invalid") from error
+        response = _validate_b1_cached_response(payload, provider=provider, model=model)
+        try:
+            parsed = parse_b1_output(response.output_text, evidence)
+        except B1Error as error:
+            raise EvaluationError("B1 cached response output is invalid") from error
+        predictions[case_id] = B1Prediction(
+            case_id=case_id,
+            baseline_id="b1-rag-only-v1",
+            retrieved_evidence=evidence,
+            secret_risk_detected=False,
+            safety_risks=[],
+            cache_hit=True,
+            model_calls=0,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            latency_ms=response.latency_ms,
+            provider_request_id=response.provider_request_id,
+            **parsed,
+        )
+        manifest_entries.append((case_id, request.cache_key, raw))
+    return predictions, _response_manifest_sha256(manifest_entries)
+
+
+def _validate_b1_cached_response(
+    value: Any,
+    *,
+    provider: str,
+    model: str,
+) -> B1ModelResponse:
+    payload = _require_object(value, "B1 cached response")
+    if not set(payload) >= _B1_RESPONSE_REQUIRED_FIELDS or not set(payload) <= (
+        _B1_RESPONSE_REQUIRED_FIELDS | _B1_RESPONSE_OPTIONAL_FIELDS
+    ):
+        raise EvaluationError("B1 cached response fields are invalid")
+    try:
+        response = B1ModelResponse(**payload)
+    except TypeError as error:
+        raise EvaluationError("B1 cached response fields are invalid") from error
+    for field_name in ("input_tokens", "output_tokens", "latency_ms"):
+        field_value = getattr(response, field_name)
+        if not isinstance(field_value, int) or isinstance(field_value, bool) or field_value < 0:
+            raise EvaluationError("B1 cached response usage is invalid")
+    if not isinstance(response.output_text, str):
+        raise EvaluationError("B1 cached response output is invalid")
+    if not isinstance(response.provider_request_id, str) or not response.provider_request_id:
+        raise EvaluationError("B1 formal response requires a provider request ID")
+    if response.provider_name not in _B1_FORMAL_PROVIDER_NAMES[provider]:
+        raise EvaluationError("B1 cached response provider identity does not match")
+    if response.provider_model_name != model:
+        raise EvaluationError("B1 cached response model identity does not match")
+    if response.cost_microusd is not None and (
+        not isinstance(response.cost_microusd, int)
+        or isinstance(response.cost_microusd, bool)
+        or response.cost_microusd < 0
+    ):
+        raise EvaluationError("B1 cached response cost is invalid")
+    for field_name in ("provider_name", "provider_model_name", "provider_fingerprint"):
+        field_value = getattr(response, field_name)
+        if field_value is not None and (
+            not isinstance(field_value, str) or not field_value.strip()
+        ):
+            raise EvaluationError("B1 cached response identity is invalid")
+    return response
+
+
+def _response_manifest_sha256(entries: list[tuple[str, str, bytes]]) -> str:
+    digest = hashlib.sha256(_B1_RESPONSE_MANIFEST_DOMAIN)
+    for case_id, request_hash, raw in sorted(entries):
+        digest.update(case_id.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(request_hash.encode("ascii"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(raw).hexdigest().encode("ascii"))
+        digest.update(b"\0")
+    return f"{_B1_RESPONSE_MANIFEST_PREFIX}{digest.hexdigest()}"
+
+
+def _canonical_evaluation_payload(value: Any) -> str:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as error:
+        raise EvaluationError("B1 evaluation report contains non-canonical JSON values") from error
+
+
+def _require_exact_fields(payload: dict[str, Any], fields: set[str], name: str) -> None:
+    if set(payload) != fields:
+        raise EvaluationError(f"{name} fields are invalid")
+
+
+def _require_object(value: Any, name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise EvaluationError(f"{name} must be an object")
+    return value
+
+
+def _canonical_absolute_path(value: Any, name: str) -> Path:
+    if not isinstance(value, str) or not value:
+        raise EvaluationError(f"{name} is invalid")
+    path = Path(value)
+    if not path.is_absolute() or path.resolve().as_posix() != value:
+        raise EvaluationError(f"{name} must be canonical and absolute")
+    return path
+
+
+def _require_code_revision(value: Any) -> str:
+    contract = _require_object(value, "B1 evaluation contract")
+    _require_exact_fields(contract, {"code_revision"}, "B1 evaluation contract")
+    revision = contract.get("code_revision")
+    prefix = "nbtriage-source-sha256:"
+    if (
+        not isinstance(revision, str)
+        or not revision.startswith(prefix)
+        or re.fullmatch(r"[0-9a-f]{64}", revision.removeprefix(prefix)) is None
+    ):
+        raise EvaluationError("B1 evaluation code revision is invalid")
+    return revision
+
+
 def _build_evaluation_report(
     dataset: EvaluationDataset,
-    predictions: dict[str, EvaluationPrediction],
+    predictions: Mapping[str, EvaluationPrediction],
     *,
     evaluation_id: str,
     run_summary: dict[str, Any],
@@ -340,7 +993,7 @@ def _build_evaluation_report(
 
     corpus_case_ids = set(evaluated_case_ids)
     corpus_scope = "scored_splits"
-    if evaluation_id == "b1-rag-only-v1":
+    if evaluation_id in {B1_EVALUATION_ID, B1_CUSTOM_EVALUATION_ID}:
         corpus_case_ids.update(dataset.split_case_ids.get("train", []))
         corpus_scope = "train_and_scored_splits"
 
@@ -532,7 +1185,7 @@ def write_new_evaluation_report(path: Path, report: dict[str, Any]) -> None:
 def _score_split(
     case_ids: list[str],
     cases: dict[str, dict[str, Any]],
-    predictions: dict[str, EvaluationPrediction],
+    predictions: Mapping[str, EvaluationPrediction],
     *,
     train_case_ids: set[str],
 ) -> dict[str, Any]:

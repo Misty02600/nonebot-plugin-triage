@@ -382,6 +382,89 @@ def test_deepseek_b1_cli_reports_missing_model_extra(monkeypatch, capsys) -> Non
         ),
     ],
 )
+def test_b1_cli_reads_unverified_execution_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+    api_key_env: str,
+    model: str,
+    max_output_tokens: str,
+    max_model_calls: str,
+) -> None:
+    report_path = tmp_path / "b1.json"
+    monkeypatch.setenv(api_key_env, "isolation-test-key")
+    monkeypatch.setattr(
+        "tools.nbtriage_maintainer.cli._load_model_symbol",
+        lambda *_args, **_kwargs: lambda **_client_kwargs: object(),
+    )
+
+    async def evaluation(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "evaluation_id": "b1-rag-only-custom-unqualified-v1",
+            "summary": {
+                "case_count": 1,
+                "provider_response_count": 1,
+                "input_tokens": 7,
+                "output_tokens": 3,
+            },
+            "execution_observation": {
+                "verification": "self_reported_unverified",
+                "model_calls": 1,
+                "cache_hits": 0,
+            },
+            "metrics_by_split": {
+                "validation": {
+                    "case_count": 1,
+                    "route_accuracy": 1.0,
+                    "fault_phase_accuracy": 1.0,
+                }
+            },
+        }
+
+    monkeypatch.setattr("tools.nbtriage_maintainer.cli.evaluate_b1", evaluation)
+
+    exit_code = main(
+        [
+            command,
+            "--model",
+            model,
+            "--max-output-tokens",
+            max_output_tokens,
+            "--max-model-calls",
+            max_model_calls,
+            "--declared-budget-usd",
+            "2",
+            "--score-split",
+            "validation",
+            "--report",
+            str(report_path),
+            "--confirm-paid-run",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(report_path.read_text(encoding="utf-8"))["execution_observation"] == {
+        "verification": "self_reported_unverified",
+        "model_calls": 1,
+        "cache_hits": 0,
+    }
+    assert "1 model call(s), 0 cache hit(s)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("command", "api_key_env", "model", "max_output_tokens", "max_model_calls"),
+    [
+        ("evaluate-b1-openai", "OPENAI_API_KEY", "fixture-model", "400", "36"),
+        (
+            "evaluate-b1-deepseek",
+            "DEEPSEEK_API_KEY",
+            "deepseek-v4-flash",
+            "1024",
+            "11",
+        ),
+    ],
+)
 def test_b1_cli_does_not_start_or_overwrite_existing_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

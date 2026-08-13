@@ -23,7 +23,13 @@ from tools.nbtriage_maintainer.bot_docs_evaluation import (
     BOT_DOCS_EVALUATION_ID,
     evaluate_bot_docs_retrieval,
 )
-from tools.nbtriage_maintainer.evaluation import evaluate_b0
+from tools.nbtriage_maintainer.evaluation import (
+    B1_CUSTOM_EVALUATION_ID,
+    B1_EVALUATION_ID,
+    EvaluationError,
+    evaluate_b0,
+    validate_b1_evaluation_report,
+)
 from tools.nbtriage_maintainer.evidence_policy import B3_EVIDENCE_POLICY_ID
 from tools.nbtriage_maintainer.evidence_policy_evaluation import evaluate_b3_evidence_policy
 from tools.nbtriage_maintainer.evidence_receipt_evaluation import (
@@ -39,7 +45,7 @@ DEFAULT_MLFLOW_EXPERIMENT = "nbtriage/evaluations"
 _B4_REAL_EVALUATION_ID = "b4-bounded-agent-real-v1"
 _B4_REAL_PARTIAL_KIND = "b4-real-partial"
 _B4_REAL_ABORT_KIND = "b4-real-run-abort-observation"
-_B0_B1_EVALUATION_IDS = frozenset({"b0-checklist-v1", "b1-rag-only-v1"})
+_B0_B1_EVALUATION_IDS = frozenset({"b0-checklist-v1", B1_EVALUATION_ID})
 _TERMINAL_PARTIAL_STATUSES = frozenset({"aborted", "completed"})
 _METRIC_ROOTS = (
     "summary",
@@ -203,6 +209,10 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
     evaluation_id = payload.get("evaluation_id")
     if not isinstance(evaluation_id, str) or not evaluation_id:
         raise MLflowTrackingError("evaluation artifact must contain evaluation_id")
+    if evaluation_id == B1_CUSTOM_EVALUATION_ID:
+        raise MLflowTrackingError(
+            "custom unqualified B1 reports cannot be published as formal runs"
+        )
     schema_version = payload.get("schema_version")
     if not isinstance(schema_version, int) or isinstance(schema_version, bool):
         raise MLflowTrackingError("evaluation artifact must contain an integer schema_version")
@@ -220,6 +230,8 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
         _validate_b0_b1_provenance(payload)
     if evaluation_id == "b0-checklist-v1":
         _validate_b0_reproducibility(payload)
+    if evaluation_id == B1_EVALUATION_ID:
+        _validate_b1_reproducibility(payload)
     if evaluation_id == ANSWER_QUALITY_EVALUATION_ID:
         _validate_answer_quality_reproducibility(payload)
     if evaluation_id == S3_EVALUATION_ID:
@@ -396,9 +408,22 @@ def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:
         "case_corpus_scope",
         "case_count",
     }
+    if payload.get("evaluation_id") == B1_EVALUATION_ID:
+        required_source_fields.update(
+            {
+                "official_split_id",
+                "official_split_sha256",
+                "official_case_corpus_sha256",
+                "response_cache_dir",
+                "response_manifest_sha256",
+            }
+        )
     if set(source) != required_source_fields:
         raise MLflowTrackingError("B0/B1 evaluation source provenance is invalid")
-    for field in ("cases_dir", "split_path"):
+    path_fields = ["cases_dir", "split_path"]
+    if payload.get("evaluation_id") == B1_EVALUATION_ID:
+        path_fields.append("response_cache_dir")
+    for field in path_fields:
         value = source.get(field)
         if (
             not isinstance(value, str)
@@ -411,6 +436,16 @@ def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:
         value = source.get(field)
         if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
             raise MLflowTrackingError("B0/B1 evaluation source hashes must be lowercase SHA-256")
+    if payload.get("evaluation_id") == B1_EVALUATION_ID:
+        response_manifest = source.get("response_manifest_sha256")
+        manifest_prefix = "nbtriage-b1-response-manifest-sha256:"
+        if (
+            not isinstance(response_manifest, str)
+            or not response_manifest.startswith(manifest_prefix)
+            or re.fullmatch(r"[0-9a-f]{64}", response_manifest.removeprefix(manifest_prefix))
+            is None
+        ):
+            raise MLflowTrackingError("B1 response manifest is invalid")
     expected_scope = (
         "scored_splits"
         if payload.get("evaluation_id") == "b0-checklist-v1"
@@ -442,6 +477,13 @@ def _validate_b0_reproducibility(payload: dict[str, Any]) -> None:
     except Exception as error:
         raise MLflowTrackingError("B0 evaluation report is not reproducible") from error
     _require_reproduced_report(payload, reproduced, report_name="B0 evaluation")
+
+
+def _validate_b1_reproducibility(payload: dict[str, Any]) -> None:
+    try:
+        validate_b1_evaluation_report(payload)
+    except EvaluationError as error:
+        raise MLflowTrackingError("B1 evaluation report is not reproducible") from error
 
 
 def _load_related_audit(artifact: _LoadedArtifact) -> _LoadedArtifact | None:

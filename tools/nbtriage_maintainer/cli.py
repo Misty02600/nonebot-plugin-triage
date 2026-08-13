@@ -1391,11 +1391,12 @@ def _run_evaluate_b1_openai(args: argparse.Namespace) -> int:
         return 1
 
     summary = report["summary"]
+    execution_observation = report["execution_observation"]
     print(
         "B1 evaluation: "
         f"{summary['case_count']} case(s), "
-        f"{summary['model_calls']} model call(s), "
-        f"{summary['cache_hits']} cache hit(s), "
+        f"{execution_observation['model_calls']} model call(s), "
+        f"{execution_observation['cache_hits']} cache hit(s), "
         f"{summary['provider_response_count']} provider response(s), "
         f"{summary['input_tokens']} input token(s), "
         f"{summary['output_tokens']} output token(s)"
@@ -1460,11 +1461,12 @@ def _run_evaluate_b1_deepseek(args: argparse.Namespace) -> int:
         return 1
 
     summary = report["summary"]
+    execution_observation = report["execution_observation"]
     print(
         "B1 evaluation: "
         f"{summary['case_count']} case(s), "
-        f"{summary['model_calls']} model call(s), "
-        f"{summary['cache_hits']} cache hit(s), "
+        f"{execution_observation['model_calls']} model call(s), "
+        f"{execution_observation['cache_hits']} cache hit(s), "
         f"{summary['provider_response_count']} provider response(s), "
         f"{summary['input_tokens']} input token(s), "
         f"{summary['output_tokens']} output token(s)"

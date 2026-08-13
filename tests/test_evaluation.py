@@ -2,8 +2,10 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
+from tools.nbtriage_maintainer import evaluation as evaluation_module
 from tools.nbtriage_maintainer.cli import main
 from tools.nbtriage_maintainer.evaluation import (
     EvaluationError,
@@ -12,9 +14,13 @@ from tools.nbtriage_maintainer.evaluation import (
     evaluate_b1,
     publish_reserved_evaluation_report,
     reserve_new_evaluation_report,
+    validate_b1_evaluation_report,
 )
+from tools.nbtriage_maintainer.evaluation_provenance import case_corpus_sha256
 
 from nbtriage.rag import B1ModelResponse
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _write_case(
@@ -444,8 +450,55 @@ class FixtureB1Client:
             input_tokens=10,
             output_tokens=5,
             provider_request_id=f"fixture-request-{self.calls}",
+            provider_name=(
+                "deepseek-responses"
+                if request.provider == "deepseek-responses"
+                else request.provider
+            ),
+            provider_model_name=request.model,
+            provider_fingerprint="fixture-fingerprint",
             latency_ms=2,
         )
+
+
+def _evaluate_formal_b1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Any]:
+    cases_dir, split_path = _fixture(tmp_path)
+    dataset = evaluation_module.load_evaluation_dataset(cases_dir, split_path)
+    validation_corpus = case_corpus_sha256(
+        dataset.case_raw_by_id,
+        set(dataset.split_case_ids["train"]) | set(dataset.split_case_ids["validation"]),
+    )
+    monkeypatch.setattr(evaluation_module, "_B1_OFFICIAL_SPLIT_ID", dataset.split_id)
+    monkeypatch.setattr(
+        evaluation_module,
+        "_B1_OFFICIAL_SPLIT_SHA256",
+        hashlib.sha256(dataset.split_raw).hexdigest(),
+    )
+    monkeypatch.setattr(
+        evaluation_module,
+        "_B1_OFFICIAL_CORPUS_SHA256_BY_SCORE_SPLIT",
+        {"validation": validation_corpus},
+    )
+    return asyncio.run(
+        evaluate_b1(
+            cases_dir,
+            split_path,
+            client=FixtureB1Client(),
+            provider="deepseek-responses",
+            model="deepseek-v4-flash",
+            generation_config={
+                "max_output_tokens": 1024,
+                "reasoning_effort": "none",
+                "temperature": 0,
+            },
+            cache_dir=tmp_path / "cache",
+            score_splits=("validation",),
+            declared_budget_usd=0.1,
+        )
+    )
 
 
 @pytest.mark.parametrize(
@@ -512,13 +565,26 @@ def test_evaluate_b1_reuses_shared_metrics_and_response_cache(tmp_path: Path) ->
         )
     )
 
-    assert first_report["evaluation_id"] == "b1-rag-only-v1"
+    assert first_report["evaluation_id"] == "b1-rag-only-custom-unqualified-v1"
+    assert first_report["evaluation_qualification"] == "custom_unqualified"
+    assert first_report["schema_version"] == 2
     assert first_report["source"]["cases_dir"] == cases_dir.resolve().as_posix()
     assert first_report["source"]["split_path"] == split_path.resolve().as_posix()
+    assert first_report["source"]["response_cache_dir"] == cache_dir.resolve().as_posix()
+    assert first_report["source"]["response_manifest_sha256"].startswith(
+        "nbtriage-b1-response-manifest-sha256:"
+    )
     assert first_report["summary"]["model"] == "fixture-model"
     assert first_report["summary"]["prompt_id"] == "b1-rag-only-v3"
-    assert first_report["summary"]["model_calls"] == 3
-    assert first_report["summary"]["cache_hits"] == 0
+    assert first_report["execution_observation"] == {
+        "verification": "self_reported_unverified",
+        "model_calls": 3,
+        "cache_hits": 0,
+    }
+    assert "model_calls" not in first_report["summary"]
+    assert "cache_hits" not in first_report["summary"]
+    assert all("model_calls" not in row["prediction"] for row in first_report["predictions"])
+    assert all("cache_hit" not in row["prediction"] for row in first_report["predictions"])
     assert first_report["summary"]["provider_response_count"] == 3
     assert first_report["summary"]["input_tokens"] == 30
     assert first_report["metrics_by_split"]["heldout"]["case_count"] == 1
@@ -535,10 +601,222 @@ def test_evaluate_b1_reuses_shared_metrics_and_response_cache(tmp_path: Path) ->
         )
     )
 
-    assert cached_report["summary"]["model_calls"] == 0
-    assert cached_report["summary"]["cache_hits"] == 3
+    assert cached_report["execution_observation"]["model_calls"] == 0
+    assert cached_report["execution_observation"]["cache_hits"] == 3
     assert cached_report["summary"]["provider_response_count"] == 3
     assert second_client.calls == 0
+
+
+def test_validate_b1_formal_report_replays_dataset_cache_and_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _evaluate_formal_b1(tmp_path, monkeypatch)
+
+    assert report["evaluation_id"] == "b1-rag-only-v1"
+    assert report["evaluation_qualification"] == "official_frozen_dataset"
+    assert report["source"]["split_sha256"] == report["source"]["official_split_sha256"]
+    assert report["source"]["case_corpus_sha256"] == report["source"]["official_case_corpus_sha256"]
+    validate_b1_evaluation_report(report)
+
+
+def test_official_dataset_with_unqualified_provider_stays_custom(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cases_dir, split_path = _fixture(tmp_path)
+    dataset = evaluation_module.load_evaluation_dataset(cases_dir, split_path)
+    validation_corpus = case_corpus_sha256(
+        dataset.case_raw_by_id,
+        set(dataset.split_case_ids["train"]) | set(dataset.split_case_ids["validation"]),
+    )
+    monkeypatch.setattr(evaluation_module, "_B1_OFFICIAL_SPLIT_ID", dataset.split_id)
+    monkeypatch.setattr(
+        evaluation_module,
+        "_B1_OFFICIAL_SPLIT_SHA256",
+        hashlib.sha256(dataset.split_raw).hexdigest(),
+    )
+    monkeypatch.setattr(
+        evaluation_module,
+        "_B1_OFFICIAL_CORPUS_SHA256_BY_SCORE_SPLIT",
+        {"validation": validation_corpus},
+    )
+
+    report = asyncio.run(
+        evaluate_b1(
+            cases_dir,
+            split_path,
+            client=FixtureB1Client(),
+            provider="openai-responses",
+            model="gpt-4.1-mini",
+            generation_config={"max_output_tokens": 400},
+            cache_dir=tmp_path / "openai-cache",
+            score_splits=("validation",),
+            declared_budget_usd=1.0,
+        )
+    )
+
+    assert report["evaluation_id"] == "b1-rag-only-custom-unqualified-v1"
+    assert report["evaluation_qualification"] == "custom_unqualified"
+
+
+@pytest.mark.parametrize(
+    ("generation_config", "declared_budget_usd"),
+    [
+        (
+            {"max_output_tokens": 400, "reasoning_effort": "none", "temperature": 0},
+            0.1,
+        ),
+        (
+            {"max_output_tokens": 1024, "reasoning_effort": "none", "temperature": 0},
+            1.0,
+        ),
+    ],
+)
+def test_official_dataset_with_profile_drift_stays_custom(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    generation_config: dict[str, object],
+    declared_budget_usd: float,
+) -> None:
+    cases_dir, split_path = _fixture(tmp_path)
+    dataset = evaluation_module.load_evaluation_dataset(cases_dir, split_path)
+    validation_corpus = case_corpus_sha256(
+        dataset.case_raw_by_id,
+        set(dataset.split_case_ids["train"]) | set(dataset.split_case_ids["validation"]),
+    )
+    monkeypatch.setattr(evaluation_module, "_B1_OFFICIAL_SPLIT_ID", dataset.split_id)
+    monkeypatch.setattr(
+        evaluation_module,
+        "_B1_OFFICIAL_SPLIT_SHA256",
+        hashlib.sha256(dataset.split_raw).hexdigest(),
+    )
+    monkeypatch.setattr(
+        evaluation_module,
+        "_B1_OFFICIAL_CORPUS_SHA256_BY_SCORE_SPLIT",
+        {"validation": validation_corpus},
+    )
+
+    report = asyncio.run(
+        evaluate_b1(
+            cases_dir,
+            split_path,
+            client=FixtureB1Client(),
+            provider="deepseek-responses",
+            model="deepseek-v4-flash",
+            generation_config=generation_config,
+            cache_dir=tmp_path / "profile-drift-cache",
+            score_splits=("validation",),
+            declared_budget_usd=declared_budget_usd,
+        )
+    )
+
+    assert report["evaluation_id"] == "b1-rag-only-custom-unqualified-v1"
+    assert report["evaluation_qualification"] == "custom_unqualified"
+
+
+def test_validate_b1_formal_report_treats_execution_observation_as_unverified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _evaluate_formal_b1(tmp_path, monkeypatch)
+    report["execution_observation"]["model_calls"] += 100
+    report["execution_observation"]["cache_hits"] += 100
+
+    validate_b1_evaluation_report(report)
+
+
+@pytest.mark.parametrize(
+    ("target", "field", "value"),
+    [
+        ("root", "metrics_by_split", {}),
+        ("row", "case_id", "forged-case"),
+        ("source", "response_manifest_sha256", "forged"),
+        ("summary", "provider", "injected"),
+        ("summary", "model", "forged-model"),
+    ],
+)
+def test_validate_b1_formal_report_rejects_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    field: str,
+    value: object,
+) -> None:
+    report = _evaluate_formal_b1(tmp_path, monkeypatch)
+    if target == "root":
+        report[field] = value
+    elif target == "row":
+        cast(list[dict[str, Any]], report["predictions"])[0][field] = value
+    else:
+        cast(dict[str, Any], report[target])[field] = value
+
+    with pytest.raises(EvaluationError):
+        validate_b1_evaluation_report(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("output_text", "{}"),
+        ("input_tokens", -1),
+        ("latency_ms", -1),
+        ("provider_name", "injected"),
+        ("provider_model_name", "forged-model"),
+    ],
+)
+def test_validate_b1_formal_report_rejects_cache_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    report = _evaluate_formal_b1(tmp_path, monkeypatch)
+    cache_path = next((tmp_path / "cache").glob("*.json"))
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    payload[field] = value
+    cache_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(EvaluationError):
+        validate_b1_evaluation_report(report)
+
+
+def test_validate_b1_formal_report_rejects_legacy_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _evaluate_formal_b1(tmp_path, monkeypatch)
+    report["schema_version"] = 1
+
+    with pytest.raises(EvaluationError, match="identity"):
+        validate_b1_evaluation_report(report)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "value"),
+    [
+        ("metric_case_count", True),
+        ("metric_rate", 1),
+        ("execution_model_calls", True),
+        ("metric_rate", float("nan")),
+    ],
+)
+def test_validate_b1_formal_report_rejects_json_type_aliases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    value: object,
+) -> None:
+    report = _evaluate_formal_b1(tmp_path, monkeypatch)
+    if mutation == "metric_case_count":
+        report["metrics_by_split"]["validation"]["case_count"] = value
+    elif mutation == "metric_rate":
+        report["metrics_by_split"]["validation"]["route_accuracy"] = value
+    else:
+        report["execution_observation"]["model_calls"] = value
+
+    with pytest.raises(EvaluationError):
+        validate_b1_evaluation_report(report)
 
 
 def test_evaluate_b1_can_run_validation_without_exposing_heldout(tmp_path: Path) -> None:
