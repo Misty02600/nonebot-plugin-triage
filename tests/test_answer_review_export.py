@@ -231,6 +231,101 @@ def test_export_builds_forward_hidden_offline_review_package(tmp_path: Path) -> 
     assert "chain_of_thought" not in serialized
 
 
+def test_export_reads_each_b4_source_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = _real_report(tmp_path / "b4-real.json")
+    source_paths = {
+        report_path.resolve(),
+        b4_real_partial_report_path(report_path).resolve(),
+        B4_FIXTURES.resolve(),
+        B4_SPLIT.resolve(),
+    }
+    original_read_bytes = Path.read_bytes
+    reads = dict.fromkeys(source_paths, 0)
+
+    def changing_read_bytes(path: Path) -> bytes:
+        canonical_path = path.resolve()
+        if canonical_path not in reads:
+            return original_read_bytes(path)
+        reads[canonical_path] += 1
+        if reads[canonical_path] > 1:
+            return b"{}"
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", changing_read_bytes)
+
+    samples, _ = build_b4_answer_quality_review(
+        report_path,
+        B4_FIXTURES,
+        B4_SPLIT,
+        RUBRIC,
+    )
+
+    assert set(reads.values()) == {1}
+    assert (
+        samples["source_evaluation"]["fixtures_sha256"]
+        == hashlib.sha256(original_read_bytes(B4_FIXTURES)).hexdigest()
+    )
+
+
+def test_completed_review_reads_each_b4_source_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path, samples_path, annotations_path = _write_review_package(tmp_path)
+    _complete_annotations(annotations_path)
+    source_paths = {
+        report_path.resolve(),
+        b4_real_partial_report_path(report_path).resolve(),
+        B4_FIXTURES.resolve(),
+        B4_SPLIT.resolve(),
+    }
+    original_read_bytes = Path.read_bytes
+    reads = dict.fromkeys(source_paths, 0)
+
+    def changing_read_bytes(path: Path) -> bytes:
+        canonical_path = path.resolve()
+        if canonical_path not in reads:
+            return original_read_bytes(path)
+        reads[canonical_path] += 1
+        if reads[canonical_path] > 1:
+            return b"{}"
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", changing_read_bytes)
+
+    report = evaluate_answer_quality(
+        RUBRIC,
+        samples_path,
+        annotations_path,
+        source_report_path=report_path,
+    )
+
+    assert set(reads.values()) == {1}
+    assert report["quality_claim_gate"]["eligible"] is True
+
+
+def test_export_fails_closed_when_declared_source_disappears(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = _real_report(tmp_path / "b4-real.json")
+    missing_path = B4_SPLIT.resolve()
+    original_read_bytes = Path.read_bytes
+
+    def missing_source(path: Path) -> bytes:
+        if path.resolve() == missing_path:
+            raise FileNotFoundError(missing_path)
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", missing_source)
+
+    with pytest.raises(AnswerReviewExportError, match="failed to load B4 split"):
+        build_b4_answer_quality_review(report_path, B4_FIXTURES, B4_SPLIT, RUBRIC)
+
+
 def test_export_rejects_nonfinite_value_in_source_report(tmp_path: Path) -> None:
     report_path = _real_report(tmp_path / "b4-real.json")
     raw = report_path.read_text(encoding="utf-8")
@@ -323,7 +418,7 @@ def test_completed_review_requires_the_original_source_report(tmp_path: Path) ->
     source_report = json.loads(source_report_path.read_text(encoding="utf-8"))
     source_report["trials"][0]["fixture_id"] = "changed-after-review-export"
     source_report_path.write_text(json.dumps(source_report), encoding="utf-8")
-    with pytest.raises(AnswerQualityEvaluationError, match="does not match its digest"):
+    with pytest.raises(AnswerQualityEvaluationError, match="source B4 report is invalid"):
         evaluate_answer_quality(
             RUBRIC,
             samples_path,
@@ -391,7 +486,7 @@ def test_completed_review_rejects_changed_b4_projection_source(
     annotations["fixture_revision"] = answer_quality_fixture_revision(samples)
     annotations_path.write_text(json.dumps(annotations), encoding="utf-8")
 
-    with pytest.raises(AnswerQualityEvaluationError, match=r"cannot be replayed|digest"):
+    with pytest.raises(AnswerQualityEvaluationError, match="path does not match"):
         evaluate_answer_quality(
             RUBRIC,
             samples_path,
@@ -449,7 +544,7 @@ def test_export_rejects_scripted_or_mismatched_source(tmp_path: Path) -> None:
     tampered["fixtures"][0]["case"]["source"]["title"] = "tampered"
     tampered_path = tmp_path / "tampered-fixtures.json"
     tampered_path.write_text(json.dumps(tampered), encoding="utf-8")
-    with pytest.raises(AnswerReviewExportError, match="different fixtures"):
+    with pytest.raises(AnswerReviewExportError, match="path does not match"):
         build_b4_answer_quality_review(real_path, tampered_path, B4_SPLIT, RUBRIC)
 
 

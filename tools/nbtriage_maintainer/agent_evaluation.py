@@ -7,11 +7,12 @@ import copy
 import hashlib
 import json
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
 
@@ -422,6 +423,33 @@ class _B4EvaluationSplit:
     primary_score_split: str
     fixture_ids_by_split: dict[str, list[str]]
     split_by_fixture_id: dict[str, str]
+
+
+@dataclass(frozen=True)
+class FrozenJsonArtifact:
+    """把一次文件读取的路径、原始字节、严格解析结果和摘要冻结在一起。"""
+
+    path: Path
+    raw: bytes
+    sha256: str
+    _payload: Mapping[str, Any]
+
+    @property
+    def payload(self) -> dict[str, Any]:
+        """返回冻结解析结果的副本，避免调用方令 payload 与 raw/摘要分叉。"""
+        payload = _thaw_json(self._payload)
+        assert isinstance(payload, dict)
+        return payload
+
+
+@dataclass(frozen=True)
+class B4RealReviewSourceBundle:
+    """真实 B4 人工评审所依赖的单次读取来源包。"""
+
+    report: FrozenJsonArtifact
+    partial_audit: FrozenJsonArtifact
+    fixtures: FrozenJsonArtifact
+    split: FrozenJsonArtifact
 
 
 @dataclass
@@ -1070,12 +1098,61 @@ def load_b4_real_review_source(
     report_path: Path,
 ) -> tuple[bytes, dict[str, Any], Path, bytes, dict[str, Any]]:
     """严格加载并验证真实 B4 报告及其同名 completed partial audit。"""
-    report_raw, report = _load_strict_object(report_path, "real B4 report")
-    partial_path = b4_real_partial_report_path(report_path)
-    partial_raw, partial = _load_strict_object(partial_path, "real B4 partial audit")
-    validate_b4_real_review_source(report, partial)
-    _validate_real_report_frozen_sources(report)
-    return report_raw, report, partial_path, partial_raw, partial
+    bundle = load_b4_real_review_source_bundle(report_path)
+    return (
+        bundle.report.raw,
+        bundle.report.payload,
+        b4_real_partial_report_path(report_path),
+        bundle.partial_audit.raw,
+        bundle.partial_audit.payload,
+    )
+
+
+def load_b4_real_review_source_bundle(report_path: Path) -> B4RealReviewSourceBundle:
+    """单次读取并严格验证真实 B4 报告及其全部冻结来源。"""
+    report_artifact = _load_frozen_json_artifact(report_path, "real B4 report")
+    partial_artifact = _load_frozen_json_artifact(
+        b4_real_partial_report_path(report_artifact.path),
+        "real B4 partial audit",
+    )
+    validate_b4_real_review_source(report_artifact.payload, partial_artifact.payload)
+
+    source = report_artifact.payload["source"]
+    fixtures_path = _canonical_declared_source_path(
+        source["fixtures_path"],
+        label="real B4 fixtures",
+    )
+    split_path = _canonical_declared_source_path(
+        source["split_path"],
+        label="real B4 split",
+    )
+    fixtures_artifact = _load_frozen_json_artifact(fixtures_path, "B4 fixtures")
+    _validate_fixtures_artifact(fixtures_artifact)
+    split_artifact = _load_frozen_json_artifact(split_path, "B4 split")
+    split_contract = _validate_evaluation_split_artifact(
+        split_artifact,
+        fixtures_artifact.payload,
+    )
+    _validate_real_report_frozen_sources(
+        report_artifact.payload,
+        fixtures_artifact,
+        split_contract,
+    )
+    return B4RealReviewSourceBundle(
+        report=report_artifact,
+        partial_audit=partial_artifact,
+        fixtures=fixtures_artifact,
+        split=split_artifact,
+    )
+
+
+def _canonical_declared_source_path(value: Any, *, label: str) -> Path:
+    if not isinstance(value, str) or not value:
+        raise AgentEvaluationError(f"{label} path is invalid")
+    path = Path(value)
+    if not path.is_absolute() or path.resolve().as_posix() != value:
+        raise AgentEvaluationError(f"{label} path must be canonical and absolute")
+    return path.resolve()
 
 
 def _load_strict_object(path: Path, label: str) -> tuple[bytes, dict[str, Any]]:
@@ -1089,12 +1166,15 @@ def _load_strict_object(path: Path, label: str) -> tuple[bytes, dict[str, Any]]:
     return raw, payload
 
 
-def _validate_real_report_frozen_sources(report: dict[str, Any]) -> None:
+def _validate_real_report_frozen_sources(
+    report: dict[str, Any],
+    fixtures_artifact: FrozenJsonArtifact,
+    split: _B4EvaluationSplit,
+) -> None:
     source = report["source"]
-    fixtures_raw, fixtures = _load_fixtures(Path(source["fixtures_path"]))
-    split = _load_evaluation_split(Path(source["split_path"]), fixtures)
+    fixtures = fixtures_artifact.payload
     if (
-        hashlib.sha256(fixtures_raw).hexdigest() != source["fixtures_sha256"]
+        fixtures_artifact.sha256 != source["fixtures_sha256"]
         or hashlib.sha256(split.raw).hexdigest() != source["split_sha256"]
     ):
         raise AgentEvaluationError("real B4 frozen source content does not match report digest")
@@ -2387,8 +2467,10 @@ async def evaluate_b4_real_fixtures(
     partial_audit: RealGatePartialAudit | None = None,
 ) -> dict[str, Any]:
     """用同一真实 Provider/model 对照 B1、B3 与 B4；调用前必须由 CLI 单独授权。"""
-    raw, payload = _load_fixtures(fixtures_path)
-    split = _load_evaluation_split(split_path, payload)
+    resolved_fixtures_path = fixtures_path.resolve()
+    resolved_split_path = split_path.resolve()
+    raw, payload = _load_fixtures(resolved_fixtures_path)
+    split = _load_evaluation_split(resolved_split_path, payload)
     if not paid_run_confirmed or not synthetic_data_egress_confirmed:
         raise AgentEvaluationError(
             "real B4 Gate requires explicit paid-run and synthetic-data-egress confirmation"
@@ -2693,9 +2775,9 @@ async def evaluate_b4_real_fixtures(
         "split_id": split.split_id,
         "generated_at": datetime.now(UTC).isoformat(),
         "source": {
-            "fixtures_path": str(fixtures_path),
+            "fixtures_path": resolved_fixtures_path.as_posix(),
             "fixtures_sha256": hashlib.sha256(raw).hexdigest(),
-            "split_path": str(split_path),
+            "split_path": resolved_split_path.as_posix(),
             "split_sha256": hashlib.sha256(split.raw).hexdigest(),
         },
         "summary": {
@@ -3362,11 +3444,16 @@ def _load_evaluation_split(
     path: Path,
     fixtures_payload: dict[str, Any],
 ) -> _B4EvaluationSplit:
-    try:
-        raw = path.read_bytes()
-        payload = json.loads(raw)
-    except (OSError, json.JSONDecodeError) as error:
-        raise AgentEvaluationError(f"failed to load B4 split {path}: {error}") from error
+    artifact = _load_frozen_json_artifact(path, "B4 split")
+    return _validate_evaluation_split_artifact(artifact, fixtures_payload)
+
+
+def _validate_evaluation_split_artifact(
+    artifact: FrozenJsonArtifact,
+    fixtures_payload: dict[str, Any],
+) -> _B4EvaluationSplit:
+    raw = artifact.raw
+    payload = artifact.payload
     if not isinstance(payload, dict) or payload.get("schema_version") != B4_SPLIT_SCHEMA_VERSION:
         raise AgentEvaluationError("B4 split must be a schema_version 1 object")
     split_id = payload.get("split_id")
@@ -3417,11 +3504,13 @@ def _load_evaluation_split(
 
 
 def _load_fixtures(path: Path) -> tuple[bytes, dict[str, Any]]:
-    try:
-        raw = path.read_bytes()
-        payload = json.loads(raw)
-    except (OSError, json.JSONDecodeError) as error:
-        raise AgentEvaluationError(f"failed to load B4 fixtures {path}: {error}") from error
+    artifact = _load_frozen_json_artifact(path, "B4 fixtures")
+    _validate_fixtures_artifact(artifact)
+    return artifact.raw, artifact.payload
+
+
+def _validate_fixtures_artifact(artifact: FrozenJsonArtifact) -> None:
+    payload = artifact.payload
     if (
         not isinstance(payload, dict)
         or set(payload) != _FIXTURE_SET_FIELDS
@@ -3463,7 +3552,39 @@ def _load_fixtures(path: Path) -> tuple[bytes, dict[str, Any]]:
     visible_payload = json.dumps(visible_case_inputs, ensure_ascii=False, sort_keys=True)
     if any(marker in visible_payload for marker in leakage_markers):
         raise AgentEvaluationError("B4 target/train input leaked hidden Gold")
-    return raw, payload
+
+
+def _load_frozen_json_artifact(path: Path, label: str) -> FrozenJsonArtifact:
+    canonical_path = path.resolve()
+    try:
+        raw = canonical_path.read_bytes()
+        payload = strict_json_loads(raw)
+    except (OSError, StrictJsonError) as error:
+        raise AgentEvaluationError(f"failed to load {label} {canonical_path}") from error
+    if not isinstance(payload, dict):
+        raise AgentEvaluationError(f"{label} must be a JSON object")
+    return FrozenJsonArtifact(
+        path=canonical_path,
+        raw=raw,
+        sha256=hashlib.sha256(raw).hexdigest(),
+        _payload=_freeze_json(payload),
+    )
+
+
+def _freeze_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _thaw_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
+    return value
 
 
 def _validate_fixture(

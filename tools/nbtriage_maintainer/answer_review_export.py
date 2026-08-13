@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import Any
 
 from tools.nbtriage_maintainer.agent_evaluation import (
     AgentEvaluationError,
-    load_b4_real_review_source,
+    B4RealReviewSourceBundle,
+    FrozenJsonArtifact,
+    load_b4_real_review_source_bundle,
     validate_b4_real_review_source,
 )
 from tools.nbtriage_maintainer.answer_quality_evaluation import (
@@ -52,45 +53,27 @@ def build_b4_answer_quality_review(
         或原始 Provider 响应。
     """
     try:
-        report_raw, report, audit_path, audit_raw, audit = load_b4_real_review_source(
-            evaluation_report_path
-        )
+        source_bundle = load_b4_real_review_source_bundle(evaluation_report_path)
     except AgentEvaluationError as error:
         raise AnswerReviewExportError(f"real B4 report source is invalid: {error}") from error
+    _require_requested_source_path(fixtures_path, source_bundle.fixtures, "B4 fixtures")
+    _require_requested_source_path(split_path, source_bundle.split, "B4 split")
     _, rubric = _load_object(rubric_path, "answer quality rubric")
     return build_b4_answer_quality_review_payloads(
-        report_raw=report_raw,
-        report=report,
-        audit_path=audit_path,
-        audit_raw=audit_raw,
-        audit=audit,
-        fixtures_path=fixtures_path,
-        split_path=split_path,
+        source_bundle=source_bundle,
         rubric=rubric,
     )
 
 
 def build_b4_answer_quality_review_payloads(
     *,
-    report_raw: bytes,
-    report: dict[str, Any],
-    audit_path: Path,
-    audit_raw: bytes,
-    audit: dict[str, Any],
-    fixtures_path: Path,
-    split_path: Path,
+    source_bundle: B4RealReviewSourceBundle,
     rubric: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """从已读 B4 报告与可复核来源重建唯一人工评审投影。
 
     Args:
-        report_raw: B4 报告原始字节，用于生成稳定来源身份。
-        report: 从同一原始字节解析出的 B4 报告对象。
-        audit_path: 报告同名的 completed partial audit 路径。
-        audit_raw: partial audit 原始字节，用于生成稳定来源身份。
-        audit: 从同一原始字节解析出的 partial audit 对象。
-        fixtures_path: B4 报告声明绑定的 Fixture 文件。
-        split_path: B4 报告声明绑定的 split 文件。
+        source_bundle: 报告、completed partial、Fixture 与 split 的单次读取冻结来源包。
         rubric: 当前人工评分合同。
 
     Returns:
@@ -99,32 +82,26 @@ def build_b4_answer_quality_review_payloads(
     Raises:
         AnswerReviewExportError: 原始字节与解析对象不一致，或 B4 来源与投影合同无效。
     """
-    try:
-        raw_report = strict_json_loads(report_raw)
-    except StrictJsonError as error:
-        raise AnswerReviewExportError("B4 evaluation report raw bytes are invalid") from error
-    if raw_report != report:
-        raise AnswerReviewExportError("B4 evaluation report bytes do not match its payload")
-    try:
-        raw_audit = strict_json_loads(audit_raw)
-    except StrictJsonError as error:
-        raise AnswerReviewExportError("B4 real partial audit raw bytes are invalid") from error
-    if raw_audit != audit:
-        raise AnswerReviewExportError("B4 real partial audit bytes do not match its payload")
+    report_artifact = source_bundle.report
+    audit_artifact = source_bundle.partial_audit
+    fixtures_artifact = source_bundle.fixtures
+    split_artifact = source_bundle.split
+    report = report_artifact.payload
+    audit = audit_artifact.payload
     try:
         validate_b4_real_review_source(report, audit)
     except AgentEvaluationError as error:
         raise AnswerReviewExportError(f"real B4 report source is invalid: {error}") from error
-    fixtures_raw, fixtures = _load_object(fixtures_path, "B4 fixtures")
-    split_raw, split = _load_object(split_path, "B4 split")
+    fixtures = fixtures_artifact.payload
+    split = split_artifact.payload
 
     _validate_source_contract(
         report,
         fixtures,
         split,
         rubric,
-        fixtures_sha256=hashlib.sha256(fixtures_raw).hexdigest(),
-        split_sha256=hashlib.sha256(split_raw).hexdigest(),
+        fixtures_sha256=fixtures_artifact.sha256,
+        split_sha256=split_artifact.sha256,
     )
 
     fixture_by_id = {item["fixture_id"]: item for item in fixtures["fixtures"]}
@@ -150,7 +127,7 @@ def build_b4_answer_quality_review_payloads(
             "B4 report has no completed forward_hidden candidates for human review"
         )
 
-    report_sha256 = hashlib.sha256(report_raw).hexdigest()
+    report_sha256 = report_artifact.sha256
     fixture_set_id = f"answer-quality-b4-{report_sha256[:16]}"
     summary = report["summary"]
     source_evaluation = {
@@ -168,12 +145,12 @@ def build_b4_answer_quality_review_payloads(
         "trials_per_fixture": summary["trials_per_fixture"],
         "real_model_multi_trial": summary["trials_per_fixture"] >= 2,
         "promotion_gate_passed": report["promotion_gate"]["passed"],
-        "audit_path": str(audit_path.resolve()),
-        "audit_sha256": hashlib.sha256(audit_raw).hexdigest(),
-        "fixtures_path": str(fixtures_path.resolve()),
-        "fixtures_sha256": hashlib.sha256(fixtures_raw).hexdigest(),
-        "split_path": str(split_path.resolve()),
-        "split_sha256": hashlib.sha256(split_raw).hexdigest(),
+        "audit_path": audit_artifact.path.as_posix(),
+        "audit_sha256": audit_artifact.sha256,
+        "fixtures_path": fixtures_artifact.path.as_posix(),
+        "fixtures_sha256": fixtures_artifact.sha256,
+        "split_path": split_artifact.path.as_posix(),
+        "split_sha256": split_artifact.sha256,
     }
     samples = {
         "schema_version": ANSWER_QUALITY_FIXTURE_SCHEMA_VERSION,
@@ -441,6 +418,19 @@ def _load_object(path: Path, label: str) -> tuple[bytes, dict[str, Any]]:
     if not isinstance(payload, dict):
         raise AnswerReviewExportError(f"{label} must be a JSON object")
     return raw, payload
+
+
+def _require_requested_source_path(
+    requested_path: Path,
+    artifact: FrozenJsonArtifact,
+    label: str,
+) -> None:
+    try:
+        canonical_requested = requested_path.resolve()
+    except OSError as error:
+        raise AnswerReviewExportError(f"failed to resolve {label} {requested_path}") from error
+    if canonical_requested != artifact.path:
+        raise AnswerReviewExportError(f"{label} path does not match the real B4 report source")
 
 
 def _unique_strings(value: Any, *, allow_empty: bool) -> bool:
