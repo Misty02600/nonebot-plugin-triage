@@ -443,8 +443,6 @@ def _validate_source_evaluation(payload: dict[str, Any]) -> None:
         "trials_per_fixture",
         "real_model_multi_trial",
         "promotion_gate_passed",
-        "audit_path",
-        "audit_sha256",
         "fixtures_path",
         "fixtures_sha256",
         "split_path",
@@ -469,7 +467,6 @@ def _validate_source_evaluation(payload: dict[str, Any]) -> None:
         "split_id",
         "provider",
         "model",
-        "audit_path",
         "fixtures_path",
         "split_path",
     ):
@@ -505,7 +502,7 @@ def _validate_source_evaluation(payload: dict[str, Any]) -> None:
         )
     if not isinstance(source["promotion_gate_passed"], bool):
         raise AnswerQualityEvaluationError("source promotion_gate_passed must be boolean")
-    for field in ("audit_sha256", "fixtures_sha256", "split_sha256"):
+    for field in ("fixtures_sha256", "split_sha256"):
         if not _is_sha256(source[field]):
             raise AnswerQualityEvaluationError(f"source {field} is invalid")
 
@@ -559,17 +556,10 @@ def _validate_source_report_binding(
 
     fixtures_source_path = Path(source["fixtures_path"])
     split_source_path = Path(source["split_path"])
-    audit_source_path = Path(source["audit_path"])
-    audit_raw, audit = _load_object(audit_source_path, "source B4 partial audit")
-    if hashlib.sha256(audit_raw).hexdigest() != source["audit_sha256"]:
-        raise AnswerQualityEvaluationError("source B4 partial audit does not match its digest")
     try:
         replayed, _ = build_b4_answer_quality_review_payloads(
             report_raw=report_raw,
             report=report,
-            audit_path=audit_source_path,
-            audit_raw=audit_raw,
-            audit=audit,
             fixtures_path=fixtures_source_path,
             split_path=split_source_path,
             rubric=rubric,

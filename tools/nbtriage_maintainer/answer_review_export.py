@@ -9,7 +9,6 @@ from typing import Any
 from tools.nbtriage_maintainer.agent_evaluation import (
     AgentEvaluationError,
     load_b4_real_review_source,
-    validate_b4_real_review_source,
 )
 from tools.nbtriage_maintainer.answer_quality_evaluation import (
     ANSWER_QUALITY_AXES,
@@ -52,18 +51,13 @@ def build_b4_answer_quality_review(
         或原始 Provider 响应。
     """
     try:
-        report_raw, report, audit_path, audit_raw, audit = load_b4_real_review_source(
-            evaluation_report_path
-        )
+        report_raw, report, _, _, _ = load_b4_real_review_source(evaluation_report_path)
     except AgentEvaluationError as error:
         raise AnswerReviewExportError(f"real B4 report source is invalid: {error}") from error
     _, rubric = _load_object(rubric_path, "answer quality rubric")
     return build_b4_answer_quality_review_payloads(
         report_raw=report_raw,
         report=report,
-        audit_path=audit_path,
-        audit_raw=audit_raw,
-        audit=audit,
         fixtures_path=fixtures_path,
         split_path=split_path,
         rubric=rubric,
@@ -74,9 +68,6 @@ def build_b4_answer_quality_review_payloads(
     *,
     report_raw: bytes,
     report: dict[str, Any],
-    audit_path: Path,
-    audit_raw: bytes,
-    audit: dict[str, Any],
     fixtures_path: Path,
     split_path: Path,
     rubric: dict[str, Any],
@@ -86,9 +77,6 @@ def build_b4_answer_quality_review_payloads(
     Args:
         report_raw: B4 报告原始字节，用于生成稳定来源身份。
         report: 从同一原始字节解析出的 B4 报告对象。
-        audit_path: 报告同名的 completed partial audit 路径。
-        audit_raw: partial audit 原始字节，用于生成稳定来源身份。
-        audit: 从同一原始字节解析出的 partial audit 对象。
         fixtures_path: B4 报告声明绑定的 Fixture 文件。
         split_path: B4 报告声明绑定的 split 文件。
         rubric: 当前人工评分合同。
@@ -105,16 +93,6 @@ def build_b4_answer_quality_review_payloads(
         raise AnswerReviewExportError("B4 evaluation report raw bytes are invalid") from error
     if raw_report != report:
         raise AnswerReviewExportError("B4 evaluation report bytes do not match its payload")
-    try:
-        raw_audit = strict_json_loads(audit_raw)
-    except StrictJsonError as error:
-        raise AnswerReviewExportError("B4 real partial audit raw bytes are invalid") from error
-    if raw_audit != audit:
-        raise AnswerReviewExportError("B4 real partial audit bytes do not match its payload")
-    try:
-        validate_b4_real_review_source(report, audit)
-    except AgentEvaluationError as error:
-        raise AnswerReviewExportError(f"real B4 report source is invalid: {error}") from error
     fixtures_raw, fixtures = _load_object(fixtures_path, "B4 fixtures")
     split_raw, split = _load_object(split_path, "B4 split")
 
@@ -168,8 +146,6 @@ def build_b4_answer_quality_review_payloads(
         "trials_per_fixture": summary["trials_per_fixture"],
         "real_model_multi_trial": summary["trials_per_fixture"] >= 2,
         "promotion_gate_passed": report["promotion_gate"]["passed"],
-        "audit_path": str(audit_path.resolve()),
-        "audit_sha256": hashlib.sha256(audit_raw).hexdigest(),
         "fixtures_path": str(fixtures_path.resolve()),
         "fixtures_sha256": hashlib.sha256(fixtures_raw).hexdigest(),
         "split_path": str(split_path.resolve()),
