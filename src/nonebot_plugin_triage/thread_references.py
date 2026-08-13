@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, TypeAlias
 
 from nonebot.matcher import Matcher
@@ -45,12 +45,6 @@ OutgoingThreadBinding: TypeAlias = (
 )
 
 
-@dataclass(frozen=True)
-class _OwnedOutgoingThreadBinding:
-    binding: OutgoingThreadBinding
-    owner: object = field(repr=False, compare=False)
-
-
 class SupportThreadReferenceBridge:
     """把 UniSeg 会话目标转换为不保存平台明文身份的 Thread 引用键。"""
 
@@ -64,7 +58,6 @@ class SupportThreadReferenceBridge:
         else:
             self.coordinator = None
             self.index = coordinator_or_index
-        self._binding_owner = object()
         self._dropped_count = 0
         self._registered = False
 
@@ -81,31 +74,6 @@ class SupportThreadReferenceBridge:
             raise RuntimeError("support thread reference bridge is already registered")
         register_run_postprocessor(self.cleanup_unsettled_binding)
         self._registered = True
-
-    def set_outgoing_binding(
-        self,
-        state: dict[str, Any],
-        binding: OutgoingThreadBinding,
-    ) -> None:
-        state[NBTRIAGE_THREAD_BINDING_STATE_KEY] = _OwnedOutgoingThreadBinding(
-            binding,
-            self._binding_owner,
-        )
-
-    def pop_outgoing_binding(
-        self,
-        state: dict[str, Any],
-    ) -> OutgoingThreadBinding | None:
-        value = state.get(NBTRIAGE_THREAD_BINDING_STATE_KEY)
-        if not isinstance(value, _OwnedOutgoingThreadBinding):
-            return None
-        if value.owner is not self._binding_owner:
-            return None
-        del state[NBTRIAGE_THREAD_BINDING_STATE_KEY]
-        return value.binding
-
-    def discard_outgoing_binding(self, state: dict[str, Any]) -> bool:
-        return self.pop_outgoing_binding(state) is not None
 
     def bind_reference(
         self,
@@ -268,7 +236,7 @@ class SupportThreadReferenceBridge:
         exception: Exception | None = None,
     ) -> None:
         del matcher, exception
-        binding = self.pop_outgoing_binding(state)
+        binding = pop_outgoing_thread_binding(state)
         if binding is not None:
             self.fail_binding(binding)
             self._record_drop()
@@ -278,9 +246,6 @@ class SupportThreadReferenceBridge:
 
 
 def pop_outgoing_thread_binding(state: dict[str, Any]) -> OutgoingThreadBinding | None:
-    value = state.get(NBTRIAGE_THREAD_BINDING_STATE_KEY)
-    if isinstance(value, _OwnedOutgoingThreadBinding):
-        return None
     value = state.pop(NBTRIAGE_THREAD_BINDING_STATE_KEY, None)
     return (
         value

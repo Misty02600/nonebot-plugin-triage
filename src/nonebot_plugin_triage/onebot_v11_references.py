@@ -15,6 +15,7 @@ from nonebot_plugin_triage.thread_references import (
     PendingContinuationBinding,
     PreparedContinuationBinding,
     SupportThreadReferenceBridge,
+    pop_outgoing_thread_binding,
 )
 from nonebot_plugin_triage.universal_references import UniversalReferenceBridge
 
@@ -70,9 +71,7 @@ class OneBotV11OutgoingReferenceProvider:
         if matcher is None:
             return
         thread_binding = (
-            self.thread_bridge.pop_outgoing_binding(matcher.state)
-            if self.thread_bridge is not None
-            else None
+            pop_outgoing_thread_binding(matcher.state) if self.thread_bridge is not None else None
         )
         if exception is not None:
             self._fail_thread_binding(thread_binding)

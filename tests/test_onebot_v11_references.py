@@ -39,7 +39,6 @@ from nonebot_plugin_triage.thread_references import (
     PendingContinuationBinding,
     PreparedContinuationBinding,
     SupportThreadReferenceBridge,
-    pop_outgoing_thread_binding,
 )
 from nonebot_plugin_triage.universal_references import UniversalReferenceBridge, conversation_scope
 
@@ -133,15 +132,6 @@ def group_target(group_id: str = "100", self_id: str = "4200") -> Target:
     )
 
 
-def owned_thread_state(
-    bridge: SupportThreadReferenceBridge,
-    binding: InitialThreadBinding | PendingContinuationBinding | PreparedContinuationBinding,
-) -> dict[str, Any]:
-    state: dict[str, Any] = {}
-    bridge.set_outgoing_binding(state, binding)
-    return state
-
-
 @pytest.mark.anyio
 async def test_matcher_send_result_binds_only_routing_fields_and_message_id() -> None:
     index = make_index()
@@ -194,10 +184,7 @@ async def test_matcher_send_result_also_binds_thread_to_actor_scope() -> None:
     matcher = cast(
         Matcher,
         SimpleNamespace(
-            state=owned_thread_state(
-                thread_bridge,
-                InitialThreadBinding("thread-1", "actor-200"),
-            )
+            state={NBTRIAGE_THREAD_BINDING_STATE_KEY: InitialThreadBinding("thread-1", "actor-200")}
         ),
     )
     token = current_matcher.set(matcher)
@@ -245,13 +232,12 @@ async def test_initial_thread_send_uses_coordinator_and_binds_reference() -> Non
     matcher = cast(
         Matcher,
         SimpleNamespace(
-            state=owned_thread_state(
-                thread_bridge,
-                InitialThreadBinding(
+            state={
+                NBTRIAGE_THREAD_BINDING_STATE_KEY: InitialThreadBinding(
                     thread.thread_id,
                     "actor-200",
-                ),
-            )
+                )
+            }
         ),
     )
 
@@ -304,13 +290,12 @@ async def test_failed_initial_thread_send_closes_thread(
     matcher = cast(
         Matcher,
         SimpleNamespace(
-            state=owned_thread_state(
-                thread_bridge,
-                InitialThreadBinding(
+            state={
+                NBTRIAGE_THREAD_BINDING_STATE_KEY: InitialThreadBinding(
                     thread.thread_id,
                     "actor-200",
-                ),
-            )
+                )
+            }
         ),
     )
 
@@ -347,13 +332,12 @@ async def test_failed_initial_thread_send_closes_thread(
 async def test_run_postprocessor_closes_unsettled_initial_thread() -> None:
     store, _, _, thread_bridge = make_thread_runtime()
     thread = store.create(ThreadKind.CLARIFICATION)
-    state = owned_thread_state(
-        thread_bridge,
-        InitialThreadBinding(
+    state: dict[str, Any] = {
+        NBTRIAGE_THREAD_BINDING_STATE_KEY: InitialThreadBinding(
             thread.thread_id,
             "actor-200",
-        ),
-    )
+        )
+    }
 
     await thread_bridge.cleanup_unsettled_binding(
         cast(Matcher, SimpleNamespace(state=state)),
@@ -451,15 +435,14 @@ async def test_successful_continuation_send_completes_and_rebinds_once() -> None
     matcher = cast(
         Matcher,
         SimpleNamespace(
-            state=owned_thread_state(
-                thread_bridge,
-                PreparedContinuationBinding(
+            state={
+                NBTRIAGE_THREAD_BINDING_STATE_KEY: PreparedContinuationBinding(
                     claim.lease.token,
                     "actor-200",
                     ThreadKind.GUIDANCE,
                     ("topic-next",),
-                ),
-            )
+                )
+            }
         ),
     )
 
@@ -545,15 +528,14 @@ async def test_failed_continuation_send_closes_claimed_thread(
     matcher = cast(
         Matcher,
         SimpleNamespace(
-            state=owned_thread_state(
-                thread_bridge,
-                PreparedContinuationBinding(
+            state={
+                NBTRIAGE_THREAD_BINDING_STATE_KEY: PreparedContinuationBinding(
                     claim.lease.token,
                     "actor-200",
                     ThreadKind.GUIDANCE,
                     ("topic-next",),
-                ),
-            )
+                )
+            }
         ),
     )
 
@@ -616,13 +598,12 @@ async def test_run_postprocessor_closes_unsettled_continuation() -> None:
         message_reference="601",
     )
     assert claim.lease is not None
-    state = owned_thread_state(
-        thread_bridge,
-        PendingContinuationBinding(
+    state: dict[str, Any] = {
+        NBTRIAGE_THREAD_BINDING_STATE_KEY: PendingContinuationBinding(
             claim.lease.token,
             "actor-200",
-        ),
-    )
+        )
+    }
 
     await thread_bridge.cleanup_unsettled_binding(
         cast(Matcher, SimpleNamespace(state=state)),
@@ -635,205 +616,6 @@ async def test_run_postprocessor_closes_unsettled_continuation() -> None:
     assert closed.status is ThreadStatus.CLOSED
     assert NBTRIAGE_THREAD_BINDING_STATE_KEY not in state
     assert thread_bridge.dropped_count == 1
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("owner_first", [False, True])
-async def test_only_owning_runtime_settles_binding_in_any_callback_order(
-    owner_first: bool,
-) -> None:
-    owner_store, _, _, owner_bridge = make_thread_runtime()
-    _, _, _, other_bridge = make_thread_runtime()
-    owner_provider = OneBotV11OutgoingReferenceProvider(
-        UniversalReferenceBridge(make_index()),
-        thread_bridge=owner_bridge,
-    )
-    other_provider = OneBotV11OutgoingReferenceProvider(
-        UniversalReferenceBridge(make_index()),
-        thread_bridge=other_bridge,
-    )
-    thread = owner_store.create(ThreadKind.GUIDANCE)
-    state = owned_thread_state(
-        owner_bridge,
-        InitialThreadBinding(thread.thread_id, "actor-200"),
-    )
-    matcher = cast(Matcher, SimpleNamespace(state=state))
-    providers = (
-        (owner_provider, other_provider) if owner_first else (other_provider, owner_provider)
-    )
-
-    token = current_matcher.set(matcher)
-    try:
-        for provider in providers:
-            await provider.bind_outgoing_group_message(
-                make_bot(),
-                None,
-                "send_group_msg",
-                {"group_id": 100},
-                {"message_id": 604},
-            )
-    finally:
-        current_matcher.reset(token)
-
-    current = owner_store.get(thread.thread_id)
-    assert current is not None
-    assert current.status is ThreadStatus.CONTINUABLE
-    assert NBTRIAGE_THREAD_BINDING_STATE_KEY not in state
-    assert owner_provider.dropped_count == 0
-    assert other_provider.dropped_count == 0
-    assert owner_bridge.dropped_count == 0
-    assert other_bridge.dropped_count == 0
-    assert (
-        owner_bridge.resolve_reply(
-            adapter_name=ONEBOT_V11_ADAPTER_NAME,
-            bot_scope="4200",
-            target=group_target(),
-            actor_scope="actor-200",
-            message_reference="604",
-        )
-        == thread.thread_id
-    )
-    assert (
-        other_bridge.resolve_reply(
-            adapter_name=ONEBOT_V11_ADAPTER_NAME,
-            bot_scope="4200",
-            target=group_target(),
-            actor_scope="actor-200",
-            message_reference="604",
-        )
-        is None
-    )
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("owner_first", [False, True])
-async def test_only_owning_bridge_cleans_binding_in_any_postprocessor_order(
-    owner_first: bool,
-) -> None:
-    owner_store, _, _, owner_bridge = make_thread_runtime()
-    _, _, _, other_bridge = make_thread_runtime()
-    thread = owner_store.create(ThreadKind.GUIDANCE)
-    state = owned_thread_state(
-        owner_bridge,
-        InitialThreadBinding(thread.thread_id, "actor-200"),
-    )
-    matcher = cast(Matcher, SimpleNamespace(state=state))
-    bridges = (owner_bridge, other_bridge) if owner_first else (other_bridge, owner_bridge)
-
-    for bridge in bridges:
-        await bridge.cleanup_unsettled_binding(
-            matcher,
-            state,
-            RuntimeError("matcher ended before send"),
-        )
-
-    current = owner_store.get(thread.thread_id)
-    assert current is not None
-    assert current.status is ThreadStatus.CLOSED
-    assert NBTRIAGE_THREAD_BINDING_STATE_KEY not in state
-    assert owner_bridge.dropped_count == 1
-    assert other_bridge.dropped_count == 0
-
-
-@pytest.mark.anyio
-async def test_only_owning_runtime_closes_binding_after_send_failure() -> None:
-    owner_store, _, _, owner_bridge = make_thread_runtime()
-    _, _, _, other_bridge = make_thread_runtime()
-    owner_provider = OneBotV11OutgoingReferenceProvider(
-        UniversalReferenceBridge(make_index()),
-        thread_bridge=owner_bridge,
-    )
-    other_provider = OneBotV11OutgoingReferenceProvider(
-        UniversalReferenceBridge(make_index()),
-        thread_bridge=other_bridge,
-    )
-    thread = owner_store.create(ThreadKind.GUIDANCE)
-    state = owned_thread_state(
-        owner_bridge,
-        InitialThreadBinding(thread.thread_id, "actor-200"),
-    )
-    matcher = cast(Matcher, SimpleNamespace(state=state))
-
-    token = current_matcher.set(matcher)
-    try:
-        await other_provider.bind_outgoing_group_message(
-            make_bot(),
-            RuntimeError("send failed"),
-            "send_group_msg",
-            {"group_id": 100},
-            {"message_id": 605},
-        )
-        assert NBTRIAGE_THREAD_BINDING_STATE_KEY in state
-        await owner_provider.bind_outgoing_group_message(
-            make_bot(),
-            RuntimeError("send failed"),
-            "send_group_msg",
-            {"group_id": 100},
-            {"message_id": 605},
-        )
-    finally:
-        current_matcher.reset(token)
-
-    current = owner_store.get(thread.thread_id)
-    assert current is not None
-    assert current.status is ThreadStatus.CLOSED
-    assert NBTRIAGE_THREAD_BINDING_STATE_KEY not in state
-    assert owner_provider.dropped_count == 1
-    assert other_provider.dropped_count == 0
-    assert owner_bridge.dropped_count == 0
-    assert other_bridge.dropped_count == 0
-
-
-@pytest.mark.anyio
-async def test_owned_binding_api_ignores_malformed_state_without_counting_drop() -> None:
-    _, _, _, thread_bridge = make_thread_runtime()
-    provider = OneBotV11OutgoingReferenceProvider(
-        UniversalReferenceBridge(make_index()),
-        thread_bridge=thread_bridge,
-    )
-    malformed = {"binding": "not-an-owned-binding"}
-    state: dict[str, Any] = {NBTRIAGE_THREAD_BINDING_STATE_KEY: malformed}
-    matcher = cast(Matcher, SimpleNamespace(state=state))
-
-    token = current_matcher.set(matcher)
-    try:
-        await provider.bind_outgoing_group_message(
-            make_bot(),
-            None,
-            "send_group_msg",
-            {"group_id": 100},
-            {"message_id": 606},
-        )
-    finally:
-        current_matcher.reset(token)
-    await thread_bridge.cleanup_unsettled_binding(matcher, state)
-
-    assert state[NBTRIAGE_THREAD_BINDING_STATE_KEY] is malformed
-    assert provider.dropped_count == 0
-    assert thread_bridge.dropped_count == 0
-
-
-def test_legacy_public_pop_helper_cannot_consume_owned_binding() -> None:
-    thread_bridge = make_thread_bridge()
-    state = owned_thread_state(
-        thread_bridge,
-        InitialThreadBinding("thread-owned", "actor-200"),
-    )
-
-    assert pop_outgoing_thread_binding(state) is None
-    assert NBTRIAGE_THREAD_BINDING_STATE_KEY in state
-    assert thread_bridge.pop_outgoing_binding(state) == InitialThreadBinding(
-        "thread-owned",
-        "actor-200",
-    )
-
-
-def test_legacy_public_pop_helper_still_consumes_plain_binding() -> None:
-    binding = InitialThreadBinding("thread-legacy", "actor-200")
-    state: dict[str, Any] = {NBTRIAGE_THREAD_BINDING_STATE_KEY: binding}
-
-    assert pop_outgoing_thread_binding(state) is binding
-    assert NBTRIAGE_THREAD_BINDING_STATE_KEY not in state
 
 
 def test_registration_is_explicit_and_rejects_repeat(
