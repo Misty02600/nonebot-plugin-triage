@@ -18,11 +18,17 @@ from nbtriage.evidence_receipts import (
     evidence_receipt_revision,
     parse_evidence_receipt,
 )
+from tools.nbtriage_maintainer.evaluation import (
+    B1_EVALUATION_ID,
+    EvaluationError,
+    validate_b1_evaluation_report,
+)
 from tools.nbtriage_maintainer.evidence_policy import EvidencePolicyError, select_next_evidence
 from tools.nbtriage_maintainer.runtime_results import (
     RuntimeAssessment,
     runtime_result_validation_error,
 )
+from tools.nbtriage_maintainer.strict_json import StrictJsonError, strict_json_loads
 
 SESSION_SCHEMA_VERSION = 4
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -215,11 +221,23 @@ def create_session_from_report(
     resolved_case_id = validate_case_id(case_id)
     raw = _read_bytes(report_path)
     try:
-        report = json.loads(raw)
-    except json.JSONDecodeError as error:
-        raise SessionError(f"invalid prediction report {report_path}: {error}") from error
-    if not isinstance(report, dict) or not str(report.get("evaluation_id", "")).startswith("b1-"):
-        raise SessionError("prediction report must be a B1 evaluation report")
+        report = strict_json_loads(raw)
+    except StrictJsonError as error:
+        raise SessionError(
+            "prediction report is not a valid formal B1 evaluation report"
+        ) from error
+    if (
+        not isinstance(report, dict)
+        or report.get("schema_version") != 2
+        or report.get("evaluation_id") != B1_EVALUATION_ID
+    ):
+        raise SessionError("prediction report is not a valid formal B1 evaluation report")
+    try:
+        validate_b1_evaluation_report(report)
+    except EvaluationError as error:
+        raise SessionError(
+            "prediction report is not a valid formal B1 evaluation report"
+        ) from error
     rows = report.get("predictions")
     if not isinstance(rows, list):
         raise SessionError("prediction report must contain predictions")

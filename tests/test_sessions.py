@@ -1,8 +1,21 @@
+import asyncio
+import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
+from tools.nbtriage_maintainer import evaluation as evaluation_module
+from tools.nbtriage_maintainer import sessions as sessions_module
 from tools.nbtriage_maintainer.cli import _load_session_case, main
+from tools.nbtriage_maintainer.evaluation import (
+    B1_CUSTOM_EVALUATION_ID,
+    B1_EVALUATION_ID,
+    EvaluationError,
+    evaluate_b1,
+    validate_b1_evaluation_report,
+)
+from tools.nbtriage_maintainer.evaluation_provenance import case_corpus_sha256
 from tools.nbtriage_maintainer.runtime_results import (
     RuntimeAssessment,
     assess_runtime_result,
@@ -11,6 +24,7 @@ from tools.nbtriage_maintainer.runtime_results import (
 )
 from tools.nbtriage_maintainer.sessions import (
     FileSessionStore,
+    SessionError,
     SessionStateError,
     SessionStoreError,
     approve_session,
@@ -20,6 +34,21 @@ from tools.nbtriage_maintainer.sessions import (
 )
 
 from nbtriage.evidence_receipts import create_evidence_receipt
+from nbtriage.rag import B1ModelRequest, B1ModelResponse
+
+
+@pytest.fixture(autouse=True)
+def _accept_bounded_state_machine_report_fixtures(monkeypatch: pytest.MonkeyPatch) -> None:
+    """让状态机单测隔离于昂贵的正式 B1 重放，其他工件仍走真实校验器。"""
+
+    def validate(report: dict[str, Any]) -> None:
+        if report.get("session_test_fixture") is True:
+            if report.get("schema_version") != 2 or report.get("evaluation_id") != B1_EVALUATION_ID:
+                raise EvaluationError("invalid bounded session test fixture")
+            return
+        validate_b1_evaluation_report(report)
+
+    monkeypatch.setattr(sessions_module, "validate_b1_evaluation_report", validate)
 
 
 def _receipt(
@@ -66,8 +95,9 @@ def _prediction_report(
     path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
-                "evaluation_id": "b1-rag-only-v1",
+                "schema_version": 2,
+                "evaluation_id": B1_EVALUATION_ID,
+                "session_test_fixture": True,
                 "predictions": [
                     {
                         "case_id": case_id,
@@ -92,6 +122,122 @@ def _prediction_report(
         encoding="utf-8",
     )
     return path
+
+
+def _write_formal_b1_case(
+    cases_dir: Path,
+    case_id: str,
+    *,
+    execution_mode: str,
+) -> None:
+    payload = {
+        "case_id": case_id,
+        "source": {
+            "owner": "nonebot",
+            "repository": "plugin-demo",
+            "title": "Unexpected behavior",
+            "body": (
+                "Python 3.12.4, plugin 1.2.3 on Windows 11. Traceback: ValueError. "
+                "Reproduction steps, expected behavior, and configuration are included."
+            ),
+            "labels": [],
+        },
+        "curation": {
+            "support_level": "s1_verify",
+            "execution_mode": execution_mode,
+            "fault_phase": "handle",
+            "symptoms": ["exception"],
+            "candidate_owners": ["plugin"],
+            "versions": {"python": "3.12.4", "plugin": "1.2.3"},
+            "environment": {"os": "Windows 11"},
+            "required_evidence_gaps": [],
+            "unknowns": [],
+        },
+    }
+    (cases_dir / f"{case_id}.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+class _FormalB1Client:
+    async def generate(self, request: B1ModelRequest) -> B1ModelResponse:
+        return B1ModelResponse(
+            output_text=json.dumps(
+                {
+                    "version_values": ["1.2.3", "3.12.4"],
+                    "missing_evidence": [],
+                    "symptoms": ["exception"],
+                    "fault_phase": "handle",
+                    "candidate_owners": ["plugin"],
+                    "route": "verify",
+                    "answer": "Need a bounded next step.",
+                    "citations": [],
+                }
+            ),
+            input_tokens=10,
+            output_tokens=5,
+            provider_request_id="formal-response-1",
+            provider_name="deepseek-responses",
+            provider_model_name=request.model,
+            provider_fingerprint="fixture-fingerprint",
+            latency_ms=2,
+        )
+
+
+def _formal_prediction_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, dict[str, Any]]:
+    cases_dir = tmp_path / "formal-cases"
+    cases_dir.mkdir()
+    _write_formal_b1_case(cases_dir, "train-case", execution_mode="contract_exec")
+    _write_formal_b1_case(cases_dir, "case-1", execution_mode="contract_exec")
+    split_path = tmp_path / "formal-split.json"
+    split_path.write_text(
+        json.dumps(
+            {
+                "split_id": "session-formal-split",
+                "splits": {
+                    "train": [{"case_id": "train-case"}],
+                    "validation": [{"case_id": "case-1"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    dataset = evaluation_module.load_evaluation_dataset(cases_dir, split_path)
+    corpus_sha256 = case_corpus_sha256(dataset.case_raw_by_id, {"train-case", "case-1"})
+    monkeypatch.setattr(evaluation_module, "_B1_OFFICIAL_SPLIT_ID", dataset.split_id)
+    monkeypatch.setattr(
+        evaluation_module,
+        "_B1_OFFICIAL_SPLIT_SHA256",
+        hashlib.sha256(dataset.split_raw).hexdigest(),
+    )
+    monkeypatch.setattr(
+        evaluation_module,
+        "_B1_OFFICIAL_CORPUS_SHA256_BY_SCORE_SPLIT",
+        {"validation": corpus_sha256},
+    )
+    report = asyncio.run(
+        evaluate_b1(
+            cases_dir,
+            split_path,
+            client=_FormalB1Client(),
+            provider="deepseek-responses",
+            model="deepseek-v4-flash",
+            generation_config={
+                "max_output_tokens": 1024,
+                "reasoning_effort": "none",
+                "temperature": 0,
+            },
+            cache_dir=tmp_path / "formal-cache",
+            score_splits=("validation",),
+            declared_budget_usd=0.1,
+        )
+    )
+    report_path = tmp_path / "formal-report.json"
+    report_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+    return report_path, report
 
 
 def _runtime_case(case_id: str = "case-1") -> dict:
@@ -169,6 +315,111 @@ def test_b1_routes_create_bounded_session_actions(
     assert [event.sequence for event in session.events] == [1, 2]
     assert "Need a bounded next step." in session.prediction["answer"]
     assert "body" not in session.to_dict()
+
+
+def test_session_accepts_a_replayable_formal_b1_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path, _ = _formal_prediction_report(tmp_path, monkeypatch)
+
+    session = create_session_from_report(
+        report_path,
+        "case-1",
+        session_id="session-1",
+        occurred_at="2026-08-08T00:00:00+00:00",
+    )
+
+    assert session.route == "verify"
+    assert session.action.kind == "run_oracle"
+    assert session.source_report_sha256 == hashlib.sha256(report_path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "value"),
+    [
+        ("evaluation_id", B1_CUSTOM_EVALUATION_ID),
+        ("evaluation_id", "b1-forged-v1"),
+        ("schema_version", 1),
+        ("metrics_by_split", {}),
+    ],
+)
+def test_session_rejects_nonformal_or_tampered_b1_before_state_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    value: object,
+) -> None:
+    report_path, report = _formal_prediction_report(tmp_path, monkeypatch)
+    report[mutation] = value
+    report_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+    sessions_dir = tmp_path / "sessions"
+
+    with pytest.raises(SessionError, match="valid formal B1") as exc_info:
+        session = create_session_from_report(report_path, "case-1", session_id="session-1")
+        FileSessionStore(sessions_dir).create(session)
+
+    assert not sessions_dir.exists()
+    assert "b1-forged-v1" not in str(exc_info.value)
+
+
+def test_session_rejects_formal_b1_with_missing_source_before_state_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path, report = _formal_prediction_report(tmp_path, monkeypatch)
+    cases_dir = Path(report["source"]["cases_dir"])
+    for case_path in cases_dir.iterdir():
+        case_path.unlink()
+    cases_dir.rmdir()
+    sessions_dir = tmp_path / "sessions"
+
+    with pytest.raises(SessionError, match="valid formal B1"):
+        session = create_session_from_report(report_path, "case-1", session_id="session-1")
+        FileSessionStore(sessions_dir).create(session)
+
+    assert not sessions_dir.exists()
+
+
+def test_session_validates_formal_b1_before_reading_predictions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = tmp_path / "forged-report.json"
+    untrusted_answer = "DO_NOT_ECHO_PRIVATE_REPORT_TEXT"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "evaluation_id": B1_EVALUATION_ID,
+                "predictions": [
+                    {
+                        "case_id": "case-1",
+                        "prediction": {
+                            "case_id": "case-1",
+                            "route": "verify",
+                            "answer": untrusted_answer,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    validation_calls = 0
+
+    def reject_report(report: dict[str, Any]) -> None:
+        nonlocal validation_calls
+        validation_calls += 1
+        raise EvaluationError(untrusted_answer)
+
+    monkeypatch.setattr(sessions_module, "validate_b1_evaluation_report", reject_report)
+
+    with pytest.raises(SessionError, match="valid formal B1") as exc_info:
+        create_session_from_report(report_path, "case-1", session_id="session-1")
+
+    assert validation_calls == 1
+    assert untrusted_answer not in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
