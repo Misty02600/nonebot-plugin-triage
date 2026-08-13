@@ -35,4 +35,5 @@
 | [ADR-0031](0031-require-triage-for-support-thread-continuation.md) | 部分被替代 | 所有支持轮次都要求显式 `triage`；Reply 提交时机由 ADR-0033 细化 |
 | [ADR-0032](0032-separate-capability-audience-analysis-and-platform-status.md) | 已采纳 | 分离能力受众、平台范围、分析问题与约束，由派生 ServingView 取代 review 审批层 |
 | [ADR-0033](0033-serialize-support-thread-turns-with-single-use-reply-claims.md) | 已采纳 | 一次性消费 Reply，并用单 Thread lease 串行化支持处理轮 |
-| [ADR-0034](0034-distinguish-matchers-from-user-observable-capabilities.md) | 已采纳 | 先以 Matcher 等构建期事实为锚点，再按用户可观察效果归并能力；支撑 Matcher 压缩为证据 |
+| [ADR-0034](0034-distinguish-matchers-from-user-observable-capabilities.md) | 已替代 | 曾按用户可观察效果归并 Matcher；由 ADR-0036 收窄为独立确定性记录 |
+| [ADR-0036](0036-keep-capability-shadow-deterministic-and-record-oriented.md) | 已采纳 | 保持能力影子确定且以记录为单位，删除无消费者的 Matcher 角色和逐记录源码对齐推断 |

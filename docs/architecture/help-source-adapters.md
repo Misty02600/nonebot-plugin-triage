@@ -12,24 +12,17 @@ Alconna `parse()`，也尚未接入任何第三方帮助插件。
 普通 Matcher 的命令识别会读取 NoneBot 2.5 的 `Rule.checkers` 结构。这不是稳定的跨版本公共协议，因此
 只能放在版本适配层：遇到未知 checker 或结构变化时保留未知约束并失败关闭，不能猜成公开、可执行能力。
 
-当前 schema v2 仍以 Matcher 作为运行事实锚点，但已接入首阶段能力归并：有界源码效果分析可以确认明确
-用户输出，或把只做共享状态读写的 message / passive Matcher 收敛为目标能力的支撑证据；无法确认的关系
-保留 `capability_mapping_unknown` 并失败关闭。Matcher、handler、Rule、Permission、命令结构和源码位置仍
-属于运行或代码事实，不天然等于一项用户可观察能力；完整独立事实表、跨 revision 稳定能力身份和一般
-多对多查询图尚未实现。
+当前 schema v2 把每个已观察命令或 Matcher 保持为独立记录，不从 handler 源码推断用户输出、共享状态
+读写、Matcher 角色或跨 Matcher 支撑关系。Matcher、Rule、Permission、命令结构和源码位置仍属于运行或
+代码事实，不天然等于一项用户可观察能力；动态或被动入口若缺少确定展示字段，就保留具体 issue 并退出
+普通 ServingView。
 
 ## Matcher 与 Capability 的边界
 
-适配器应先形成带来源和 revision 的构建期事实，再由后续层按用户可观察效果派生 Capability。映射允许多对多：
-同一功能可能用命令 Matcher 启动，再由消息 Matcher 接收输入、推进状态或清理结果；这些支撑 Matcher 保留为
-证据，但不应重复显示成多项帮助。被动 Matcher 若本身产生独立的用户可观察效果，仍可形成能力，不能仅因
-没有命令头就隐藏。
-
-无法判断某个事实应独立展示、归入哪项能力或只承担支撑作用时，适配器保留事实和候选关系，并产生
-`capability_mapping_unknown`，而不是静默猜测或每个 Matcher 固定生成一项能力。LLM 可以提出引用
-Evidence ID 与 revision 的效果描述和候选映射，但不能凭语义相似度决定披露、平台、精确语法或消除 issue。
-普通 ServingView 最终只消费完成模型外门禁的派生 Capability；当前维护者视图展示派生记录和问题，支撑
-Matcher 只以压缩 Claim / Evidence 保存，独立原始事实与映射视图尚未实现。
+适配器先形成带来源和 revision 的记录，再由模型外 ServingView 按披露、平台、记录状态、完整性和 issue
+过滤。被动 Matcher 只有在 trigger 和展示标签都能由确定证据安全投影时才可公开；否则维护者仍可查看该
+独立记录及其问题。LLM 可以提出引用 Evidence ID 与 revision 的效果描述，但不能凭语义相似度合并记录、
+决定披露或平台、声称精确语法，或清除 issue。
 
 ## Handler 形参与用户语法的边界
 

@@ -111,7 +111,8 @@ NBTRIAGE_CAPABILITY_SHADOW_PATH=data/nbtriage-capabilities.sqlite3
 启动钩子只调度后台刷新，不等待制品扫描或索引构建；实际工作通过线程执行，不阻塞 Bot 启动关键路径。
 后台任务读取标准 `pyproject.toml` 的 NoneBot 声明、安装制品 revision 和实际已加载模块做
 `registered / not_observed / runtime_only` 协调，再从已加载的 Plugin、Matcher、Alconna 结构、插件元数据
-和本地源码摘要原子生成全文索引。同一轮 deployment 构建只枚举一次 distribution package map。它不调用
+和轻量本地源码摘要原子生成全文索引。同一轮 deployment 构建只枚举一次 distribution package map。每个
+命令或 Matcher 保持独立记录，不分析 handler 效果、推断跨 Matcher 角色，也不做逐文件模块源码对齐。它不调用
 第三方 Rule、Permission、handler 或命令解析，也不读取
 `.env`、日志和运行数据。每条记录分别保存 `public / restricted` 受众、`all / explicit / unknown`
 平台范围、具体 `analysis_issues`、执行约束和记录状态。确定命令入口、当前 adapter 在范围内、没有分析问题、

@@ -29,7 +29,6 @@ Matcher。把这些情况都称为“待审核”既无法说明真实缺口，�
    - `evidence_conflict`：同一字段的可信证据互相冲突；
    - `sensitive_ambiguity`：公开与受限边界存在无法自动消解的敏感歧义；
    - `evidence_insufficient`：其他必要服务字段缺少足够证据。
-   - `capability_mapping_unknown`：Matcher 事实与用户可观察能力的映射仍无法确定，由 ADR-0034 引入。
 4. 不持久化 `analysis_status=ready / pending / conflicted`，也不保留 `review` 领域状态。维护者视图直接报告
    `analysis_issues`；空集合表示当前没有这些阻塞问题，不表示能力一定可执行。
 5. `RecordState.VERIFIED / CANDIDATE / CONFLICTED / STALE` 保留，但只表达记录结构、证据聚合和新鲜度。
@@ -90,9 +89,9 @@ Matcher。把这些情况都称为“待审核”既无法说明真实缺口，�
 - 2026-08-12：领域记录、快照、SQLite v2、检索过滤和维护者 CLI 已按本 ADR 实现；普通用户查询只从上述
   派生 ServingView 召回，维护者输出直接列出 issue。
 - nonemigut 已为首次快照中 28 条明确命令涉及的 9 个本地插件补齐根模块平台元数据，并通过不启动 Driver
-  的插件加载与 metadata 断言；2026-08-13 的本地源码快照验证还确认：7 条原动态候选收敛为 5 项用户能力和
-  2 条支撑关系，`dynamic_entry=0`、`capability_mapping_unknown=0`，快照完整。该离线验证不替代正式 Bot
-  启动后的部署 generation 刷新。
+  的插件加载与 metadata 断言。曾实现的 Matcher 角色归并已由 ADR-0036 撤下；当前动态或被动入口按独立
+  记录保留 `dynamic_entry`，不再推断跨 Matcher 支撑关系。离线验证不替代正式 Bot 启动后的部署 generation
+  刷新。
 - 普通查询要求本轮 snapshot 与 deployment inventory 都完整且刷新成功；全局刷新失败或任一 partial 时失败
   关闭。逐能力源码 manifest 对齐由 [ADR-0036](0036-keep-capability-shadow-deterministic-and-record-oriented.md)
   移除，制品版本、commit 和文件摘要只作为部署诊断事实。

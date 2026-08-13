@@ -11,10 +11,9 @@ Alconna 观察、源码摘要和 FTS5 原子构建在线程中执行，不阻塞
 distribution package map。
 `restricted` 保存 SUPERUSER 与内部管理能力；普通用户在当前 adapter 域读取自动或显式确定公开的能力，
 SUPERUSER 则可在模型外鉴权后通过同一个 `triage` 入口检索带披露标签的本机候选。该在线路径使用确定性
-模板，不启用模型或执行能力。当前 schema v2 仍以 Matcher 作为构建期事实锚点，但已接入有界 handler
-效果分析：message / passive Matcher 的明确用户输出可形成能力，只做共享状态读写的同类 Matcher 会附到
-目标能力作为压缩支撑证据，无法确认的关系以 `capability_mapping_unknown` 失败关闭。独立事实表和映射表、
-跨 revision 稳定能力身份及一般多对多关系图尚未实现。
+模板，不启用模型或执行能力。当前 schema v2 直接保存每条能力记录的披露、平台、分析问题与约束；
+不会从 handler 源码推断 Matcher 角色或跨 Matcher 支撑关系。动态或被动入口若缺少可确定展示字段，继续保留
+`dynamic_entry` 并退出普通 ServingView，而不是猜测用户能力身份。
 
 B4 已增加 Provider 无关的有界 Agent control plane：模型可在白名单运行观察、train-only 检索、结构化
 补证和最终诊断间动态选择；领域 runtime 掌握跨步预算、二次授权、暂停恢复和 trajectory，Pydantic AI
@@ -68,9 +67,8 @@ Reply 可选，但每轮都必须写 `triage`；Reply 命中 Triage 的有效回
 `analysis_issues` 具体记录，不另存 `ready / pending / conflicted`。SUPERUSER 可读取完整维护者域，普通用户
 只读取当前 adapter 在范围内、无阻塞 issue、记录状态为 `verified / candidate`、快照明确完整且 generation
 新鲜的 `public` 能力；`conflicted / stale` 不进入普通 ServingView。
-当前采集仍以 Matcher 为构建期事实锚点，但已用有界 handler 效果分析接入首阶段归并：只承担共享状态
-读写的 message / passive Matcher 会作为压缩支撑证据附到用户能力，映射不确定则保留
-`capability_mapping_unknown`。独立事实表和映射表、跨 revision 稳定能力身份及一般多对多关系图尚未实现。
+当前采集以每个已观察的命令或 Matcher 记录为边界，不分析 handler 的用户输出、共享状态读写或跨 Matcher
+关系；无法确定的动态或被动入口保留具体 issue 并失败关闭。跨 revision 稳定能力身份及多对多能力图未实现。
 LLM 只能提出引用既有 Evidence ID 与 revision 的语义 Claim，不能自行决定披露、平台、精确语法或清除问题。
 系统不使用 `hidden` 披露态；按能力
 完全排除将由后续独立 operator exclude policy 在持久化前处理，当前尚无这个接口。当前只有确定性首轮
@@ -82,8 +80,8 @@ LLM 只能提出引用既有 Evidence ID 与 revision 的语义 Claim，不能�
 [ADR-0030](../adr/0030-continue-support-thread-by-exact-reply.md)，能力影子边界见
 [ADR-0021](../adr/0021-use-deployment-local-capability-shadow-index.md)，维护者在线检索见
 [ADR-0022](../adr/0022-limit-capability-shadow-guidance-to-superusers.md)，状态轴拆分见
-[ADR-0032](../adr/0032-separate-capability-audience-analysis-and-platform-status.md)，Matcher 与用户可观察能力的
-关系见 [ADR-0034](../adr/0034-distinguish-matchers-from-user-observable-capabilities.md)。
+[ADR-0032](../adr/0032-separate-capability-audience-analysis-and-platform-status.md)；曾采用的 Matcher 角色归并已由
+[ADR-0036](../adr/0036-keep-capability-shadow-deterministic-and-record-oriented.md) 撤下。
 
 项目已经采纳“面向已鉴权开发者的插件行为探索”方向：开发者以后可以在不打开仓库的情况下询问插件的
 能力、触发条件、配置影响、环境约束和当前部署表现。该能力不会把源码当作唯一真值，而是协调运行时注册
@@ -131,7 +129,7 @@ LLM 只能提出引用既有 Evidence ID 与 revision 的语义 Claim，不能�
 | `just maintainer evaluate-answer-quality` | 用四轴 0–2 人工 rubric 汇总固定 `answer + citations` 标注 | 默认合成校准只验证评分锚点；候选质量必须来自真实 B4 的 `forward_hidden` 多 trial 报告、使用独立人工复核，并同时通过来源 B4 Gate、均值、逐样本和关键零分硬门；结果只属于 `offline_fixed_fixture`，不构成生产质量证据；非校准报告拒绝覆盖 | `tools/nbtriage_maintainer/answer_quality_evaluation.py`、`evals/rubrics/answer-quality-v1.json`、`evals/datasets/fixtures/answer-quality-calibration-v1.json` |
 | `just maintainer evaluate-b4-scripted` | 用 scripted model 在冻结 regression / forward-hidden split 上验证动态 action、预算、暂停恢复、轨迹评分和 Gold 隔离 | 0 真实 Provider 请求、0 外部工具调用；报告记录 Prompt/schema/policy/source revision 与结构化输出通过率，但明确不具备晋级资格 | `src/nbtriage/bounded_agent.py`、`tools/nbtriage_maintainer/agent_evaluation.py`、`evals/datasets/fixtures/b4-bounded-agent-v1.json`、`evals/datasets/splits/b4-gate-v1.json` |
 | `just maintainer evaluate-b4-real` | 在明确付费/出站授权后，让同一 Provider/model 多 trial 对照 B1、B3 与 B4 | 支持 DeepSeek / OpenAI Responses 与 Anthropic Messages；只用 forward-hidden 指标判断晋级；B1/B4 后验结构拒绝计入 trial，未知费用仍中止；每次请求前/响应后更新 partial audit，success/partial 路径禁止覆盖；仍无完整质量报告或 Provider 资格 | `tools/nbtriage_maintainer/agent_evaluation.py`、`tools/nbtriage_maintainer/cli.py`、`evals/datasets/splits/b4-gate-v1.json` |
-| `just maintainer publish-evaluation-mlflow` | 维护者把已经落盘的评测 JSON 发布到显式 MLflow experiment 以比较迭代；不属于插件安装接口 | MLflow 只持有可查询副本，不参与付费评测；正式 B0、S3、B3 policy / receipt、bot-docs 与人工评分报告会从报告绑定的本地来源离线重放并要求结果全等，B1 只校验输入与源码谱系；按报告与终态 audit 摘要幂等；真实 B4 成功报告缺少完成态 audit 时拒绝；默认写本机 `127.0.0.1` | `tools/nbtriage_maintainer/mlflow_tracking.py`、`tools/nbtriage_maintainer/cli.py`、`docs/adr/0016-keep-maintainer-evaluation-tooling-out-of-install-surface.md` |
+| `just maintainer publish-evaluation-mlflow` | 维护者把已经落盘的评测 JSON 发布到显式 MLflow experiment 以比较迭代；不属于插件安装接口 | MLflow 只持有按内容摘要幂等的查询副本，不重新执行评测；默认只接受小型正式评测 ID 白名单，显式允许的自定义或未知工件统一标为不可比较；真实 B4 成功报告还必须配对完成态同名 audit 且来源摘要一致；默认写本机 `127.0.0.1` | `tools/nbtriage_maintainer/mlflow_tracking.py`、`tools/nbtriage_maintainer/cli.py`、`docs/adr/0016-keep-maintainer-evaluation-tooling-out-of-install-surface.md` |
 | `just maintainer session-*` | 从冻结 B1 预测创建、接收脱敏回执、审批、关联已有 Oracle 结果并查看支持会话 | `needs_evidence` 只接收当前槽位并从剩余候选重规划；`verify` 未显式审批不能附加结果；不执行代码或外部写入 | `tools/nbtriage_maintainer/sessions.py`、`tools/nbtriage_maintainer/cli.py` |
 | `RuntimeObservation` / `RuntimeObservationBuffer` | 接收 NoneBot 观察桥提交的最小化事件、Matcher、插件、API 与异常标识，并按关联 ID 生成证据包 | 不接收消息正文、用户 / 群 ID、API 参数或结果；容量与 TTL 必须由调用方显式给出；仅单进程内存 | `src/nbtriage/runtime_observations.py` |
 | `NoneBotRuntimeObserver` | 显式注册 NoneBot 2.5 公共 hook，用事件 state 关联 event、实际 Matcher 与其内部 API 生命周期 | fail-open；只读取框架 / 插件标识和异常类 / 栈模块；Matcher 外 API 不猜测归属 | `src/nonebot_plugin_triage/nonebot_runtime.py` |
@@ -145,7 +143,7 @@ LLM 只能提出引用既有 Evidence ID 与 revision 的语义 Claim，不能�
 | `LiveTrialService` / trial Matchers | 为已受理 incident 建立 observation-only trial，记录查询曝光、revisioned 枚举反馈和活动聚合 | 默认 off；observe 必须有本地轮转 JSONL sink；只保存最小失败形状和计数，写入失败计数但不改变受理；反馈 / 统计要求 `SUPERUSER`；零模型 / 工具 / 外部写入 | `src/nbtriage/live_trials.py`、`src/nonebot_plugin_triage/trials.py`、`src/nonebot_plugin_triage/live_reports.py`、`src/nonebot_plugin_triage/handlers.py` |
 | `build_reply_report_signals` / `build_unlinked_report_signals` | 分别把已命中的引用或无证据故障转为确定性入口信号 | 两者都要求上游已判定用户在报告问题；没有明确失败时不把生命周期成功误称为行为成功；不调用模型 | `src/nbtriage/reply_reports.py` |
 | `parse_intake_signals` / `route_intake` | 把受信边界产生的显式触发、意图、相关性、命令解析、运行与安全信号分流为教学、纠错、疑似故障、无关或危险 | 不接收文本、命令原文或身份；危险优先、解析错误先纠错、矛盾或不足只补问；不调用模型或工具 | `src/nbtriage/intake.py` |
-| 公开能力 Provider / 部署本地能力影子 | 普通用户解释显式 Provider 或自动确定公开的当前 adapter 能力；SUPERUSER 可检索已加载 Alconna、普通 Matcher、被动能力与插件来源形成的影子候选；首阶段按用户可观察效果归并运行事实 | 普通查询在 SQL 召回前限定当前 adapter 的 public，partial / stale 与 blocking issue 均失败关闭；维护者回复保留受众标签、具体 issue 与 opaque；已抑制有证据的支撑 Matcher，未知映射不进入普通视图；不重跑 `parse()`、Rule、Permission 或 handler | `src/nonebot_plugin_triage/support_intake.py`、`src/nonebot_plugin_triage/capability_shadow.py`、`src/nonebot_plugin_triage/capability_snapshot.py`、`src/nbtriage/capabilities.py` |
+| 公开能力 Provider / 部署本地能力影子 | 普通用户解释显式 Provider 或自动确定公开的当前 adapter 能力；SUPERUSER 可检索已加载 Alconna、普通 Matcher、被动能力与插件来源形成的影子候选 | 普通查询在 SQL 召回前限定当前 adapter 的 public，partial / stale 与 blocking issue 均失败关闭；维护者回复保留受众标签、具体 issue 与 opaque；不推断跨 Matcher 角色，不重跑 `parse()`、Rule、Permission 或 handler | `src/nonebot_plugin_triage/support_intake.py`、`src/nonebot_plugin_triage/capability_shadow.py`、`src/nonebot_plugin_triage/capability_snapshot.py`、`src/nbtriage/capabilities.py` |
 | `SupportCase` schema v1 | 冻结打开时输入边界，分离当前 API 快照中的后续材料 | Issue 正文可能被事后编辑，必须保留时间完整性限制 | `tools/nbtriage_maintainer/models.py` |
 
 ## 逻辑组件与依赖方向
@@ -196,8 +194,8 @@ existing Arparma ─────→ minimal parse receipt ───────�
 standard pyproject → declared inventory → artifact revision ─┐
 loaded module names ─────────────────────────────────────────┴─→ deployment reconciliation status
 
-构建期 Plugin / Matcher / handler / Rule facts → bounded effect analysis + capability mapping（首阶段已接入）
-                                                → user-observable Capability → ServingView
+构建期 Plugin / Matcher / Rule facts → deterministic capability record → ServingView
+动态或被动入口且展示字段不足 ───────────────────────────────→ blocking issue
 
 current runtime capability record → bounded handler/config EvidenceUnit
                                    → policy-first config projection
@@ -228,7 +226,7 @@ current runtime capability record → bounded handler/config EvidenceUnit
 | Provider response usage / identity | 从 Pydantic AI 响应提取 Provider、model、request ID 与可选 fingerprint，并按返回身份归一化 microUSD | 返回 Provider 不匹配或模型漂移时不回退请求侧价格；身份缺失可记录但真实 Gate 不得晋级 | 无长期状态 | `src/nbtriage/model_usage.py`、`src/nbtriage/model_adapters.py`、`src/nbtriage/pydantic_agent_adapter.py` |
 | Evidence request policy | 按故障阶段把 B1 多槽位候选收缩为当前轮唯一问题 | 只用于维护者离线评测与会话；只能选择模型候选；空候选失败；validation 冻结后等待前向隐藏集 | validation 策略工件 | `tools/nbtriage_maintainer/evidence_policy.py`、`tools/nbtriage_maintainer/evidence_policy_evaluation.py` |
 | Evidence receipt contract | 把九类补证限制为已脱敏、字段白名单化的结构摘要和原始材料指纹；schema v2 以域分隔规范摘要绑定 receipt / session / Case / slot、原始材料指纹、字节数与规范化 facts | 拒绝任意额外字段、疑似 secret、错绑、不完整摘要和版本错配；不读取原始材料；`receipt_revision` 是内容地址而非签名，不能证明 facts 真实来自指纹所指材料 | 合成 Fixture 与冻结守门报告 | `src/nbtriage/evidence_receipts.py`、`tools/nbtriage_maintainer/evidence_receipt_evaluation.py` |
-| Answer review exporter / rubric evaluator | B4 schema v3 先保留完成态 `answer + citations` 和白名单化 review context；导出器再把真实多 trial 的 `forward_hidden` 候选转换为待人工评分的固定集，评分器按 groundedness、completeness、limitation awareness 和 overclaim control 四轴汇总 | Gold 只在模型运行后生成评审要点；标注 schema v3 以域分隔规范摘要同时绑定整个 Fixture 与 rubric 语义，候选终审还会核对 B4 Fixture/split 原始字节、严格真实报告与同名 completed partial audit，重算请求账本、trial 覆盖、基础指标和 promotion gate 后再重放导出投影；旧评分不能套用到同 ID 的新回答、Context、评分锚点或门槛；草稿标注明确不可评分；通过结果只属于 `offline_fixed_fixture`，结构化 B4 Gate 和未来部署 shadow/canary 均不能被它替代；这些摘要保证内容错绑和内部不一致失败关闭，不是本地文件防篡改签名，也不证明 Provider 身份真实性 | 版本化 rubric、合成校准 Fixture与校准标注；候选评审包和完整报告写入本地 `artifacts/` 或显式 MLflow | `tools/nbtriage_maintainer/answer_review_export.py`、`tools/nbtriage_maintainer/answer_quality_evaluation.py`、`evals/rubrics/answer-quality-v1.json`、`evals/curation/answer-quality/calibration-v1.json` |
+| Answer review exporter / rubric evaluator | B4 schema v3 先保留完成态 `answer + citations` 和白名单化 review context；导出器再把真实多 trial 的 `forward_hidden` 候选转换为待人工评分的固定集，评分器按 groundedness、completeness、limitation awareness 和 overclaim control 四轴汇总 | Gold 只在模型运行后生成评审要点；标注 schema v3 绑定整个 Fixture 与冻结 rubric；候选来源要求真实 B4 报告、同名 completed partial audit，以及一致的 evaluation contract、Fixture/split ID 与摘要。该校验防止明显错绑，不重演账本、trial 指标或 promotion gate，也不是本地文件防篡改签名或 Provider 身份证明 | 版本化 rubric、合成校准 Fixture与校准标注；候选评审包和完整报告写入本地 `artifacts/` 或显式 MLflow | `tools/nbtriage_maintainer/answer_review_export.py`、`tools/nbtriage_maintainer/answer_quality_evaluation.py`、`evals/rubrics/answer-quality-v1.json`、`evals/curation/answer-quality/calibration-v1.json` |
 | Support session control plane | 把 B1 route 映射为固定动作，约束回执、重规划、审批与结果附加的合法状态变化 | 读取冻结报告、合格回执和 Runtime validator 结论；不读取 Issue 指令执行工具 | schema v4 本地会话 JSON、预测报告哈希、带 `receipt_revision` 的脱敏回执摘要、action result 与顺序事件；旧 schema 失败关闭 | `tools/nbtriage_maintainer/sessions.py` |
 | B4 bounded Agent runtime | 拥有循环、按 capability / 已观察轨迹收缩 action 白名单、参数二次校验、跨步预算、observation 执行、暂停恢复和稳定停止原因 | 只读取既有 `RuntimeEvidenceBundle`、train-only retriever 与精确绑定的脱敏回执；不导入 Provider、Pydantic AI 或 NoneBot 类型 | schema v2 `AgentRunState`：结构化 action、可重算 `receipt_revision` 的规范化 observation、摘要、引用、usage、outcome 与可选脱敏终态失败分类；旧 state 失败关闭 | `src/nbtriage/bounded_agent.py` |
 | Pydantic AI Agent step adapter | 把本步允许 action 与 citation 约束映射为唯一 `propose_action` 原生工具信封，并把唯一调用 deferred 给领域层 | 每步一个临时 Agent；`retries=0`、一次请求、最多一个调用；hard timeout 取 client timeout 与领域剩余 deadline 的较小值，零剩余值不耗 call slot，`TimeoutError` 交给 runner 映射 `DEADLINE`；不执行项目工具、不持久化框架历史；DeepSeek Responses 依赖 Pydantic + 领域本地复核；Provider 响应后的框架错误通过 `capture_run_messages()` 保留 usage / identity | 无长期状态 | `src/nbtriage/pydantic_agent_adapter.py`、`tools/nbtriage_maintainer/deepseek_adapter.py`、`src/nbtriage/openai_adapter.py`、`src/nbtriage/anthropic_adapter.py` |
@@ -240,7 +238,7 @@ current runtime capability record → bounded handler/config EvidenceUnit
 | OneBot V11 outgoing reference provider | 从 Matcher 内成功群发送结果提取 message ID | 只在安装 OneBot 时加载；不读取被回复正文或执行外部查询；运行证据与 Thread 分别写入独立 HMAC 索引 | Provider 本地丢弃计数；出站映射进入通用引用索引或 Thread 引用索引 | `src/nonebot_plugin_triage/onebot_v11_references.py` |
 | Support Thread store / Turn coordinator / reference bridge | 保存不含正文的短期教学和澄清状态；一次性消费 Reply，并让同一 Thread 同时只有一个处理轮 | 有界内存、idle / absolute TTL、latest-only；HMAC 绑定 adapter、Bot、场景和 actor；发送成功才原子提交上下文与新引用，失败关闭且不复活旧引用；不跨重启 | `SupportThreadRecord`、短期 lease 与独立 HMAC 引用索引；不保存聊天历史或原始平台身份 | `src/nbtriage/support_threads.py`、`src/nonebot_plugin_triage/thread_references.py` |
 | Alconna triage entry | 每轮接收必选 `triage` 后的自由文本，`@Bot` 和 Reply 可选；有效 Reply 只负责选择短期 Thread | Alconna / UniSeg 提供结构化 Reply / Target；入口不读 Reply 正文 / origin；Thread 索引另行校验作用域、TTL 和最近回答；所有求助轮次先过轻量 HMAC 限流，只有疑似故障再过建单限流并进入 incident | 显式公开能力 Provider；SUPERUSER 可读取影子候选；短期 Thread；疑似故障才有短期 LiveIncident | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support_intake.py`、`src/nonebot_plugin_triage/live_reports.py` |
-| Deployment-local capability shadow | 启动钩子后台生成字段级 Claim、Evidence、Constraint 和本地 FTS5 索引；以 Matcher 为构建期事实锚点，并用有界 handler 效果分析派生首阶段用户能力与压缩支撑证据 | 默认关闭；扫描与构建在线程中执行；首次可服务 generation 发布前普通用户回退显式 Provider；源码哈希不依赖 `uv.lock`；普通用户只读派生 ServingView，SUPERUSER 鉴权后可定向检索未解决或受限记录；支撑 Matcher 已按证据抑制，未知映射失败关闭；独立事实/映射表、稳定能力身份和一般多对多图尚未实现；失败保留上一个同 schema 索引，普通视图另行拒绝 partial / stale | 配置路径下的可删除 SQLite 派生数据与内存构建状态 | `src/nonebot_plugin_triage/capability_snapshot.py`、`src/nonebot_plugin_triage/capability_shadow.py`、`src/nbtriage/capabilities.py` |
+| Deployment-local capability shadow | 启动钩子后台生成字段级 Claim、Evidence、Constraint 和本地 FTS5 索引；每个已观察命令或 Matcher 保持为独立记录 | 默认关闭；扫描与构建在线程中执行；首次可服务 generation 发布前普通用户回退显式 Provider；普通用户只读派生 ServingView，SUPERUSER 鉴权后可定向检索未解决或受限记录；不做 handler 效果、跨 Matcher 角色或逐记录源码清单推断；失败保留上一个同 schema 索引，普通视图另行拒绝 partial / stale | 配置路径下的可删除 SQLite 派生数据与内存构建状态 | `src/nonebot_plugin_triage/capability_snapshot.py`、`src/nonebot_plugin_triage/capability_shadow.py`、`src/nbtriage/capabilities.py` |
 | Maintainer incident query | 在 NoneBot `SUPERUSER` 权限通过后，按编号读取固定字段摘要与活动 cluster 计数 | 普通成员在读取前被拒绝；无任意时间范围、日志导出或原始事件读取 | 读取现有 LiveIncident 与同缓冲内 cluster；不创建持久状态 | `src/nbtriage/live_incidents.py`、`src/nbtriage/incident_queries.py`、`src/nonebot_plugin_triage/incident_queries.py`、`src/nonebot_plugin_triage/handlers.py` |
 | Observation-first trial | 在 incident 已受理后建立 `intake-v1` trial，追加 started / summary_viewed / feedback 事件并提供活动与离线窗口统计 | 默认 off；observe 需要审计 sink；失败写入 fail-open 且计数；只接受枚举反馈；离线汇总严格校验后只返回无标识聚合；不调用模型或工具 | 短期有界 trial 状态；本地单进程轮转 JSONL；trial / event / incident 不透明 ID 与最小失败形状；脱敏窗口摘要 | `src/nbtriage/live_trials.py`、`tools/nbtriage_maintainer/cli.py`、`src/nonebot_plugin_triage/trials.py`、`src/nonebot_plugin_triage/live_reports.py`、`src/nonebot_plugin_triage/handlers.py` |
 | Explicit-report adapter | 根据匹配 correlation 的运行 bundle 或无证据空 bundle 构造确定性故障信号 | 上游已确认故障意图；只把明确失败标为失败；不读取文本 | 无长期状态 | `src/nbtriage/reply_reports.py` |
@@ -308,9 +306,8 @@ current runtime capability record → bounded handler/config EvidenceUnit
 - 支持入口的危险标记拥有绝对路由优先级；命令解析错误不能直接升级为插件故障，冲突或不足信号不能强行产生责任层；
 - 能力发现不得调用已注册命令的 `parse()`；Alconna 元数据只能作为不受信证据，不能覆盖策略或触发工具；
 - 部署本地能力影子不得调用任意第三方 Rule、Permission、handler、behavior 或 executor；绝对本机路径、Token、配置原文和私密日志不得进入索引；SUPERUSER、`CommandMeta.hide=True` 与内部管理能力必须保存为 `restricted`。普通用户的召回、源码工具和模型上下文从源头排除它们，并对精确询问表现为未找到；SUPERUSER 鉴权只开放确定性维护者视图，不自动授权把 restricted 源码交给 LLM，模型深查需要独立显式授权；
-- Matcher 注册、LLM 语义相似或同属一个插件都不能单独证明 Capability 身份。支撑 Matcher 与带
-  `capability_mapping_unknown` 的候选不进入普通 ServingView；LLM 映射 Claim 必须引用已有 Evidence ID 与
-  revision，并经过模型外结构、披露和平台门禁；
+- Matcher 注册、LLM 语义相似或同属一个插件都不能单独证明跨 Matcher 的 Capability 身份。当前不生成这类
+  映射；每条记录必须独立通过结构、披露、平台和完整性门禁，动态入口证据不足时继续失败关闭；
 - 能力回答由事实输出合同约束而不是固定话术：模型可自行组织语言；公开能力有可靠证据时应说明可观察的场景、角色和限流条件，整项 restricted 能力仍不得借权限说明向普通用户暴露；Config 引用与语义输出合同已有库级实现，自定义约束解释及在线模型尚未接入；
 - 配置值模型输入由部署者策略守门：`NBTRIAGE_RESTRICTED_CONFIG` 按大小写不敏感的顶层 NoneBot 键整项拒绝；只有当前能力源码可证明引用、运行时类型与 revision 对齐且未受限的有界值可以瞬时进入单次分析请求。完整 `.env`、完整 Config、`os.environ` 枚举、受限值及任何配置值持久化始终禁止；
 - 不自动创建 Issue、PR、评论或标签；
