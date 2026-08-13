@@ -43,6 +43,8 @@ pip-delete-this-directory.txt
 nosetests.xml
 .hypothesis/
 .pytest_cache/
+.pytest-root*/
+.tmp-pytest*/
 .pytest-tmp-*/
 .pytest-review*/
 .tmp/
