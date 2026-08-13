@@ -952,24 +952,19 @@ async def test_public_shadow_capability_guidance_is_available_to_regular_user(
         RecordState,
         SourceRevision,
     )
-    from nbtriage.module_source_revisions import scan_python_module_source
     from nonebot_plugin_triage import handlers
     from nonebot_plugin_triage.capability_shadow import CapabilityShadowService
 
     module_name = "nonebot_plugin_triage"
-    module_path = Path(__file__).parents[2] / "src" / module_name
-    scan = scan_python_module_source(module_name, module_path)
-    assert scan.manifest is not None
-    manifest = scan.manifest
+    revision = "0" * 64
     source = SourceRevision(
         source_id="integration-plugin-source",
         kind="plugin_source",
-        revision=manifest.revision,
+        revision=revision,
         locator=f"{module_name}/__init__.py",
         payload={
             "module_name": module_name,
             "line": None,
-            "module_source_manifest": manifest.to_dict(),
         },
     )
     evidence = EvidenceRef(
@@ -977,7 +972,7 @@ async def test_public_shadow_capability_guidance_is_available_to_regular_user(
         source_id=source.source_id,
         kind="plugin_source",
         locator=f"{module_name}/__init__.py",
-        content_hash=manifest.revision,
+        content_hash=revision,
         payload={"module_name": module_name, "line": None},
     )
 
@@ -1001,10 +996,9 @@ async def test_public_shadow_capability_guidance_is_available_to_regular_user(
                 module_name=module_name,
                 status=ArtifactRevisionStatus.LOCATED,
                 source_kind=ArtifactSourceKind.LOCAL,
-                revision=manifest.revision,
+                revision=revision,
                 evidence=(),
                 distribution_name="nonebot-plugin-triage",
-                module_source_manifest=manifest,
             )
 
         return build_capability_deployment(
