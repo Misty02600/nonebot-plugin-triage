@@ -9,10 +9,9 @@ from nonebot.adapters import Bot, Event
 
 from nonebot_plugin_triage.support_intake import (
     PublicCapability,
-    SupportIntent,
-    classify_support_request,
     collect_visible_alconna_capabilities,
     format_capability_guidance,
+    normalize_support_request,
     register_public_alconna_capability,
     registered_public_alconna_capability_paths,
     unregister_public_alconna_capability,
@@ -20,25 +19,23 @@ from nonebot_plugin_triage.support_intake import (
 
 
 @pytest.mark.parametrize(
-    ("text", "intent", "content"),
+    ("text", "content", "is_empty"),
     [
-        ("", SupportIntent.EMPTY, ""),
-        ("请受理这个故障", SupportIntent.REPORT_PROBLEM, "请受理这个故障"),
-        ("请受理这个故障！", SupportIntent.REPORT_PROBLEM, "请受理这个故障！"),
-        ("确认按故障处理", SupportIntent.REPORT_PROBLEM, "确认按故障处理"),
-        ("提醒功能怎么使用", SupportIntent.CAPABILITY_GUIDANCE, "提醒功能怎么使用"),
-        ("今天天气不错", SupportIntent.UNKNOWN, "今天天气不错"),
+        ("", "", True),
+        (" \n\t ", "", True),
+        ("  提醒功能  怎么使用  ", "提醒功能 怎么使用", False),
+        ("今天天气不错", "今天天气不错", False),
     ],
 )
-def test_support_request_deterministic_fast_paths(
+def test_support_request_deterministic_normalization(
     text: str,
-    intent: SupportIntent,
     content: str,
+    is_empty: bool,
 ) -> None:
-    result = classify_support_request(text)
+    result = normalize_support_request(text)
 
-    assert result.intent is intent
     assert result.content == content
+    assert result.is_empty is is_empty
 
 
 @pytest.mark.parametrize(
@@ -50,6 +47,10 @@ def test_support_request_deterministic_fast_paths(
         "刚才执行后报错了",
         "报错",
         "报障",
+        "请受理这个故障",
+        "请受理这个故障！",
+        "确认按故障处理",
+        "确认按故障处理！",
         "为什么不工作",
         "这不是报错，只想问提醒怎么用",
         "这个功能不能用吗，怎么开启",
@@ -76,11 +77,11 @@ def test_support_request_deterministic_fast_paths(
         "报错名词解释",
     ],
 )
-def test_non_explicit_text_never_requests_incident(text: str) -> None:
-    result = classify_support_request(text)
+def test_normalizer_never_infers_semantic_intent(text: str) -> None:
+    result = normalize_support_request(text)
 
-    assert result.intent is not SupportIntent.REPORT_PROBLEM
     assert result.content == text
+    assert result.is_empty is False
 
 
 def test_specific_capability_question_returns_usage() -> None:
@@ -104,7 +105,7 @@ def test_specific_capability_question_returns_usage() -> None:
     assert message == ("提醒：创建提醒\n用法：提醒 <时间> <内容>\n示例：提醒 20 分钟后交作业")
 
 
-def test_generic_capability_question_lists_available_commands() -> None:
+def test_query_without_capability_subject_lists_available_commands() -> None:
     capabilities = (
         PublicCapability("提醒", "创建提醒", "提醒 <时间>", None),
         PublicCapability("天气", "查询天气", "天气 <城市>", None),
@@ -115,6 +116,17 @@ def test_generic_capability_question_lists_available_commands() -> None:
     assert "- 提醒：创建提醒" in message
     assert "- 天气：查询天气" in message
     assert message.endswith("告诉我具体功能名，我再给你用法。")
+
+
+def test_capability_matching_does_not_strip_language_specific_words() -> None:
+    capabilities = (
+        PublicCapability("帮助", "查看命令索引", "帮助", None),
+        PublicCapability("天气", "查询天气", "天气 <城市>", None),
+    )
+
+    message = format_capability_guidance("帮助", capabilities)
+
+    assert message == "帮助：查看命令索引\n用法：帮助"
 
 
 def test_empty_capability_result_uses_neutral_reply() -> None:

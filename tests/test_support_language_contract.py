@@ -10,7 +10,7 @@ from nonebot.adapters import Event
 
 from nbtriage.support_threads import SupportThreadRecord, ThreadKind, ThreadStatus
 from nonebot_plugin_triage import handlers
-from nonebot_plugin_triage.support_intake import SupportIntent, classify_support_request
+from nonebot_plugin_triage.support_intake import normalize_support_request
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "evals" / "datasets" / "fixtures" / "support-language-contract-v1.json"
@@ -43,29 +43,15 @@ def _thread(case: dict[str, Any]) -> SupportThreadRecord:
     )
 
 
-def _deterministic_outcome(case: dict[str, Any]) -> tuple[SupportIntent, str, str]:
+def _deterministic_outcome(case: dict[str, Any]) -> tuple[str, str]:
     text = cast(str, case["text"])
-    direct_intent = classify_support_request(text).intent
     turn_type = cast(str, case["turn_type"])
     if turn_type == "initial":
-        outcomes = {
-            SupportIntent.EMPTY: "open_clarification",
-            SupportIntent.CAPABILITY_GUIDANCE: "open_guidance",
-            SupportIntent.REPORT_PROBLEM: "accept_incident",
-            SupportIntent.UNKNOWN: "open_clarification",
-        }
-        return direct_intent, outcomes[direct_intent], text
+        return "open_clarification", normalize_support_request(text).content
 
     thread = _thread(case)
     query = handlers._continuation_query(thread, text)
-    if handlers._requests_thread_close(text):
-        return direct_intent, "close_user", query
-    if direct_intent is SupportIntent.REPORT_PROBLEM:
-        return direct_intent, "accept_incident", query
-    contextual_intent = classify_support_request(query).intent
-    if thread.kind is ThreadKind.GUIDANCE or contextual_intent is SupportIntent.CAPABILITY_GUIDANCE:
-        return direct_intent, "continue_guidance", query
-    return direct_intent, "close_unresolved", query
+    return "close_unresolved", query
 
 
 def test_support_language_fixture_is_public_deterministic_contract() -> None:
@@ -73,12 +59,11 @@ def test_support_language_fixture_is_public_deterministic_contract() -> None:
 
     assert payload["schema_version"] == 1
     assert payload["fixture_set_id"] == "support-language-contract-v1"
-    assert payload["evaluation_kind"] == "deterministic_language_contract"
+    assert payload["evaluation_kind"] == "deterministic_framing_contract"
     assert payload["sample_origin"] == "maintainer_authored_production_like"
     assert payload["synthetic_only"] is True
     assert payload["contains_real_user_data"] is False
-    assert payload["llm_prompt_eval"] is False
-    assert payload["expected_model_calls"] == 0
+    assert payload["semantic_quality_eval"] is False
     assert payload["expected_external_tool_calls"] == 0
     assert payload["contract"] == {
         "command": "triage",
@@ -106,9 +91,8 @@ def test_explicit_triage_trigger_contract(case: dict[str, Any]) -> None:
     ids=lambda case: case["case_id"],
 )
 def test_support_utterance_contract(case: dict[str, Any]) -> None:
-    intent, outcome, query = _deterministic_outcome(case)
+    outcome, query = _deterministic_outcome(case)
 
-    assert intent.value == case["expected_intent"]
     assert outcome == case["expected_outcome"]
     if "expected_context_query" in case:
         assert query == case["expected_context_query"]

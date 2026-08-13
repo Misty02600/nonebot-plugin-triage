@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "support-semantic-v3",
+  "split": "development",
+  "semantic_schema_version": 3,
+  "synthetic_only": true,
+  "contains_real_user_data": false,
+  "cases": [
+    {"case_id":"guidance-basic","text":"提醒功能怎么用？","expected_status":"assessed","expected_reason":null,"expected_goals":["guidance"],"expected_reported_observation":false,"expected_maintenance_detail_requested":false},
+    {"case_id":"guidance-correction","text":"提醒命令少了时间参数，正确格式怎么写？","expected_status":"assessed","expected_reason":null,"expected_goals":["guidance"],"expected_reported_observation":false,"expected_maintenance_detail_requested":false},
+    {"case_id":"behavior-basic","text":"为什么提醒只在群聊里生效？","expected_status":"assessed","expected_reason":null,"expected_goals":["behavior_explanation"],"expected_reported_observation":false,"expected_maintenance_detail_requested":false},
+    {"case_id":"behavior-error-meaning","text":"PermissionError 在这里是什么意思？","expected_status":"assessed","expected_reason":null,"expected_goals":["behavior_explanation"],"expected_reported_observation":false,"expected_maintenance_detail_requested":false},
+    {"case_id":"maintenance-flow","text":"提醒会经过哪些 Matcher、Rule 和 handler？","expected_status":"assessed","expected_reason":null,"expected_goals":["behavior_explanation"],"expected_reported_observation":false,"expected_maintenance_detail_requested":true},
+    {"case_id":"maintenance-config","text":"当前部署是哪个配置字段控制语音功能的？","expected_status":"assessed","expected_reason":null,"expected_goals":["behavior_explanation"],"expected_reported_observation":false,"expected_maintenance_detail_requested":true},
+    {"case_id":"observation-only","text":"我刚才发了提醒，但机器人没有响应。","expected_status":"assessed","expected_reason":null,"expected_goals":[],"expected_reported_observation":true,"expected_maintenance_detail_requested":false},
+    {"case_id":"observation-explanation","text":"我刚才发提醒没响应，为什么？","expected_status":"assessed","expected_reason":null,"expected_goals":["behavior_explanation"],"expected_reported_observation":true,"expected_maintenance_detail_requested":false},
+    {"case_id":"observation-guidance","text":"我刚才发提醒没响应，正确用法是什么？","expected_status":"assessed","expected_reason":null,"expected_goals":["guidance"],"expected_reported_observation":true,"expected_maintenance_detail_requested":false},
+    {"case_id":"observation-maintenance","text":"我刚才发提醒没响应，哪个部署配置控制它？","expected_status":"assessed","expected_reason":null,"expected_goals":["behavior_explanation"],"expected_reported_observation":true,"expected_maintenance_detail_requested":true},
+    {"case_id":"incident-explicit","text":"我刚才发提醒没响应，请帮我受理这个故障。","expected_status":"assessed","expected_reason":null,"expected_goals":["incident_intake"],"expected_reported_observation":true,"expected_maintenance_detail_requested":false},
+    {"case_id":"incident-request-no-observation","text":"我要提交一个故障，稍后再补充现象。","expected_status":"assessed","expected_reason":null,"expected_goals":["incident_intake"],"expected_reported_observation":false,"expected_maintenance_detail_requested":false},
+    {"case_id":"not-incident","text":"刚才报错了，我只是想知道原因，不要建立故障记录。","expected_status":"assessed","expected_reason":null,"expected_goals":["behavior_explanation"],"expected_reported_observation":true,"expected_maintenance_detail_requested":false},
+    {"case_id":"feature-feedback","text":"希望提醒支持只在工作日重复。","expected_status":"assessed","expected_reason":null,"expected_goals":["feature_feedback"],"expected_reported_observation":false,"expected_maintenance_detail_requested":false},
+    {"case_id":"feature-question-not-feedback","text":"提醒现在支持工作日重复吗？","expected_status":"assessed","expected_reason":null,"expected_goals":["guidance"],"expected_reported_observation":false,"expected_maintenance_detail_requested":false},
+    {"case_id":"multi-guidance-feedback","text":"提醒怎么用？另外希望以后支持农历日期。","expected_status":"assessed","expected_reason":null,"expected_goals":["guidance","feature_feedback"],"expected_reported_observation":false,"expected_maintenance_detail_requested":false},
+    {"case_id":"multi-incident-maintenance","text":"这次欢迎消息没发出，请受理故障并告诉我内部哪个开关控制它。","expected_status":"assessed","expected_reason":null,"expected_goals":["incident_intake","behavior_explanation"],"expected_reported_observation":true,"expected_maintenance_detail_requested":true},
+    {"case_id":"hypothetical-not-observation","text":"如果提醒以后报错，通常意味着什么？","expected_status":"assessed","expected_reason":null,"expected_goals":["behavior_explanation"],"expected_reported_observation":false,"expected_maintenance_detail_requested":false},
+    {"case_id":"ambiguous-reference","text":"它为什么这样？","expected_status":"needs_clarification","expected_reason":"ambiguous_reference","expected_goals":[],"expected_reported_observation":false,"expected_maintenance_detail_requested":false},
+    {"case_id":"unrelated","text":"帮我写一首关于夏天的诗。","expected_status":"unsupported","expected_reason":"unsupported_request","expected_goals":[],"expected_reported_observation":false,"expected_maintenance_detail_requested":false}
+  ]
+}

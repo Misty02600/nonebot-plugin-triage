@@ -40,6 +40,7 @@ _REASON_LABELS = {
     "command_rejected": "命令解析或权限拒绝",
     "runtime_failure_observed": "观察到明确运行失败",
     "problem_reported": "用户显式报告问题",
+    "reported_failure_unverified": "用户报告的现象尚未验证",
     "capability_requested": "用户请求功能说明",
     "insufficient_structured_signals": "结构化证据不足",
 }

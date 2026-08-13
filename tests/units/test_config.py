@@ -1,44 +1,95 @@
+from pathlib import Path
+
 import pytest
 from nonebot.config import BaseSettings
 from pydantic import ValidationError
 
 from nonebot_plugin_triage.config import NBTriageConfig
+from nonebot_plugin_triage.product_contract import (
+    FEEDBACK_COMMAND,
+    MAINTAINER_MATCHER_PRIORITY,
+    QUERY_COMMAND,
+    TRIAGE_COMMAND,
+    TRIAGE_MATCHER_PRIORITY,
+    TRIAGE_REQUEST_MAX_CHARS,
+    TRIAL_STATS_COMMAND,
+)
 
 
-def test_plugin_config_normalizes_and_separates_public_commands() -> None:
-    config = NBTriageConfig(
-        nbtriage_command="  support  ",
-        nbtriage_query_command="  受理查询  ",
-    )
-
-    assert config.nbtriage_command == "support"
-    assert config.nbtriage_query_command == "受理查询"
-    with pytest.raises(ValidationError, match="must be different"):
-        NBTriageConfig(
-            nbtriage_command="支持",
-            nbtriage_query_command="支持",
-        )
-    with pytest.raises(ValidationError, match="must be different"):
-        NBTriageConfig(
-            nbtriage_feedback_command="报错查询",
-        )
-
-
-def test_capability_shadow_is_opt_in_and_uses_a_local_path() -> None:
-    assert NBTriageConfig().nbtriage_capability_shadow_path is None
+def test_fixed_product_contract_values_are_not_plugin_configuration() -> None:
     assert (
-        NBTriageConfig(
-            nbtriage_capability_shadow_path="  data/capabilities.sqlite3  "
-        ).nbtriage_capability_shadow_path
-        == "data/capabilities.sqlite3"
+        TRIAGE_COMMAND,
+        QUERY_COMMAND,
+        FEEDBACK_COMMAND,
+        TRIAL_STATS_COMMAND,
+    ) == ("triage", "报错查询", "报错反馈", "报错统计")
+    assert (TRIAGE_MATCHER_PRIORITY, MAINTAINER_MATCHER_PRIORITY) == (10, 10)
+    assert TRIAGE_REQUEST_MAX_CHARS == 2_000
+
+
+@pytest.mark.parametrize(
+    ("key", "replacement"),
+    [
+        ("nbtriage_command", "fixed to triage"),
+        ("nbtriage_query_command", "fixed to 报错查询"),
+        ("nbtriage_feedback_command", "fixed to 报错反馈"),
+        ("nbtriage_trial_stats_command", "fixed to 报错统计"),
+        ("nbtriage_priority", "fixed to 10"),
+        ("nbtriage_query_priority", "fixed to 10"),
+        ("nbtriage_request_max_chars", "fixed to 2000"),
+        ("nbtriage_support_cooldown_seconds", "nbtriage_cooldown_seconds"),
+        ("nbtriage_report_cooldown_seconds", "nbtriage_cooldown_seconds"),
+        ("nbtriage_capability_shadow_path", "LocalStore cache"),
+    ],
+)
+def test_removed_product_contract_settings_fail_fast(key: str, replacement: str) -> None:
+    with pytest.raises(ValidationError, match=replacement):
+        NBTriageConfig.model_validate({key: "legacy-value"})
+
+
+def test_shared_triage_cooldown_has_a_bounded_default() -> None:
+    assert NBTriageConfig().nbtriage_cooldown_seconds == 2
+    assert NBTriageConfig(nbtriage_cooldown_seconds=30).nbtriage_cooldown_seconds == 30
+    with pytest.raises(ValidationError):
+        NBTriageConfig(nbtriage_cooldown_seconds=0)
+
+
+def test_readme_configuration_table_covers_every_public_field() -> None:
+    readme = (Path(__file__).parents[2] / "README.md").read_text(encoding="utf-8")
+    table = readme.split("## 配置", 1)[1].split("OpenCode Go 配置示例", 1)[0]
+
+    for field in NBTriageConfig.model_fields:
+        assert f"| `{field.upper()}` |" in table
+
+    for removed in (
+        "NBTRIAGE_COMMAND",
+        "NBTRIAGE_PRIORITY",
+        "NBTRIAGE_REQUEST_MAX_CHARS",
+        "NBTRIAGE_SUPPORT_COOLDOWN_SECONDS",
+        "NBTRIAGE_REPORT_COOLDOWN_SECONDS",
+        "NBTRIAGE_QUERY_COMMAND",
+        "NBTRIAGE_FEEDBACK_COMMAND",
+        "NBTRIAGE_TRIAL_STATS_COMMAND",
+        "NBTRIAGE_CAPABILITY_SHADOW_PATH",
+    ):
+        assert f"| `{removed}` |" not in table
+
+
+def test_knowledge_pack_download_requires_exact_https_url_and_sha256() -> None:
+    digest = "a" * 64
+    config = NBTriageConfig(
+        nbtriage_knowledge_pack_url="https://example.com/pack.zip",
+        nbtriage_knowledge_pack_sha256=digest.upper(),
     )
 
-    with pytest.raises(ValidationError, match="capability shadow path must be local"):
-        NBTriageConfig(nbtriage_capability_shadow_path=r"\\server\share\capabilities.sqlite3")
-    with pytest.raises(ValidationError, match=r"must end with \.sqlite3"):
-        NBTriageConfig(nbtriage_capability_shadow_path="pyproject.toml")
-    with pytest.raises(ValidationError, match="must not target an environment file"):
-        NBTriageConfig(nbtriage_capability_shadow_path=".env.sqlite3")
+    assert config.nbtriage_knowledge_pack_sha256 == digest
+    with pytest.raises(ValidationError, match="configured together"):
+        NBTriageConfig(nbtriage_knowledge_pack_url="https://example.com/pack.zip")
+    with pytest.raises(ValidationError, match="HTTPS asset URL"):
+        NBTriageConfig(
+            nbtriage_knowledge_pack_url="http://example.com/pack.zip",
+            nbtriage_knowledge_pack_sha256=digest,
+        )
 
 
 def test_restricted_config_normalizes_nonebot_roots() -> None:
@@ -95,12 +146,10 @@ def test_nonebot_environment_decodes_restricted_config_json(
 def test_support_thread_config_has_bounded_compatible_defaults() -> None:
     config = NBTriageConfig()
 
-    assert config.nbtriage_priority == 10
     assert config.nbtriage_thread_max_entries == 4_096
     assert config.nbtriage_thread_idle_seconds == 900
     assert config.nbtriage_thread_absolute_seconds == 1_800
 
-    assert NBTriageConfig(nbtriage_priority=1).nbtriage_priority == 1
     with pytest.raises(ValidationError):
         NBTriageConfig(nbtriage_thread_max_entries=100_001)
     with pytest.raises(ValidationError, match="absolute lifetime"):

@@ -39,7 +39,7 @@ class IntakeTrigger(StrEnum):
 
 class UserIntent(StrEnum):
     DISCOVER_CAPABILITY = "discover_capability"
-    REPORT_PROBLEM = "report_problem"
+    REPORTED_FAILURE_UNVERIFIED = "report_problem"
     UNKNOWN = "unknown"
 
 
@@ -92,7 +92,7 @@ class IntakeReason(StrEnum):
     EXPLICITLY_UNRELATED = "explicitly_unrelated"
     COMMAND_REJECTED = "command_rejected"
     RUNTIME_FAILURE_OBSERVED = "runtime_failure_observed"
-    PROBLEM_REPORTED = "problem_reported"
+    REPORTED_FAILURE_UNVERIFIED = "reported_failure_unverified"
     CAPABILITY_REQUESTED = "capability_requested"
     INSUFFICIENT_STRUCTURED_SIGNALS = "insufficient_structured_signals"
 
@@ -253,13 +253,8 @@ def route_intake(signals: IntakeSignals) -> IntakeDecision:
             action=IntakeAction.START_DIAGNOSIS,
             reason=IntakeReason.RUNTIME_FAILURE_OBSERVED,
         )
-    if normalized.user_intent is UserIntent.REPORT_PROBLEM:
-        return _decision(
-            normalized,
-            disposition=IntakeDisposition.SUSPECTED_INCIDENT,
-            action=IntakeAction.START_DIAGNOSIS,
-            reason=IntakeReason.PROBLEM_REPORTED,
-        )
+    if normalized.user_intent is UserIntent.REPORTED_FAILURE_UNVERIFIED:
+        return _clarification(normalized, IntakeReason.REPORTED_FAILURE_UNVERIFIED)
     if normalized.user_intent is UserIntent.DISCOVER_CAPABILITY:
         return _decision(
             normalized,
@@ -277,7 +272,7 @@ def _has_conflicting_signals(signals: IntakeSignals) -> bool:
         if signals.runtime_status is not RuntimeStatus.NOT_OBSERVED:
             return True
     if signals.runtime_status is RuntimeStatus.SUCCEEDED:
-        if signals.user_intent is UserIntent.REPORT_PROBLEM:
+        if signals.user_intent is UserIntent.REPORTED_FAILURE_UNVERIFIED:
             return True
         if signals.command_status in COMMAND_ERROR_STATUSES:
             return True

@@ -4,16 +4,13 @@
 
 ```mermaid
 flowchart TD
-    A["triage + 自然语言"] --> B{"分流为疑似故障？"}
+    A["triage + 自然语言"] --> B{"可信初检仍为故障？"}
     B -- "否" --> C["功能说明、纠错或澄清；零 incident、零 trial"]
-    B -- "是" --> R{"带 Reply 且近期引用命中？"}
-    R -- "是" --> D["建立有关联证据的 LiveIncident"]
-    R -- "否" --> U["建立无运行证据的 LiveIncident"]
-    D --> CL{"有明确失败？"}
-    CL -- "是" --> X["进入活动 cluster"]
-    CL -- "否" --> E
+    B -- "是" --> R{"带 Reply、近期引用命中且失败复核通过？"}
+    R -- "是" --> D["建立有关联失败证据的 LiveIncident"]
+    R -- "否" --> C
+    D --> X["进入活动 cluster"]
     X --> E
-    U --> E
     E{"trial mode"}
     E -- "off" --> F["只返回现有受理回执"]
     E -- "observe" --> G["建立 intake-v1 trial"]
@@ -89,12 +86,14 @@ LOCALSTORE_PLUGIN_DATA_DIR={"nonebot_plugin_triage":"/var/lib/nonebot/triage-wor
 - 单个 Bot 进程独占一个 LocalStore data dir；多 worker 必须分别覆盖
   `LOCALSTORE_PLUGIN_DATA_DIR` 中的 `nonebot_plugin_triage` 路径，或接入宿主集中日志；
 - 日志目录对 Bot 运行账号可写、对无关本机账号不可读，并由宿主仓库忽略；
-- `NBTRIAGE_MODEL_ENABLED=false` 保持不变，observe 不需要 Provider API Key；
+- observation trial 不要求配置模型 transport 或 Provider API Key；
 - 磁盘至少容纳 `max_bytes × (backup_count + 1)`，默认有界窗口约 60 MiB；
 - 日志不得上传、提交、公开或用于训练，除非另行完成来源、隐私和许可证复核。
 
-上线 smoke 依次验证：`triage 某个功能怎么使用` 得到说明且不产生 incident；`triage 请受理这个故障`
-得到受理编号；再回复近期 Bot 消息验证证据关联。`SUPERUSER` 查询对应 incident、记录
+当前 OpenCode Go / `deepseek-v4-flash` / 60 秒 / 240 token / Prompt v5 的语义 Agent 已通过 40 条 held-out
+资格门并接入；线上 smoke 应分别验证功能指导、未决澄清和明确故障受理目标。即使模型给出 incident 目标和
+现象 signal，也只有模型外可信初检仍失败的请求才得到受理编号。回复近期 Bot 消息验证证据关联后，
+`SUPERUSER` 查询已有 incident、记录
 一次枚举反馈并查看统计；非 `SUPERUSER` 无法读取后三个入口；日志只出现当前 JSONL 与有界编号备份，且
 不含消息正文、平台身份、correlation ID、异常消息或 Provider 凭据。
 

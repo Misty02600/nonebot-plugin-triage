@@ -9,14 +9,6 @@ from nonebot.matcher import current_matcher
 from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
 from nonebot_plugin_triage.nonebot_runtime import NBTRIAGE_CORRELATION_STATE_KEY
-from nonebot_plugin_triage.thread_references import (
-    InitialThreadBinding,
-    OutgoingThreadBinding,
-    PendingContinuationBinding,
-    PreparedContinuationBinding,
-    SupportThreadReferenceBridge,
-    pop_outgoing_thread_binding,
-)
 from nonebot_plugin_triage.universal_references import UniversalReferenceBridge
 
 ONEBOT_V11_ADAPTER_NAME = SupportAdapter.onebot11.value
@@ -30,14 +22,8 @@ class OneBotV11OutgoingReferenceProviderError(RuntimeError):
 class OneBotV11OutgoingReferenceProvider:
     """补齐 OneBot V11 群消息发送结果中的平台消息引用。"""
 
-    def __init__(
-        self,
-        bridge: UniversalReferenceBridge,
-        *,
-        thread_bridge: SupportThreadReferenceBridge | None = None,
-    ) -> None:
+    def __init__(self, bridge: UniversalReferenceBridge) -> None:
         self.bridge = bridge
-        self.thread_bridge = thread_bridge
         self._dropped_count = 0
         self._registered = False
 
@@ -70,25 +56,15 @@ class OneBotV11OutgoingReferenceProvider:
         matcher = current_matcher.get(None)
         if matcher is None:
             return
-        thread_binding = (
-            pop_outgoing_thread_binding(matcher.state) if self.thread_bridge is not None else None
-        )
         if exception is not None:
-            self._fail_thread_binding(thread_binding)
-            if thread_binding is not None:
-                self._record_drop()
             return
         try:
             group_id = _outgoing_group_id(api, data)
             if group_id is None:
-                self._fail_thread_binding(thread_binding)
-                if thread_binding is not None:
-                    self._record_drop()
                 return
             message_id = _result_message_id(result)
             target = _group_target(group_id, str(bot.self_id))
         except Exception:
-            self._fail_thread_binding(thread_binding)
             self._record_drop()
             return
 
@@ -104,49 +80,6 @@ class OneBotV11OutgoingReferenceProvider:
                 )
             except Exception:
                 self._record_drop()
-
-        if thread_binding is not None and not self._settle_thread_binding(
-            thread_binding,
-            bot_scope=str(bot.self_id),
-            target=target,
-            message_reference=str(message_id),
-        ):
-            self._record_drop()
-
-    def _settle_thread_binding(
-        self,
-        binding: OutgoingThreadBinding,
-        *,
-        bot_scope: str,
-        target: Target,
-        message_reference: str,
-    ) -> bool:
-        bridge = self.thread_bridge
-        if bridge is None:
-            return False
-        if isinstance(binding, InitialThreadBinding):
-            return bridge.bind_initial(
-                binding,
-                adapter_name=ONEBOT_V11_ADAPTER_NAME,
-                bot_scope=bot_scope,
-                target=target,
-                message_reference=message_reference,
-            )
-        if isinstance(binding, PreparedContinuationBinding):
-            return bridge.complete_continuation(
-                binding,
-                adapter_name=ONEBOT_V11_ADAPTER_NAME,
-                bot_scope=bot_scope,
-                target=target,
-                message_reference=message_reference,
-            )
-        if isinstance(binding, PendingContinuationBinding):
-            bridge.fail_binding(binding)
-        return False
-
-    def _fail_thread_binding(self, binding: OutgoingThreadBinding | None) -> None:
-        if binding is not None and self.thread_bridge is not None:
-            self.thread_bridge.fail_binding(binding)
 
     def _record_drop(self) -> None:
         self._dropped_count += 1

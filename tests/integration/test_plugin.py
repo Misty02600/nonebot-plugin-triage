@@ -63,6 +63,47 @@ def _onebot_test_bot(ctx: Any, *, self_id: str = "1") -> Any:
     )
 
 
+def _inject_semantic_assessment(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    goals: tuple[str, ...] = (),
+    reported_observation: bool = False,
+) -> None:
+    from nbtriage.support_semantics import (
+        SUPPORT_SEMANTIC_SCHEMA_VERSION,
+        SupportAssessmentExecutionStatus,
+        SupportAssessmentOutcome,
+        SupportAssessmentStatus,
+        SupportGoal,
+        SupportSemanticAssessment,
+    )
+    from nonebot_plugin_triage import handlers
+
+    assessment = SupportSemanticAssessment(
+        schema_version=SUPPORT_SEMANTIC_SCHEMA_VERSION,
+        status=SupportAssessmentStatus.ASSESSED,
+        goals=tuple(SupportGoal(item) for item in goals),
+        reported_observation=reported_observation,
+    )
+
+    class FakeAssessor:
+        async def assess(self, request: Any) -> SupportAssessmentOutcome:
+            assert request.model_dump(mode="json") == {
+                "schema_version": SUPPORT_SEMANTIC_SCHEMA_VERSION,
+                "request_text": request.request_text,
+            }
+            return SupportAssessmentOutcome(
+                SupportAssessmentExecutionStatus.COMPLETED,
+                assessment,
+            )
+
+    monkeypatch.setattr(
+        handlers,
+        "plugin_runtime",
+        replace(handlers.plugin_runtime, semantic_assessment_service=FakeAssessor()),
+    )
+
+
 def _clean_subprocess_environment() -> dict[str, str]:
     environment = os.environ.copy()
     environment["NBTRIAGE_TRIAL_LOG_PATH"] = ""
@@ -123,6 +164,11 @@ assert "nonebot.adapters.qq" in module.__plugin_meta__.supported_adapters
 assert module.__plugin_meta__.config is module.NBTriageConfig
 assert module.__plugin_meta__.name == "NoneBot Triage Agent"
 assert module.__plugin_meta__.homepage.endswith("/nonebot-plugin-triage")
+assert "triage <求助内容>" in module.__plugin_meta__.usage
+assert "报错查询 <受理编号>" in module.__plugin_meta__.usage
+assert "报错反馈" in module.__plugin_meta__.usage
+assert "报错统计" in module.__plugin_meta__.usage
+assert handlers._empty_support_prompt() == "请在 triage 后描述想了解的功能或遇到的问题。"
 assert len(handlers.plugin_runtime.outgoing_reference_providers) == 1
 runtime.find_spec = lambda _: None
 assert runtime._create_outgoing_reference_providers(
@@ -175,7 +221,7 @@ assert not asyncio.run(handlers.trial_stats_matcher.check_perm(bot, event_for(20
     assert result.returncode == 0, result.stderr
 
 
-def test_plugin_metadata_and_prompts_follow_custom_commands() -> None:
+def test_plugin_rejects_removed_custom_command_configuration() -> None:
     project_root = Path(__file__).parents[2]
     script = """
 import nonebot
@@ -184,58 +230,9 @@ from types import SimpleNamespace
 nonebot.init(
     driver="~none",
     nbtriage_command="support",
-    nbtriage_query_command="受理查询",
-    nbtriage_feedback_command="受理反馈",
-    nbtriage_trial_stats_command="试用统计",
 )
 plugin = nonebot.load_plugin("nonebot_plugin_triage")
-assert plugin is not None
-
-import nonebot_plugin_triage as module
-from nonebot_plugin_triage import handlers
-
-assert handlers.support_matcher._rule.command().parse("support 任意自然语言").matched
-assert handlers.query_matcher._rule.command().parse("受理查询 incident-example").matched
-assert handlers.feedback_matcher._rule.command().parse("受理反馈 incident-example 有用").matched
-assert handlers.trial_stats_matcher._rule.command().parse("试用统计").matched
-assert "support" in module.__plugin_meta__.usage
-assert "受理查询" in module.__plugin_meta__.usage
-assert "受理反馈" in module.__plugin_meta__.usage
-assert "试用统计" in module.__plugin_meta__.usage
-assert handlers._empty_support_prompt() == "请在 support 后描述想了解的功能或遇到的问题。"
-
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message
-from nonebot.adapters.onebot.v11.event import Sender
-
-sender = Sender(user_id=201, nickname="tester")
-event = GroupMessageEvent(
-    time=1,
-    self_id=1,
-    post_type="message",
-    sub_type="normal",
-    user_id=201,
-    message_type="group",
-    message_id=1,
-    message=Message("support 任意自然语言"),
-    original_message=Message("support 任意自然语言"),
-    raw_message="support 任意自然语言",
-    font=0,
-    sender=sender,
-    group_id=100,
-    to_me=False,
-)
-assert handlers._has_explicit_support_command(event)
-adapter = SimpleNamespace(
-    get_name=lambda: "OneBot V11",
-    config=nonebot.get_driver().config,
-)
-bot = Bot(adapter=adapter, self_id="1")
-assert asyncio.run(handlers.support_matcher.check_rule(bot, event, {}))
-event.message = Message("triage 任意自然语言")
-event.original_message = Message("triage 任意自然语言")
-event.raw_message = "triage 任意自然语言"
-assert not handlers._has_explicit_support_command(event)
-assert not asyncio.run(handlers.support_matcher.check_rule(bot, event, {}))
+assert plugin is None
 """
 
     result = subprocess.run(
@@ -294,16 +291,18 @@ async def test_query_matcher_sends_narrow_not_found_reply(app: App) -> None:
 )
 async def test_support_matcher_accepts_optional_at_without_creating_incident(
     app: App,
+    monkeypatch: pytest.MonkeyPatch,
     message_id: int,
     user_id: int,
     message: Message,
     original_message: Message,
     to_me: bool,
 ) -> None:
-    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
+    from nonebot_plugin_triage import handlers
 
-    incident_count = len(plugin_runtime.incidents)
-    async with app.test_matcher(support_matcher) as ctx:
+    _inject_semantic_assessment(monkeypatch, goals=("guidance",))
+    incident_count = len(handlers.plugin_runtime.incidents)
+    async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = ctx.create_bot()
         event = fake_group_message_event_v11(
             message_id=message_id,
@@ -323,18 +322,54 @@ async def test_support_matcher_accepts_optional_at_without_creating_incident(
             ),
             result=None,
         )
-        ctx.should_finished(support_matcher)
-    assert len(plugin_runtime.incidents) == incident_count
+        ctx.should_finished(handlers.support_matcher)
+    assert len(handlers.plugin_runtime.incidents) == incident_count
+
+
+async def test_support_matcher_rejects_fixed_2000_character_overflow_before_assessment(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    async def unexpected_assessment(_: object) -> object:
+        raise AssertionError("overlong support text must not reach semantic assessment")
+
+    monkeypatch.setattr(
+        handlers.plugin_runtime.semantic_assessment_service,
+        "assess",
+        unexpected_assessment,
+    )
+    event = fake_group_message_event_v11(
+        message_id=104,
+        user_id=20_003,
+        message=Message(f"triage {'x' * 2_001}"),
+        original_message=Message(f"triage {'x' * 2_001}"),
+        raw_message=f"triage {'x' * 2_001}",
+        to_me=False,
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = ctx.create_bot()
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            FallbackMessage("求助内容过长，请缩短到 2000 字以内。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
 
 
 async def test_explicit_triage_reply_to_registered_answer_continues_thread(
     app: App,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
     from nbtriage.support_threads import ThreadKind
     from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
 
+    _inject_semantic_assessment(monkeypatch, goals=("guidance",))
     thread = plugin_runtime.support_threads.create(
         ThreadKind.GUIDANCE,
         topic_refs=("label:dHJpYWdl",),
@@ -383,9 +418,107 @@ async def test_explicit_triage_reply_to_registered_answer_continues_thread(
                 "用法：triage <求助内容>\n"
                 "示例：triage 某个功能怎么使用"
             ),
-            result=None,
+            result={"message_id": 901},
         )
         ctx.should_finished(support_matcher)
+
+    target = Target(
+        "87654321",
+        self_id="1",
+        scope=SupportScope.qq_client,
+        adapter=SupportAdapter.onebot11,
+    )
+    assert (
+        plugin_runtime.thread_reference_bridge.resolve_reply(
+            adapter_name="OneBot V11",
+            bot_scope="1",
+            target=target,
+            actor_scope="220",
+            message_reference="900",
+        )
+        is None
+    )
+    assert (
+        plugin_runtime.thread_reference_bridge.resolve_reply(
+            adapter_name="OneBot V11",
+            bot_scope="1",
+            target=target,
+            actor_scope="220",
+            message_reference="901",
+        )
+        == thread.thread_id
+    )
+
+
+@pytest.mark.parametrize(
+    ("user_id", "reply_id", "content"),
+    [
+        (223, 902, "参数呢"),
+        (224, 903, "解决了"),
+        (225, 906, "确认按故障处理"),
+    ],
+)
+async def test_guidance_thread_unclassified_text_reads_no_capability(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+    user_id: int,
+    reply_id: int,
+    content: str,
+) -> None:
+    from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
+
+    from nbtriage.support_threads import ThreadKind, ThreadStatus
+    from nonebot_plugin_triage import handlers
+
+    async def unexpected_guidance(*_: object, **__: object) -> object:
+        raise AssertionError("unclassified continuation must not read capability sources")
+
+    def unexpected_report(*_: object, **__: object) -> object:
+        raise AssertionError("unclassified continuation must not enter incident intake")
+
+    monkeypatch.setattr(handlers, "_capability_guidance_result", unexpected_guidance)
+    monkeypatch.setattr(handlers.plugin_runtime.report_service, "handle", unexpected_report)
+    monkeypatch.setattr(handlers.plugin_runtime.support_rate_limiter, "allow", lambda *_: True)
+    thread = handlers.plugin_runtime.support_threads.create(
+        ThreadKind.GUIDANCE,
+        topic_refs=("label:dHJpYWdl",),
+    )
+    handlers.plugin_runtime.thread_reference_bridge.bind_reference(
+        adapter_name="OneBot V11",
+        bot_scope="1",
+        target=Target(
+            "87654321",
+            self_id="1",
+            scope=SupportScope.qq_client,
+            adapter=SupportAdapter.onebot11,
+        ),
+        actor_scope=str(user_id),
+        message_reference=str(reply_id),
+        thread_id=thread.thread_id,
+    )
+    event = _triage_reply_event(
+        message_id=reply_id + 1_000,
+        user_id=user_id,
+        reply_id=reply_id,
+        content=content,
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message(
+                "我仍无法确定你是想了解功能还是报告问题，本次不再追问；"
+                "请重新发送 triage 和完整问题。"
+            ),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
+
+    closed_thread = handlers.plugin_runtime.support_threads.get(thread.thread_id)
+    assert closed_thread is not None
+    assert closed_thread.status is ThreadStatus.CLOSED
 
 
 async def test_reply_without_triage_is_ignored_by_support_matcher(app: App) -> None:
@@ -415,10 +548,14 @@ async def test_reply_without_triage_is_ignored_by_support_matcher(app: App) -> N
         ctx.should_not_pass_rule()
 
 
-async def test_explicit_triage_with_unknown_reply_starts_new_thread(app: App) -> None:
-    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
+async def test_explicit_triage_with_unknown_reply_starts_new_thread(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
 
-    before = len(plugin_runtime.support_threads)
+    _inject_semantic_assessment(monkeypatch, goals=("guidance",))
+    before = len(handlers.plugin_runtime.support_threads)
     event = fake_group_message_event_v11(
         message_id=123,
         user_id=221,
@@ -429,7 +566,7 @@ async def test_explicit_triage_with_unknown_reply_starts_new_thread(app: App) ->
         raw_message="[CQ:reply,id=999999] triage 搜图怎么用",
         to_me=False,
     )
-    async with app.test_matcher(support_matcher) as ctx:
+    async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = _onebot_test_bot(ctx)
         ctx.receive_event(bot, event)
         ctx.should_call_send(
@@ -441,8 +578,8 @@ async def test_explicit_triage_with_unknown_reply_starts_new_thread(app: App) ->
             ),
             result=None,
         )
-        ctx.should_finished(support_matcher)
-    assert len(plugin_runtime.support_threads) == before + 1
+        ctx.should_finished(handlers.support_matcher)
+    assert len(handlers.plugin_runtime.support_threads) == before + 1
 
 
 @pytest.mark.parametrize(
@@ -614,7 +751,14 @@ async def test_only_latest_registered_answer_can_continue_thread(
     async with app.test_matcher(support_matcher) as ctx:
         bot = _onebot_test_bot(ctx)
         ctx.receive_event(bot, latest_reply)
-        ctx.should_call_send(latest_reply, Message("已结束这次求助。"), result=None)
+        ctx.should_call_send(
+            latest_reply,
+            Message(
+                "我仍无法确定你是想了解功能还是报告问题，本次不再追问；"
+                "请重新发送 triage 和完整问题。"
+            ),
+            result=None,
+        )
         ctx.should_finished(support_matcher)
     assert plugin_runtime.support_threads.get(thread.thread_id).status is ThreadStatus.CLOSED
 
@@ -643,7 +787,11 @@ def test_thread_topic_labels_are_bounded_and_restore_non_ascii_capability_names(
             "还是说不清",
             "我仍无法确定你是想了解功能还是报告问题，本次不再追问；请重新发送 triage 和完整问题。",
         ),
-        (331, "取消", "已结束这次求助。"),
+        (
+            331,
+            "取消",
+            "我仍无法确定你是想了解功能还是报告问题，本次不再追问；请重新发送 triage 和完整问题。",
+        ),
         (332, "", "本次澄清已结束，请重新发送 triage 和完整问题。"),
         (
             333,
@@ -692,33 +840,26 @@ async def test_clarification_thread_terminal_follow_ups(
     assert plugin_runtime.support_threads.get(thread.thread_id).status is ThreadStatus.CLOSED
 
 
-async def test_clarification_follow_up_can_become_incident_without_bot_reply_evidence(
+async def test_clarification_follow_up_observation_without_runtime_failure_stays_unresolved(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
     from nbtriage.support_threads import ThreadKind, ThreadStatus
-    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
-    from nonebot_plugin_triage.live_reports import (
-        LiveReportRequest,
-        PublicReportResult,
-        PublicReportStatus,
+    from nonebot_plugin_triage import handlers
+
+    def unexpected_report(*_: object, **__: object) -> object:
+        raise AssertionError("unverified continuation must not enter incident intake")
+
+    monkeypatch.setattr(handlers.plugin_runtime.report_service, "handle", unexpected_report)
+    _inject_semantic_assessment(
+        monkeypatch,
+        goals=("incident_intake",),
+        reported_observation=True,
     )
-
-    captured: list[LiveReportRequest] = []
-
-    def accept(request: LiveReportRequest) -> PublicReportResult:
-        captured.append(request)
-        return PublicReportResult(
-            PublicReportStatus.ACCEPTED_WITHOUT_REFERENCE,
-            "固定受理回执",
-            "incident-continuation",
-        )
-
-    monkeypatch.setattr(plugin_runtime.report_service, "handle", accept)
-    thread = plugin_runtime.support_threads.create(ThreadKind.CLARIFICATION)
-    plugin_runtime.thread_reference_bridge.bind_reference(
+    thread = handlers.plugin_runtime.support_threads.create(ThreadKind.CLARIFICATION)
+    handlers.plugin_runtime.thread_reference_bridge.bind_reference(
         adapter_name="OneBot V11",
         bot_scope="1",
         target=Target(
@@ -735,24 +876,35 @@ async def test_clarification_follow_up_can_become_incident_without_bot_reply_evi
         message_id=1_926,
         user_id=340,
         reply_id=926,
-        content="请受理这个故障",
+        content="这里代表未来分类器确认的故障请求",
     )
-    async with app.test_matcher(support_matcher) as ctx:
+    async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = _onebot_test_bot(ctx)
         ctx.receive_event(bot, event)
-        ctx.should_call_send(event, Message("固定受理回执"), result=None)
-        ctx.should_finished(support_matcher)
-    assert len(captured) == 1
-    assert captured[0].reply_reference is None
-    assert plugin_runtime.support_threads.get(thread.thread_id).status is ThreadStatus.CLOSED
+        ctx.should_call_send(
+            event,
+            Message(
+                "我仍无法确定你是想了解功能还是报告问题，本次不再追问；"
+                "请重新发送 triage 和完整问题。"
+            ),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
+    closed_thread = handlers.plugin_runtime.support_threads.get(thread.thread_id)
+    assert closed_thread is not None
+    assert closed_thread.status is ThreadStatus.CLOSED
 
 
-async def test_continuation_turn_uses_same_entry_rate_limit(app: App) -> None:
+async def test_continuation_turn_uses_same_entry_rate_limit(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
     from nbtriage.support_threads import ThreadKind
     from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
 
+    _inject_semantic_assessment(monkeypatch, goals=("guidance",))
     thread = plugin_runtime.support_threads.create(ThreadKind.GUIDANCE)
     plugin_runtime.thread_reference_bridge.bind_reference(
         adapter_name="OneBot V11",
@@ -801,52 +953,9 @@ async def test_continuation_turn_uses_same_entry_rate_limit(app: App) -> None:
         ctx.should_finished(support_matcher)
 
 
-@pytest.mark.parametrize(
-    ("user_id", "permission_fails", "search_unavailable", "expected"),
-    [
-        (
-            200,
-            False,
-            False,
-            "搜图（维护者可见受限能力；来源：YetAnotherPicSearch）\n"
-            "说明：搜索图片出处\n"
-            "用法：索引没有可靠用法，请核对当前插件源码、README 或插件自带帮助。\n"
-            "约束：存在无法安全静态判断的规则或 handler 条件。\n"
-            "发现或可见不等于当前可执行；最终仍由原插件的权限、配置、场景和外部状态判断。",
-        ),
-        (
-            214,
-            False,
-            False,
-            "我目前能说明这些 Alconna 功能：\n"
-            "- triage：说明功能用法、纠正指令或受理故障\n"
-            "告诉我具体功能名，我再给你用法。",
-        ),
-        (
-            200,
-            True,
-            False,
-            "我目前能说明这些 Alconna 功能：\n"
-            "- triage：说明功能用法、纠正指令或受理故障\n"
-            "告诉我具体功能名，我再给你用法。",
-        ),
-        (
-            200,
-            False,
-            True,
-            "我目前能说明这些 Alconna 功能：\n"
-            "- triage：说明功能用法、纠正指令或受理故障\n"
-            "告诉我具体功能名，我再给你用法。",
-        ),
-    ],
-)
-async def test_shadow_capability_guidance_is_limited_to_superusers(
+async def test_guidance_never_reads_restricted_shadow_or_checks_superuser(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    user_id: int,
-    permission_fails: bool,
-    search_unavailable: bool,
-    expected: str,
 ) -> None:
     from nonebot import get_driver
     from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
@@ -891,26 +1000,15 @@ async def test_shadow_capability_guidance_is_limited_to_superusers(
         snapshot_builder=lambda **_: CapabilitySnapshot.create((record,)),
     )
     shadow.refresh()
-    permission_warnings: list[tuple[str, tuple[object, ...]]] = []
-    private_text = ""
-    if permission_fails:
-        private_text = "PRIVATE_AUTHORIZATION_FAILURE"
 
-        async def fail_permission(*_: object, **__: object) -> bool:
-            raise RuntimeError(private_text)
+    async def forbidden_permission(*_: object, **__: object) -> bool:
+        raise AssertionError("guidance must not check SUPERUSER")
 
-        class RecordingLogger:
-            def warning(self, message: str, *args: object) -> None:
-                permission_warnings.append((message, args))
+    async def forbidden_restricted_search(*_: object, **__: object) -> None:
+        raise AssertionError("guidance must not read restricted capability evidence")
 
-        monkeypatch.setattr(handlers, "SUPERUSER", fail_permission)
-        monkeypatch.setattr(handlers, "logger", RecordingLogger())
-    if search_unavailable:
-
-        async def unavailable_search(*_: object, **__: object) -> None:
-            return None
-
-        monkeypatch.setattr(shadow, "search_for_maintainer", unavailable_search)
+    monkeypatch.setattr(handlers, "SUPERUSER", forbidden_permission)
+    monkeypatch.setattr(shadow, "search_for_maintainer", forbidden_restricted_search)
 
     async def no_public_match(*_: object, **__: object) -> None:
         return None
@@ -925,12 +1023,13 @@ async def test_shadow_capability_guidance_is_limited_to_superusers(
         adapter=OneBotV11Adapter(get_driver()),
         self_id="1",
     )
-    event = fake_group_message_event_v11(user_id=user_id)
+    event = fake_group_message_event_v11(user_id=200)
 
-    assert await handlers._capability_guidance(bot, event, "搜图功能怎么用") == expected
-    if permission_fails:
-        assert permission_warnings == [("NoneBot Triage SUPERUSER capability check failed", ())]
-        assert private_text not in repr(permission_warnings)
+    assert await handlers._capability_guidance(bot, event, "搜图功能怎么用") == (
+        "我目前能说明这些 Alconna 功能：\n"
+        "- triage：说明功能用法、纠正指令或受理故障\n"
+        "告诉我具体功能名，我再给你用法。"
+    )
 
 
 async def test_public_shadow_capability_guidance_is_available_to_regular_user(
@@ -1169,6 +1268,8 @@ async def test_support_matcher_fails_closed_when_thread_capacity_is_reserved(
         "allow",
         lambda *_: True,
     )
+    if text == "triage 有什么功能":
+        _inject_semantic_assessment(monkeypatch, goals=("guidance",))
 
     async def fixed_guidance(*_: object, **__: object) -> object:
         return handlers._GuidanceResult("unused", ())
@@ -1222,15 +1323,21 @@ async def test_support_matcher_fails_closed_when_thread_capacity_is_reserved(
         assert coordinator.close_turn(lease_token)
 
 
-async def test_support_matcher_rate_limits_all_support_responses(app: App) -> None:
-    from nonebot_plugin_triage.handlers import support_matcher
+async def test_support_matcher_rate_limits_all_support_responses(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
 
-    expected = (
-        "我目前能说明这些 Alconna 功能：\n"
-        "- triage：说明功能用法、纠正指令或受理故障\n"
-        "告诉我具体功能名，我再给你用法。"
-    )
-    async with app.test_matcher(support_matcher) as ctx:
+    async def unexpected_guidance(*_: object, **__: object) -> object:
+        raise AssertionError("unclassified text must not read capability sources")
+
+    def unexpected_report(*_: object, **__: object) -> object:
+        raise AssertionError("unclassified text must not enter incident intake")
+
+    monkeypatch.setattr(handlers, "_capability_guidance_result", unexpected_guidance)
+    monkeypatch.setattr(handlers.plugin_runtime.report_service, "handle", unexpected_report)
+    async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = ctx.create_bot()
         first = fake_group_message_event_v11(
             message_id=106,
@@ -1241,8 +1348,12 @@ async def test_support_matcher_rate_limits_all_support_responses(app: App) -> No
             to_me=False,
         )
         ctx.receive_event(bot, first)
-        ctx.should_call_send(first, FallbackMessage(expected), result=None)
-        ctx.should_finished(support_matcher)
+        ctx.should_call_send(
+            first,
+            FallbackMessage("我还不能确定你是想了解功能还是报告问题，请再具体一点。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
 
         second = fake_group_message_event_v11(
             message_id=107,
@@ -1258,14 +1369,14 @@ async def test_support_matcher_rate_limits_all_support_responses(app: App) -> No
             FallbackMessage("求助请求过于频繁，请稍后再试。"),
             result=None,
         )
-        ctx.should_finished(support_matcher)
+        ctx.should_finished(handlers.support_matcher)
 
 
 @pytest.mark.parametrize(
     ("message_id", "user_id", "reply_reference"),
-    [(108, 206, None), (109, 207, "321")],
+    [(108, 206, "320"), (109, 207, "321")],
 )
-async def test_support_matcher_routes_suspected_incident_with_optional_reply(
+async def test_support_matcher_routes_trusted_reply_failure_to_incident(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
     message_id: int,
@@ -1276,7 +1387,7 @@ async def test_support_matcher_routes_suspected_incident_with_optional_reply(
     from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
     from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
 
-    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
+    from nonebot_plugin_triage import handlers
     from nonebot_plugin_triage.live_reports import (
         LiveReportRequest,
         PublicReportResult,
@@ -1285,16 +1396,22 @@ async def test_support_matcher_routes_suspected_incident_with_optional_reply(
 
     captured: list[LiveReportRequest] = []
 
-    def accept(request: LiveReportRequest) -> PublicReportResult:
+    def accept(request: LiveReportRequest, **_: object) -> PublicReportResult:
         captured.append(request)
         return PublicReportResult(
-            PublicReportStatus.ACCEPTED_WITHOUT_REFERENCE,
+            PublicReportStatus.ACCEPTED_WITH_FAILURE,
             "固定受理回执",
             "incident-test",
         )
 
-    monkeypatch.setattr(plugin_runtime.report_service, "handle", accept)
-    text = "triage 请受理这个故障"
+    monkeypatch.setattr(handlers.plugin_runtime.report_service, "handle", accept)
+    _inject_semantic_assessment(
+        monkeypatch,
+        goals=("incident_intake",),
+        reported_observation=True,
+    )
+    monkeypatch.setattr(handlers, "_has_trusted_runtime_failure", lambda *_: True)
+    text = "triage 这里代表未来分类器确认的故障请求"
     original_message = Message(text)
     if reply_reference is not None:
         original_message = Message(
@@ -1304,7 +1421,7 @@ async def test_support_matcher_routes_suspected_incident_with_optional_reply(
             ]
         )
 
-    async with app.test_matcher(support_matcher) as ctx:
+    async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = ctx.create_bot(
             base=OneBotV11Bot,
             adapter=OneBotV11Adapter(get_driver()),
@@ -1321,9 +1438,89 @@ async def test_support_matcher_routes_suspected_incident_with_optional_reply(
         event.message = Message(text)
         ctx.receive_event(bot, event)
         ctx.should_call_send(event, Message("固定受理回执"), result=None)
-        ctx.should_finished(support_matcher)
+        ctx.should_finished(handlers.support_matcher)
 
     assert [request.reply_reference for request in captured] == [reply_reference]
+
+
+async def test_support_matcher_keeps_unlinked_report_unverified(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+    from nonebot_plugin_triage.live_reports import LiveReportRequest
+
+    actual_probe = handlers._has_trusted_runtime_failure
+
+    def unlinked_probe(bot: object, target: object, request: LiveReportRequest) -> bool:
+        assert request.reply_reference is None
+        return actual_probe(bot, target, request)  # type: ignore[arg-type]
+
+    def unexpected_report(*_: object, **__: object) -> object:
+        raise AssertionError("unlinked report must not enter incident intake")
+
+    _inject_semantic_assessment(
+        monkeypatch,
+        goals=("incident_intake",),
+        reported_observation=True,
+    )
+    monkeypatch.setattr(handlers, "_has_trusted_runtime_failure", unlinked_probe)
+    monkeypatch.setattr(handlers.plugin_runtime.report_service, "handle", unexpected_report)
+    text = "triage 刚才功能没有响应"
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        event = fake_group_message_event_v11(
+            message_id=1_108,
+            user_id=1_206,
+            message=Message(text),
+            raw_message=text,
+            to_me=False,
+        )
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message("我还不能确定你是想了解功能还是报告问题，请再具体一点。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
+
+
+async def test_guidance_request_does_not_probe_runtime_reply_evidence(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    def unexpected_probe(*_: object) -> bool:
+        raise AssertionError("guidance request must not probe runtime evidence")
+
+    _inject_semantic_assessment(monkeypatch, goals=("guidance",))
+    monkeypatch.setattr(handlers, "_has_trusted_runtime_failure", unexpected_probe)
+    text = "triage 这个功能怎么用"
+    original_message = Message([MessageSegment.reply(322), MessageSegment.text(f" {text}")])
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        event = fake_group_message_event_v11(
+            message_id=1_110,
+            user_id=1_208,
+            message=original_message,
+            raw_message=str(original_message),
+            to_me=False,
+        )
+        event.message = Message(text)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message(
+                "我目前能说明这些 Alconna 功能：\n"
+                "- triage：说明功能用法、纠正指令或受理故障\n"
+                "告诉我具体功能名，我再给你用法。"
+            ),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
 
 
 async def test_busy_thread_turn_is_rejected_before_guidance_or_incident(
@@ -1443,7 +1640,7 @@ async def test_thread_claim_error_fails_closed_before_new_request(
     assert len(handlers.plugin_runtime.support_threads) == thread_count
 
 
-async def test_superuser_is_rechecked_on_every_guidance_turn(
+async def test_guidance_turns_do_not_check_superuser(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1454,9 +1651,9 @@ async def test_superuser_is_rechecked_on_every_guidance_turn(
 
     checks: list[int] = []
 
-    async def changing_permission(*_: object, **__: object) -> bool:
+    async def forbidden_permission(*_: object, **__: object) -> bool:
         checks.append(len(checks))
-        return len(checks) == 1
+        raise AssertionError("guidance must not check SUPERUSER")
 
     class Shadow:
         async def search_public(self, *_: object, **__: object) -> None:
@@ -1465,7 +1662,8 @@ async def test_superuser_is_rechecked_on_every_guidance_turn(
         async def search_for_maintainer(self, *_: object, **__: object) -> object:
             return SimpleNamespace(hits=(), partial=False, stale=False)
 
-    monkeypatch.setattr(handlers, "SUPERUSER", changing_permission)
+    monkeypatch.setattr(handlers, "SUPERUSER", forbidden_permission)
+    _inject_semantic_assessment(monkeypatch, goals=("guidance",))
     monkeypatch.setattr(
         handlers,
         "plugin_runtime",
@@ -1516,7 +1714,7 @@ async def test_superuser_is_rechecked_on_every_guidance_turn(
                 result=None,
             )
             ctx.should_finished(handlers.support_matcher)
-    assert checks == [0, 1]
+    assert checks == []
 
 
 @pytest.mark.parametrize(
@@ -1532,9 +1730,7 @@ async def test_superuser_is_rechecked_on_every_guidance_turn(
                     MessageSegment.text(" triage 某个功能怎么使用"),
                 ]
             ),
-            "我目前能说明这些 Alconna 功能：\n"
-            "- triage：说明功能用法、纠正指令或受理故障\n"
-            "告诉我具体功能名，我再给你用法。",
+            "我还不能确定你是想了解功能还是报告问题，请再具体一点。",
         ),
         (
             111,
@@ -1592,9 +1788,23 @@ async def test_superuser_is_rechecked_on_every_guidance_turn(
             Message("triage 报障"),
             "我还不能确定你是想了解功能还是报告问题，请再具体一点。",
         ),
+        (
+            121,
+            219,
+            "triage 请受理这个故障",
+            Message("triage 请受理这个故障"),
+            "我还不能确定你是想了解功能还是报告问题，请再具体一点。",
+        ),
+        (
+            122,
+            228,
+            "triage 确认按故障处理！",
+            Message("triage 确认按故障处理！"),
+            "我还不能确定你是想了解功能还是报告问题，请再具体一点。",
+        ),
     ],
 )
-async def test_support_matcher_does_not_treat_unverified_or_negated_text_as_incident(
+async def test_unclassified_natural_language_reads_no_capability_and_creates_no_incident(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
     message_id: int,
@@ -1607,14 +1817,18 @@ async def test_support_matcher_does_not_treat_unverified_or_negated_text_as_inci
     from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
     from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
 
-    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
+    from nonebot_plugin_triage import handlers
+
+    async def unexpected_guidance(*_: object, **__: object) -> object:
+        pytest.fail("unclassified support request read capability sources")
 
     def unexpected_report(_request: object) -> None:
-        pytest.fail("non-incident support request reached LiveReportService")
+        pytest.fail("unclassified support request reached LiveReportService")
 
-    monkeypatch.setattr(plugin_runtime.report_service, "handle", unexpected_report)
-    incident_count = len(plugin_runtime.incidents)
-    async with app.test_matcher(support_matcher) as ctx:
+    monkeypatch.setattr(handlers, "_capability_guidance_result", unexpected_guidance)
+    monkeypatch.setattr(handlers.plugin_runtime.report_service, "handle", unexpected_report)
+    incident_count = len(handlers.plugin_runtime.incidents)
+    async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = ctx.create_bot(
             base=OneBotV11Bot,
             adapter=OneBotV11Adapter(get_driver()),
@@ -1631,21 +1845,119 @@ async def test_support_matcher_does_not_treat_unverified_or_negated_text_as_inci
         event.message = Message(text)
         ctx.receive_event(bot, event)
         ctx.should_call_send(event, Message(expected), result=None)
-        ctx.should_finished(support_matcher)
+        ctx.should_finished(handlers.support_matcher)
 
-    assert len(plugin_runtime.incidents) == incident_count
+    assert len(handlers.plugin_runtime.incidents) == incident_count
 
 
-async def test_private_support_request_enters_common_guidance_routing(app: App) -> None:
+async def test_sensitive_support_text_is_refused_before_capability_or_incident(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    async def unexpected_guidance(*_: object, **__: object) -> object:
+        raise AssertionError("policy-blocked text must not read capability sources")
+
+    def unexpected_report(*_: object, **__: object) -> object:
+        raise AssertionError("policy-blocked text must not enter incident intake")
+
+    monkeypatch.setattr(handlers, "_capability_guidance_result", unexpected_guidance)
+    monkeypatch.setattr(handlers.plugin_runtime.report_service, "handle", unexpected_report)
+    monkeypatch.setattr(handlers.plugin_runtime.support_rate_limiter, "allow", lambda *_: True)
+    thread_count = len(handlers.plugin_runtime.support_threads)
+    incident_count = len(handlers.plugin_runtime.incidents)
+    event = fake_group_message_event_v11(
+        message_id=123,
+        user_id=229,
+        message=Message("triage api_key=abcdefghijklmnopqrstuvwxyz123456"),
+        original_message=Message("triage api_key=abcdefghijklmnopqrstuvwxyz123456"),
+        raw_message="triage api_key=abcdefghijklmnopqrstuvwxyz123456",
+        to_me=False,
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message("求助内容可能包含密钥或其他敏感信息，请移除后重新发送。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
+
+    assert len(handlers.plugin_runtime.support_threads) == thread_count
+    assert len(handlers.plugin_runtime.incidents) == incident_count
+
+
+async def test_sensitive_clarification_follow_up_is_refused_and_closes_thread(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
+
+    from nbtriage.support_threads import ThreadKind, ThreadStatus
+    from nonebot_plugin_triage import handlers
+
+    async def unexpected_guidance(*_: object, **__: object) -> object:
+        raise AssertionError("policy-blocked continuation must not read capability sources")
+
+    def unexpected_report(*_: object, **__: object) -> object:
+        raise AssertionError("policy-blocked continuation must not enter incident intake")
+
+    monkeypatch.setattr(handlers, "_capability_guidance_result", unexpected_guidance)
+    monkeypatch.setattr(handlers.plugin_runtime.report_service, "handle", unexpected_report)
+    monkeypatch.setattr(handlers.plugin_runtime.support_rate_limiter, "allow", lambda *_: True)
+    thread = handlers.plugin_runtime.support_threads.create(ThreadKind.CLARIFICATION)
+    handlers.plugin_runtime.thread_reference_bridge.bind_reference(
+        adapter_name="OneBot V11",
+        bot_scope="1",
+        target=Target(
+            "87654321",
+            self_id="1",
+            scope=SupportScope.qq_client,
+            adapter=SupportAdapter.onebot11,
+        ),
+        actor_scope="230",
+        message_reference="1230",
+        thread_id=thread.thread_id,
+    )
+    event = _triage_reply_event(
+        message_id=2_230,
+        user_id=230,
+        reply_id=1_230,
+        content="api_key=abcdefghijklmnopqrstuvwxyz123456",
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message("求助内容可能包含密钥或其他敏感信息，请移除后重新发送。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
+
+    closed = handlers.plugin_runtime.support_threads.get(thread.thread_id)
+    assert closed is not None
+    assert closed.status is ThreadStatus.CLOSED
+
+
+async def test_private_semantic_guidance_uses_common_routing(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from nonebot import get_driver
     from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
     from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
 
-    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
+    from nonebot_plugin_triage import handlers
 
-    incident_count = len(plugin_runtime.incidents)
+    _inject_semantic_assessment(monkeypatch, goals=("guidance",))
+    incident_count = len(handlers.plugin_runtime.incidents)
     text = "triage 某个功能怎么使用"
-    async with app.test_matcher(support_matcher) as ctx:
+    async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = ctx.create_bot(
             base=OneBotV11Bot,
             adapter=OneBotV11Adapter(get_driver()),
@@ -1669,21 +1981,30 @@ async def test_private_support_request_enters_common_guidance_routing(app: App) 
             ),
             result=None,
         )
-        ctx.should_finished(support_matcher)
+        ctx.should_finished(handlers.support_matcher)
 
-    assert len(plugin_runtime.incidents) == incident_count
+    assert len(handlers.plugin_runtime.incidents) == incident_count
 
 
-async def test_private_explicit_report_is_rejected_by_incident_service(app: App) -> None:
+async def test_private_semantic_report_is_rejected_by_incident_service(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from nonebot import get_driver
     from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
     from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
 
-    from nonebot_plugin_triage.handlers import plugin_runtime, support_matcher
+    from nonebot_plugin_triage import handlers
 
-    incident_count = len(plugin_runtime.incidents)
-    text = "triage 请受理这个故障"
-    async with app.test_matcher(support_matcher) as ctx:
+    _inject_semantic_assessment(
+        monkeypatch,
+        goals=("incident_intake",),
+        reported_observation=True,
+    )
+    monkeypatch.setattr(handlers, "_has_trusted_runtime_failure", lambda *_: True)
+    incident_count = len(handlers.plugin_runtime.incidents)
+    text = "triage 这里代表未来分类器确认的故障请求"
+    async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = ctx.create_bot(
             base=OneBotV11Bot,
             adapter=OneBotV11Adapter(get_driver()),
@@ -1703,9 +2024,71 @@ async def test_private_explicit_report_is_rejected_by_incident_service(app: App)
             Message("当前不能在私聊中受理故障；其他求助仍可在私聊中使用 triage。"),
             result=None,
         )
-        ctx.should_finished(support_matcher)
+        ctx.should_finished(handlers.support_matcher)
 
-    assert len(plugin_runtime.incidents) == incident_count
+    assert len(handlers.plugin_runtime.incidents) == incident_count
+
+
+@pytest.mark.parametrize(
+    ("goals", "authorized", "expected"),
+    [
+        (
+            ("behavior_exploration",),
+            False,
+            "该请求需要部署维护者权限；本轮不会读取内部配置、源码、环境或运行证据。",
+        ),
+        (
+            ("behavior_exploration",),
+            True,
+            "已识别为行为探索并通过维护者鉴权；证据探索还未接通，本轮不会读取内部配置、源码、环境或运行证据。",
+        ),
+        (
+            ("feature_feedback",),
+            None,
+            "我识别到这是一项功能建议；反馈生命周期还未接通，本轮不会建立故障记录或外部工单。",
+        ),
+    ],
+)
+async def test_semantic_candidate_routes_have_specific_zero_side_effect_responses(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+    goals: tuple[str, ...],
+    authorized: bool | None,
+    expected: str,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    _inject_semantic_assessment(monkeypatch, goals=goals)
+    if authorized is None:
+
+        async def unexpected_permission(*_: object, **__: object) -> bool:
+            raise AssertionError("non-behavior routes must not check SUPERUSER")
+
+        monkeypatch.setattr(handlers, "SUPERUSER", unexpected_permission)
+    else:
+
+        async def behavior_permission(*_: object, **__: object) -> bool:
+            return authorized
+
+        monkeypatch.setattr(handlers, "SUPERUSER", behavior_permission)
+    monkeypatch.setattr(handlers.plugin_runtime.support_rate_limiter, "allow", lambda *_: True)
+    incident_count = len(handlers.plugin_runtime.incidents)
+    event = fake_group_message_event_v11(
+        message_id=2_400 + len(goals),
+        user_id=2_400 + int(bool(authorized)),
+        message=Message("triage 合成候选请求"),
+        original_message=Message("triage 合成候选请求"),
+        raw_message="triage 合成候选请求",
+        to_me=False,
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(event, Message(expected), result=None)
+        ctx.should_finished(handlers.support_matcher)
+
+    assert len(handlers.plugin_runtime.incidents) == incident_count
 
 
 def test_domain_core_does_not_import_nonebot_transport_types() -> None:

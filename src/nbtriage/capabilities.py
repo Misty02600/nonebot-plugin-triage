@@ -50,15 +50,6 @@ DEFAULT_EXCLUDED_FILE_SUFFIXES = frozenset(
 )
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-_HELP_SUFFIXES = (
-    "应该怎么用",
-    "要怎么使用",
-    "如何使用",
-    "怎么使用",
-    "怎么用",
-    "使用方法",
-    "用法",
-)
 
 
 class CapabilityError(ValueError):
@@ -1302,14 +1293,7 @@ def _text_values(value: Any) -> Iterator[str]:
 def _query_candidates(query: str) -> tuple[str, ...]:
     normalized = unicodedata.normalize("NFKC", query).strip().casefold()
     candidates = [normalized]
-    current = normalized
-    for suffix in _HELP_SUFFIXES:
-        if current.endswith(suffix):
-            current = current[: -len(suffix)].rstrip(" ，,。！？!?：:")
-            if current:
-                candidates.append(current)
-            break
-    candidates.extend(part for part in re.split(r"\s+", current) if part)
+    candidates.extend(part for part in re.split(r"\s+", normalized) if part)
     return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
 
 

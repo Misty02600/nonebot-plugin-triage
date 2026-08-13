@@ -61,6 +61,7 @@ def test_failed_runtime_evidence_routes_reply_report_to_incident() -> None:
 
     assert signals.runtime_status is RuntimeStatus.FAILED
     assert decision.disposition is IntakeDisposition.SUSPECTED_INCIDENT
+    assert decision.action is IntakeAction.START_DIAGNOSIS
 
 
 def test_successful_lifecycle_does_not_claim_user_observed_behavior_succeeded() -> None:
@@ -74,7 +75,8 @@ def test_successful_lifecycle_does_not_claim_user_observed_behavior_succeeded() 
     decision = route_reply_report(signals)
 
     assert signals.runtime_status is RuntimeStatus.NOT_OBSERVED
-    assert decision.disposition is IntakeDisposition.SUSPECTED_INCIDENT
+    assert decision.disposition is None
+    assert decision.action is IntakeAction.ASK_ONE_QUESTION
 
 
 def test_reply_report_preserves_pre_model_unsafe_priority() -> None:
@@ -100,7 +102,7 @@ def test_reply_report_rejects_mismatched_runtime_bundle() -> None:
         )
 
 
-def test_unlinked_report_preserves_problem_intent() -> None:
+def test_unlinked_report_remains_unverified_without_starting_diagnosis() -> None:
     signals = build_unlinked_report_signals(
         intake_id="intake-support",
         occurred_at=NOW,
@@ -112,8 +114,8 @@ def test_unlinked_report_preserves_problem_intent() -> None:
 
     assert signals.trigger is IntakeTrigger.SUPPORT_COMMAND
     assert signals.runtime_status is RuntimeStatus.NOT_OBSERVED
-    assert decision.disposition is IntakeDisposition.SUSPECTED_INCIDENT
-    assert decision.action is IntakeAction.START_DIAGNOSIS
+    assert decision.disposition is None
+    assert decision.action is IntakeAction.ASK_ONE_QUESTION
 
 
 def test_unlinked_report_rejects_runtime_observations() -> None:

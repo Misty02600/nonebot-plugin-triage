@@ -35,7 +35,7 @@ def build_reply_report_signals(
     """把已解析的回复引用和最小运行证据转换为确定性入口信号。
 
     无异常的生命周期只能说明框架流程完成，不能证明用户观察到的行为正确，因此只有明确失败观察会设置
-    `runtime_status=failed`；否则保持 `not_observed`，再由显式报障意图进入疑似故障分支。
+    `runtime_status=failed`；否则保持 `not_observed`，并把用户报告保留为未验证现象。
     """
     if runtime_evidence.correlation_id != correlation_id:
         raise ReplyReportError("runtime evidence does not match reply correlation")
@@ -51,7 +51,7 @@ def build_reply_report_signals(
             "occurred_at": occurred_at.isoformat(),
             "trigger": IntakeTrigger.REPLY_REPORT.value,
             "correlation_id": correlation_id,
-            "user_intent": UserIntent.REPORT_PROBLEM.value,
+            "user_intent": UserIntent.REPORTED_FAILURE_UNVERIFIED.value,
             "bot_relevance": BotRelevance.RELATED.value,
             "command_status": CommandStatus.NOT_ATTEMPTED.value,
             "runtime_status": runtime_status.value,
@@ -68,7 +68,7 @@ def build_unlinked_report_signals(
     runtime_evidence: RuntimeEvidenceBundle,
     unsafe_detected: bool,
 ) -> IntakeSignals:
-    """为没有 Reply 证据的显式故障求助构造入口信号。
+    """为没有 Reply 证据的故障现象报告构造未验证入口信号。
 
     Args:
         intake_id: 本次报障记录的不透明标识。
@@ -78,7 +78,7 @@ def build_unlinked_report_signals(
         unsafe_detected: 模型前安全守门是否命中。
 
     Returns:
-        保留用户明确报障意图、但不声称已有运行失败证据的入口信号。
+        保留用户报告的未验证现象、但不声称已有运行失败证据的入口信号。
 
     Raises:
         ReplyReportError: 证据包与本次求助的内部关联标识不一致。
@@ -94,7 +94,7 @@ def build_unlinked_report_signals(
             "occurred_at": occurred_at.isoformat(),
             "trigger": IntakeTrigger.SUPPORT_COMMAND.value,
             "correlation_id": correlation_id,
-            "user_intent": UserIntent.REPORT_PROBLEM.value,
+            "user_intent": UserIntent.REPORTED_FAILURE_UNVERIFIED.value,
             "bot_relevance": BotRelevance.RELATED.value,
             "command_status": CommandStatus.NOT_ATTEMPTED.value,
             "runtime_status": RuntimeStatus.NOT_OBSERVED.value,

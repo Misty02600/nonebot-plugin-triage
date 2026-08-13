@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-11 |
+| 已采纳；默认关闭与显式路径由 ADR-0045 部分替代 | 2026-08-11 |
 
 ## 当时遇到了什么
 
@@ -84,6 +84,8 @@
 
 ## 替代关系
 
+- [ADR-0045](0045-use-one-triage-cooldown-and-localstore-capability-cache.md) 部分替代第 1 条和“启用者提供
+  路径”的影响：能力影子改为默认启用，路径由 LocalStore 插件 cache 管理；导入期不解析路径，失败降级。
 - 第 2、4 条中“自动发现普通命令默认 review、普通 public 主要依赖显式批准”的边界，已被
   [ADR-0024](0024-auto-publish-deterministic-capability-fields.md) 部分替代；确定入口和平台范围可判定时
   自动 public，动态、冲突、敏感和证据不足项继续 review。

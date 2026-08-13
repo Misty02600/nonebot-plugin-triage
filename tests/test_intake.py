@@ -94,15 +94,15 @@ def test_runtime_failure_routes_to_incident_diagnosis(runtime_status: str) -> No
     assert decision.reason is IntakeReason.RUNTIME_FAILURE_OBSERVED
 
 
-def test_explicit_problem_report_without_runtime_evidence_is_still_suspected() -> None:
+def test_reported_failure_without_runtime_evidence_requests_clarification() -> None:
     decision = decision_for(
         user_intent="report_problem",
         bot_relevance="related",
     )
 
-    assert decision.disposition is IntakeDisposition.SUSPECTED_INCIDENT
-    assert decision.action is IntakeAction.START_DIAGNOSIS
-    assert decision.reason is IntakeReason.PROBLEM_REPORTED
+    assert decision.disposition is None
+    assert decision.action is IntakeAction.ASK_ONE_QUESTION
+    assert decision.reason is IntakeReason.REPORTED_FAILURE_UNVERIFIED
 
 
 def test_unrelated_request_explains_scope() -> None:

@@ -23,9 +23,18 @@ from nonebot_plugin_triage.capability_shadow import (
 )
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
+from nonebot_plugin_triage.knowledge_pack_runtime import (
+    KnowledgePackService,
+    register_knowledge_pack,
+)
 from nonebot_plugin_triage.live_reports import LiveReportService
 from nonebot_plugin_triage.model_runtime import NBTriageModelService, create_model_service
 from nonebot_plugin_triage.nonebot_runtime import NoneBotRuntimeObserver
+from nonebot_plugin_triage.semantic_assessment import (
+    SemanticAssessmentService,
+    SemanticAssessmentServiceLike,
+    create_semantic_assessment_service,
+)
 from nonebot_plugin_triage.thread_references import (
     SupportThreadReferenceBridge,
 )
@@ -37,9 +46,14 @@ class OutgoingReferenceProvider(Protocol):
     def register(self) -> None: ...
 
 
+def _create_semantic_assessment_service(
+    config: NBTriageConfig,
+) -> SemanticAssessmentService:
+    return create_semantic_assessment_service(config)
+
+
 def _create_outgoing_reference_providers(
     bridge: UniversalReferenceBridge,
-    thread_bridge: SupportThreadReferenceBridge | None = None,
 ) -> tuple[OutgoingReferenceProvider, ...]:
     providers: list[OutgoingReferenceProvider] = []
     try:
@@ -51,7 +65,7 @@ def _create_outgoing_reference_providers(
             OneBotV11OutgoingReferenceProvider,
         )
 
-        providers.append(OneBotV11OutgoingReferenceProvider(bridge, thread_bridge=thread_bridge))
+        providers.append(OneBotV11OutgoingReferenceProvider(bridge))
     return tuple(providers)
 
 
@@ -69,7 +83,9 @@ class NBTriagePluginRuntime:
     incidents: LiveIncidentBuffer
     trials: LiveTrialService
     model_service: NBTriageModelService | None
+    semantic_assessment_service: SemanticAssessmentServiceLike
     capability_shadow: CapabilityShadowService | None
+    knowledge_pack: KnowledgePackService | None
     config_value_policy: ConfigValuePolicy
 
 
@@ -79,6 +95,9 @@ def create_plugin_runtime(
     model_service_factory: Callable[
         [NBTriageConfig], NBTriageModelService | None
     ] = create_model_service,
+    semantic_assessment_service_factory: Callable[
+        [NBTriageConfig], SemanticAssessmentServiceLike
+    ] = _create_semantic_assessment_service,
     trial_service_factory: Callable[[NBTriageConfig], LiveTrialService] = (create_trial_service),
 ) -> NBTriagePluginRuntime:
     runtime_buffer = RuntimeObservationBuffer(
@@ -116,34 +135,27 @@ def create_plugin_runtime(
     support_rate_limiter = KeyedRateLimiter(
         secret_key=secrets.token_bytes(32),
         max_scopes=config.nbtriage_rate_limit_max_scopes,
-        cooldown_seconds=config.nbtriage_support_cooldown_seconds,
-    )
-    report_rate_limiter = KeyedRateLimiter(
-        secret_key=secrets.token_bytes(32),
-        max_scopes=config.nbtriage_rate_limit_max_scopes,
-        cooldown_seconds=config.nbtriage_report_cooldown_seconds,
+        cooldown_seconds=config.nbtriage_cooldown_seconds,
     )
     report_service = LiveReportService(
         reference_bridge=reference_bridge,
         runtime_buffer=runtime_buffer,
         incident_buffer=incident_buffer,
-        rate_limiter=report_rate_limiter,
         evidence_retention_seconds=config.nbtriage_observation_retention_seconds,
         trial_service=trial_service,
     )
     query_service = IncidentQueryService(incident_buffer)
     model_service = model_service_factory(config)
+    semantic_assessment_service = semantic_assessment_service_factory(config)
     config_value_policy = ConfigValuePolicy.from_keys(config.nbtriage_restricted_config)
     observer.register()
     reference_bridge.register()
     thread_reference_bridge.register()
-    outgoing_reference_providers = _create_outgoing_reference_providers(
-        reference_bridge,
-        thread_reference_bridge,
-    )
+    outgoing_reference_providers = _create_outgoing_reference_providers(reference_bridge)
     for provider in outgoing_reference_providers:
         provider.register()
-    capability_shadow = register_capability_shadow(config)
+    capability_shadow = register_capability_shadow()
+    knowledge_pack = register_knowledge_pack(config)
     return NBTriagePluginRuntime(
         observer=observer,
         reference_bridge=reference_bridge,
@@ -157,7 +169,9 @@ def create_plugin_runtime(
         incidents=incident_buffer,
         trials=trial_service,
         model_service=model_service,
+        semantic_assessment_service=semantic_assessment_service,
         capability_shadow=capability_shadow,
+        knowledge_pack=knowledge_pack,
         config_value_policy=config_value_policy,
     )
 

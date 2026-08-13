@@ -126,13 +126,15 @@ README 可能过期、缺少当前启用状态与权限信息，也难以可靠�
 
 ## 落实与确认
 
-- 实施情况：确定性领域分流契约、`triage <自然语言>` 群聊入口和窄的显式公开 Alconna Provider 已完成。
-  当前 Matcher 只可靠区分能力问法、疑似故障与待澄清请求；完整五类意图和模型 Agent 尚未接入。
+- 实施情况：确定性领域分流契约、`triage <自然语言>` 入口和窄的显式公开 Alconna Provider 已完成。
+  当前 Matcher 已删除自然语言词表快判，只区分空输入与待澄清请求；固定话术不直接建立 incident，完整
+  语义 assessment 尚未接入。
 - 实施证据：[支持入口流程](../architecture/flows/support-intake-routing.md)、
   [ADR-0020](0020-use-triage-command-for-natural-language-support.md)。
 
 ## 相关文档
 
+- [ADR-0040：只有可信初检仍失败才进入 incident](0040-require-trusted-preflight-failure-before-incident.md)
 - [ADR-0001：QQ 群显式报障与本机运行证据](0001-qq-group-report-linked-runtime-evidence.md)
 - [ADR-0002：分级自治与所有权感知修复](0002-tiered-autonomy-and-ownership-aware-remediation.md)
 - [产品定位与同类能力](../architecture/product-positioning.md)

@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
-from nonebot import logger
+from nonebot import logger, require
 
 from nbtriage.capabilities import (
     CAPABILITY_INDEX_SCHEMA_VERSION,
@@ -33,10 +33,18 @@ from nbtriage.capability_deployment import (
 )
 from nbtriage.capability_reconciliation import PluginRuntimeStatus
 from nonebot_plugin_triage.capability_snapshot import build_capability_snapshot
-from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.support_intake import (
     registered_public_alconna_capability_paths,
 )
+
+_CAPABILITY_SHADOW_FILENAME = "capability-shadow.sqlite3"
+
+
+def _resolve_capability_shadow_cache_file(filename: str) -> Path:
+    require("nonebot_plugin_localstore")
+    from nonebot_plugin_localstore import get_cache_file
+
+    return get_cache_file("nonebot_plugin_triage", filename)
 
 
 def _loaded_plugin_module_names() -> tuple[str, ...]:
@@ -116,7 +124,7 @@ class CapabilityShadowService:
 
     def __init__(
         self,
-        path: Path,
+        path: Path | Callable[[], Path],
         *,
         snapshot_builder: SnapshotBuilder = build_capability_snapshot,
         index_builder: Callable[[Path, CapabilitySnapshot], None] = build_capability_index,
@@ -124,18 +132,32 @@ class CapabilityShadowService:
         deployment_builder: DeploymentBuilder = build_capability_deployment,
         runtime_modules: Callable[[], Collection[str]] = _loaded_plugin_module_names,
     ) -> None:
-        self._path = path
+        if isinstance(path, Path):
+            self._path: Path | None = path
+            self._path_resolver: Callable[[], Path] | None = None
+            served = _read_served_index_metadata(path)
+        else:
+            self._path = None
+            self._path_resolver = path
+            served = _ServedIndexMetadata()
         self._snapshot_builder = snapshot_builder
         self._index_builder = index_builder
         self._public_paths = public_paths
         self._deployment_builder = deployment_builder
         self._runtime_modules = runtime_modules
         self._deployment: CapabilityDeployment | None = None
-        served = _read_served_index_metadata(path)
         self._status = CapabilityShadowStatus(
             served_generation=served.generation,
             partial=served.partial,
         )
+
+    def _resolved_path(self) -> Path:
+        if self._path is None:
+            if self._path_resolver is None:
+                raise RuntimeError("capability shadow path resolver is unavailable")
+            self._path = self._path_resolver()
+            self._path_resolver = None
+        return self._path
 
     @property
     def status(self) -> CapabilityShadowStatus:
@@ -153,7 +175,7 @@ class CapabilityShadowService:
         try:
             hits = await asyncio.to_thread(
                 search_capability_index,
-                self._path,
+                self._resolved_path(),
                 query,
                 include_unresolved=True,
                 include_restricted=True,
@@ -189,7 +211,7 @@ class CapabilityShadowService:
         try:
             public_records = await asyncio.to_thread(
                 capability_index_public_records,
-                self._path,
+                self._resolved_path(),
             )
             capability_ids = tuple(
                 record.capability_id
@@ -200,7 +222,7 @@ class CapabilityShadowService:
                 return PublicCapabilitySearch((), partial=self._status.partial)
             hits = await asyncio.to_thread(
                 search_capability_index,
-                self._path,
+                self._resolved_path(),
                 query,
                 capability_ids=capability_ids,
                 limit=limit,
@@ -227,7 +249,8 @@ class CapabilityShadowService:
         restricted_count = sum(
             record.disclosure is Disclosure.RESTRICTED for record in snapshot.records
         )
-        served = _read_served_index_metadata(self._path)
+        path = self._resolved_path()
+        served = _read_served_index_metadata(path)
         self._status = replace(
             self._status,
             observed_generation=snapshot.generation,
@@ -236,7 +259,7 @@ class CapabilityShadowService:
             restricted_capability_count=restricted_count,
             partial=served.partial,
         )
-        self._index_builder(self._path, snapshot)
+        self._index_builder(path, snapshot)
         self._status = replace(
             self._status,
             observed_generation=snapshot.generation,
@@ -306,21 +329,7 @@ class CapabilityShadowService:
         try:
             status = self.refresh()
         except Exception as error:  # 启动期影子扩展失败不能阻断 Bot
-            served = _read_served_index_metadata(self._path)
-            self._status = replace(
-                self._status,
-                observed_generation=self._status.observed_generation,
-                served_generation=served.generation,
-                indexed_capability_count=self._status.indexed_capability_count,
-                restricted_capability_count=self._status.restricted_capability_count,
-                partial=served.partial,
-                error_code=type(error).__name__,
-            )
-            logger.warning(
-                "NoneBot Triage capability shadow refresh failed; "
-                "the last complete local index remains active ({})",
-                type(error).__name__,
-            )
+            self._record_refresh_failure(error)
             return
         logger.info(
             "NoneBot Triage capability shadow is ready: generation={}, "
@@ -335,24 +344,50 @@ class CapabilityShadowService:
         """把有界但可能较慢的制品扫描和索引构建移出启动关键路径。"""
         await asyncio.to_thread(self.refresh_safely)
 
+    def _resolve_path_safely(self) -> bool:
+        try:
+            self._resolved_path()
+        except Exception as error:
+            self._record_refresh_failure(error)
+            return False
+        return True
+
+    def _record_refresh_failure(self, error: Exception) -> None:
+        served = _ServedIndexMetadata()
+        if self._path is not None:
+            served = _read_served_index_metadata(self._path)
+        self._status = replace(
+            self._status,
+            observed_generation=self._status.observed_generation,
+            served_generation=served.generation,
+            indexed_capability_count=self._status.indexed_capability_count,
+            restricted_capability_count=self._status.restricted_capability_count,
+            partial=served.partial,
+            error_code=type(error).__name__,
+        )
+        logger.warning(
+            "NoneBot Triage capability shadow refresh failed; "
+            "the last complete local index remains active ({})",
+            type(error).__name__,
+        )
+
 
 def register_capability_shadow(
-    config: NBTriageConfig,
     *,
     startup_registrar: Callable[[Callable[[], object]], object] | None = None,
-) -> CapabilityShadowService | None:
-    """按配置注册后台快照刷新；未配置时不创建文件或生命周期钩子。"""
-    configured_path = config.nbtriage_capability_shadow_path
-    if configured_path is None:
-        return None
+    cache_file_resolver: Callable[[str], Path] = _resolve_capability_shadow_cache_file,
+) -> CapabilityShadowService:
+    """注册后台能力快照刷新，并把 LocalStore 路径解析延后到启动阶段。"""
     if startup_registrar is None:
         from nonebot import get_driver
 
         startup_registrar = get_driver().on_startup
-    service = CapabilityShadowService(Path(configured_path))
+    service = CapabilityShadowService(lambda: cache_file_resolver(_CAPABILITY_SHADOW_FILENAME))
     background_tasks: set[asyncio.Task[None]] = set()
 
     async def schedule_refresh() -> None:
+        if not service._resolve_path_safely():
+            return
         task = asyncio.create_task(service.refresh_in_background())
         background_tasks.add(task)
         task.add_done_callback(background_tasks.discard)

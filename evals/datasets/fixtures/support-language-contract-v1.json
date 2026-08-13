@@ -1,13 +1,12 @@
 {
   "schema_version": 1,
   "fixture_set_id": "support-language-contract-v1",
-  "evaluation_kind": "deterministic_language_contract",
-  "description": "维护者人工编写的中文 production-like 求助措辞，用于冻结 triage 首轮快判和短期 Thread 续问边界；不是从真实聊天采集的数据，也不是 LLM prompt 质量评测。",
+  "evaluation_kind": "deterministic_framing_contract",
+  "description": "维护者人工编写的中文 production-like 求助措辞，用于冻结 triage 指令 framing、文字规范化和 transport 不可用时的保守结果；语义分类由独立版本化 assessment 评测，不由本 Fixture 推断。",
   "sample_origin": "maintainer_authored_production_like",
   "synthetic_only": true,
   "contains_real_user_data": false,
-  "llm_prompt_eval": false,
-  "expected_model_calls": 0,
+  "semantic_quality_eval": false,
   "expected_external_tool_calls": 0,
   "contract": {
     "command": "triage",
@@ -48,126 +47,110 @@
   ],
   "utterance_cases": [
     {
-      "case_id": "initial-specific-guidance",
+      "case_id": "initial-guidance-text-awaits-semantic-classifier",
       "turn_type": "initial",
       "text": "搜图功能怎么使用",
-      "expected_intent": "capability_guidance",
-      "expected_outcome": "open_guidance"
+      "expected_outcome": "open_clarification"
     },
     {
-      "case_id": "initial-configuration-guidance",
+      "case_id": "initial-configuration-text-awaits-semantic-classifier",
       "turn_type": "initial",
       "text": "提醒功能怎么配置",
-      "expected_intent": "capability_guidance",
-      "expected_outcome": "open_guidance"
+      "expected_outcome": "open_clarification"
     },
     {
-      "case_id": "initial-explicit-incident",
+      "case_id": "initial-fixed-wording-does-not-bypass-semantic-classifier",
       "turn_type": "initial",
       "text": "请受理这个故障",
-      "expected_intent": "report_problem",
-      "expected_outcome": "accept_incident"
+      "expected_outcome": "open_clarification"
     },
     {
-      "case_id": "initial-explicit-incident-punctuation",
+      "case_id": "initial-fixed-confirmation-does-not-bypass-semantic-classifier",
       "turn_type": "initial",
       "text": "确认按故障处理！",
-      "expected_intent": "report_problem",
-      "expected_outcome": "accept_incident"
+      "expected_outcome": "open_clarification"
     },
     {
       "case_id": "initial-symptom-is-not-consent",
       "turn_type": "initial",
       "text": "刚才搜图没反应",
-      "expected_intent": "unknown",
       "expected_outcome": "open_clarification"
     },
     {
-      "case_id": "initial-negated-error-guidance",
+      "case_id": "initial-negated-error-text-awaits-semantic-classifier",
       "turn_type": "initial",
       "text": "这不是报错，只想问搜图怎么用",
-      "expected_intent": "capability_guidance",
-      "expected_outcome": "open_guidance"
+      "expected_outcome": "open_clarification"
     },
     {
       "case_id": "initial-error-topic-question",
       "turn_type": "initial",
       "text": "报错是什么意思",
-      "expected_intent": "unknown",
       "expected_outcome": "open_clarification"
     },
     {
       "case_id": "initial-compound-incident-request",
       "turn_type": "initial",
       "text": "请受理这个故障，也告诉我怎么配置",
-      "expected_intent": "unknown",
       "expected_outcome": "open_clarification"
     },
     {
-      "case_id": "clarification-becomes-guidance",
+      "case_id": "clarification-guidance-text-awaits-semantic-classifier",
       "turn_type": "clarification",
       "text": "搜图功能怎么使用",
       "topic_labels": [],
-      "expected_intent": "capability_guidance",
-      "expected_outcome": "continue_guidance"
+      "expected_outcome": "close_unresolved"
     },
     {
-      "case_id": "clarification-becomes-incident",
+      "case_id": "clarification-fixed-wording-does-not-bypass-semantic-classifier",
       "turn_type": "clarification",
       "text": "请受理这个故障",
       "topic_labels": [],
-      "expected_intent": "report_problem",
-      "expected_outcome": "accept_incident"
+      "expected_outcome": "close_unresolved"
     },
     {
       "case_id": "clarification-remains-ambiguous",
       "turn_type": "clarification",
       "text": "还是说不清",
       "topic_labels": [],
-      "expected_intent": "unknown",
       "expected_outcome": "close_unresolved"
     },
     {
-      "case_id": "clarification-user-cancels",
+      "case_id": "clarification-close-wording-does-not-bypass-semantic-classifier",
       "turn_type": "clarification",
       "text": "取消",
       "topic_labels": [],
-      "expected_intent": "unknown",
-      "expected_outcome": "close_user"
+      "expected_outcome": "close_unresolved"
     },
     {
-      "case_id": "guidance-elliptical-parameter-follow-up",
+      "case_id": "guidance-parameter-text-awaits-semantic-classifier",
       "turn_type": "guidance",
       "text": "参数呢",
       "topic_labels": ["搜图"],
       "expected_context_query": "搜图 参数呢",
-      "expected_intent": "unknown",
-      "expected_outcome": "continue_guidance"
+      "expected_outcome": "close_unresolved"
     },
     {
-      "case_id": "guidance-elliptical-permission-follow-up",
+      "case_id": "guidance-permission-text-awaits-semantic-classifier",
       "turn_type": "guidance",
       "text": "需要什么权限",
       "topic_labels": ["搜图"],
       "expected_context_query": "搜图 需要什么权限",
-      "expected_intent": "unknown",
-      "expected_outcome": "continue_guidance"
+      "expected_outcome": "close_unresolved"
     },
     {
-      "case_id": "guidance-becomes-incident",
+      "case_id": "guidance-fixed-wording-does-not-bypass-semantic-classifier",
       "turn_type": "guidance",
       "text": "确认按故障处理",
       "topic_labels": ["搜图"],
-      "expected_intent": "report_problem",
-      "expected_outcome": "accept_incident"
+      "expected_outcome": "close_unresolved"
     },
     {
-      "case_id": "guidance-user-confirms-resolution",
+      "case_id": "guidance-close-wording-does-not-bypass-semantic-classifier",
       "turn_type": "guidance",
       "text": "解决了",
       "topic_labels": ["搜图"],
-      "expected_intent": "unknown",
-      "expected_outcome": "close_user"
+      "expected_outcome": "close_unresolved"
     }
   ]
 }

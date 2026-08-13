@@ -45,7 +45,6 @@ from nonebot_plugin_triage.capability_shadow import (
     format_public_capability_guidance,
     register_capability_shadow,
 )
-from nonebot_plugin_triage.config import NBTriageConfig
 
 
 class _RecordingLogger:
@@ -161,28 +160,58 @@ def _service(path: Path, **kwargs: Any) -> CapabilityShadowService:
     )
 
 
-def test_shadow_is_default_off_without_registering_startup() -> None:
-    def reject_registration(_: Callable[[], object]) -> None:
-        raise AssertionError("disabled shadow registered a startup hook")
-
-    assert (
-        register_capability_shadow(NBTriageConfig(), startup_registrar=reject_registration) is None
-    )
-
-
-def test_configured_shadow_builds_only_when_startup_callback_runs(
+def test_default_shadow_uses_localstore_cache_and_builds_only_on_startup(
     tmp_path: Path,
 ) -> None:
     callbacks: list[Callable[[], object]] = []
     path = tmp_path / "capabilities.sqlite3"
-    service = register_capability_shadow(
-        NBTriageConfig(nbtriage_capability_shadow_path=str(path)),
+    resolutions: list[str] = []
+
+    def resolve(filename: str) -> Path:
+        resolutions.append(filename)
+        return path
+
+    register_capability_shadow(
         startup_registrar=callbacks.append,
+        cache_file_resolver=resolve,
     )
 
-    assert service is not None
     assert len(callbacks) == 1
+    assert resolutions == []
     assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_localstore_resolution_failure_is_contained_on_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nonebot_plugin_triage.capability_shadow as capability_shadow_module
+
+    callbacks: list[Callable[[], object]] = []
+    logger = _RecordingLogger()
+    private_text = "PRIVATE_LOCALSTORE_PATH"
+    resolutions = 0
+    monkeypatch.setattr(capability_shadow_module, "logger", logger)
+
+    def fail_resolution(_: str) -> Path:
+        nonlocal resolutions
+        resolutions += 1
+        raise OSError(private_text)
+
+    service = register_capability_shadow(
+        startup_registrar=callbacks.append,
+        cache_file_resolver=fail_resolution,
+    )
+
+    assert len(callbacks) == 1
+    scheduled = callbacks[0]()
+    assert scheduled is not None
+    await scheduled  # type: ignore[misc]
+
+    assert service.status.ready is False
+    assert service.status.error_code == "OSError"
+    assert resolutions == 1
+    assert private_text not in repr(logger.warnings)
 
 
 @pytest.mark.asyncio
@@ -198,10 +227,9 @@ async def test_startup_callback_schedules_refresh_without_waiting_for_scan(
         await release.wait()
 
     service = register_capability_shadow(
-        NBTriageConfig(nbtriage_capability_shadow_path=str(tmp_path / "capabilities.sqlite3")),
         startup_registrar=callbacks.append,
+        cache_file_resolver=lambda _: tmp_path / "capabilities.sqlite3",
     )
-    assert service is not None
     service.refresh_in_background = delayed_refresh  # type: ignore[method-assign]
 
     scheduled = callbacks[0]()

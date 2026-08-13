@@ -46,14 +46,14 @@ MODEL_BACKEND_SPECS: Mapping[ModelBackend, ModelBackendSpec] = MappingProxyType(
     {
         "anthropic-messages": ModelBackendSpec(
             backend="anthropic-messages",
-            extra="model-anthropic",
+            extra="anthropic",
             api_key_environment="ANTHROPIC_API_KEY",
             factory_module="nbtriage.anthropic_adapter",
             factory_name="create_anthropic_messages_b1_client",
         ),
         "openai-responses": ModelBackendSpec(
             backend="openai-responses",
-            extra="model-openai",
+            extra="openai",
             api_key_environment="OPENAI_API_KEY",
             factory_module="nbtriage.openai_adapter",
             factory_name="create_openai_responses_b1_client",
@@ -82,18 +82,21 @@ def create_model_service(
         factories: 测试或受控装配注入的 backend factory；生产默认按 extra 惰性导入。
 
     Returns:
-        模型禁用时返回 ``None``；启用时返回不主动发起请求的模型服务。
+        未配置远端 transport 身份时返回 ``None``；配置且通过资格门时返回不主动发起请求的模型服务。
 
     Raises:
         ModelRuntimeConfigurationError: 组合未准入、依赖缺失、密钥缺失或 factory 无效。
     """
-    if not config.nbtriage_model_enabled:
-        return None
-
     backend = config.nbtriage_model_backend
     model = config.nbtriage_model_name
+    if backend is None and model is None:
+        return None
     if backend is None or model is None:
-        raise ModelRuntimeConfigurationError("enabled model support requires backend and model")
+        raise ModelRuntimeConfigurationError(
+            "model backend and model name must be configured together"
+        )
+    if backend == "opencode-go-chat":
+        return None
     if (backend, model) not in qualified_models:
         raise ModelRuntimeConfigurationError(
             f"model combination is not qualified for plugin runtime: {backend}/{model}"

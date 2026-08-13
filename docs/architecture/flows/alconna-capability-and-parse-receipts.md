@@ -1,6 +1,6 @@
 # 流程：Alconna 公开能力与解析回执
 
-当前运行入口优先支持显式公开能力 Provider。默认关闭的部署本地影子索引会读取已经加载的 Alconna 与
+当前运行入口优先支持显式公开能力 Provider。默认启用、由 LocalStore 管理 cache 的部署本地影子索引会读取已经加载的 Alconna 与
 普通 Matcher：普通用户可检索派生 ServingView 中自动确定为 `public` 的命令，SUPERUSER 通过模型外鉴权后
 还可读取带具体分析问题或受限标签的记录；解析回执仍是仓库级实验，位于
 `tools/nbtriage_maintainer/alconna_capabilities.py`，不进入插件 wheel。

@@ -262,7 +262,7 @@ def test_b1_cli_requires_api_key_after_confirmation(monkeypatch) -> None:
     assert exit_code == 1
 
 
-def test_openai_b1_cli_reports_missing_model_extra(monkeypatch, capsys) -> None:
+def test_openai_b1_cli_reports_missing_provider_extra(monkeypatch, capsys) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "isolation-test-key")
 
     def missing_adapter(module_name: str):
@@ -290,7 +290,7 @@ def test_openai_b1_cli_reports_missing_model_extra(monkeypatch, capsys) -> None:
     )
 
     assert exit_code == 1
-    assert "nonebot-plugin-triage[model-openai]" in capsys.readouterr().err
+    assert "nonebot-plugin-triage[openai]" in capsys.readouterr().err
 
 
 def test_deepseek_b1_cli_refuses_unconfirmed_paid_run(monkeypatch) -> None:

@@ -26,6 +26,18 @@ from nonebot_plugin_alconna import (
 )
 
 from nbtriage.capabilities import CapabilitySearchHit
+from nbtriage.runtime_observations import ObservationOutcome
+from nbtriage.support_routing import (
+    SupportRoutingAction,
+    SupportRoutingDecision,
+    route_support_assessment,
+)
+from nbtriage.support_semantics import (
+    SUPPORT_SEMANTIC_SCHEMA_VERSION,
+    SupportAssessmentExecutionStatus,
+    SupportAssessmentRequest,
+    SupportGoal,
+)
 from nbtriage.support_threads import (
     SupportThreadError,
     SupportThreadRecord,
@@ -35,20 +47,28 @@ from nbtriage.support_threads import (
 )
 from nonebot_plugin_triage import plugin_config
 from nonebot_plugin_triage.capability_shadow import (
-    format_maintainer_capability_guidance,
     format_public_capability_guidance,
 )
 from nonebot_plugin_triage.incident_queries import format_incident_lookup
 from nonebot_plugin_triage.live_reports import LiveReportRequest
+from nonebot_plugin_triage.product_contract import (
+    FEEDBACK_COMMAND,
+    MAINTAINER_MATCHER_PRIORITY,
+    QUERY_COMMAND,
+    TRIAGE_COMMAND,
+    TRIAGE_MATCHER_PRIORITY,
+    TRIAGE_REQUEST_MAX_CHARS,
+    TRIAL_STATS_COMMAND,
+)
 from nonebot_plugin_triage.runtime import create_plugin_runtime
 from nonebot_plugin_triage.support_intake import (
-    SupportIntent,
-    classify_support_request,
     collect_visible_alconna_capabilities,
     format_capability_guidance,
     matching_public_capabilities,
+    normalize_support_request,
     register_public_alconna_capability,
 )
+from nonebot_plugin_triage.support_responses import finish_support_response
 from nonebot_plugin_triage.thread_references import (
     NBTRIAGE_THREAD_BINDING_STATE_KEY,
     InitialThreadBinding,
@@ -78,12 +98,12 @@ with namespace(
     )
 ):
     support_command = Alconna(
-        plugin_config.nbtriage_command,
+        TRIAGE_COMMAND,
         Args["request_text", MultiVar(str, "*")],
         meta=CommandMeta(
             description="说明功能用法、纠正指令或受理故障",
-            usage=f"{plugin_config.nbtriage_command} <求助内容>",
-            example=f"{plugin_config.nbtriage_command} 某个功能怎么使用",
+            usage=f"{TRIAGE_COMMAND} <求助内容>",
+            example=f"{TRIAGE_COMMAND} 某个功能怎么使用",
         ),
     )
 
@@ -94,7 +114,7 @@ def _has_explicit_support_command(event: Event) -> bool:
         content = event.get_plaintext().lstrip()
     except (NotImplementedError, ValueError):
         return False
-    command = plugin_config.nbtriage_command
+    command = TRIAGE_COMMAND
     return content == command or (
         content.startswith(command)
         and len(content) > len(command)
@@ -138,7 +158,7 @@ support_matcher = on_alconna(
     rule=_has_explicit_support_command,
     extensions=[_SupportCommandMessageProvider()],
     use_cmd_start=False,
-    priority=plugin_config.nbtriage_priority,
+    priority=TRIAGE_MATCHER_PRIORITY,
     block=True,
 )
 register_public_alconna_capability(support_command)
@@ -147,53 +167,41 @@ _TOPIC_LABEL_PREFIX = "label:"
 _MAX_TOPIC_REFS = 16
 _MAX_TOPIC_REF_LENGTH = 96
 _MAX_TOPIC_REFS_BYTES = 1_024
-_THREAD_CLOSE_ACTIONS = frozenset(
-    {
-        "cancel",
-        "不用了",
-        "停止",
-        "取消",
-        "好了",
-        "算了",
-        "结束",
-        "解决了",
-    }
-)
 query_matcher = on_alconna(
     Alconna(
-        plugin_config.nbtriage_query_command,
+        QUERY_COMMAND,
         Args["incident_id", str],
         meta=CommandMeta(description="按受理编号查看短期运行摘要"),
     ),
     rule=to_me(),
     permission=SUPERUSER,
     use_cmd_start=False,
-    priority=plugin_config.nbtriage_query_priority,
+    priority=MAINTAINER_MATCHER_PRIORITY,
     block=True,
 )
 
 feedback_matcher = on_alconna(
     Alconna(
-        plugin_config.nbtriage_feedback_command,
+        FEEDBACK_COMMAND,
         Args["incident_id", str]["feedback", str],
         meta=CommandMeta(description="记录一次观察型试运行反馈"),
     ),
     rule=to_me(),
     permission=SUPERUSER,
     use_cmd_start=False,
-    priority=plugin_config.nbtriage_query_priority,
+    priority=MAINTAINER_MATCHER_PRIORITY,
     block=True,
 )
 
 trial_stats_matcher = on_alconna(
     Alconna(
-        plugin_config.nbtriage_trial_stats_command,
+        TRIAL_STATS_COMMAND,
         meta=CommandMeta(description="查看当前观察型试运行统计"),
     ),
     rule=to_me(),
     permission=SUPERUSER,
     use_cmd_start=False,
-    priority=plugin_config.nbtriage_query_priority,
+    priority=MAINTAINER_MATCHER_PRIORITY,
     block=True,
 )
 
@@ -210,7 +218,33 @@ def _report_request(
         bot_scope=str(bot.self_id),
         actor_scope=event.get_user_id(),
         target=target,
-        reply_reference=replies[0].id if replies else None,
+        reply_reference=_reply_reference(replies[0]) if replies else None,
+    )
+
+
+def _bounded_message_reference(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    normalized = str(value)
+    if not normalized or len(normalized.encode("utf-8")) > 512:
+        return None
+    return normalized
+
+
+def _reply_reference(reply: Reply) -> str | None:
+    return _bounded_message_reference(reply.id)
+
+
+def _is_supported_thread_reply(bot: Bot, event: Event, reply: Reply) -> bool:
+    if adapter_name(bot) != "Discord":
+        return True
+    reference_type = getattr(reply.origin, "type", None)
+    origin_reference = _bounded_message_reference(getattr(reply.origin, "message_id", None))
+    return (
+        getattr(getattr(event, "type", None), "name", None) == "REPLY"
+        and getattr(reference_type, "name", None) != "FORWARD"
+        and origin_reference is not None
+        and origin_reference == _reply_reference(reply)
     )
 
 
@@ -221,14 +255,18 @@ def _claim_continued_turn(
     target: MsgTarget,
 ) -> tuple[TurnClaimStatus, SupportTurnLease | None]:
     replies = message.get(Reply, 1)
-    if not replies:
+    if (
+        not replies
+        or not _is_supported_thread_reply(bot, event, replies[0])
+        or (message_reference := _reply_reference(replies[0])) is None
+    ):
         return TurnClaimStatus.NOT_FOUND, None
     result = plugin_runtime.thread_reference_bridge.claim_reply(
         adapter_name=adapter_name(bot),
         bot_scope=str(bot.self_id),
         target=target,
         actor_scope=event.get_user_id(),
-        message_reference=replies[0].id,
+        message_reference=message_reference,
     )
     return result.status, result.lease
 
@@ -243,7 +281,62 @@ def _support_request_allowed(bot: Bot, event: Event, target: MsgTarget) -> bool:
 
 
 def _empty_support_prompt() -> str:
-    return f"请在 {plugin_config.nbtriage_command} 后描述想了解的功能或遇到的问题。"
+    return f"请在 {TRIAGE_COMMAND} 后描述想了解的功能或遇到的问题。"
+
+
+def _has_trusted_runtime_failure(
+    bot: Bot,
+    target: MsgTarget,
+    request: LiveReportRequest,
+) -> bool:
+    if request.reply_reference is None:
+        return False
+    try:
+        correlation_id = plugin_runtime.reference_bridge.resolve_reply(
+            adapter_name=adapter_name(bot),
+            bot_scope=str(bot.self_id),
+            target=target,
+            message_reference=request.reply_reference,
+        )
+    except Exception:
+        logger.warning("NoneBot Triage trusted runtime reference lookup failed")
+        return False
+    if correlation_id is None:
+        return False
+    try:
+        evidence = plugin_runtime.report_service.runtime_buffer.capture(correlation_id)
+    except Exception:
+        logger.warning("NoneBot Triage trusted runtime evidence lookup failed")
+        return False
+    return any(
+        observation.outcome is ObservationOutcome.FAILED for observation in evidence.observations
+    )
+
+
+async def _route_support_text(
+    content: str,
+    *,
+    bot: Bot,
+    report_request: LiveReportRequest,
+) -> SupportRoutingDecision:
+    request = SupportAssessmentRequest(
+        schema_version=SUPPORT_SEMANTIC_SCHEMA_VERSION,
+        request_text=content,
+    )
+    outcome = await plugin_runtime.semantic_assessment_service.assess(request)
+    assessment = outcome.assessment
+    trusted_runtime_failure = (
+        outcome.execution_status is SupportAssessmentExecutionStatus.COMPLETED
+        and assessment is not None
+        and SupportGoal.INCIDENT_INTAKE in assessment.goals
+        and assessment.reported_observation
+        and _has_trusted_runtime_failure(bot, report_request.target, report_request)
+    )
+    return route_support_assessment(
+        outcome,
+        trusted_runtime_failure=trusted_runtime_failure,
+        incident_request_binding=report_request,
+    )
 
 
 async def _capability_guidance_result(
@@ -271,24 +364,26 @@ async def _capability_guidance_result(
                 format_public_capability_guidance(public_result),
                 _shadow_topic_labels(public_result.hits[:8]),
             )
-        try:
-            is_maintainer = bool(await SUPERUSER(bot, event))
-        except Exception:
-            logger.warning("NoneBot Triage SUPERUSER capability check failed")
-            is_maintainer = False
-        if is_maintainer:
-            result = await shadow.search_for_maintainer(content)
-            if result is not None and result.hits:
-                return _GuidanceResult(
-                    format_maintainer_capability_guidance(result),
-                    _shadow_topic_labels(result.hits[:8]),
-                )
 
     return _GuidanceResult(format_capability_guidance(content, capabilities), ())
 
 
 async def _capability_guidance(bot: Bot, event: Event, content: str) -> str:
     return (await _capability_guidance_result(bot, event, content)).message
+
+
+async def _behavior_exploration_response(bot: Bot, event: Event) -> str:
+    try:
+        is_maintainer = bool(await SUPERUSER(bot, event))
+    except Exception:
+        logger.warning("NoneBot Triage SUPERUSER behavior-exploration check failed")
+        is_maintainer = False
+    if not is_maintainer:
+        return "该请求需要部署维护者权限；本轮不会读取内部配置、源码、环境或运行证据。"
+    return (
+        "已识别为行为探索并通过维护者鉴权；证据探索还未接通，"
+        "本轮不会读取内部配置、源码、环境或运行证据。"
+    )
 
 
 def _thread_binding(thread: SupportThreadRecord, event: Event) -> InitialThreadBinding:
@@ -354,6 +449,22 @@ async def _create_support_thread(
     return thread
 
 
+async def _finish_thread_response(
+    matcher: Matcher,
+    bot: Bot,
+    target: MsgTarget,
+    message: str,
+) -> None:
+    await finish_support_response(
+        support_matcher,
+        matcher,
+        message=UniMessage.text(message),
+        bot=bot,
+        target=target,
+        thread_bridge=plugin_runtime.thread_reference_bridge,
+    )
+
+
 def _shadow_topic_labels(hits: Iterable[CapabilitySearchHit]) -> tuple[str, ...]:
     labels: list[str] = []
     for hit in hits:
@@ -413,10 +524,6 @@ def _decode_topic_label(topic_ref: str) -> str | None:
     return decoded or None
 
 
-def _requests_thread_close(content: str) -> bool:
-    return content.casefold().rstrip("。！？!?") in _THREAD_CLOSE_ACTIONS
-
-
 @support_matcher.handle()
 async def handle_support(
     matcher: Matcher,
@@ -445,17 +552,21 @@ async def handle_support(
         _set_pending_continuation(matcher, event, lease)
         await _handle_continuation(matcher, bot, event, lease, content, target)
         return
-    if len(content) > plugin_config.nbtriage_request_max_chars:
+    if len(content) > TRIAGE_REQUEST_MAX_CHARS:
         await support_matcher.finish(
-            UniMessage.text(
-                f"求助内容过长，请缩短到 {plugin_config.nbtriage_request_max_chars} 字以内。"
-            )
+            UniMessage.text(f"求助内容过长，请缩短到 {TRIAGE_REQUEST_MAX_CHARS} 字以内。")
         )
-    request = classify_support_request(content)
-    if request.intent is SupportIntent.EMPTY:
+    request = normalize_support_request(content)
+    if request.is_empty:
         await _create_support_thread(matcher, event, ThreadKind.CLARIFICATION)
-        await support_matcher.finish(UniMessage.text(_empty_support_prompt()))
-    if request.intent is SupportIntent.CAPABILITY_GUIDANCE:
+        await _finish_thread_response(matcher, bot, target, _empty_support_prompt())
+    report_request = _report_request(bot, event, original, target)
+    routing = await _route_support_text(
+        request.content,
+        bot=bot,
+        report_request=report_request,
+    )
+    if routing.action is SupportRoutingAction.SHOW_GUIDANCE:
         guidance = await _capability_guidance_result(bot, event, request.content)
         await _create_support_thread(
             matcher,
@@ -463,13 +574,45 @@ async def handle_support(
             ThreadKind.GUIDANCE,
             topic_refs=guidance.matched_headers,
         )
-        await support_matcher.finish(UniMessage.text(guidance.message))
-    if request.intent is SupportIntent.REPORT_PROBLEM:
-        result = plugin_runtime.report_service.handle(_report_request(bot, event, original, target))
+        await _finish_thread_response(matcher, bot, target, guidance.message)
+    if routing.action is SupportRoutingAction.OPEN_INCIDENT:
+        authorization = routing.incident_authorization
+        if authorization is None:
+            await support_matcher.finish(UniMessage.text("求助记录暂时不可用，请稍后重试。"))
+        result = plugin_runtime.report_service.handle(
+            report_request,
+            routing_decision=routing,
+            authorization=authorization,
+        )
         await support_matcher.finish(UniMessage.text(result.message))
+    if routing.action is SupportRoutingAction.REFUSE:
+        await support_matcher.finish(
+            UniMessage.text("求助内容可能包含密钥或其他敏感信息，请移除后重新发送。")
+        )
+    if routing.action is SupportRoutingAction.BEHAVIOR_EXPLORATION_CANDIDATE:
+        await _create_support_thread(matcher, event, ThreadKind.CLARIFICATION)
+        await _finish_thread_response(
+            matcher,
+            bot,
+            target,
+            await _behavior_exploration_response(bot, event),
+        )
+    if routing.action is SupportRoutingAction.FEATURE_FEEDBACK_CANDIDATE:
+        await _create_support_thread(matcher, event, ThreadKind.CLARIFICATION)
+        await _finish_thread_response(
+            matcher,
+            bot,
+            target,
+            "我识别到这是一项功能建议；反馈生命周期还未接通，本轮不会建立故障记录或外部工单。",
+        )
+    if routing.action is SupportRoutingAction.OUT_OF_SCOPE:
+        await support_matcher.finish(UniMessage.text("这个请求不属于当前 Bot 支持入口的处理范围。"))
     await _create_support_thread(matcher, event, ThreadKind.CLARIFICATION)
-    await support_matcher.finish(
-        UniMessage.text("我还不能确定你是想了解功能还是报告问题，请再具体一点。")
+    await _finish_thread_response(
+        matcher,
+        bot,
+        target,
+        "我还不能确定你是想了解功能还是报告问题，请再具体一点。",
     )
 
 
@@ -494,13 +637,13 @@ async def _handle_continuation(
     target: MsgTarget,
 ) -> None:
     thread = lease.thread
-    if len(request_text) > plugin_config.nbtriage_request_max_chars:
+    if len(request_text) > TRIAGE_REQUEST_MAX_CHARS:
         if thread.kind is ThreadKind.CLARIFICATION:
             _close_continuation(matcher, lease)
             await support_matcher.finish(
                 UniMessage.text(
                     "本次澄清已结束；请重新发送 triage 和缩短后的完整问题，"
-                    f"内容需在 {plugin_config.nbtriage_request_max_chars} 字以内。"
+                    f"内容需在 {TRIAGE_REQUEST_MAX_CHARS} 字以内。"
                 )
             )
         _prepare_continuation(
@@ -510,10 +653,11 @@ async def _handle_continuation(
             kind=thread.kind,
             topic_refs=thread.topic_refs,
         )
-        await support_matcher.finish(
-            UniMessage.text(
-                f"求助内容过长，请缩短到 {plugin_config.nbtriage_request_max_chars} 字以内。"
-            )
+        await _finish_thread_response(
+            matcher,
+            bot,
+            target,
+            f"求助内容过长，请缩短到 {TRIAGE_REQUEST_MAX_CHARS} 字以内。",
         )
     if not request_text:
         if thread.kind is ThreadKind.CLARIFICATION:
@@ -528,27 +672,39 @@ async def _handle_continuation(
             kind=thread.kind,
             topic_refs=thread.topic_refs,
         )
-        await support_matcher.finish(UniMessage.text("请在回复中写明想继续了解的内容。"))
-    if _requests_thread_close(request_text):
-        _close_continuation(matcher, lease)
-        await support_matcher.finish(UniMessage.text("已结束这次求助。"))
-
-    query = _continuation_query(thread, request_text)
-    current_request = classify_support_request(request_text)
-    if current_request.intent is SupportIntent.REPORT_PROBLEM:
-        _close_continuation(matcher, lease)
-        report_request = LiveReportRequest(
-            adapter_name=adapter_name(bot),
-            bot_scope=str(bot.self_id),
-            actor_scope=event.get_user_id(),
-            target=target,
-            reply_reference=None,
+        await _finish_thread_response(
+            matcher,
+            bot,
+            target,
+            "请在回复中写明想继续了解的内容。",
         )
-        result = plugin_runtime.report_service.handle(report_request)
+    current_request = normalize_support_request(request_text)
+    report_request = LiveReportRequest(
+        adapter_name=adapter_name(bot),
+        bot_scope=str(bot.self_id),
+        actor_scope=event.get_user_id(),
+        target=target,
+        reply_reference=None,
+    )
+    routing = await _route_support_text(
+        current_request.content,
+        bot=bot,
+        report_request=report_request,
+    )
+    if routing.action is SupportRoutingAction.OPEN_INCIDENT:
+        _close_continuation(matcher, lease)
+        authorization = routing.incident_authorization
+        if authorization is None:
+            await support_matcher.finish(UniMessage.text("求助记录暂时不可用，请稍后重试。"))
+        result = plugin_runtime.report_service.handle(
+            report_request,
+            routing_decision=routing,
+            authorization=authorization,
+        )
         await support_matcher.finish(UniMessage.text(result.message))
 
-    request = classify_support_request(query)
-    if thread.kind is ThreadKind.GUIDANCE or request.intent is SupportIntent.CAPABILITY_GUIDANCE:
+    if routing.action is SupportRoutingAction.SHOW_GUIDANCE:
+        query = _continuation_query(thread, current_request.content)
         guidance = await _capability_guidance_result(bot, event, query)
         _prepare_continuation(
             matcher,
@@ -561,7 +717,27 @@ async def _handle_continuation(
                 else thread.topic_refs
             ),
         )
-        await support_matcher.finish(UniMessage.text(guidance.message))
+        await _finish_thread_response(matcher, bot, target, guidance.message)
+    if routing.action is SupportRoutingAction.REFUSE:
+        _close_continuation(matcher, lease)
+        await support_matcher.finish(
+            UniMessage.text("求助内容可能包含密钥或其他敏感信息，请移除后重新发送。")
+        )
+    if routing.action is SupportRoutingAction.BEHAVIOR_EXPLORATION_CANDIDATE:
+        _close_continuation(matcher, lease)
+        await support_matcher.finish(
+            UniMessage.text(await _behavior_exploration_response(bot, event))
+        )
+    if routing.action is SupportRoutingAction.FEATURE_FEEDBACK_CANDIDATE:
+        _close_continuation(matcher, lease)
+        await support_matcher.finish(
+            UniMessage.text(
+                "我识别到这是一项功能建议；反馈生命周期还未接通，本轮不会建立故障记录或外部工单。"
+            )
+        )
+    if routing.action is SupportRoutingAction.OUT_OF_SCOPE:
+        _close_continuation(matcher, lease)
+        await support_matcher.finish(UniMessage.text("这个请求不属于当前 Bot 支持入口的处理范围。"))
     _close_continuation(matcher, lease)
     await support_matcher.finish(
         UniMessage.text(

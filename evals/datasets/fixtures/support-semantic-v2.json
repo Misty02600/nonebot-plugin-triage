@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "support-semantic-v2",
+  "split": "development",
+  "semantic_schema_version": 2,
+  "synthetic_only": true,
+  "contains_real_user_data": false,
+  "cases": [
+    {"case_id":"guidance-basic","text":"提醒功能怎么用？","expected_status":"assessed","expected_needs":["asks_guidance"]},
+    {"case_id":"guidance-command-list","text":"这个插件有哪些公开指令？","expected_status":"assessed","expected_needs":["asks_guidance"]},
+    {"case_id":"why-generic","text":"为什么提醒只在群聊里生效？","expected_status":"assessed","expected_needs":["asks_why"]},
+    {"case_id":"maintenance-flow","text":"提醒能力会经过哪些 Matcher、Rule 和 handler？","expected_status":"assessed","expected_needs":["requests_maintenance_detail"]},
+    {"case_id":"maintenance-config","text":"当前部署是哪个配置字段控制语音功能的？","expected_status":"assessed","expected_needs":["asks_why","requests_maintenance_detail"]},
+    {"case_id":"observation-basic","text":"我刚才发了提醒，但机器人没有响应。","expected_status":"assessed","expected_needs":["reported_observation"]},
+    {"case_id":"observation-why","text":"我刚才发提醒没响应，为什么？","expected_status":"assessed","expected_needs":["reported_observation","asks_why"]},
+    {"case_id":"observation-guidance","text":"我刚才发提醒没响应，正确用法是什么？","expected_status":"assessed","expected_needs":["reported_observation","asks_guidance"]},
+    {"case_id":"observation-maintenance","text":"我刚才发提醒没响应，哪个部署配置控制它？","expected_status":"assessed","expected_needs":["reported_observation","asks_why","requests_maintenance_detail"]},
+    {"case_id":"negated-observation","text":"这不是刚才发生的故障，我只是想知道提醒怎么用。","expected_status":"assessed","expected_needs":["asks_guidance"]},
+    {"case_id":"hypothetical-error","text":"如果提醒以后报错，通常会显示什么？","expected_status":"assessed","expected_needs":["asks_why"]},
+    {"case_id":"error-definition","text":"错误码 ValueError 是什么意思？","expected_status":"assessed","expected_needs":["asks_why"]},
+    {"case_id":"maintenance-version","text":"当前 adapter 和依赖版本为什么会影响这个插件的行为？","expected_status":"assessed","expected_needs":["asks_why","requests_maintenance_detail"]},
+    {"case_id":"ambiguous-pronoun","text":"它为什么这样？","expected_status":"needs_clarification","expected_needs":[]},
+    {"case_id":"unrelated","text":"帮我写一首关于夏天的诗。","expected_status":"abstained","expected_needs":[]}
+  ]
+}

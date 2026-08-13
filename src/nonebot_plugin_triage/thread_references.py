@@ -229,6 +229,50 @@ class SupportThreadReferenceBridge:
             self._record_drop()
             return False
 
+    def settle_outgoing_binding(
+        self,
+        binding: OutgoingThreadBinding,
+        *,
+        adapter_name: str,
+        bot_scope: str,
+        target: Target,
+        message_reference: str,
+    ) -> bool:
+        """用已验证引用结算 binding；提交失败时完成失败关闭与单次计数。"""
+        dropped_before = self._dropped_count
+        if isinstance(binding, InitialThreadBinding):
+            settled = self.bind_initial(
+                binding,
+                adapter_name=adapter_name,
+                bot_scope=bot_scope,
+                target=target,
+                message_reference=message_reference,
+            )
+        elif isinstance(binding, PreparedContinuationBinding):
+            settled = self.complete_continuation(
+                binding,
+                adapter_name=adapter_name,
+                bot_scope=bot_scope,
+                target=target,
+                message_reference=message_reference,
+            )
+        else:
+            settled = False
+        if settled:
+            return True
+        self.fail_binding(binding)
+        if self._dropped_count == dropped_before:
+            self._record_drop()
+        return False
+
+    def fail_outgoing_binding(self, binding: OutgoingThreadBinding) -> bool:
+        """失败关闭发送边界已经取得所有权的 binding，并记录一次丢弃。"""
+        dropped_before = self._dropped_count
+        failed = self.fail_binding(binding)
+        if self._dropped_count == dropped_before:
+            self._record_drop()
+        return failed
+
     async def cleanup_unsettled_binding(
         self,
         matcher: Matcher,
@@ -238,8 +282,7 @@ class SupportThreadReferenceBridge:
         del matcher, exception
         binding = pop_outgoing_thread_binding(state)
         if binding is not None:
-            self.fail_binding(binding)
-            self._record_drop()
+            self.fail_outgoing_binding(binding)
 
     def _record_drop(self) -> None:
         self._dropped_count += 1

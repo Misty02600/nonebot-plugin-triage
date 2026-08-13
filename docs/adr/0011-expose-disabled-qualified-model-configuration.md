@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳
+部分被 [ADR-0037](0037-make-semantic-assessment-the-default-triage-path.md) 替代
 
 ## 日期
 
@@ -70,4 +70,5 @@ OpenAI Responses 与 Anthropic Messages 已有相互隔离的 optional extras �
 
 - [ADR-0008：采用 Pydantic AI 的受控模型适配层](0008-pydantic-ai-controlled-model-adaptation.md)
 - [ADR-0010：用有界证据获取循环验证 Agent 能力](0010-use-bounded-evidence-seeking-agent-loop.md)
+- [ADR-0037：把语义 assessment 作为 triage 的正式默认路径](0037-make-semantic-assessment-the-default-triage-path.md)
 - [模型 Provider 支持矩阵](../architecture/model-provider-support.md)

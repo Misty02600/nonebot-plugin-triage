@@ -17,17 +17,24 @@
 
 ## 介绍
 
-发送 `triage <求助内容>` 即可调用插件，`@Bot` 可选。`triage` 后可以直接写自然语言，例如询问功能用法，
-或明确请求受理一次故障。回复近期消息时，插件还会尝试关联这条消息在本机产生的运行记录。
+发送 `triage <求助内容>` 即可调用插件，`@Bot` 可选。`triage` 后可以直接写自然语言，例如询问功能用法或
+描述遇到的问题。回复近期消息时，插件还会尝试关联这条消息在本机产生的运行记录。
 续问同样需要发送 `triage <内容>`；若同时精确回复 Triage 最近一次仍有效的回答，插件会尝试续接原 Thread。
-只有 Reply、没有 `triage` 的消息不会触发该入口。当前只有 OneBot V11 群发送完成了 Bot 回答的精确引用关联；
-其他平台或未命中 Reply 会按一次新的 `triage` 请求处理。
+只有 Reply、没有 `triage` 的消息不会触发该入口。Triage 现在用当前 Alconna Matcher 返回并经严格校验的
+UniSeg Receipt 登记下一条续接点；本地合同测试覆盖 OneBot V11 群聊 / 私聊和 Discord 频道 / 私聊。
+未验证的平台、畸形回执或未命中 Reply 会按一次新的 `triage` 请求处理；真实 Discord 网关仍待 smoke。
 同一 Thread 的上一轮仍在处理时，新的续问不会排队或并行执行；请等待后重新发送 `triage`。Reply 一旦被
 当前处理轮接受就会失效，若处理或发送失败，也请重新发送完整请求。
 
-当前默认不调用模型：明确的用法问题会读取已登记的公开 Alconna 能力；只有全文匹配的显式受理动作（例如
-`请受理这个故障`）才会建立受理记录。症状描述、原因询问和复合诉求不会仅凭关键词建单，当前窄入口会
-回答可确定的公开用法或追问一次。插件不执行求助文本里的命令，也不会自动创建 Issue。
+每次非空 `triage` 现在都默认经过版本化语义 assessment service。未配置 transport 时，runtime 装配
+unavailable service并让本轮 abstain；配置已准入的 OpenCode Go 精确组合后，首轮与续问会各发起一次受限
+语义请求，且不会回退到词表或固定话术。
+模型合同只允许输出四类目标、现象陈述和维护证据深度，确定性 router 才决定 action；模型不能回答、鉴权或
+直接建单。只有模型同时识别到明确 `incident_intake` 目标与 `reported_observation`、模型外 Reply correlation
+对应的可信运行证据明确失败，router 才会为精确
+`LiveReportRequest` 签发进程内授权；报障服务一次性消费该授权后才能进入故障受理。插件不执行求助文本里的
+命令，也不会自动创建 Issue。没有 Reply、引用未命中、只有成功生命周期或空回执时，报告保持未验证并
+进入澄清，不创建 incident、trial，也不进入后续 Agent。
 
 ## 安装
 
@@ -36,6 +43,11 @@ git clone https://github.com/Misty02600/nonebot-plugin-triage.git
 cd nonebot-plugin-triage
 uv sync --all-extras --group dev
 ```
+
+宿主按实际适配器安装对应 extra，例如 `nonebot-plugin-triage[onebot]` 或
+`nonebot-plugin-triage[discord]`。使用当前已准入的语义 transport 时还需安装
+`nonebot-plugin-triage[openai]`；OpenCode Go 复用 Pydantic AI 的 OpenAI Provider，不再声明内容重复的
+专用 extra。插件不会替宿主注册适配器。
 
 在宿主 NoneBot 项目中加载插件：
 
@@ -46,67 +58,96 @@ plugins = ["nonebot_plugin_triage"]
 
 ## 配置
 
-| 配置项                         | 默认值                       | 说明                              |
-| ------------------------------ | ---------------------------- | --------------------------------- |
-| `NBTRIAGE_COMMAND`                  | `triage`                     | 普通用户自然语言入口              |
-| `NBTRIAGE_PRIORITY`                 | `10`                         | `triage` 入口优先级               |
-| `NBTRIAGE_REQUEST_MAX_CHARS`        | `2000`                       | 单次求助文字上限                  |
-| `NBTRIAGE_SUPPORT_COOLDOWN_SECONDS` | `2`                          | 同一用户连续求助的最短间隔        |
-| `NBTRIAGE_REPORT_COOLDOWN_SECONDS`  | `30`                         | 同一用户连续建立故障记录的最短间隔 |
-| `NBTRIAGE_QUERY_COMMAND`            | `报错查询`                   | 维护者查询命令                    |
-| `NBTRIAGE_FEEDBACK_COMMAND`         | `报错反馈`                   | 维护者反馈命令                    |
-| `NBTRIAGE_TRIAL_STATS_COMMAND`      | `报错统计`                   | 维护者试运行统计命令              |
-| `NBTRIAGE_TRIAL_MODE`               | `off`                        | 可设为 `observe` 开启本地观察日志 |
-| `NBTRIAGE_CAPABILITY_SHADOW_PATH`   | 未设置                       | 可选的本地能力影子 SQLite 路径    |
-| `NBTRIAGE_MODEL_ENABLED`            | `false`                      | 当前请保持关闭                    |
-| `NBTRIAGE_RESTRICTED_CONFIG`        | `[]`                         | 模型不得读取的顶层 NoneBot 配置键 |
-| `NBTRIAGE_THREAD_IDLE_SECONDS`      | `900`                        | 教学/澄清 Thread 空闲有效期       |
-| `NBTRIAGE_THREAD_ABSOLUTE_SECONDS`  | `1800`                       | Thread 不可延长的最长有效期       |
-| `NBTRIAGE_THREAD_MAX_ENTRIES`       | `4096`                       | 单进程短期 Thread 容量上限         |
+`triage`、`报错查询`、`报错反馈`、`报错统计`、Matcher 优先级和 2000 字入口上限是当前版本固定的产品合同，
+不再通过环境变量改写。以下各项的“含义”直接说明其控制对象、默认行为、作用域与失败边界。
+
+| 配置项 | 默认值 | 含义 |
+|---|---:|---|
+| `NBTRIAGE_COOLDOWN_SECONDS` | `2` | 同一适配器、Bot、会话和用户每次进入 `triage` 后，在该秒数内再次发送任何 `triage` 请求都会被拒绝；首轮、续问、空输入、超长输入、教学、澄清和报障共用窗口。窗口只在当前进程内存中，重启清空，不是跨进程配额或模型费用预算。 |
+| `NBTRIAGE_RATE_LIMIT_MAX_SCOPES` | `4096` | 当前进程入口限流表最多保留的不同 `适配器 + Bot + 会话 + 用户` scope 数；容量满时淘汰最旧 scope 并累计 drop 计数。它限制内存键数量，不提高单个用户频率，也不提供跨进程协调。 |
+| `NBTRIAGE_CAPABILITY_VISIBILITY_TIMEOUT_SECONDS` | `0.25` | 收集显式 Alconna 能力时，等待单个第三方 Provider 异步可见性判断的最长秒数；超时、异常或返回 false 的能力不会进入本轮公开说明。它不控制模型请求或能力影子后台刷新。 |
+| `NBTRIAGE_OBSERVATION_MAX_ENTRIES` | `10000` | 当前进程最多保留的 NoneBot 生命周期观察记录数，用于 Reply 关联后的可信失败复核；容量满时旧记录被淘汰，原始 API data/result 不会存入该 buffer，重启后清空。 |
+| `NBTRIAGE_OBSERVATION_RETENTION_SECONDS` | `900` | 生命周期观察记录可参与故障证据关联的最长秒数；过期记录不能再支持 Incident，同时也界定受理服务接受证据的时间范围。它不是日志保存期。 |
+| `NBTRIAGE_REFERENCE_MAX_ENTRIES` | `4096` | 当前进程最多保留的出站消息引用索引数，用于把用户 Reply 的 `message_id` 精确关联到近期 Bot 运行；容量满时旧引用被淘汰，索引保存 HMAC scope 而不是平台身份原文。 |
+| `NBTRIAGE_REFERENCE_RETENTION_SECONDS` | `900` | 出站引用可以被 Reply 命中的最长秒数；过期 Reply 按无可信引用处理，不能据此建立 Incident。它不控制 Thread 总寿命。 |
+| `NBTRIAGE_THREAD_IDLE_SECONDS` | `900` | Thread 在没有新一轮成功续接时可以保持空闲的秒数；命中续问会延长空闲期限，但不能越过绝对期限。 |
+| `NBTRIAGE_THREAD_ABSOLUTE_SECONDS` | `1800` | Thread 从创建起不可延长的总寿命；到期后的 Reply 按新的 `triage` 请求处理。该值不能短于空闲期限。 |
+| `NBTRIAGE_THREAD_MAX_ENTRIES` | `4096` | 当前进程最多保存的短期 Thread 数量；容量满时旧状态会被淘汰，重启后全部清空，不是持久会话存储。 |
+| `NBTRIAGE_INCIDENT_MAX_ENTRIES` | `256` | 当前进程最多保存的短期 Incident/活跃 trial 数量；容量满时旧项被淘汰，查询可能返回未找到。它不是数据库容量或持久工单上限。 |
+| `NBTRIAGE_INCIDENT_RETENTION_SECONDS` | `86400` | Incident 与活跃 trial 在当前进程中可查询、反馈和汇总的最长秒数；过期或重启后维护命令不再命中。已写入 observe JSONL 的最小审计事件不由该值删除。 |
+| `NBTRIAGE_TRIAL_MODE` | `off` | `off` 不创建 trial sink、不解析 LocalStore data 路径，也不写观察型事件；`observe` 把受理、查询、反馈和统计所需的最小审计事件写入 LocalStore data。它不启用模型，也不放宽 Incident 证据门。 |
+| `NBTRIAGE_TRIAL_LOG_MAX_BYTES` | `10485760` | `observe` 模式下单个 `trial-events.jsonl` 文件轮转前允许的最大字节数；达到上限后按备份数量轮转。`off` 时不使用该值。 |
+| `NBTRIAGE_TRIAL_LOG_BACKUP_COUNT` | `5` | `observe` 模式下轮转 JSONL 最多保留的历史备份数；超出的最旧备份被轮转策略删除。它不改变内存 Incident 的数量或寿命。 |
+| `NBTRIAGE_KNOWLEDGE_PACK_URL` | 未设置 | 与 SHA-256 成对指定经过发布审核的 HTTPS knowledge pack 资产；未设置时启动后明确进入 no-knowledge 模式，不下载内容。配置后在后台下载到 LocalStore cache，安装失败会降级且不阻止 Bot 启动。 |
+| `NBTRIAGE_KNOWLEDGE_PACK_SHA256` | 未设置 | 与 URL 成对固定 knowledge pack 压缩包的 64 位十六进制 SHA-256；下载内容不匹配时拒绝安装并继续 no-knowledge 模式。它校验制品身份，不表示制品来源或许可证已自动获准。 |
+| `NBTRIAGE_MODEL_BACKEND` | 未设置 | 与 `NBTRIAGE_MODEL_NAME` 成对选择语义模型 transport；未设置时每轮语义判断保守 abstain。当前已准入值为 `opencode-go-chat`。 |
+| `NBTRIAGE_MODEL_NAME` | 未设置 | 与 backend 成对选择已通过精确任务资格和评测的模型；当前已准入值为 `deepseek-v4-flash`，其他名称会在启动时拒绝。 |
+| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 单次语义请求的最长等待时间；当前 OpenCode Go 资格要求精确为 60 秒，超时后本轮 abstain，不自动重试。 |
+| `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 模型结构化语义输出的 token 上限；默认值即当前 OpenCode Go 精确资格值，不匹配时启动失败。它不限制用户输入长度，也不是累计费用预算。 |
+| `NBTRIAGE_RESTRICTED_CONFIG` | `[]` | JSON 数组，列出禁止把实际值交给能力分析模型的 NoneBot 顶层配置键；键名大小写不敏感，`FOO__BAR` 等嵌套写法按顶层 `foo` 整项限制。命中后在读取实际值前拒绝；它不会删除 NoneBot 配置、禁止分析公开 schema/源码，也不表示未列出的整份 `.env` 会被发送。 |
+
+OpenCode Go 配置示例：
+
+```dotenv
+NBTRIAGE_MODEL_BACKEND=opencode-go-chat
+NBTRIAGE_MODEL_NAME=deepseek-v4-flash
+NBTRIAGE_MODEL_TIMEOUT_SECONDS=60
+NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS=240
+```
+
+密钥只从进程环境变量 `OPENCODE_API_KEY` 读取，不写入 `NBTriageConfig`。该 transport 只向固定 Go endpoint
+发送当前单条、规范化并通过秘密守门的 `triage` 请求文字；不会发送 Reply / Thread 历史、身份、配置、
+日志、源码、运行证据、能力索引或 restricted 证据。每轮最多一次请求、零自动重试；失败或非法输出会
+abstain，不切换模型。语义客户端使用 Pydantic AI `Agent(output_type=SupportSemanticAssessment)`；当前
+OpenCode Go Profile 以 `final_result` output tool 承载闭合结果，该 tool 只用于结构化返回，插件不会把它
+升级为业务工具或副作用授权。
+
+当前语义字段的中文对应为：`guidance`（公开能力指导）、`behavior_exploration`（行为探索）、
+`incident_intake`（故障受理）、`feature_feedback`（功能建议）；另有
+`reported_observation`（用户陈述当前或过去真实发生过 Bot 行为）。公开能力、语法、参数、公开角色、场景和
+前提由 guidance 回答；需要源码、内部配置、环境、版本、调用流或运行证据的内部原因进入 behavior
+exploration。分类不接收身份，选中行为探索后才执行模型外 `SUPERUSER` 鉴权。
 
 `observe` 模式的审计事件固定写入 LocalStore 为本插件解析出的 data 目录下
 `trial-events.jsonl`；部署者如需更换目录，使用 LocalStore 的 `LOCALSTORE_PLUGIN_DATA_DIR`，插件不再提供
 独立日志路径配置。旧 `NBTRIAGE_TRIAL_LOG_PATH` 会在初始化时给出迁移错误；既有
 `logs/nbtriage-trials.jsonl` 不会自动迁移、合并或读取。
 
-`NBTRIAGE_RESTRICTED_CONFIG` 使用 JSON 数组，键名大小写不敏感；写入嵌套键时会按顶层整项限制。例如：
+`NBTRIAGE_RESTRICTED_CONFIG` 的 JSON 数组格式示例：
 
 ```dotenv
 NBTRIAGE_RESTRICTED_CONFIG='["DISCORD_BOTS", "PLUGIN_COOKIE"]'
 ```
 
-这会限制整个 `DISCORD_BOTS` 复合配置，包括其中的 Token。当前版本已实现从已加载插件的 handler 源码
-提取标准 Config 引用、在读取前应用策略、对未受限值做有界瞬时投影，并装配一次性能力分析请求；这些
-库级组件尚未接入 Bot handler 或获准真实模型，因此设置该项本身不会触发读取、发送或持久化配置。分析
-链也不会发送整份 `.env`、完整 Config 或枚举进程环境。
+当前版本已实现从已加载插件的 handler 源码提取标准 Config 引用、在读取前应用策略、对未受限值做有界
+瞬时投影，并装配一次性能力分析请求；这些库级组件尚未接入 Bot handler 或获准真实模型，因此设置该项
+本身不会触发读取、发送或持久化配置。分析链也不会发送整份 `.env`、完整 Config 或枚举进程环境。
 
 ## 使用
 
-普通用户入口可以在私聊、群聊或频道直接发送，也可以 `@Bot` 后发送；私聊目前不能建立故障记录。
-维护命令仍需要 `@Bot`。
+普通用户入口可以在私聊、群聊或频道直接发送，也可以 `@Bot` 后发送；三种会话使用相同分流和调用者
+鉴权规则。私聊目前不能建立故障记录，维护命令仍需要 `@Bot`。未配置合格 semantic transport 时，下表的
+`triage` 场景会保守澄清；配置上述 OpenCode Go 精确组合后，router 才能按模型 signals 进入已实现分支。
 
 | 指令                                              | 权限      | 说明                           |
 | ------------------------------------------------- | --------- | ------------------------------ |
 | `triage 某个功能怎么使用`                         | 所有人    | 说明当前平台确定公开的功能     |
 | 回复 Triage 回答并发送 `triage <续问>`            | 所有人    | 有效 Reply 命中时续接短期 Thread |
-| `triage <公开能力问题>`（启用能力影子时）         | 所有人    | 检索当前平台可安全说明的能力   |
-| `triage <未解决或受限能力问题>`（启用能力影子时） | SUPERUSER | 检索维护者可见的本机能力候选   |
-| `triage 请受理这个故障`（可回复近期消息）         | 所有人    | 受理故障；Reply 用于关联记录   |
+| `triage <公开能力问题>`                            | 所有人    | 检索当前平台可安全说明的能力   |
+| `triage <内部行为探索问题>`                        | SUPERUSER | 鉴权后进入行为探索候选；完整取证仍在实施 |
 | `@Bot 报错查询 <受理编号>`                        | SUPERUSER | 查看短期运行摘要               |
 | `@Bot 报错反馈 <受理编号> <有用\|不完整\|不正确>` | SUPERUSER | 为观察型试运行记录反馈         |
 | `@Bot 报错统计`                                   | SUPERUSER | 查看当前试运行统计             |
 
 跨平台命令、结构化 Reply / Target 与回复发送由 Alconna / UniSeg 提供；Thread 是否可续接仍由插件自己的
-HMAC 索引校验作用域、有效期和最近回答。当前只有 OneBot V11 实现了 Bot 出站消息的精确引用关联；其他
-适配器可以提交 `triage` 求助，但不保证能关联 Bot 主动发送的消息。
+HMAC 索引校验作用域、有效期和最近回答。Thread 出站结算只接受当前 Matcher 的单条、同 Bot / adapter /
+Target 且平台结构合法的 Receipt；当前验证范围为 OneBot V11 与 Discord。OneBot 的全局出站 Provider 仍只
+负责运行证据 correlation，不再结算 Thread。其他适配器可以提交 `triage` 求助，但尚不保证续接。
 
-### 实验性能力影子索引
+### 本地能力影子索引
 
-如需检查当前部署实际加载了哪些能力候选，可配置一个以 `.sqlite3` 结尾的本地路径：
-
-```dotenv
-NBTRIAGE_CAPABILITY_SHADOW_PATH=data/nbtriage-capabilities.sqlite3
-```
+能力影子默认启用，并使用 LocalStore 管理的插件 cache；部署者不需要也不能通过 Triage 配置指定 SQLite
+路径。它是可删除重建的派生索引，不是用户数据或权威状态；文件位置、文件名和数据库格式不属于公开合同。
 
 启动钩子只调度后台刷新，不等待制品扫描或索引构建；实际工作通过线程执行，不阻塞 Bot 启动关键路径。
 后台任务读取标准 `pyproject.toml` 的 NoneBot 声明、安装制品 revision 和实际已加载模块做
@@ -132,12 +173,14 @@ just maintainer search-capabilities "搜图怎么用" \
 ```
 
 本地维护者已经在模型外确认自己有权查看当前部署的内部能力时，可以额外使用 `--include-restricted`。CLI
-开关只是声明带外授权，不自行检查身份；群聊中的 `triage <能力问题>` 则会在读取索引前执行 NoneBot
-`SUPERUSER` 检查。
+开关只是声明带外授权，不自行检查身份；语义 router 选中行为探索后，私聊、群聊和频道中的 `triage` 都会
+对当前 Bot / Event 的请求者执行同一 NoneBot `SUPERUSER` 检查。OpenCode Go transport 已可让 guidance、
+behavior exploration 与 incident signals 进入 router；behavior candidate 的鉴权已接入，但取证和解释编排
+仍未实现，因此当前只返回有界状态，不读取 restricted 索引。
 
 这条检索链不依赖模型、网络或向量服务。首次后台构建尚未发布可服务 generation 时，普通用户继续回退
 显式 Provider；发布后也只检索派生 ServingView 中符合上述条件的能力。
-SUPERUSER 还可以查看带具体 `analysis_issues` 的未解决能力和 `restricted` 能力；维护者回复报告实际 issue，
+维护者 CLI 还可以显式查看带具体 `analysis_issues` 的未解决能力和 `restricted` 能力；维护者结果报告实际 issue，
 不把它们笼统称为待审核候选。索引缺少可靠用法或存在
 不透明规则时不会补写参数，也不会把“发现到”宣称为“当前一定能执行”。启动刷新失败但仍有上一份成功构建
 索引时，维护者回复会明确标记快照陈旧；第三方说明中的 mention 和 Unicode 控制字符会在发送前中和。

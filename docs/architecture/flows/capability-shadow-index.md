@@ -2,8 +2,9 @@
 
 ## 这条流程保证什么
 
-影子索引用来回答“当前 Bot 有哪些可说明的能力证据”，不回答“这个用户现在一定能执行什么”。它默认关闭；
-配置后，普通用户只能检索当前 adapter 域内通过确定性门禁的公开记录，SUPERUSER 可以查看带 issue 或受限记录。
+影子索引用来回答“当前 Bot 有哪些可说明的能力证据”，不回答“这个用户现在一定能执行什么”。它默认启用，
+SQLite 位置由 LocalStore 插件 cache 管理而不是部署配置；普通用户只能检索当前 adapter 域内通过确定性门禁
+的公开记录，SUPERUSER 可以查看带 issue 或受限记录。
 
 ```text
 pyproject 声明 + 制品摘要 + 已加载模块
@@ -43,6 +44,8 @@ Matcher 角色或跨 Matcher 支撑关系。
 - 制品版本、VCS commit、有界相对路径与文件摘要用于部署清单和诊断，不构成逐能力源码身份合同。
 - `.env*`、日志、数据库、缓存和运行数据不参与摘要，索引不保存原始配置值。
 - 新索引在临时文件完整写入并校验后替换目标；构建失败保留最近可用索引。
+- LocalStore 路径只在启动刷新阶段解析；解析失败、cache 不可写或版本不兼容时记录稳定错误类型并降级，
+  不阻止插件加载、`triage` 或模型语义分流。
 - deployment 未刷新、刷新失败、snapshot / deployment 任一 partial 或索引 stale 时，普通查询失败关闭；维护者
   仍可读取最近快照并看到 partial / stale 标记。
 - `opaque` Permission、Rule 和 handler 条件只表示无法静态求值；能力说明不等于执行授权，实际执行仍由原
@@ -55,3 +58,4 @@ Matcher 角色或跨 Matcher 支撑关系。
 - [ADR-0026：在检索与模型前隔离能力知识受众域](../../adr/0026-filter-capability-knowledge-before-retrieval.md)
 - [ADR-0032：分离能力受众、平台范围与分析问题](../../adr/0032-separate-capability-audience-analysis-and-platform-status.md)
 - [ADR-0036：保持能力影子确定且以记录为单位](../../adr/0036-keep-capability-shadow-deterministic-and-record-oriented.md)
+- [ADR-0045：统一 triage 冷却并用 LocalStore 管理能力 cache](../../adr/0045-use-one-triage-cooldown-and-localstore-capability-cache.md)

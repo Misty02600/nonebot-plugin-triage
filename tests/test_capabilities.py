@@ -291,7 +291,7 @@ def test_explicit_platform_scope_requires_normalized_adapter_specs() -> None:
             PlatformScope.explicit((invalid,))
 
 
-def test_chinese_usage_query_prefers_image_search_over_triage(tmp_path: Path) -> None:
+def test_structured_subject_prefers_image_search_over_triage(tmp_path: Path) -> None:
     snapshot = _snapshot(
         [
             _record("command:image", "搜图功能", "按关键词搜索图片并返回结果"),
@@ -301,14 +301,12 @@ def test_chinese_usage_query_prefers_image_search_over_triage(tmp_path: Path) ->
     index_path = tmp_path / "capabilities.sqlite3"
     build_capability_index(index_path, snapshot)
 
-    hits = search_capability_index(index_path, "搜图功能怎么用")
+    hits = search_capability_index(index_path, "搜图功能")
 
     assert hits
     assert hits[0].card.capability_id == "command:image"
     assert hits[0].card.values("title") == ("搜图功能",)
-    assert search_capability_index(index_path, "搜图怎么用")[0].card.capability_id == (
-        "command:image"
-    )
+    assert search_capability_index(index_path, "搜图")[0].card.capability_id == "command:image"
 
 
 def test_search_applies_capability_allowlist_before_ranking_and_limit(

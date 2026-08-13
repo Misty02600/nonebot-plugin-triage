@@ -4,24 +4,19 @@ import asyncio
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from enum import StrEnum
 from inspect import isawaitable
 
 from arclet.alconna import Alconna, Empty, command_manager
 from nonebot.adapters import Bot, Event
 
 
-class SupportIntent(StrEnum):
-    EMPTY = "empty"
-    CAPABILITY_GUIDANCE = "capability_guidance"
-    REPORT_PROBLEM = "report_problem"
-    UNKNOWN = "unknown"
-
-
 @dataclass(frozen=True)
 class SupportRequest:
-    intent: SupportIntent
     content: str
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.content
 
 
 @dataclass(frozen=True)
@@ -41,64 +36,13 @@ class _CapabilityProvider:
     is_visible: CapabilityVisibility | None
 
 
-_CAPABILITY_PATTERNS = (
-    "怎么用",
-    "怎么使用",
-    "怎样用",
-    "怎样使用",
-    "如何用",
-    "如何使用",
-    "使用方法",
-    "用法",
-    "帮助",
-    "教程",
-    "说明",
-    "能做什么",
-    "有什么功能",
-    "有哪些功能",
-    "支持什么",
-    "会什么",
-    "能不能",
-    "怎么设置",
-    "怎么配置",
-    "怎么开启",
-    "怎么关闭",
-)
-_EXPLICIT_REPORT_ACTIONS = frozenset(
-    {
-        "请受理这个故障",
-        "确认按故障处理",
-    }
-)
-_GENERIC_GUIDANCE_TEXT = re.compile(
-    r"(?:怎么用|怎样用|如何使用?|使用方法|用法|帮助|教程|说明|功能|"
-    r"能做什么|有什么|有哪些|支持什么|会什么|请问|告诉我)"
-)
 _NON_SEARCH_TEXT = re.compile(r"[^0-9a-zA-Z\u4e00-\u9fff_-]+")
 _CAPABILITY_PROVIDERS: dict[str, _CapabilityProvider] = {}
 
 
-def classify_support_request(text: str) -> SupportRequest:
-    """执行不产生外部副作用的确定性入口快判。
-
-    这里只识别确定性的功能问法和全文匹配的显式报障动作。其他自由表达与复合诉求仍交给语义
-    分类层，当前不可用时由上层保守追问；症状或题材词不会直接建立 incident。
-    """
-    content = " ".join(text.split())
-    if not content:
-        return SupportRequest(SupportIntent.EMPTY, "")
-    asks_for_guidance = any(pattern in content for pattern in _CAPABILITY_PATTERNS)
-    normalized_action = content.rstrip("。！!")
-    explicitly_requests_report = normalized_action in _EXPLICIT_REPORT_ACTIONS
-    contains_report_action = any(action in content for action in _EXPLICIT_REPORT_ACTIONS)
-
-    if explicitly_requests_report:
-        return SupportRequest(SupportIntent.REPORT_PROBLEM, content)
-    if contains_report_action:
-        return SupportRequest(SupportIntent.UNKNOWN, content)
-    if asks_for_guidance:
-        return SupportRequest(SupportIntent.CAPABILITY_GUIDANCE, content)
-    return SupportRequest(SupportIntent.UNKNOWN, content)
+def normalize_support_request(text: str) -> SupportRequest:
+    """只规范化当前请求文字，不承担任何语义分类。"""
+    return SupportRequest(" ".join(text.split()))
 
 
 async def collect_visible_alconna_capabilities(
@@ -278,7 +222,7 @@ def _matching_capabilities(
     query: str,
     capabilities: tuple[PublicCapability, ...],
 ) -> tuple[PublicCapability, ...]:
-    searchable = _searchable_text(_GENERIC_GUIDANCE_TEXT.sub("", query))
+    searchable = _searchable_text(query)
     if not searchable:
         return ()
     scored: list[tuple[int, PublicCapability]] = []
