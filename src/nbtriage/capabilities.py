@@ -80,7 +80,6 @@ class AnalysisIssue(StrEnum):
     EVIDENCE_CONFLICT = "evidence_conflict"
     SENSITIVE_AMBIGUITY = "sensitive_ambiguity"
     EVIDENCE_INSUFFICIENT = "evidence_insufficient"
-    CAPABILITY_MAPPING_UNKNOWN = "capability_mapping_unknown"
 
 
 class PlatformScopeKind(StrEnum):
@@ -1332,7 +1331,6 @@ def _searchable_claims(record: CapabilityRecord) -> tuple[Claim, ...]:
         "config.references",
         "plugin.distribution",
         "plugin.module_name",
-        "supporting.matchers",
     }
     command_specific = any(
         claim.field in {"command.header", "command.literals", "command.path"}

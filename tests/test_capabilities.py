@@ -291,25 +291,6 @@ def test_explicit_platform_scope_requires_normalized_adapter_specs() -> None:
             PlatformScope.explicit((invalid,))
 
 
-def test_capability_mapping_issue_round_trips_and_blocks_public_serving(tmp_path: Path) -> None:
-    record = _record(
-        "command:mapping-unknown",
-        "监听器候选",
-        "Matcher 与用户能力关系尚未确认",
-        analysis_issues=(AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN,),
-    )
-    restored = CapabilityRecord.from_dict(record.to_dict())
-
-    assert restored.analysis_issues == (AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN,)
-
-    index_path = tmp_path / "capabilities.sqlite3"
-    build_capability_index(index_path, _snapshot([record]))
-
-    assert search_capability_index(index_path, "监听器") == []
-    unresolved = search_capability_index(index_path, "监听器", include_unresolved=True)
-    assert [hit.record.capability_id for hit in unresolved] == ["command:mapping-unknown"]
-
-
 def test_chinese_usage_query_prefers_image_search_over_triage(tmp_path: Path) -> None:
     snapshot = _snapshot(
         [

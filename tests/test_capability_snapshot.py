@@ -313,7 +313,7 @@ def test_plain_message_and_passive_matchers_remain_low_confidence_unresolved(
     assert all(_record_values(record, "confidence") == ("low",) for record in snapshot.records)
 
 
-def test_production_snapshot_distinguishes_duplicate_named_user_and_support_handlers(
+def test_production_snapshot_keeps_user_and_background_matchers_separate(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     matcher_cleanup: list[type[object]],
@@ -351,31 +351,13 @@ async def _():
 
     snapshot = build_capability_snapshot(plugins=[plugin])
 
-    assert len(snapshot.records) == 1
-    record = snapshot.records[0]
-    assert record.analysis_issues == ()
-    assert _record_values(record, "trigger.factory") == ("on_regex",)
-    assert _record_values(record, "trigger.entries") == ([r"^谁艾特我$"],)
-    supporting = _record_values(record, "supporting.matchers")[0]
-    assert len(supporting) == 1
-    assert supporting[0]["matcher_type"] == "message"
-    assert supporting[0]["shared_effects"] == ["MainTable"]
-    supporting_claim = next(
-        claim for claim in record.claims if claim.field == "supporting.matchers"
+    assert len(snapshot.records) == 2
+    query_record = next(
+        record
+        for record in snapshot.records
+        if _record_values(record, "trigger.factory") == ("on_regex",)
     )
-    supporting_evidence = {
-        evidence.evidence_id: evidence
-        for evidence in record.evidence_refs
-        if evidence.kind in {"supporting_matcher_source", "supporting_handler_effect"}
-    }
-    assert supporting_evidence
-    assert any(
-        evidence.kind == "supporting_handler_effect"
-        and evidence.locator.endswith("/__init__.py")
-        and evidence.payload["line"] is not None
-        for evidence in supporting_evidence.values()
-    )
-    assert set(supporting_claim.evidence_ids) == set(supporting_evidence)
+    assert _record_values(query_record, "trigger.entries") == ([r"^谁艾特我$"],)
 
 
 def test_production_snapshot_does_not_fold_distinct_qualified_state_resources(
@@ -413,9 +395,8 @@ async def query_reminders():
         for record in snapshot.records
         if _record_values(record, "trigger.factory") == ("on_regex",)
     )
-    assert _record_values(query_record, "supporting.matchers") == ()
     listener_record = next(record for record in snapshot.records if record is not query_record)
-    assert AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN in listener_record.analysis_issues
+    assert AnalysisIssue.DYNAMIC_ENTRY in listener_record.analysis_issues
 
 
 def test_production_snapshot_does_not_fold_state_handler_with_opaque_deeper_helper(
@@ -469,7 +450,7 @@ async def query_state():
         for record in snapshot.records
         if _record_values(record, "trigger.factory") == ("on_regex",)
     )
-    assert _record_values(query_record, "supporting.matchers") == ()
+    assert AnalysisIssue.DYNAMIC_ENTRY in query_record.analysis_issues
 
 
 def test_explicit_command_is_not_folded_into_supporting_matcher(
@@ -547,7 +528,6 @@ async def respond():
 
     assert record.kind == "command"
     assert AnalysisIssue.DYNAMIC_ENTRY in record.analysis_issues
-    assert AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN in record.analysis_issues
     assert _record_values(record, "command.header") == ()
 
 
@@ -573,10 +553,7 @@ async def opaque():
 
     (record,) = build_capability_snapshot(plugins=[plugin]).records
 
-    assert record.analysis_issues == (
-        AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN,
-        AnalysisIssue.DYNAMIC_ENTRY,
-    )
+    assert record.analysis_issues == (AnalysisIssue.DYNAMIC_ENTRY,)
 
 
 @pytest.mark.parametrize("supported_adapters", [set(), {"not a module"}])
@@ -618,10 +595,6 @@ def test_local_source_change_changes_snapshot_generation(
     ]
     source = second.manifest.source_revisions[0]
     assert source.revision != "unavailable"
-    manifest = source.payload["module_source_manifest"]
-    assert isinstance(manifest, dict)
-    assert manifest["revision"] == source.revision
-    assert manifest["module_name"] == plugin.module_name
     assert str(tmp_path) not in second.to_json()
 
 

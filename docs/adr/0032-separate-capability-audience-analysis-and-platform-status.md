@@ -43,8 +43,7 @@ Matcher。把这些情况都称为“待审核”既无法说明真实缺口，�
    AND record_state in {verified, candidate}
    AND served snapshot is complete (partial == false)
    AND served generation is fresh
-   AND current deployment observation is registered
-   AND local/editable module source manifest exactly matches snapshot evidence
+   AND current deployment inventory is complete
    ```
 
    `platform_scope=unknown` 不支持任何普通用户 adapter；`explicit` 只支持列出的 adapter；`all` 支持当前
@@ -94,23 +93,19 @@ Matcher。把这些情况都称为“待审核”既无法说明真实缺口，�
   的插件加载与 metadata 断言；2026-08-13 的本地源码快照验证还确认：7 条原动态候选收敛为 5 项用户能力和
   2 条支撑关系，`dynamic_entry=0`、`capability_mapping_unknown=0`，快照完整。该离线验证不替代正式 Bot
   启动后的部署 generation 刷新。
-- deployment 对齐已进入普通查询的派生 ServingView：完整刷新才创建同时绑定 snapshot / deployment generation
-  的 alignment；逐能力要求当前 `registered`，并对 `local / editable / wheel / vcs` 制品比较快照与部署双方的同域模块
-  源码 manifest。未注册、源码变化、证据歧义或缺失均逐条剔除；全局刷新失败或任一快照 / deployment
-  partial 则整体失败关闭。wheel / VCS 缺少完整同域 manifest 时不会以版本、commit 或 `RECORD` 摘要
-  推断成已对齐。
+- 普通查询要求本轮 snapshot 与 deployment inventory 都完整且刷新成功；全局刷新失败或任一 partial 时失败
+  关闭。逐能力源码 manifest 对齐由 [ADR-0036](0036-keep-capability-shadow-deterministic-and-record-oriented.md)
+  移除，制品版本、commit 和文件摘要只作为部署诊断事实。
 - 尚未落实：后台 LLM 语义编排、一般动态入口自动消解、字段冲突工作流、operator exclude policy，以及
-  更广泛的语义知识接入。有界 handler AST 效果分析与 Matcher 角色归并的首阶段已由 ADR-0034 接入；
-  这些其余缺口不改变本 ADR 的持久模型。
+  更广泛的语义知识接入。这些缺口不改变本 ADR 的持久模型。
 
 ## 替代关系
 
 - 落实并部分替代 [ADR-0024](0024-auto-publish-deterministic-capability-fields.md) 第 5 项尚未固定的持久模型；
 - 保留 [ADR-0026](0026-filter-capability-knowledge-before-retrieval.md) 的模型前受众与 adapter 隔离，但以派生
   ServingView 取代 `review` 披露层；
-- [ADR-0034](0034-distinguish-matchers-from-user-observable-capabilities.md) 进一步把 Matcher 运行事实与派生
-  Capability 分开，并以 `capability_mapping_unknown` 扩展具体分析问题；本 ADR 的受众、平台、记录状态与
-  ServingView 轴保持不变；
+- [ADR-0036](0036-keep-capability-shadow-deterministic-and-record-oriented.md) 移除逐能力源码对齐和 Matcher
+  角色推断；本 ADR 的受众、平台、记录状态与 ServingView 轴保持不变；
 - 不改变 `restricted` 对普通用户不可发现，以及受限源码默认不进入模型的边界。
 
 ## 相关文档

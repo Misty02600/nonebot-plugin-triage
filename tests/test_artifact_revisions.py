@@ -10,7 +10,6 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from nbtriage.artifact_revisions import (
-    ArtifactRevision,
     ArtifactRevisionError,
     ArtifactRevisionStatus,
     ArtifactScanLimits,
@@ -19,7 +18,6 @@ from nbtriage.artifact_revisions import (
     StdlibDistributionMetadataAdapter,
     build_artifact_revision,
 )
-from nbtriage.module_source_revisions import scan_python_module_source
 
 
 def _record_hash(content: bytes) -> str:
@@ -119,8 +117,6 @@ def test_explicit_local_revision_tracks_source_but_excludes_runtime_data(tmp_pat
     assert first.status is ArtifactRevisionStatus.LOCATED
     assert first.source_kind is ArtifactSourceKind.LOCAL
     assert first.revision is not None and len(first.revision) == 64
-    assert first.module_source_manifest is not None
-    module_revision = first.module_source_manifest.revision
     locators = {item.locator for item in first.evidence}
     assert locators == {
         "README.md",
@@ -133,14 +129,10 @@ def test_explicit_local_revision_tracks_source_but_excludes_runtime_data(tmp_pat
     (data / "private.py").write_text("secret = 2\n", encoding="utf-8")
     ignored_change = build_artifact_revision("nonebot_plugin_demo", search_paths=(project,))
     assert ignored_change.revision == first.revision
-    assert ignored_change.module_source_manifest is not None
-    assert ignored_change.module_source_manifest.revision == module_revision
 
     source.write_text("value = 2\n", encoding="utf-8")
     source_change = build_artifact_revision("nonebot_plugin_demo", search_paths=(project,))
     assert source_change.revision != first.revision
-    assert source_change.module_source_manifest is not None
-    assert source_change.module_source_manifest.revision != module_revision
 
 
 def test_local_plugin_revision_does_not_include_sibling_plugin_source(tmp_path: Path) -> None:
@@ -196,11 +188,6 @@ def test_wheel_revision_uses_record_hash_and_fallback_content_digest() -> None:
 
     assert revision.status is ArtifactRevisionStatus.LOCATED
     assert revision.source_kind is ArtifactSourceKind.WHEEL
-    assert revision.module_source_manifest is not None
-    assert [item.relative_path for item in revision.module_source_manifest.files] == [
-        "__init__.py",
-        "config.py",
-    ]
     assert revision.distribution_name == "nonebot-plugin-demo"
     assert revision.distribution_version == "1.2.3"
     assert [item.basis for item in revision.evidence] == ["record_hash", "record_hash"]
@@ -249,167 +236,7 @@ def test_vcs_commit_participates_in_revision() -> None:
 
     assert first.source_kind is ArtifactSourceKind.VCS
     assert first.vcs_commit == "abc123"
-    assert first.module_source_manifest is not None
     assert first.revision != second.revision
-
-
-def test_flat_wheel_module_manifest_excludes_sibling_files() -> None:
-    module_content = b"VALUE = 1\n"
-    sibling_content = b"VALUE = 2\n"
-    adapter = FakeMetadataAdapter(
-        packages={"demo": ("demo-dist",)},
-        versions={"demo-dist": "1.0.0"},
-        files={
-            "demo-dist": (
-                _distribution_file("demo.py", module_content),
-                _distribution_file("demo_extra.py", sibling_content),
-                _distribution_file("other/__init__.py", sibling_content),
-            )
-        },
-        contents={
-            ("demo-dist", "demo.py"): module_content,
-            ("demo-dist", "demo_extra.py"): sibling_content,
-            ("demo-dist", "other/__init__.py"): sibling_content,
-        },
-    )
-
-    revision = build_artifact_revision("demo", metadata_adapter=adapter)
-
-    assert revision.status is ArtifactRevisionStatus.LOCATED
-    assert revision.module_source_manifest is not None
-    assert revision.module_source_manifest.layout.value == "module"
-    assert [item.relative_path for item in revision.module_source_manifest.files] == ["demo.py"]
-
-
-@pytest.mark.parametrize(
-    ("record_hash", "declared_size", "content"),
-    [
-        (None, 10, b"VALUE = 1\n"),
-        ("sha256=not-a-canonical-digest", 10, b"VALUE = 1\n"),
-        (
-            "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(b"VALUE = 1\n").digest()).decode(),
-            10,
-            b"VALUE = 1\n",
-        ),
-        ("md5=XrY7u-Ae7tCTyyK7j1rNww", 10, b"VALUE = 1\n"),
-        (_record_hash(b"OTHER = 1\n"), 10, b"VALUE = 1\n"),
-        (_record_hash(b"VALUE = 1\n"), 9, b"VALUE = 1\n"),
-    ],
-)
-def test_wheel_module_manifest_rejects_unverified_record_fields(
-    record_hash: str | None,
-    declared_size: int,
-    content: bytes,
-) -> None:
-    adapter = FakeMetadataAdapter(
-        packages={"demo": ("demo-dist",)},
-        versions={"demo-dist": "1.0.0"},
-        files={"demo-dist": (DistributionFile("demo.py", record_hash, declared_size),)},
-        contents={("demo-dist", "demo.py"): content},
-    )
-
-    revision = build_artifact_revision("demo", metadata_adapter=adapter)
-
-    assert revision.status is ArtifactRevisionStatus.PARTIAL
-    assert revision.module_source_manifest is None
-
-
-def test_wheel_module_manifest_requires_record_size() -> None:
-    content = b"VALUE = 1\n"
-    adapter = FakeMetadataAdapter(
-        packages={"demo": ("demo-dist",)},
-        versions={"demo-dist": "1.0.0"},
-        files={"demo-dist": (DistributionFile("demo.py", _record_hash(content)),)},
-        contents={("demo-dist", "demo.py"): content},
-    )
-
-    revision = build_artifact_revision("demo", metadata_adapter=adapter)
-
-    assert revision.status is ArtifactRevisionStatus.PARTIAL
-    assert revision.module_source_manifest is None
-
-
-@pytest.mark.parametrize(
-    "locators",
-    [
-        ("demo/__init__.py", "demo.py"),
-        ("demo/config.py",),
-        ("demo/__init__.py", "demo/__init__.py"),
-        ("demo/__init__.py", "demo/Config.py", "demo/config.py"),
-    ],
-)
-def test_wheel_module_manifest_rejects_ambiguous_or_duplicate_topology(
-    locators: tuple[str, ...],
-) -> None:
-    content = b"VALUE = 1\n"
-    adapter = FakeMetadataAdapter(
-        packages={"demo": ("demo-dist",)},
-        versions={"demo-dist": "1.0.0"},
-        files={"demo-dist": tuple(_distribution_file(locator, content) for locator in locators)},
-        contents={("demo-dist", locator): content for locator in locators},
-    )
-
-    revision = build_artifact_revision("demo", metadata_adapter=adapter)
-
-    assert revision.status is ArtifactRevisionStatus.PARTIAL
-    assert revision.module_source_manifest is None
-
-
-def test_wheel_module_manifest_obeys_file_and_byte_limits() -> None:
-    package_init = b"A = 1\n"
-    extra = b"B = 2\n"
-    adapter = FakeMetadataAdapter(
-        packages={"demo": ("demo-dist",)},
-        versions={"demo-dist": "1.0.0"},
-        files={
-            "demo-dist": (
-                _distribution_file("demo/__init__.py", package_init),
-                _distribution_file("demo/extra.py", extra),
-            )
-        },
-        contents={
-            ("demo-dist", "demo/__init__.py"): package_init,
-            ("demo-dist", "demo/extra.py"): extra,
-        },
-    )
-
-    revision = build_artifact_revision(
-        "demo",
-        metadata_adapter=adapter,
-        limits=ArtifactScanLimits(max_files=1, max_bytes=100, max_file_bytes=100),
-    )
-
-    assert revision.status is ArtifactRevisionStatus.PARTIAL
-    assert revision.module_source_manifest is None
-
-
-def test_wheel_module_manifest_rejects_metadata_or_content_changes_during_scan() -> None:
-    first_content = b"VALUE = 1\n"
-    second_content = b"VALUE = 2\n"
-    first_file = _distribution_file("demo.py", first_content)
-    second_file = _distribution_file("demo.py", second_content)
-    metadata_changed = FakeMetadataAdapter(
-        packages={"demo": ("demo-dist",)},
-        versions={"demo-dist": "1.0.0"},
-        file_snapshots={"demo-dist": ((first_file,), (second_file,))},
-        contents={("demo-dist", "demo.py"): first_content},
-    )
-    content_changed = FakeMetadataAdapter(
-        packages={"demo": ("demo-dist",)},
-        versions={"demo-dist": "1.0.0"},
-        files={"demo-dist": (first_file,)},
-        content_snapshots={
-            ("demo-dist", "demo.py"): (first_content, second_content),
-        },
-    )
-
-    metadata_revision = build_artifact_revision("demo", metadata_adapter=metadata_changed)
-    content_revision = build_artifact_revision("demo", metadata_adapter=content_changed)
-
-    assert metadata_revision.status is ArtifactRevisionStatus.PARTIAL
-    assert metadata_revision.module_source_manifest is None
-    assert content_revision.status is ArtifactRevisionStatus.PARTIAL
-    assert content_revision.module_source_manifest is None
 
 
 def test_stdlib_distribution_external_record_path_is_partial_but_module_can_be_verified(
@@ -456,7 +283,6 @@ def test_stdlib_distribution_external_record_path_is_partial_but_module_can_be_v
     revision = build_artifact_revision("demo", metadata_adapter=adapter)
 
     assert revision.status is ArtifactRevisionStatus.PARTIAL
-    assert revision.module_source_manifest is not None
     assert [item.locator for item in revision.evidence] == ["demo/__init__.py"]
 
 
@@ -494,23 +320,6 @@ def test_missing_module_has_no_synthetic_revision() -> None:
     assert revision.source_kind is ArtifactSourceKind.UNKNOWN
     assert revision.revision is None
     assert revision.evidence == ()
-
-
-def test_artifact_rejects_a_module_manifest_for_another_module(tmp_path: Path) -> None:
-    source = tmp_path / "other.py"
-    source.write_text("VALUE = 1\n", encoding="utf-8")
-    scan = scan_python_module_source("other", source)
-    assert scan.manifest is not None
-
-    with pytest.raises(ArtifactRevisionError, match="module does not match"):
-        ArtifactRevision(
-            module_name="demo",
-            status=ArtifactRevisionStatus.LOCATED,
-            source_kind=ArtifactSourceKind.LOCAL,
-            revision="a" * 64,
-            evidence=(),
-            module_source_manifest=scan.manifest,
-        )
 
 
 def test_source_limit_marks_revision_partial(tmp_path: Path) -> None:

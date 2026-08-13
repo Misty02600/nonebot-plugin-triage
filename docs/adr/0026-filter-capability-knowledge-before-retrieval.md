@@ -17,7 +17,7 @@ LLM 补全功能语义。如果先把全部记录交给词法 / 向量检索、�
 ## 决策
 
 1. 每次普通用户请求先在模型外建立受众域与 adapter 域，再进行能力候选召回。普通用户域只包含当前
-   adapter 支持、已经允许 `public`、当前注册且 revision 对齐的能力。
+   adapter 支持、已经允许 `public`，并通过本轮完整快照与 deployment 门禁的能力。
 2. `review`、`restricted`、hidden、SUPERUSER-only、operator deny 和其他 adapter 专属能力不得进入普通
    用户的 FTS、向量召回、Agent 源码搜索或 LLM 上下文。精确询问这些能力时与真正不存在使用同一通用
    未命中回复，不说明权限不足、受限能力或其他平台实现存在。
@@ -58,18 +58,12 @@ LLM 补全功能语义。如果先把全部记录交给词法 / 向量检索、�
 - **2026-08-12 实现检查点**：普通用户已能检索自动公开候选；当前 adapter 的允许能力 ID 会在 SQL 召回与
   `limit` 前应用，stale generation 失败关闭，`review / restricted` 不进入普通用户候选。受控源码
   EvidenceUnit、默认拒绝受限源码、严格模型输出 schema 与证据引用闭包已有库级实现。
-- **2026-08-13 逐能力 deployment 对齐门**：完整刷新在本轮 deployment、snapshot 与索引发布后构建
-  alignment generation，并同时绑定 served snapshot generation 与 deployment generation。普通域只接纳唯一
-  `plugin.module_name` 观察及 `plugin_source` 证据所指向、当前状态为 `registered`、制品已定位且
-  `local / editable / wheel / vcs` 模块源码 manifest 与快照 manifest 精确相等的能力。alignment 能力 ID 先与 adapter / public
-  白名单求交，再进入 SQL 排名与 `limit`；索引记录在求交前和反序列化返回后都会用 alignment 中的整条记录
-  revision 二次复核。
-- deployment-only 刷新、进程重启后尚未完整刷新、刷新异常、snapshot / deployment partial，以及成功后再次
-  失败都会清除内存 alignment 并让普通查询失败关闭，不复用上一轮授权；快照索引构建与维护者检索仍保持
-  可用。wheel `RECORD`、distribution 版本或 VCS commit 仍不能冒充同域模块源码 manifest；wheel / VCS
-  缺少完整可比 manifest 时相应能力不进入普通域。
+- **2026-08-13 deployment 完整性门**：普通域要求本轮 snapshot 完整且新鲜，并要求 deployment inventory
+  成功且完整。受众、adapter、analysis issue 和记录状态白名单在 SQL 排名与 `limit` 前应用；进程重启、刷新
+  异常或成功后再次失败都会使普通查询失败关闭，快照索引与维护者检索仍可用。逐记录源码 manifest 对齐由
+  [ADR-0036](0036-keep-capability-shadow-deterministic-and-record-oriented.md) 移除。
 - **尚未实现**：真实模型语义层、向量召回、Agent 源码搜索、持久语义知识和更完整的字段级 ServingView。
-  当前在线帮助仍是确定性格式化，且热加载自动刷新与持久 alignment 缓存
+  当前在线帮助仍是确定性格式化，且热加载自动刷新
   尚未实现；不能把库级假模型测试描述成已上线模型行为。
 - 本 ADR 记录产品与安全边界，不授权创建实施计划或启动新的模型调用。
 

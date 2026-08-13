@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import hashlib
 import importlib.metadata
 import inspect
@@ -35,13 +34,6 @@ from nbtriage.capabilities import (
     SnapshotError,
     SourceRevision,
 )
-from nbtriage.capability_effects import HandlerAnchor, extract_function_effects
-from nbtriage.capability_role_analysis import (
-    CapabilityRole,
-    SourceEffectFact,
-    analyze_runtime_matcher_roles,
-)
-from nbtriage.module_source_revisions import ModuleSourceScan, scan_python_module_source
 from nonebot_plugin_triage.config_policy import normalize_config_root
 from nonebot_plugin_triage.config_references import (
     ConfigReference,
@@ -76,7 +68,6 @@ class SourceEvidence:
     line: int | None
     digest: str | None
     partial_errors: tuple[str, ...] = ()
-    module_source_manifest: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -161,7 +152,6 @@ class CapabilityCandidate:
     evidence: tuple[SourceEvidence, ...]
     trigger_factory: str | None = None
     trigger_entries: tuple[str, ...] = ()
-    supporting_matchers: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -185,7 +175,6 @@ class _CollectorState:
     packages_distributions: Mapping[str, Sequence[str]]
     file_hashes: dict[Path, tuple[str | None, tuple[str, ...]]]
     module_hashes: dict[str, tuple[str | None, tuple[str, ...]]]
-    module_scans: dict[str, ModuleSourceScan]
     module_sources: dict[Path, tuple[str | None, str | None]]
 
 
@@ -226,7 +215,7 @@ def build_capability_snapshot(
         plugins = get_loaded_plugins()
 
     package_map = _installed_package_map()
-    state = _CollectorState(package_map, {}, {}, {}, {})
+    state = _CollectorState(package_map, {}, {}, {})
     public_paths = frozenset(
         path for path in explicit_public_alconna_paths if isinstance(path, str)
     )
@@ -248,7 +237,6 @@ def build_capability_snapshot(
             for error in identity.source.partial_errors
         )
         plugin_candidates: list[CapabilityCandidate] = []
-        plugin_effects: list[tuple[str, tuple[SourceEffectFact, ...], bool]] = []
         for matcher in _ordered_matchers(getattr(plugin, "matcher", ())):
             try:
                 candidate = _candidate_from_matcher(
@@ -270,18 +258,12 @@ def build_capability_snapshot(
                 continue
             candidate_ids.add(candidate.candidate_id)
             plugin_candidates.append(candidate)
-            plugin_effects.append(
-                (
-                    candidate.candidate_id,
-                    *_matcher_effect_facts(matcher, identity, state),
-                )
-            )
             for evidence in candidate.evidence:
                 errors.extend(
                     f"candidate_source:{candidate.candidate_id}:{error}"
                     for error in evidence.partial_errors
                 )
-        candidates.extend(_merge_matcher_roles(plugin_candidates, plugin_effects))
+        candidates.extend(plugin_candidates)
 
     identity_tuple = tuple(sorted(identities, key=lambda item: item.plugin_id))
     candidate_tuple = tuple(
@@ -917,184 +899,6 @@ def _matcher_handler_references(
     return tuple(sorted(result, key=lambda item: (str(item["module"]), str(item["function"]))))
 
 
-def _matcher_effect_facts(
-    matcher: object,
-    plugin: PluginIdentity,
-    state: _CollectorState,
-) -> tuple[tuple[SourceEffectFact, ...], bool]:
-    effects: list[SourceEffectFact] = []
-    handlers = _safe_collection(getattr(matcher, "handlers", ()))
-    if not handlers:
-        return (), False
-    analyzable = 0
-    analyzed = 0
-    for dependent in handlers:
-        call = getattr(dependent, "call", None)
-        if not inspect.isfunction(call):
-            continue
-        analyzable += 1
-        module_name = _safe_text(getattr(call, "__module__", None))
-        function_name = _safe_text(getattr(call, "__name__", None))
-        if (
-            module_name is None
-            or function_name is None
-            or not _module_belongs_to_plugin(module_name, plugin.module_name)
-        ):
-            continue
-        module = sys.modules.get(module_name)
-        try:
-            raw_source_path = inspect.getsourcefile(call)
-            source_path = (
-                Path(raw_source_path).resolve(strict=False)
-                if isinstance(raw_source_path, str) and raw_source_path
-                else None
-            )
-        except (OSError, TypeError, RuntimeError):
-            source_path = None
-        if source_path is None or not source_path.name:
-            source_path = _module_file(module)
-        if source_path is None:
-            continue
-        source_text, _ = _module_source_text(source_path, state)
-        if source_text is None:
-            continue
-        line = _function_definition_line(source_text, call)
-        if line is None:
-            continue
-        try:
-            (analysis,) = extract_function_effects(
-                source_text,
-                locator=_logical_module_path(module_name, source_path),
-                functions=(HandlerAnchor(function_name, line),),
-            )
-        except (TypeError, ValueError):
-            continue
-        effects.extend(analysis.effects)
-        if not analysis.partial_errors:
-            analyzed += 1
-    return tuple(effects), analyzable == len(handlers) and analyzed == analyzable
-
-
-def _merge_matcher_roles(
-    candidates: list[CapabilityCandidate],
-    matcher_effects: list[tuple[str, tuple[SourceEffectFact, ...], bool]],
-) -> tuple[CapabilityCandidate, ...]:
-    analyses = {item.matcher_key: item for item in analyze_runtime_matcher_roles(matcher_effects)}
-    by_id = {candidate.candidate_id: candidate for candidate in candidates}
-    support_by_target: dict[str, list[dict[str, object]]] = {}
-    support_evidence_by_target: dict[str, list[SourceEvidence]] = {}
-    omitted: set[str] = set()
-    for candidate in candidates:
-        analysis = analyses.get(candidate.candidate_id)
-        if analysis is None:
-            continue
-        if (
-            analysis.role is CapabilityRole.SUPPORTING
-            and AnalysisIssue.DYNAMIC_ENTRY in candidate.analysis_issues
-            and candidate.kind in {CapabilityKind.MESSAGE, CapabilityKind.PASSIVE}
-        ):
-            omitted.add(candidate.candidate_id)
-            for relationship in analysis.relationships:
-                support_by_target.setdefault(relationship.target_matcher_key, []).append(
-                    {
-                        "matcher_id": candidate.candidate_id,
-                        "matcher_type": candidate.matcher_type,
-                        "shared_effects": list(relationship.shared_symbols),
-                    }
-                )
-                support_evidence_by_target.setdefault(relationship.target_matcher_key, []).extend(
-                    (
-                        *(_supporting_source_evidence(source) for source in candidate.evidence),
-                        *(
-                            _supporting_effect_evidence(effect)
-                            for effect in relationship.source_effects
-                        ),
-                    )
-                )
-        elif analysis.role is CapabilityRole.USER_CAPABILITY and candidate.kind in {
-            CapabilityKind.MESSAGE,
-            CapabilityKind.PASSIVE,
-        }:
-            issues = tuple(
-                issue
-                for issue in candidate.analysis_issues
-                if issue is not AnalysisIssue.DYNAMIC_ENTRY
-            )
-            candidate = replace(candidate, analysis_issues=issues)
-            by_id[candidate.candidate_id] = candidate
-        elif AnalysisIssue.DYNAMIC_ENTRY in candidate.analysis_issues:
-            issues = tuple(
-                sorted(
-                    {*candidate.analysis_issues, AnalysisIssue.CAPABILITY_MAPPING_UNKNOWN},
-                    key=lambda item: item.value,
-                )
-            )
-            by_id[candidate.candidate_id] = replace(candidate, analysis_issues=issues)
-
-    result: list[CapabilityCandidate] = []
-    for candidate in candidates:
-        if candidate.candidate_id in omitted:
-            continue
-        resolved = by_id[candidate.candidate_id]
-        support = tuple(support_by_target.get(candidate.candidate_id, ()))
-        if support:
-            support_evidence = tuple(
-                {
-                    source.source_id: source
-                    for source in support_evidence_by_target.get(candidate.candidate_id, ())
-                }.values()
-            )
-            resolved = replace(
-                resolved,
-                supporting_matchers=support,
-                evidence=(*resolved.evidence, *support_evidence),
-            )
-        result.append(resolved)
-    return tuple(result)
-
-
-def _supporting_source_evidence(source: SourceEvidence) -> SourceEvidence:
-    return _source_evidence(
-        kind="supporting_matcher_source",
-        module_name=source.module_name,
-        path=source.path,
-        line=source.line,
-        digest=source.digest,
-        partial_errors=source.partial_errors,
-    )
-
-
-def _supporting_effect_evidence(effect: SourceEffectFact) -> SourceEvidence:
-    return _source_evidence(
-        kind="supporting_handler_effect",
-        module_name=None,
-        path=effect.source.locator,
-        line=effect.source.line,
-        digest=effect.source.digest,
-        partial_errors=(),
-    )
-
-
-def _function_definition_line(source_text: str, function: object) -> int | None:
-    code = getattr(function, "__code__", None)
-    name = _safe_text(getattr(function, "__name__", None))
-    first_line = getattr(code, "co_firstlineno", None)
-    if name is None or not isinstance(first_line, int) or first_line < 1:
-        return None
-    try:
-        tree = ast.parse(source_text)
-    except (SyntaxError, ValueError, RecursionError):
-        return None
-    matches: list[int] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) or node.name != name:
-            continue
-        identity_line = min((node.lineno, *(decorator.lineno for decorator in node.decorator_list)))
-        if identity_line == first_line:
-            matches.append(node.lineno)
-    return matches[0] if len(matches) == 1 else None
-
-
 def _module_config_bindings(
     module: ModuleType,
     plugin_module_name: str,
@@ -1236,7 +1040,6 @@ def _module_source_evidence(
 ) -> SourceEvidence:
     path = _module_file(module)
     digest, errors = _module_source_hash(module, module_name, state)
-    scan = _module_source_scan(module, module_name, state)
     return _source_evidence(
         kind="plugin_source",
         module_name=module_name,
@@ -1244,7 +1047,6 @@ def _module_source_evidence(
         line=None,
         digest=digest,
         partial_errors=errors,
-        module_source_manifest=(scan.manifest.to_dict() if scan.manifest is not None else None),
     )
 
 
@@ -1256,7 +1058,6 @@ def _source_evidence(
     line: int | None,
     digest: str | None,
     partial_errors: tuple[str, ...],
-    module_source_manifest: dict[str, object] | None = None,
 ) -> SourceEvidence:
     payload = json.dumps(
         [kind, module_name, path, line, digest],
@@ -1272,7 +1073,6 @@ def _source_evidence(
         line=line,
         digest=digest,
         partial_errors=partial_errors,
-        module_source_manifest=module_source_manifest,
     )
 
 
@@ -1303,28 +1103,10 @@ def _module_source_hash(
 ) -> tuple[str | None, tuple[str, ...]]:
     if module_name in state.module_hashes:
         return state.module_hashes[module_name]
-    scan = _module_source_scan(module, module_name, state)
-    result = (scan.manifest.revision, ()) if scan.manifest is not None else (None, scan.errors)
+    path = _module_file(module)
+    result = _file_digest(path, state) if path is not None else (None, ("source_unavailable",))
     state.module_hashes[module_name] = result
     return result
-
-
-def _module_source_scan(
-    module: ModuleType | None,
-    module_name: str,
-    state: _CollectorState,
-) -> ModuleSourceScan:
-    cached = state.module_scans.get(module_name)
-    if cached is not None:
-        return cached
-    module_file = _module_file(module)
-    scan = (
-        scan_python_module_source(module_name, module_file)
-        if module_file is not None
-        else ModuleSourceScan(None, ("source_unavailable",))
-    )
-    state.module_scans[module_name] = scan
-    return scan
 
 
 def _file_digest(
@@ -1450,8 +1232,6 @@ def _source_revision(
         "module_name": source.module_name,
         "line": source.line,
     }
-    if source.module_source_manifest is not None:
-        source_payload["module_source_manifest"] = source.module_source_manifest
     if payload:
         source_payload.update(payload)
     return SourceRevision(
@@ -1553,20 +1333,6 @@ def _core_record(
                 list(candidate.trigger_entries),
                 ClaimBasis.OBSERVED,
                 matcher_evidence,
-            )
-        )
-    if candidate.supporting_matchers:
-        supporting_evidence = tuple(
-            item.evidence_id
-            for item in evidence
-            if item.kind in {"supporting_matcher_source", "supporting_handler_effect"}
-        )
-        claims.append(
-            Claim(
-                "supporting.matchers",
-                list(candidate.supporting_matchers),
-                ClaimBasis.INFERRED,
-                supporting_evidence or matcher_evidence,
             )
         )
     declared_evidence = (

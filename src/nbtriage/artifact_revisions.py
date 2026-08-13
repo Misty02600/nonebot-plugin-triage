@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import importlib.metadata
 import json
@@ -15,18 +13,8 @@ from typing import Protocol, TypeVar, overload
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
-from nbtriage.module_source_revisions import (
-    ModuleSourceFile,
-    ModuleSourceLimits,
-    ModuleSourceRevisionError,
-    PythonModuleLayout,
-    PythonModuleSourceManifest,
-    scan_python_module_source,
-)
-
 _MODULE_NAME_PATTERN = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$", re.ASCII)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-_RECORD_SHA256_PATTERN = re.compile(r"^sha256=([A-Za-z0-9_-]{43})$", re.ASCII)
 _ResultT = TypeVar("_ResultT")
 _EXCLUDED_DIRECTORIES = frozenset(
     {
@@ -153,7 +141,6 @@ class ArtifactRevision:
     distribution_name: str | None = None
     distribution_version: str | None = None
     vcs_commit: str | None = None
-    module_source_manifest: PythonModuleSourceManifest | None = None
 
     def __post_init__(self) -> None:
         _module_name(self.module_name)
@@ -167,21 +154,10 @@ class ArtifactRevision:
             not isinstance(item, ArtifactEvidence) for item in self.evidence
         ):
             raise ArtifactRevisionError("evidence must be a tuple of ArtifactEvidence")
-        if self.module_source_manifest is not None:
-            if not isinstance(self.module_source_manifest, PythonModuleSourceManifest):
-                raise ArtifactRevisionError(
-                    "module_source_manifest must be PythonModuleSourceManifest"
-                )
-            if self.module_source_manifest.module_name != self.module_name:
-                raise ArtifactRevisionError("module source manifest module does not match artifact")
         if self.status is ArtifactRevisionStatus.MISSING:
             if self.source_kind is not ArtifactSourceKind.UNKNOWN:
                 raise ArtifactRevisionError("missing artifacts must have unknown source kind")
-            if (
-                self.revision is not None
-                or self.evidence
-                or self.module_source_manifest is not None
-            ):
+            if self.revision is not None or self.evidence:
                 raise ArtifactRevisionError("missing artifacts cannot have revision evidence")
         elif self.revision is None:
             raise ArtifactRevisionError("located artifacts require a revision")
@@ -441,30 +417,8 @@ def _build_source_revision(
     vcs_commit: str | None = None,
     force_partial: bool = False,
 ) -> ArtifactRevision:
-    module_limits = ModuleSourceLimits(
-        max_files=limits.max_files,
-        max_total_bytes=limits.max_bytes,
-        max_file_bytes=limits.max_file_bytes,
-        max_directories=limits.max_directories,
-    )
-    module_scan = scan_python_module_source(
-        module_name,
-        location.scan_root,
-        limits=module_limits,
-    )
     scan = _scan_source(location, limits)
-    verified_module_scan = scan_python_module_source(
-        module_name,
-        location.scan_root,
-        limits=module_limits,
-    )
-    module_manifest = (
-        module_scan.manifest
-        if module_scan.manifest is not None
-        and verified_module_scan.manifest == module_scan.manifest
-        else None
-    )
-    partial = force_partial or scan.partial or not scan.evidence or module_manifest is None
+    partial = force_partial or scan.partial or not scan.evidence
     status = ArtifactRevisionStatus.PARTIAL if partial else ArtifactRevisionStatus.LOCATED
     revision = _revision_digest(
         module_name=module_name,
@@ -484,7 +438,6 @@ def _build_source_revision(
         distribution_name=distribution_name,
         distribution_version=distribution_version,
         vcs_commit=vcs_commit,
-        module_source_manifest=module_manifest,
     )
 
 
@@ -545,22 +498,6 @@ def _build_distribution_revision(
             )
         )
 
-    module_manifest, verified_snapshot = _build_distribution_module_manifest(
-        module_name,
-        adapter=adapter,
-        distribution_name=distribution_name,
-        first_snapshot=first_snapshot,
-        limits=limits,
-    )
-    if verified_snapshot != first_snapshot:
-        partial = True
-        module_manifest = None
-    if verified_snapshot.partial:
-        partial = True
-    if verified_snapshot.unavailable or verified_snapshot.unknown_rejections:
-        module_manifest = None
-    if module_manifest is None:
-        partial = True
     if not evidence:
         partial = True
     status = ArtifactRevisionStatus.PARTIAL if partial else ArtifactRevisionStatus.LOCATED
@@ -583,7 +520,6 @@ def _build_distribution_revision(
         distribution_name=distribution_name,
         distribution_version=version,
         vcs_commit=vcs_commit,
-        module_source_manifest=module_manifest,
     )
 
 
@@ -617,137 +553,6 @@ def _distribution_file_snapshot(
         unknown_rejections=unknown_rejections,
         unavailable=incomplete,
     )
-
-
-def _build_distribution_module_manifest(
-    module_name: str,
-    *,
-    adapter: DistributionMetadataAdapter,
-    distribution_name: str,
-    first_snapshot: _DistributionFileSnapshot,
-    limits: ArtifactScanLimits,
-) -> tuple[PythonModuleSourceManifest | None, _DistributionFileSnapshot]:
-    first_projection = _distribution_module_projection(module_name, first_snapshot, limits)
-    files = None
-    if first_projection is not None:
-        _, root_prefix, candidates = first_projection
-        files = _read_distribution_module_files(
-            adapter,
-            distribution_name=distribution_name,
-            root_prefix=root_prefix,
-            candidates=candidates,
-            limits=limits,
-        )
-
-    verified_snapshot = _distribution_file_snapshot(adapter, distribution_name)
-    if verified_snapshot != first_snapshot or first_projection is None or files is None:
-        return None, verified_snapshot
-    verified_projection = _distribution_module_projection(module_name, verified_snapshot, limits)
-    if verified_projection is None or verified_projection != first_projection:
-        return None, verified_snapshot
-    layout, root_prefix, candidates = verified_projection
-    verified_files = _read_distribution_module_files(
-        adapter,
-        distribution_name=distribution_name,
-        root_prefix=root_prefix,
-        candidates=candidates,
-        limits=limits,
-    )
-    if verified_files != files:
-        return None, verified_snapshot
-    try:
-        return PythonModuleSourceManifest.create(module_name, layout, files), verified_snapshot
-    except ModuleSourceRevisionError:
-        return None, verified_snapshot
-
-
-def _distribution_module_projection(
-    module_name: str,
-    snapshot: _DistributionFileSnapshot,
-    limits: ArtifactScanLimits,
-) -> tuple[PythonModuleLayout, str, tuple[DistributionFile, ...]] | None:
-    module_prefix = module_name.replace(".", "/")
-    package_marker = f"{module_prefix}/__init__.py"
-    flat_marker = f"{module_prefix}.py"
-    safe_locators = {item.locator for item in snapshot.files}
-    rejected_locators = {
-        item.safe_locator for item in snapshot.rejected if item.safe_locator is not None
-    }
-    if package_marker in rejected_locators or flat_marker in rejected_locators:
-        return None
-    has_package = package_marker in safe_locators
-    has_flat = flat_marker in safe_locators
-    if has_package == has_flat:
-        return None
-
-    if has_flat:
-        candidates = tuple(item for item in snapshot.files if item.locator == flat_marker)
-        root_prefix = module_prefix.rpartition("/")[0]
-        return PythonModuleLayout.MODULE, f"{root_prefix}/" if root_prefix else "", candidates
-
-    prefix = f"{module_prefix}/"
-    if any(
-        locator.startswith(prefix) and locator.casefold().endswith(".py")
-        for locator in rejected_locators
-    ):
-        return None
-    candidates = tuple(
-        item
-        for item in snapshot.files
-        if item.locator.startswith(prefix) and item.locator.casefold().endswith(".py")
-    )
-    if not candidates or len(candidates) > limits.max_files:
-        return None
-    relative_paths = tuple(item.locator.removeprefix(prefix) for item in candidates)
-    if len(set(relative_paths)) != len(relative_paths) or len(
-        {path.casefold() for path in relative_paths}
-    ) != len(relative_paths):
-        return None
-    return PythonModuleLayout.PACKAGE, prefix, candidates
-
-
-def _read_distribution_module_files(
-    adapter: DistributionMetadataAdapter,
-    *,
-    distribution_name: str,
-    root_prefix: str,
-    candidates: tuple[DistributionFile, ...],
-    limits: ArtifactScanLimits,
-) -> tuple[ModuleSourceFile, ...] | None:
-    files: list[ModuleSourceFile] = []
-    consumed = 0
-    for item in candidates:
-        expected_digest = _record_sha256(item.record_hash)
-        if expected_digest is None or item.size is None:
-            return None
-        if item.size > limits.max_file_bytes or consumed + item.size > limits.max_bytes:
-            return None
-        try:
-            content = adapter.read_file(
-                distribution_name,
-                item.locator,
-                max_bytes=item.size,
-            )
-        except Exception:
-            return None
-        if content is None or len(content) != item.size:
-            return None
-        actual_digest = hashlib.sha256(content).digest()
-        if actual_digest != expected_digest:
-            return None
-        relative_path = item.locator.removeprefix(root_prefix)
-        try:
-            files.append(
-                ModuleSourceFile(
-                    relative_path=relative_path,
-                    content_sha256=actual_digest.hex(),
-                    size=len(content),
-                )
-            )
-        except ModuleSourceRevisionError:
-            return None
-        consumed += len(content)
-    return tuple(files)
 
 
 def _locate_explicit_source(
@@ -1039,24 +844,6 @@ def _digest_field(digest: object, value: str) -> None:
     encoded = value.encode("utf-8")
     digest.update(len(encoded).to_bytes(8, "big"))  # type: ignore[attr-defined]
     digest.update(encoded)  # type: ignore[attr-defined]
-
-
-def _record_sha256(value: str | None) -> bytes | None:
-    if value is None or (match := _RECORD_SHA256_PATTERN.fullmatch(value)) is None:
-        return None
-    encoded = match.group(1).encode("ascii")
-    try:
-        decoded = base64.b64decode(
-            encoded + b"=" * (-len(encoded) % 4),
-            altchars=b"-_",
-            validate=True,
-        )
-    except (ValueError, binascii.Error):
-        return None
-    canonical = base64.urlsafe_b64encode(decoded).rstrip(b"=")
-    return (
-        decoded if len(decoded) == hashlib.sha256().digest_size and canonical == encoded else None
-    )
 
 
 def _safe_module_locator(value: object) -> str | None:

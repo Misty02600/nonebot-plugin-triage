@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-13 |
+| 已替代；由 [ADR-0036](0036-keep-capability-shadow-deterministic-and-record-oriented.md) 替代 | 2026-08-13 |
 
 ## 当时遇到了什么
 
