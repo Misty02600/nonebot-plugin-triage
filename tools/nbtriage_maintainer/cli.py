@@ -521,6 +521,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MLFLOW_EXPERIMENT,
     )
     mlflow_parser.add_argument("--run-name")
+    mlflow_parser.add_argument(
+        "--allow-unqualified",
+        action="store_true",
+        help=(
+            "Publish a registered custom result or unknown artifact as non-comparable; "
+            "known unregistered evaluation IDs remain rejected."
+        ),
+    )
 
     session_create_parser = subparsers.add_parser(
         "session-create",
@@ -699,6 +707,7 @@ def _run_publish_evaluation_mlflow(args: argparse.Namespace) -> int:
             tracking_uri=args.tracking_uri,
             experiment_name=args.experiment,
             run_name=args.run_name,
+            allow_unqualified=args.allow_unqualified,
         )
     except MLflowTrackingError as error:
         print(f"MLflow publication failed: {error}", file=sys.stderr)

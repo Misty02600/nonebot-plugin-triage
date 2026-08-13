@@ -10,16 +10,27 @@ import os
 import re
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from tools.nbtriage_maintainer.agent_evaluation import (
+    B4_CUSTOM_SCRIPTED_EVALUATION_ID,
+    B4_EVALUATION_ID,
+    B4_REAL_EVALUATION_ID,
+    AgentEvaluationError,
+    evaluate_b4_scripted_fixtures,
+    load_b4_real_review_source,
+    load_b4_scripted_report,
+)
 from tools.nbtriage_maintainer.answer_quality_evaluation import (
     ANSWER_QUALITY_EVALUATION_ID,
     evaluate_answer_quality,
 )
 from tools.nbtriage_maintainer.bot_docs_evaluation import (
+    BOT_DOCS_CUSTOM_EVALUATION_ID,
     BOT_DOCS_EVALUATION_ID,
     evaluate_bot_docs_retrieval,
 )
@@ -27,12 +38,12 @@ from tools.nbtriage_maintainer.evaluation import (
     B1_CUSTOM_EVALUATION_ID,
     B1_EVALUATION_ID,
     EvaluationError,
-    evaluate_b0,
     validate_b1_evaluation_report,
 )
 from tools.nbtriage_maintainer.evidence_policy import B3_EVIDENCE_POLICY_ID
 from tools.nbtriage_maintainer.evidence_policy_evaluation import evaluate_b3_evidence_policy
 from tools.nbtriage_maintainer.evidence_receipt_evaluation import (
+    B3_EVIDENCE_RECEIPT_CUSTOM_EVALUATION_ID,
     B3_EVIDENCE_RECEIPT_EVALUATION_ID,
     evaluate_b3_evidence_receipts,
 )
@@ -42,11 +53,10 @@ from tools.nbtriage_maintainer.strict_json import StrictJsonError, strict_json_l
 DEFAULT_MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 DEFAULT_MLFLOW_EXPERIMENT = "nbtriage/evaluations"
 
-_B4_REAL_EVALUATION_ID = "b4-bounded-agent-real-v1"
 _B4_REAL_PARTIAL_KIND = "b4-real-partial"
 _B4_REAL_ABORT_KIND = "b4-real-run-abort-observation"
-_B0_B1_EVALUATION_IDS = frozenset({"b0-checklist-v1", B1_EVALUATION_ID})
-_TERMINAL_PARTIAL_STATUSES = frozenset({"aborted", "completed"})
+_B0_EVALUATION_ID = "b0-checklist-v1"
+_REPORT_KIND = "report"
 _METRIC_ROOTS = (
     "summary",
     "metrics",
@@ -85,12 +95,28 @@ class _LoadedArtifact:
     sha256: str
 
 
+@dataclass(frozen=True)
+class _ValidatedArtifacts:
+    artifact: _LoadedArtifact
+    audit: _LoadedArtifact | None = None
+
+
+@dataclass(frozen=True)
+class _ArtifactProfile:
+    validator: Callable[[_LoadedArtifact], _ValidatedArtifacts]
+    qualification: str
+    artifact_role: str
+    comparable: bool
+    classifier: Callable[[dict[str, Any]], tuple[str, str, bool]] | None = None
+
+
 def publish_evaluation_to_mlflow(
     report_path: Path,
     *,
     tracking_uri: str = DEFAULT_MLFLOW_TRACKING_URI,
     experiment_name: str = DEFAULT_MLFLOW_EXPERIMENT,
     run_name: str | None = None,
+    allow_unqualified: bool = False,
     mlflow_module: Any | None = None,
 ) -> MLflowPublication:
     """把既有评测工件发布到 MLflow，并重放支持复建的正式离线评测。
@@ -100,6 +126,7 @@ def publish_evaluation_to_mlflow(
         tracking_uri: 显式 MLflow Tracking URI；不会读取项目配置或改写报告。
         experiment_name: MLflow experiment 名称。
         run_name: 可选的 MLflow run 名称；缺省时由评测 ID 和工件摘要生成。
+        allow_unqualified: 显式允许发布不可比较的已注册 custom 结果或未知观察工件。
         mlflow_module: 测试时注入的 MLflow 兼容对象；正常调用不应传入。
 
     Returns:
@@ -111,8 +138,12 @@ def publish_evaluation_to_mlflow(
     Note:
         MLflow 是查询索引和 UI 副本。报告原文、评测结论与 promotion gate 仍由本地 JSON 所有。
     """
-    artifact = _load_artifact(report_path)
-    audit = _load_related_audit(artifact)
+    profile, validated = _resolve_artifact_profile(
+        report_path,
+        allow_unqualified=allow_unqualified,
+    )
+    artifact = validated.artifact
+    audit = validated.audit
     bundle_sha256 = _bundle_sha256(artifact, audit)
     mlflow = mlflow_module or _load_mlflow()
 
@@ -144,7 +175,7 @@ def publish_evaluation_to_mlflow(
             created=False,
         )
 
-    tags = _build_tags(artifact, audit, bundle_sha256)
+    tags = _build_tags(artifact, audit, bundle_sha256, profile)
     parameters = _build_parameters(artifact.payload)
     metrics = _build_metrics(artifact.payload)
     effective_run_name = run_name or (f"{artifact.payload['evaluation_id']}:{bundle_sha256[:12]}")
@@ -194,7 +225,7 @@ def _load_mlflow() -> Any:
         ) from error
 
 
-def _load_artifact(path: Path) -> _LoadedArtifact:
+def _load_basic_artifact(path: Path) -> _LoadedArtifact:
     try:
         raw = path.read_bytes()
     except OSError as error:
@@ -209,39 +240,11 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
     evaluation_id = payload.get("evaluation_id")
     if not isinstance(evaluation_id, str) or not evaluation_id:
         raise MLflowTrackingError("evaluation artifact must contain evaluation_id")
-    if evaluation_id == B1_CUSTOM_EVALUATION_ID:
-        raise MLflowTrackingError(
-            "custom unqualified B1 reports cannot be published as formal runs"
-        )
     schema_version = payload.get("schema_version")
     if not isinstance(schema_version, int) or isinstance(schema_version, bool):
         raise MLflowTrackingError("evaluation artifact must contain an integer schema_version")
     if "generated_at" in payload:
         _validate_generated_at(payload["generated_at"])
-
-    if payload.get("artifact_kind") == _B4_REAL_PARTIAL_KIND:
-        status = payload.get("status")
-        if status not in _TERMINAL_PARTIAL_STATUSES:
-            raise MLflowTrackingError(
-                "b4-real-partial must be completed or aborted before publication"
-            )
-
-    if evaluation_id in _B0_B1_EVALUATION_IDS:
-        _validate_b0_b1_provenance(payload)
-    if evaluation_id == "b0-checklist-v1":
-        _validate_b0_reproducibility(payload)
-    if evaluation_id == B1_EVALUATION_ID:
-        _validate_b1_reproducibility(payload)
-    if evaluation_id == ANSWER_QUALITY_EVALUATION_ID:
-        _validate_answer_quality_reproducibility(payload)
-    if evaluation_id == S3_EVALUATION_ID:
-        _validate_s3_reproducibility(payload)
-    if evaluation_id == B3_EVIDENCE_POLICY_ID:
-        _validate_b3_evidence_policy_reproducibility(payload)
-    if evaluation_id == B3_EVIDENCE_RECEIPT_EVALUATION_ID:
-        _validate_b3_evidence_receipt_reproducibility(payload)
-    if evaluation_id == BOT_DOCS_EVALUATION_ID:
-        _validate_bot_docs_reproducibility(payload)
 
     return _LoadedArtifact(
         path=path,
@@ -249,6 +252,64 @@ def _load_artifact(path: Path) -> _LoadedArtifact:
         payload=payload,
         sha256=hashlib.sha256(raw).hexdigest(),
     )
+
+
+def _loaded_artifact(path: Path, raw: bytes, payload: dict[str, Any]) -> _LoadedArtifact:
+    return _LoadedArtifact(
+        path=path,
+        raw=raw,
+        payload=payload,
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def _normalized_artifact_kind(payload: dict[str, Any]) -> str:
+    artifact_kind = payload.get("artifact_kind", _REPORT_KIND)
+    if not isinstance(artifact_kind, str) or not artifact_kind.strip():
+        raise MLflowTrackingError("evaluation artifact_kind must be a non-empty string")
+    return _REPORT_KIND if artifact_kind == _REPORT_KIND else artifact_kind
+
+
+def _resolve_artifact_profile(
+    report_path: Path,
+    *,
+    allow_unqualified: bool,
+) -> tuple[_ArtifactProfile, _ValidatedArtifacts]:
+    artifact = _load_basic_artifact(report_path)
+    evaluation_id = str(artifact.payload["evaluation_id"])
+    artifact_kind = _normalized_artifact_kind(artifact.payload)
+    key = (evaluation_id, artifact_kind)
+    profile = _ARTIFACT_REGISTRY.get(key)
+
+    if profile is None and evaluation_id in _KNOWN_EVALUATION_IDS:
+        raise MLflowTrackingError(
+            f"evaluation artifact profile is not supported: {evaluation_id}/{artifact_kind}"
+        )
+    if profile is None:
+        if not allow_unqualified:
+            raise MLflowTrackingError("unknown evaluation artifacts require allow_unqualified=True")
+        profile = _UNKNOWN_ARTIFACT_PROFILE
+    elif profile.qualification != "formal" and not allow_unqualified:
+        raise MLflowTrackingError(
+            "custom unqualified evaluation artifacts require allow_unqualified=True"
+        )
+
+    validated = profile.validator(artifact)
+    validated_key = (
+        str(validated.artifact.payload.get("evaluation_id")),
+        _normalized_artifact_kind(validated.artifact.payload),
+    )
+    if validated_key != key:
+        raise MLflowTrackingError("evaluation artifact identity changed during validation")
+    if profile.classifier is not None:
+        qualification, artifact_role, comparable = profile.classifier(validated.artifact.payload)
+        profile = _ArtifactProfile(
+            validator=profile.validator,
+            qualification=qualification,
+            artifact_role=artifact_role,
+            comparable=comparable,
+        )
+    return profile, validated
 
 
 def _validate_generated_at(value: Any) -> None:
@@ -266,6 +327,172 @@ def _validate_generated_at(value: Any) -> None:
         raise MLflowTrackingError(
             "evaluation artifact generated_at must be timezone-aware ISO 8601"
         )
+
+
+def _validated(artifact: _LoadedArtifact) -> _ValidatedArtifacts:
+    return _ValidatedArtifacts(artifact=artifact)
+
+
+def _validate_unknown_observation(artifact: _LoadedArtifact) -> _ValidatedArtifacts:
+    return _validated(artifact)
+
+
+def _validate_b1_artifact(artifact: _LoadedArtifact) -> _ValidatedArtifacts:
+    _validate_b1_provenance(artifact.payload)
+    _validate_b1_reproducibility(artifact.payload)
+    return _validated(artifact)
+
+
+def _validate_answer_quality_artifact(artifact: _LoadedArtifact) -> _ValidatedArtifacts:
+    _validate_answer_quality_reproducibility(artifact.payload)
+    return _validated(artifact)
+
+
+def _classify_answer_quality(payload: dict[str, Any]) -> tuple[str, str, bool]:
+    scope = payload.get("evaluation_scope")
+    if scope == "rubric_calibration":
+        return "formal", "observation", False
+    if scope == "offline_fixed_fixture":
+        return "formal", "result", True
+    raise MLflowTrackingError("answer-quality evaluation scope is not supported")
+
+
+def _validate_s3_artifact(artifact: _LoadedArtifact) -> _ValidatedArtifacts:
+    _validate_s3_reproducibility(artifact.payload)
+    _require_official_qualification(artifact.payload, {"official"})
+    _require_official_gate_checks(
+        artifact.payload,
+        gate_name="quality_gate",
+        required_checks={"official_fixture_contract", "complete_official_coverage"},
+    )
+    return _validated(artifact)
+
+
+def _validate_b3_evidence_policy_artifact(
+    artifact: _LoadedArtifact,
+) -> _ValidatedArtifacts:
+    _validate_b3_evidence_policy_reproducibility(artifact.payload)
+    _require_official_qualification(artifact.payload, {"official_frozen_projection"})
+    return _validated(artifact)
+
+
+def _validate_b3_evidence_receipt_artifact(
+    artifact: _LoadedArtifact,
+) -> _ValidatedArtifacts:
+    _validate_b3_evidence_receipt_reproducibility(artifact.payload)
+    _require_official_qualification(artifact.payload, {"official_frozen_fixture"})
+    _require_official_gate_checks(
+        artifact.payload,
+        gate_name="quality_gate",
+        required_checks={"official_fixture_contract", "complete_official_coverage"},
+    )
+    return _validated(artifact)
+
+
+def _validate_b3_evidence_receipt_custom_artifact(
+    artifact: _LoadedArtifact,
+) -> _ValidatedArtifacts:
+    _validate_b3_evidence_receipt_reproducibility(artifact.payload)
+    _require_custom_qualification(artifact.payload, gate_name="quality_gate")
+    return _validated(artifact)
+
+
+def _validate_bot_docs_artifact(artifact: _LoadedArtifact) -> _ValidatedArtifacts:
+    _validate_bot_docs_reproducibility(artifact.payload)
+    _require_official_qualification(artifact.payload, {"official"})
+    _require_official_gate_checks(
+        artifact.payload,
+        gate_name="quality_gate",
+        required_checks={"official_fixture_contract"},
+    )
+    return _validated(artifact)
+
+
+def _validate_bot_docs_custom_artifact(artifact: _LoadedArtifact) -> _ValidatedArtifacts:
+    _validate_bot_docs_reproducibility(artifact.payload)
+    _require_custom_qualification(artifact.payload, gate_name="quality_gate")
+    return _validated(artifact)
+
+
+def _validate_b4_scripted_artifact(artifact: _LoadedArtifact) -> _ValidatedArtifacts:
+    try:
+        raw, payload = load_b4_scripted_report(artifact.path)
+    except AgentEvaluationError as error:
+        raise MLflowTrackingError("B4 scripted report is not reproducible") from error
+    loaded = _loaded_artifact(artifact.path, raw, payload)
+    _require_official_qualification(payload, {"official_frozen_fixture"})
+    return _validated(loaded)
+
+
+def _validate_b4_scripted_custom_artifact(
+    artifact: _LoadedArtifact,
+) -> _ValidatedArtifacts:
+    source = artifact.payload.get("source")
+    fixtures_path = source.get("fixtures_path") if isinstance(source, dict) else None
+    split_path = source.get("split_path") if isinstance(source, dict) else None
+    if not isinstance(fixtures_path, str) or not isinstance(split_path, str):
+        raise MLflowTrackingError("custom B4 scripted report is not reproducible")
+    try:
+        reproduced = asyncio.run(
+            evaluate_b4_scripted_fixtures(Path(fixtures_path), Path(split_path))
+        )
+    except Exception as error:
+        raise MLflowTrackingError("custom B4 scripted report is not reproducible") from error
+    _require_reproduced_report(
+        artifact.payload,
+        reproduced,
+        report_name="custom B4 scripted",
+    )
+    _require_custom_qualification(artifact.payload, gate_name="promotion_gate")
+    return _validated(artifact)
+
+
+def _validate_b4_real_artifact(artifact: _LoadedArtifact) -> _ValidatedArtifacts:
+    try:
+        report_raw, report, audit_path, audit_raw, audit = load_b4_real_review_source(artifact.path)
+    except AgentEvaluationError as error:
+        raise MLflowTrackingError("B4 real report is not reproducible") from error
+    return _ValidatedArtifacts(
+        artifact=_loaded_artifact(artifact.path, report_raw, report),
+        audit=_loaded_artifact(audit_path, audit_raw, audit),
+    )
+
+
+def _require_official_qualification(
+    payload: dict[str, Any],
+    accepted: set[str],
+) -> None:
+    if payload.get("evaluation_qualification") not in accepted:
+        raise MLflowTrackingError("formal evaluation qualification is invalid")
+
+
+def _require_official_gate_checks(
+    payload: dict[str, Any],
+    *,
+    gate_name: str,
+    required_checks: set[str],
+) -> None:
+    gate = payload.get(gate_name)
+    checks = gate.get("checks") if isinstance(gate, dict) else None
+    if not isinstance(checks, dict) or any(
+        checks.get(name) is not True for name in required_checks
+    ):
+        raise MLflowTrackingError("formal evaluation gate identity is invalid")
+
+
+def _require_custom_qualification(
+    payload: dict[str, Any],
+    *,
+    gate_name: str,
+) -> None:
+    gate = payload.get(gate_name)
+    if payload.get("evaluation_qualification") != "custom_unqualified":
+        raise MLflowTrackingError("custom evaluation qualification is invalid")
+    if gate_name == "promotion_gate":
+        if not isinstance(gate, dict) or gate.get("promotion_eligible") is not False:
+            raise MLflowTrackingError("custom evaluation gate must be unqualified")
+    elif not isinstance(gate, dict) or gate.get("status") != "unqualified":
+        raise MLflowTrackingError("custom evaluation gate must be unqualified")
 
 
 def _validate_answer_quality_reproducibility(payload: dict[str, Any]) -> None:
@@ -396,10 +623,10 @@ def _require_reproduced_report(
         raise MLflowTrackingError(f"{report_name} report is not reproducible")
 
 
-def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:
+def _validate_b1_provenance(payload: dict[str, Any]) -> None:
     source = payload.get("source")
     if not isinstance(source, dict):
-        raise MLflowTrackingError("B0/B1 evaluation artifact must contain source provenance")
+        raise MLflowTrackingError("B1 evaluation artifact must contain source provenance")
     required_source_fields = {
         "cases_dir",
         "split_path",
@@ -408,21 +635,18 @@ def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:
         "case_corpus_scope",
         "case_count",
     }
-    if payload.get("evaluation_id") == B1_EVALUATION_ID:
-        required_source_fields.update(
-            {
-                "official_split_id",
-                "official_split_sha256",
-                "official_case_corpus_sha256",
-                "response_cache_dir",
-                "response_manifest_sha256",
-            }
-        )
+    required_source_fields.update(
+        {
+            "official_split_id",
+            "official_split_sha256",
+            "official_case_corpus_sha256",
+            "response_cache_dir",
+            "response_manifest_sha256",
+        }
+    )
     if set(source) != required_source_fields:
-        raise MLflowTrackingError("B0/B1 evaluation source provenance is invalid")
-    path_fields = ["cases_dir", "split_path"]
-    if payload.get("evaluation_id") == B1_EVALUATION_ID:
-        path_fields.append("response_cache_dir")
+        raise MLflowTrackingError("B1 evaluation source provenance is invalid")
+    path_fields = ["cases_dir", "split_path", "response_cache_dir"]
     for field in path_fields:
         value = source.get(field)
         if (
@@ -431,35 +655,28 @@ def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:
             or not Path(value).is_absolute()
             or Path(value).resolve().as_posix() != value
         ):
-            raise MLflowTrackingError("B0/B1 evaluation source paths must be absolute")
+            raise MLflowTrackingError("B1 evaluation source paths must be absolute")
     for field in ("split_sha256", "case_corpus_sha256"):
         value = source.get(field)
         if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
-            raise MLflowTrackingError("B0/B1 evaluation source hashes must be lowercase SHA-256")
-    if payload.get("evaluation_id") == B1_EVALUATION_ID:
-        response_manifest = source.get("response_manifest_sha256")
-        manifest_prefix = "nbtriage-b1-response-manifest-sha256:"
-        if (
-            not isinstance(response_manifest, str)
-            or not response_manifest.startswith(manifest_prefix)
-            or re.fullmatch(r"[0-9a-f]{64}", response_manifest.removeprefix(manifest_prefix))
-            is None
-        ):
-            raise MLflowTrackingError("B1 response manifest is invalid")
-    expected_scope = (
-        "scored_splits"
-        if payload.get("evaluation_id") == "b0-checklist-v1"
-        else "train_and_scored_splits"
-    )
-    if source.get("case_corpus_scope") != expected_scope:
-        raise MLflowTrackingError("B0/B1 evaluation case corpus scope is invalid")
+            raise MLflowTrackingError("B1 evaluation source hashes must be lowercase SHA-256")
+    response_manifest = source.get("response_manifest_sha256")
+    manifest_prefix = "nbtriage-b1-response-manifest-sha256:"
+    if (
+        not isinstance(response_manifest, str)
+        or not response_manifest.startswith(manifest_prefix)
+        or re.fullmatch(r"[0-9a-f]{64}", response_manifest.removeprefix(manifest_prefix)) is None
+    ):
+        raise MLflowTrackingError("B1 response manifest is invalid")
+    if source.get("case_corpus_scope") != "train_and_scored_splits":
+        raise MLflowTrackingError("B1 evaluation case corpus scope is invalid")
     case_count = source.get("case_count")
     if not isinstance(case_count, int) or isinstance(case_count, bool) or case_count < 1:
-        raise MLflowTrackingError("B0/B1 evaluation case count is invalid")
+        raise MLflowTrackingError("B1 evaluation case count is invalid")
 
     contract = payload.get("evaluation_contract")
     if not isinstance(contract, dict) or set(contract) != {"code_revision"}:
-        raise MLflowTrackingError("B0/B1 evaluation contract is invalid")
+        raise MLflowTrackingError("B1 evaluation contract is invalid")
     revision = contract.get("code_revision")
     prefix = "nbtriage-source-sha256:"
     if (
@@ -467,16 +684,7 @@ def _validate_b0_b1_provenance(payload: dict[str, Any]) -> None:
         or not revision.startswith(prefix)
         or re.fullmatch(r"[0-9a-f]{64}", revision.removeprefix(prefix)) is None
     ):
-        raise MLflowTrackingError("B0/B1 evaluation code revision is invalid")
-
-
-def _validate_b0_reproducibility(payload: dict[str, Any]) -> None:
-    source = payload["source"]
-    try:
-        reproduced = evaluate_b0(Path(source["cases_dir"]), Path(source["split_path"]))
-    except Exception as error:
-        raise MLflowTrackingError("B0 evaluation report is not reproducible") from error
-    _require_reproduced_report(payload, reproduced, report_name="B0 evaluation")
+        raise MLflowTrackingError("B1 evaluation code revision is invalid")
 
 
 def _validate_b1_reproducibility(payload: dict[str, Any]) -> None:
@@ -486,38 +694,85 @@ def _validate_b1_reproducibility(payload: dict[str, Any]) -> None:
         raise MLflowTrackingError("B1 evaluation report is not reproducible") from error
 
 
-def _load_related_audit(artifact: _LoadedArtifact) -> _LoadedArtifact | None:
-    payload = artifact.payload
-    if payload.get("evaluation_id") != _B4_REAL_EVALUATION_ID:
-        return None
-    if payload.get("artifact_kind") in {_B4_REAL_PARTIAL_KIND, _B4_REAL_ABORT_KIND}:
-        return None
-
-    audit_path = artifact.path.with_suffix(".partial.json")
-    if not audit_path.is_file():
-        raise MLflowTrackingError("completed B4 real report requires its sibling partial audit")
-    audit = _load_artifact(audit_path)
-    if audit.payload.get("artifact_kind") != _B4_REAL_PARTIAL_KIND:
-        raise MLflowTrackingError("B4 real sibling audit has an unexpected artifact_kind")
-    if audit.payload.get("status") != "completed":
-        raise MLflowTrackingError("completed B4 real report requires a completed partial audit")
-    if audit.payload.get("evaluation_id") != payload.get("evaluation_id"):
-        raise MLflowTrackingError("B4 real report and partial audit evaluation_id differ")
-    if _source_hashes(audit.payload) != _source_hashes(payload):
-        raise MLflowTrackingError("B4 real report and partial audit source hashes differ")
-    return audit
-
-
-def _source_hashes(payload: dict[str, Any]) -> tuple[str, str]:
-    source = payload.get("source")
-    if not isinstance(source, dict):
-        raise MLflowTrackingError("B4 real artifact must contain source hashes")
-    fixtures_sha256 = source.get("fixtures_sha256")
-    split_sha256 = source.get("split_sha256")
-    for value in (fixtures_sha256, split_sha256):
-        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
-            raise MLflowTrackingError("B4 real artifact source hashes must be lowercase SHA-256")
-    return str(fixtures_sha256), str(split_sha256)
+_ARTIFACT_REGISTRY: dict[tuple[str, str], _ArtifactProfile] = {
+    (B1_EVALUATION_ID, _REPORT_KIND): _ArtifactProfile(
+        validator=_validate_b1_artifact,
+        qualification="formal",
+        artifact_role="result",
+        comparable=True,
+    ),
+    (ANSWER_QUALITY_EVALUATION_ID, _REPORT_KIND): _ArtifactProfile(
+        validator=_validate_answer_quality_artifact,
+        qualification="formal",
+        artifact_role="observation",
+        comparable=False,
+        classifier=_classify_answer_quality,
+    ),
+    (S3_EVALUATION_ID, _REPORT_KIND): _ArtifactProfile(
+        validator=_validate_s3_artifact,
+        qualification="formal",
+        artifact_role="result",
+        comparable=True,
+    ),
+    (B3_EVIDENCE_POLICY_ID, _REPORT_KIND): _ArtifactProfile(
+        validator=_validate_b3_evidence_policy_artifact,
+        qualification="formal",
+        artifact_role="result",
+        comparable=True,
+    ),
+    (B3_EVIDENCE_RECEIPT_EVALUATION_ID, _REPORT_KIND): _ArtifactProfile(
+        validator=_validate_b3_evidence_receipt_artifact,
+        qualification="formal",
+        artifact_role="result",
+        comparable=True,
+    ),
+    (B3_EVIDENCE_RECEIPT_CUSTOM_EVALUATION_ID, _REPORT_KIND): _ArtifactProfile(
+        validator=_validate_b3_evidence_receipt_custom_artifact,
+        qualification="custom_unqualified",
+        artifact_role="result",
+        comparable=False,
+    ),
+    (BOT_DOCS_EVALUATION_ID, _REPORT_KIND): _ArtifactProfile(
+        validator=_validate_bot_docs_artifact,
+        qualification="formal",
+        artifact_role="result",
+        comparable=True,
+    ),
+    (BOT_DOCS_CUSTOM_EVALUATION_ID, _REPORT_KIND): _ArtifactProfile(
+        validator=_validate_bot_docs_custom_artifact,
+        qualification="custom_unqualified",
+        artifact_role="result",
+        comparable=False,
+    ),
+    (B4_EVALUATION_ID, _REPORT_KIND): _ArtifactProfile(
+        validator=_validate_b4_scripted_artifact,
+        qualification="formal",
+        artifact_role="result",
+        comparable=True,
+    ),
+    (B4_CUSTOM_SCRIPTED_EVALUATION_ID, _REPORT_KIND): _ArtifactProfile(
+        validator=_validate_b4_scripted_custom_artifact,
+        qualification="custom_unqualified",
+        artifact_role="result",
+        comparable=False,
+    ),
+    (B4_REAL_EVALUATION_ID, _REPORT_KIND): _ArtifactProfile(
+        validator=_validate_b4_real_artifact,
+        qualification="formal",
+        artifact_role="result",
+        comparable=True,
+    ),
+}
+_KNOWN_EVALUATION_IDS = frozenset(
+    {evaluation_id for evaluation_id, _ in _ARTIFACT_REGISTRY}
+    | {_B0_EVALUATION_ID, B1_CUSTOM_EVALUATION_ID}
+)
+_UNKNOWN_ARTIFACT_PROFILE = _ArtifactProfile(
+    validator=_validate_unknown_observation,
+    qualification="unknown_unqualified",
+    artifact_role="observation",
+    comparable=False,
+)
 
 
 def _bundle_sha256(artifact: _LoadedArtifact, audit: _LoadedArtifact | None) -> str:
@@ -533,6 +788,7 @@ def _build_tags(
     artifact: _LoadedArtifact,
     audit: _LoadedArtifact | None,
     bundle_sha256: str,
+    profile: _ArtifactProfile,
 ) -> dict[str, str]:
     payload = artifact.payload
     status = payload.get("status")
@@ -543,13 +799,16 @@ def _build_tags(
         "nbtriage.artifact_sha256": artifact.sha256,
         _BUNDLE_TAG: bundle_sha256,
         "nbtriage.evaluation_status": status,
+        "nbtriage.registry_qualification": profile.qualification,
+        "nbtriage.artifact_role": profile.artifact_role,
+        "nbtriage.comparable": str(profile.comparable).lower(),
+        "nbtriage.artifact_kind": _normalized_artifact_kind(payload),
     }
     if audit is not None:
         tags["nbtriage.audit_sha256"] = audit.sha256
 
     for key in (
         "generated_at",
-        "artifact_kind",
         "artifact_profile",
         "split_id",
         "fixture_set_id",
@@ -558,7 +817,11 @@ def _build_tags(
         _copy_scalar_tag(tags, f"nbtriage.{key}", payload.get(key))
     decision = _evaluation_decision(payload)
     _copy_scalar_tag(tags, "nbtriage.evaluation_decision", decision)
-    if isinstance(payload.get("promotion_gate"), dict):
+    if (
+        profile.qualification == "formal"
+        and profile.artifact_role == "result"
+        and isinstance(payload.get("promotion_gate"), dict)
+    ):
         _copy_scalar_tag(tags, "nbtriage.promotion_decision", decision)
 
     source = payload.get("source")
