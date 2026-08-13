@@ -12,9 +12,7 @@ import pytest
 from tools.nbtriage_maintainer import cli
 from tools.nbtriage_maintainer import evaluation as evaluation_module
 from tools.nbtriage_maintainer.agent_evaluation import (
-    RealGatePartialAudit,
-    b4_real_partial_report_path,
-    evaluate_b4_real_fixtures,
+    B4_REAL_EVALUATION_ID,
     evaluate_b4_scripted_fixtures,
 )
 from tools.nbtriage_maintainer.answer_quality_evaluation import (
@@ -38,13 +36,7 @@ from tools.nbtriage_maintainer.mlflow_tracking import (
 )
 from tools.nbtriage_maintainer.safety_evaluation import evaluate_s3
 
-from nbtriage.bounded_agent import (
-    AgentStepRequest,
-    AgentStepResponse,
-    AgentStepUsage,
-    parse_agent_action,
-)
-from nbtriage.rag import B1ModelRequest, B1ModelResponse
+from nbtriage.rag import B1ModelResponse
 
 ROOT = Path(__file__).resolve().parents[1]
 ANSWER_QUALITY_RUBRIC = ROOT / "evals" / "rubrics" / "answer-quality-v1.json"
@@ -137,7 +129,36 @@ def _write_json(path: Path, payload: dict[str, Any]) -> bytes:
 
 
 def _scripted_report() -> dict[str, Any]:
-    return asyncio.run(evaluate_b4_scripted_fixtures(B4_FIXTURES, B4_SPLIT))
+    return {
+        "schema_version": 2,
+        "evaluation_id": "b4-bounded-agent-scripted-v1",
+        "fixture_set_id": "b4-fixtures-v1",
+        "split_id": "b4-gate-v1",
+        "generated_at": "2026-08-10T12:00:00+00:00",
+        "evaluation_contract": {
+            "prompt_ids": {"b1": "b1-rag-only-v3"},
+            "code_revision": "nbtriage-source-sha256:abc",
+        },
+        "source": {
+            "fixtures_path": "evals/datasets/fixtures/b4.json",
+            "fixtures_sha256": "a" * 64,
+            "split_sha256": "b" * 64,
+        },
+        "summary": {
+            "fixture_count": 4,
+            "model_kind": "scripted",
+            "synthetic_only": True,
+            "terminal_step_failure_counts": {
+                "response_rejected": 2,
+                "provider_request_failed": 1,
+                "local_validation_failed": 0,
+                "local_step_error": 3,
+            },
+        },
+        "metrics": {"b4": {"task_success_rate": 0.75}},
+        "promotion_gate": {"passed": False, "decision": "scripted_only"},
+        "predictions": [{"private_numeric_detail": 99}],
+    }
 
 
 class _B1Client:
@@ -295,112 +316,22 @@ def _write_answer_quality_calibration_report(tmp_path: Path) -> Path:
     return path
 
 
-def _b4_real_output(case_id: str) -> str:
-    values = {
-        "b4-runtime-case": ("handle", ["logs", "reproduction_steps"]),
-        "b4-support-case": ("boot", ["component_versions", "logs"]),
-        "b4-evidence-case": ("connect", ["configuration", "logs"]),
-    }
-    phase, missing = values[case_id]
-    return json.dumps(
-        {
-            "version_values": ["3.12"] if case_id == "b4-runtime-case" else [],
-            "missing_evidence": missing,
-            "symptoms": ["timeout_or_disconnect" if phase == "connect" else "exception"],
-            "fault_phase": phase,
-            "candidate_owners": ["adapter" if phase == "connect" else "plugin"],
-            "route": "needs_evidence",
-            "answer": "需要更多证据。",
-            "citations": [],
-        },
-        ensure_ascii=False,
-    )
-
-
-class _ReviewB1Client:
-    async def generate(self, request: B1ModelRequest) -> B1ModelResponse:
-        return B1ModelResponse(
-            output_text=_b4_real_output(request.case_input["case_id"]),
-            input_tokens=50,
-            output_tokens=20,
-            cost_microusd=100,
-            provider_request_id="b1-review-fixture",
-            provider_name="fixture-provider",
-            provider_model_name="fixture-model",
-            provider_fingerprint="fixture-fingerprint",
-            latency_ms=2,
-        )
-
-
-class _ReviewAgentClient:
-    def __init__(self, actions_by_case: dict[str, list[dict[str, Any]]]) -> None:
-        self._actions_by_case = actions_by_case
-
-    async def choose_action(self, request: AgentStepRequest) -> AgentStepResponse:
-        action = parse_agent_action(self._actions_by_case[request.case_id][len(request.trajectory)])
-        return AgentStepResponse(
-            action=action,
-            usage=AgentStepUsage(
-                provider_requests=1,
-                input_tokens=100,
-                output_tokens=25,
-                cost_microusd=100,
-            ),
-            provider_request_id=f"agent-{request.case_id}-{len(request.trajectory) + 1}",
-            provider_name="fixture-provider",
-            provider_model_name="fixture-model",
-            provider_fingerprint="fixture-fingerprint",
-            latency_ms=3,
-        )
-
-
-def _write_b4_real_report(tmp_path: Path) -> Path:
-    report_path = tmp_path / "b4-real.json"
-    fixture_payload = json.loads(B4_FIXTURES.read_text(encoding="utf-8"))
-    actions_by_case = {
-        fixture["case"]["case_id"]: fixture["b4_trials"][0]["actions"]
-        for fixture in fixture_payload["fixtures"]
-    }
-    partial = RealGatePartialAudit.create(
-        b4_real_partial_report_path(report_path),
-        provider="fixture-provider",
-        model="fixture-model",
-        trials_per_fixture=2,
-        max_provider_requests=40,
-        max_agent_input_tokens_per_trial=4000,
-        max_output_tokens_per_trial=1000,
-        deadline_seconds=5,
-        whole_run_timeout_seconds=900,
-        declared_budget_usd=1.0,
-        paid_run_confirmed=True,
-        synthetic_data_egress_confirmed=True,
-    )
-    report = asyncio.run(
-        evaluate_b4_real_fixtures(
-            B4_FIXTURES,
-            B4_SPLIT,
-            b1_client_factory=_ReviewB1Client,
-            agent_client_factory=lambda: _ReviewAgentClient(actions_by_case),
-            provider="fixture-provider",
-            model="fixture-model",
-            trials_per_fixture=2,
-            max_provider_requests=40,
-            max_agent_input_tokens_per_trial=4000,
-            max_output_tokens_per_trial=1000,
-            deadline_seconds=5,
-            declared_budget_usd=1.0,
-            paid_run_confirmed=True,
-            synthetic_data_egress_confirmed=True,
-            partial_audit=partial,
-        )
-    )
-    _write_json(report_path, report)
-    partial.complete()
-    return report_path
-
-
 def _write_answer_quality_candidate_report(tmp_path: Path) -> Path:
-    source_path = _write_b4_real_report(tmp_path)
+    source = asyncio.run(evaluate_b4_scripted_fixtures(B4_FIXTURES, B4_SPLIT))
+    source["evaluation_id"] = B4_REAL_EVALUATION_ID
+    source["summary"].update(
+        {
+            "model_kind": "real",
+            "provider": "fixture-provider",
+            "model": "fixture-model",
+            "trials_per_fixture": 2,
+        }
+    )
+    source["promotion_gate"]["checks"]["real_model_multi_trial"] = True
+    source["promotion_gate"]["passed"] = True
+    source["promotion_gate"]["decision"] = "eligible_for_fixture"
+    source_path = tmp_path / "b4-real.json"
+    _write_json(source_path, source)
 
     fixtures, annotations = build_b4_answer_quality_review(
         source_path,
@@ -454,16 +385,6 @@ def _write_b3_evidence_receipt_report(tmp_path: Path) -> Path:
     return path
 
 
-def _write_custom_b3_evidence_receipt_report(tmp_path: Path) -> Path:
-    fixtures_path = tmp_path / "custom-b3-evidence-receipts.json"
-    fixtures = json.loads(B3_RECEIPT_FIXTURES.read_text(encoding="utf-8"))
-    fixtures["fixture_set_id"] = "custom-b3-evidence-receipts"
-    _write_json(fixtures_path, fixtures)
-    report_path = tmp_path / "custom-b3-evidence-receipt-report.json"
-    _write_json(report_path, evaluate_b3_evidence_receipts(fixtures_path))
-    return report_path
-
-
 def _write_bot_docs_report(tmp_path: Path) -> tuple[Path, Path]:
     source_root = tmp_path / "bot-docs"
     (source_root / "notes/platforms").mkdir(parents=True)
@@ -484,27 +405,6 @@ def _write_bot_docs_report(tmp_path: Path) -> tuple[Path, Path]:
     report_path = tmp_path / "bot-docs-retrieval.json"
     _write_json(report_path, report)
     return report_path, index_path
-
-
-def _write_custom_bot_docs_report(tmp_path: Path) -> Path:
-    report_path, index_path = _write_bot_docs_report(tmp_path)
-    fixture_path = tmp_path / "custom-bot-docs-fixture.json"
-    fixture = json.loads(DEFAULT_BOT_DOCS_FIXTURE_PATH.read_text(encoding="utf-8"))
-    fixture["description"] += " custom diagnostic"
-    _write_json(fixture_path, fixture)
-    _write_json(report_path, evaluate_bot_docs_retrieval(index_path, fixture_path))
-    return report_path
-
-
-def _write_custom_b4_scripted_report(tmp_path: Path) -> Path:
-    fixtures_path = tmp_path / "custom-b4-fixtures.json"
-    fixtures = json.loads(B4_FIXTURES.read_text(encoding="utf-8"))
-    fixtures["fixtures"][0]["case"]["source"]["title"] += " custom"
-    _write_json(fixtures_path, fixtures)
-    report_path = tmp_path / "custom-b4-scripted-report.json"
-    report = asyncio.run(evaluate_b4_scripted_fixtures(fixtures_path, B4_SPLIT))
-    _write_json(report_path, report)
-    return report_path
 
 
 def _assert_mlflow_untouched(mlflow: _FakeMLflow) -> None:
@@ -535,18 +435,15 @@ def test_publish_maps_stable_fields_and_preserves_exact_artifact(
     assert run.params["nbtriage.evaluation_contract.prompt_ids.b1"] == "b1-rag-only-v3"
     assert run.metrics["summary.fixture_count"] == 4.0
     assert run.metrics["summary.synthetic_only"] == 1.0
-    assert run.metrics["summary.terminal_step_failure_counts.response_rejected"] == 0.0
-    assert run.metrics["summary.terminal_step_failure_counts.provider_request_failed"] == 0.0
+    assert run.metrics["summary.terminal_step_failure_counts.response_rejected"] == 2.0
+    assert run.metrics["summary.terminal_step_failure_counts.provider_request_failed"] == 1.0
     assert run.metrics["summary.terminal_step_failure_counts.local_validation_failed"] == 0.0
-    assert run.metrics["summary.terminal_step_failure_counts.local_step_error"] == 0.0
-    assert run.metrics["metrics.b4.task_success_rate"] == 0.875
+    assert run.metrics["summary.terminal_step_failure_counts.local_step_error"] == 3.0
+    assert run.metrics["metrics.b4.task_success_rate"] == 0.75
     assert run.metrics["promotion_gate.passed"] == 0.0
     assert all(not key.startswith("predictions") for key in run.metrics)
-    assert run.tags["nbtriage.evaluation_decision"] == "not_eligible_scripted_evidence_only"
-    assert run.tags["nbtriage.promotion_decision"] == "not_eligible_scripted_evidence_only"
-    assert run.tags["nbtriage.registry_qualification"] == "formal"
-    assert run.tags["nbtriage.artifact_role"] == "result"
-    assert run.tags["nbtriage.comparable"] == "true"
+    assert run.tags["nbtriage.evaluation_decision"] == "scripted_only"
+    assert run.tags["nbtriage.promotion_decision"] == "scripted_only"
     assert run.tags["nbtriage.publisher.git_sha"] == "0123456789abcdef"
     assert run.tags["nbtriage.publisher.git_dirty"] == "true"
     assert run.artifacts[("evaluation", report_path.name)] == raw
@@ -599,11 +496,7 @@ def test_b1_publish_maps_evaluator_provenance_separately_from_publisher_git(
     assert not any("execution_observation" in key for key in run.metrics)
 
 
-@pytest.mark.parametrize("allow_unqualified", [False, True])
-def test_b1_custom_dataset_is_not_accepted_as_formal_mlflow_result(
-    tmp_path: Path,
-    allow_unqualified: bool,
-) -> None:
+def test_b1_custom_dataset_is_not_accepted_as_formal_mlflow_result(tmp_path: Path) -> None:
     cases_dir = tmp_path / "custom-cases"
     cases_dir.mkdir()
     for case_id in ("train-case", "validation-case"):
@@ -665,12 +558,8 @@ def test_b1_custom_dataset_is_not_accepted_as_formal_mlflow_result(
     _write_json(report_path, payload)
     mlflow = _FakeMLflow()
 
-    with pytest.raises(MLflowTrackingError, match="profile is not supported"):
-        publish_evaluation_to_mlflow(
-            report_path,
-            allow_unqualified=allow_unqualified,
-            mlflow_module=mlflow,
-        )
+    with pytest.raises(MLflowTrackingError):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
 
     _assert_mlflow_untouched(mlflow)
 
@@ -744,22 +633,14 @@ def test_b1_publish_rejects_empty_handwritten_report_before_mlflow_call(
     _assert_mlflow_untouched(mlflow)
 
 
-@pytest.mark.parametrize("allow_unqualified", [False, True])
-def test_b0_report_is_rejected_until_official_identity_is_bound(
-    tmp_path: Path,
-    allow_unqualified: bool,
-) -> None:
+def test_b0_report_publishes_only_after_offline_reproduction(tmp_path: Path) -> None:
     report_path = _write_b0_report(tmp_path)
     mlflow = _FakeMLflow()
 
-    with pytest.raises(MLflowTrackingError, match="profile is not supported"):
-        publish_evaluation_to_mlflow(
-            report_path,
-            allow_unqualified=allow_unqualified,
-            mlflow_module=mlflow,
-        )
+    publication = publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
 
-    _assert_mlflow_untouched(mlflow)
+    assert publication.created is True
+    assert len(mlflow.runs) == 1
 
 
 def test_b0_report_rejects_metric_tampering_before_mlflow_call(tmp_path: Path) -> None:
@@ -769,7 +650,7 @@ def test_b0_report_rejects_metric_tampering_before_mlflow_call(tmp_path: Path) -
     _write_json(report_path, payload)
     mlflow = _FakeMLflow()
 
-    with pytest.raises(MLflowTrackingError, match="profile is not supported"):
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
         publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
 
     _assert_mlflow_untouched(mlflow)
@@ -781,7 +662,7 @@ def test_b0_report_rejects_missing_case_source_before_mlflow_call(tmp_path: Path
     Path(payload["source"]["cases_dir"], "b0-case.json").unlink()
     mlflow = _FakeMLflow()
 
-    with pytest.raises(MLflowTrackingError, match="profile is not supported"):
+    with pytest.raises(MLflowTrackingError, match="not reproducible"):
         publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
 
     _assert_mlflow_untouched(mlflow)
@@ -827,103 +708,16 @@ def test_b1_publish_rejects_missing_or_invalid_provenance(
     _assert_mlflow_untouched(mlflow)
 
 
-def test_unknown_report_requires_explicit_unqualified_override(tmp_path: Path) -> None:
+def test_non_b0_b1_report_remains_compatible_without_provenance(tmp_path: Path) -> None:
     report_path = tmp_path / "legacy-other-evaluation.json"
     _write_json(
         report_path,
-        {
-            "schema_version": 1,
-            "evaluation_id": "legacy-other-v1",
-            "summary": {},
-            "promotion_gate": {"passed": True, "decision": "forged"},
-        },
+        {"schema_version": 1, "evaluation_id": "legacy-other-v1", "summary": {}},
     )
 
-    mlflow = _FakeMLflow()
-    with pytest.raises(MLflowTrackingError, match="allow_unqualified"):
-        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
-
-    _assert_mlflow_untouched(mlflow)
-    publication = publish_evaluation_to_mlflow(
-        report_path,
-        allow_unqualified=True,
-        mlflow_module=mlflow,
-    )
+    publication = publish_evaluation_to_mlflow(report_path, mlflow_module=_FakeMLflow())
 
     assert publication.created is True
-    assert mlflow.runs[0].tags["nbtriage.registry_qualification"] == "unknown_unqualified"
-    assert mlflow.runs[0].tags["nbtriage.artifact_role"] == "observation"
-    assert mlflow.runs[0].tags["nbtriage.comparable"] == "false"
-    assert "nbtriage.promotion_decision" not in mlflow.runs[0].tags
-
-
-@pytest.mark.parametrize(
-    "write_report",
-    [
-        _write_custom_b3_evidence_receipt_report,
-        _write_custom_bot_docs_report,
-        _write_custom_b4_scripted_report,
-    ],
-    ids=["evidence-receipt", "bot-docs", "b4-scripted"],
-)
-def test_registered_custom_report_requires_override_and_is_noncomparable(
-    tmp_path: Path,
-    write_report: Any,
-) -> None:
-    report_path = write_report(tmp_path)
-    mlflow = _FakeMLflow()
-
-    with pytest.raises(MLflowTrackingError, match="allow_unqualified"):
-        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
-    _assert_mlflow_untouched(mlflow)
-
-    publish_evaluation_to_mlflow(
-        report_path,
-        allow_unqualified=True,
-        mlflow_module=mlflow,
-    )
-
-    run = mlflow.runs[0]
-    assert run.tags["nbtriage.registry_qualification"] == "custom_unqualified"
-    assert run.tags["nbtriage.artifact_role"] == "result"
-    assert run.tags["nbtriage.comparable"] == "false"
-    assert "nbtriage.promotion_decision" not in run.tags
-
-
-def test_registered_custom_report_is_replayed_before_override_publish(tmp_path: Path) -> None:
-    report_path = _write_custom_b3_evidence_receipt_report(tmp_path)
-    payload = json.loads(report_path.read_text(encoding="utf-8"))
-    payload["summary"]["case_count"] += 1
-    _write_json(report_path, payload)
-    mlflow = _FakeMLflow()
-
-    with pytest.raises(MLflowTrackingError, match="not reproducible"):
-        publish_evaluation_to_mlflow(
-            report_path,
-            allow_unqualified=True,
-            mlflow_module=mlflow,
-        )
-
-    _assert_mlflow_untouched(mlflow)
-
-
-def test_known_formal_id_with_unknown_kind_rejects_override_before_mlflow_call(
-    tmp_path: Path,
-) -> None:
-    payload = _scripted_report()
-    payload["artifact_kind"] = "diagnostic-observation"
-    report_path = tmp_path / "known-formal-unknown-kind.json"
-    _write_json(report_path, payload)
-    mlflow = _FakeMLflow()
-
-    with pytest.raises(MLflowTrackingError, match="profile is not supported"):
-        publish_evaluation_to_mlflow(
-            report_path,
-            allow_unqualified=True,
-            mlflow_module=mlflow,
-        )
-
-    _assert_mlflow_untouched(mlflow)
 
 
 def test_publish_rejects_duplicate_json_keys_before_mlflow_call(tmp_path: Path) -> None:
@@ -997,10 +791,6 @@ def test_answer_quality_publish_requires_and_preserves_reproduced_report(
         "rubric_calibration" if report_kind == "calibration" else "offline_fixed_fixture"
     )
     assert run.tags["nbtriage.evaluation_scope"] == expected_scope
-    expected_role = "observation" if report_kind == "calibration" else "result"
-    assert run.tags["nbtriage.registry_qualification"] == "formal"
-    assert run.tags["nbtriage.artifact_role"] == expected_role
-    assert run.tags["nbtriage.comparable"] == str(report_kind == "candidate").lower()
     assert "nbtriage.promotion_decision" not in run.tags
     if report_kind == "candidate":
         assert (
@@ -1289,10 +1079,27 @@ def test_bot_docs_report_rejects_fixture_path_tampering_before_mlflow_call(
 
 
 def test_real_report_publishes_only_with_matching_completed_audit(tmp_path: Path) -> None:
-    report_path = _write_b4_real_report(tmp_path)
-    report_raw = report_path.read_bytes()
+    report_path = tmp_path / "eval-b4-real.json"
+    source = {"fixtures_sha256": "a" * 64, "split_sha256": "b" * 64}
+    report = {
+        "schema_version": 2,
+        "evaluation_id": "b4-bounded-agent-real-v1",
+        "generated_at": "2026-08-10T12:00:00+00:00",
+        "source": source,
+        "summary": {"provider": "deepseek-responses", "model": "deepseek-v4-flash"},
+        "promotion_gate": {"passed": True, "decision": "eligible"},
+    }
+    audit = {
+        "schema_version": 4,
+        "artifact_kind": "b4-real-partial",
+        "evaluation_id": "b4-bounded-agent-real-v1",
+        "status": "completed",
+        "source": source,
+        "ledger": {"request_attempts": 12},
+    }
+    report_raw = _write_json(report_path, report)
     audit_path = report_path.with_suffix(".partial.json")
-    audit_raw = audit_path.read_bytes()
+    audit_raw = _write_json(audit_path, audit)
     mlflow = _FakeMLflow()
 
     publication = publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
@@ -1301,45 +1108,25 @@ def test_real_report_publishes_only_with_matching_completed_audit(tmp_path: Path
     assert mlflow.runs[0].artifacts[("evaluation", report_path.name)] == report_raw
     assert mlflow.runs[0].artifacts[("audit", audit_path.name)] == audit_raw
     assert mlflow.runs[0].tags["nbtriage.audit_sha256"]
-    assert mlflow.runs[0].tags["nbtriage.registry_qualification"] == "formal"
-    assert mlflow.runs[0].tags["nbtriage.artifact_role"] == "result"
-    assert mlflow.runs[0].tags["nbtriage.comparable"] == "true"
 
 
-@pytest.mark.parametrize(
-    ("artifact_kind", "status"),
-    [
-        ("b4-real-partial", "report_ready"),
-        ("b4-real-run-abort-observation", "aborted"),
-    ],
-)
-@pytest.mark.parametrize("allow_unqualified", [False, True])
-def test_b4_real_observation_is_rejected_before_mlflow_write(
-    tmp_path: Path,
-    artifact_kind: str,
-    status: str,
-    allow_unqualified: bool,
-) -> None:
+def test_nonterminal_partial_audit_is_rejected_before_mlflow_write(tmp_path: Path) -> None:
     partial_path = tmp_path / "eval-b4-real.partial.json"
     _write_json(
         partial_path,
         {
             "schema_version": 4,
-            "artifact_kind": artifact_kind,
+            "artifact_kind": "b4-real-partial",
             "evaluation_id": "b4-bounded-agent-real-v1",
-            "status": status,
+            "status": "report_ready",
         },
     )
     mlflow = _FakeMLflow()
 
-    with pytest.raises(MLflowTrackingError, match="profile is not supported"):
-        publish_evaluation_to_mlflow(
-            partial_path,
-            allow_unqualified=allow_unqualified,
-            mlflow_module=mlflow,
-        )
+    with pytest.raises(MLflowTrackingError, match="completed or aborted"):
+        publish_evaluation_to_mlflow(partial_path, mlflow_module=mlflow)
 
-    _assert_mlflow_untouched(mlflow)
+    assert mlflow.runs == []
 
 
 def test_real_report_rejects_missing_source_hashes(tmp_path: Path) -> None:
@@ -1363,11 +1150,8 @@ def test_real_report_rejects_missing_source_hashes(tmp_path: Path) -> None:
         },
     )
 
-    mlflow = _FakeMLflow()
-    with pytest.raises(MLflowTrackingError, match="not reproducible"):
-        publish_evaluation_to_mlflow(report_path, mlflow_module=mlflow)
-
-    _assert_mlflow_untouched(mlflow)
+    with pytest.raises(MLflowTrackingError, match="source hashes"):
+        publish_evaluation_to_mlflow(report_path, mlflow_module=_FakeMLflow())
 
 
 def test_publish_cli_uses_explicit_tracking_target(
@@ -1399,7 +1183,6 @@ def test_publish_cli_uses_explicit_tracking_target(
             "nbtriage/test",
             "--run-name",
             "test-run",
-            "--allow-unqualified",
         ]
     )
 
@@ -1409,6 +1192,5 @@ def test_publish_cli_uses_explicit_tracking_target(
         "tracking_uri": "http://localhost:5050",
         "experiment_name": "nbtriage/test",
         "run_name": "test-run",
-        "allow_unqualified": True,
     }
     assert "MLflow run created: run-1" in capsys.readouterr().out
