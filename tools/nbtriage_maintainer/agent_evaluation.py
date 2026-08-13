@@ -83,6 +83,13 @@ B4_FIXTURE_SCHEMA_VERSION = 1
 B4_SPLIT_SCHEMA_VERSION = 1
 B4_EVALUATION_SCHEMA_VERSION = 3
 B4_EVALUATION_ID = "b4-bounded-agent-scripted-v1"
+B4_CUSTOM_SCRIPTED_EVALUATION_ID = "b4-bounded-agent-scripted-custom-unqualified-v1"
+B4_OFFICIAL_FIXTURE_SET_ID = "b4-bounded-agent-v1"
+B4_OFFICIAL_SPLIT_ID = "b4-gate-v1"
+B4_OFFICIAL_FIXTURES_SHA256 = "1aeb37330ff5b676935c0af93302c53ee3fccf524b65a86cb4f1b6fb0b0f9c5c"
+B4_OFFICIAL_SPLIT_SHA256 = "20796335b885a4b22e24b2cdb3914cbb7b9ee2a6243393e5c4ded9fcbb89d400"
+B4_OFFICIAL_FIXTURE_COUNT = 4
+B4_OFFICIAL_TRIAL_COUNT = 8
 B4_REAL_EVALUATION_ID = "b4-bounded-agent-real-v1"
 B4_REAL_PARTIAL_SCHEMA_VERSION = 4
 B4_REAL_PARTIAL_ARTIFACT_KIND = "b4-real-partial"
@@ -159,6 +166,39 @@ _GOLD_FIELDS = frozenset(
     }
 )
 _GOLD_EMBEDDED_FIELDS = frozenset({"curation", "gold", "oracle"})
+_SCRIPTED_REPORT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "evaluation_id",
+        "evaluation_qualification",
+        "evaluation_contract",
+        "fixture_set_id",
+        "split_id",
+        "generated_at",
+        "source",
+        "summary",
+        "budget",
+        "metrics",
+        "metrics_by_split",
+        "promotion_gate",
+        "trials",
+        "limitations",
+    }
+)
+_SCRIPTED_REPORT_SOURCE_FIELDS = frozenset(
+    {
+        "fixtures_path",
+        "fixtures_sha256",
+        "official_fixtures_sha256",
+        "split_path",
+        "split_sha256",
+        "official_split_sha256",
+        "official_fixture_set_id",
+        "official_split_id",
+        "official_fixture_count",
+        "official_trial_count",
+    }
+)
 _REAL_REPORT_FIELDS = frozenset(
     {
         "schema_version",
@@ -700,6 +740,89 @@ class RealGatePartialAudit:
 
 def b4_real_partial_report_path(report_path: Path) -> Path:
     return report_path.with_suffix(".partial.json")
+
+
+def load_b4_scripted_report(report_path: Path) -> tuple[bytes, dict[str, Any]]:
+    """严格加载并离线重放正式 B4 scripted 报告。"""
+    report_raw, report = _load_strict_object(report_path, "B4 scripted report")
+    validate_b4_scripted_report(report)
+    return report_raw, report
+
+
+def validate_b4_scripted_report(report: dict[str, Any]) -> None:
+    """验证正式 B4 scripted 报告，并从其冻结来源完整重放。"""
+    asyncio.run(_validate_b4_scripted_report(report))
+
+
+async def _validate_b4_scripted_report(report: dict[str, Any]) -> None:
+    """验证正式 B4 scripted 报告，并从其冻结来源完整重放。"""
+    if set(report) != _SCRIPTED_REPORT_FIELDS:
+        raise AgentEvaluationError("B4 scripted report fields are invalid")
+    if (
+        report.get("schema_version") != B4_EVALUATION_SCHEMA_VERSION
+        or report.get("evaluation_id") != B4_EVALUATION_ID
+        or report.get("evaluation_qualification") != "official_frozen_fixture"
+        or report.get("fixture_set_id") != B4_OFFICIAL_FIXTURE_SET_ID
+        or report.get("split_id") != B4_OFFICIAL_SPLIT_ID
+    ):
+        raise AgentEvaluationError("B4 scripted report official identity is invalid")
+    _require_timestamp(report, "generated_at", "B4 scripted report")
+    _validate_evaluation_contract(report.get("evaluation_contract"))
+    source = _require_exact_object(
+        report,
+        "source",
+        _SCRIPTED_REPORT_SOURCE_FIELDS,
+        "B4 scripted report",
+    )
+    for field in ("fixtures_path", "split_path"):
+        value = source[field]
+        if (
+            not isinstance(value, str)
+            or not value
+            or not Path(value).is_absolute()
+            or Path(value).resolve().as_posix() != value
+        ):
+            raise AgentEvaluationError("B4 scripted report source paths must be absolute")
+    expected_source_identity = {
+        "fixtures_sha256": B4_OFFICIAL_FIXTURES_SHA256,
+        "official_fixtures_sha256": B4_OFFICIAL_FIXTURES_SHA256,
+        "split_sha256": B4_OFFICIAL_SPLIT_SHA256,
+        "official_split_sha256": B4_OFFICIAL_SPLIT_SHA256,
+        "official_fixture_set_id": B4_OFFICIAL_FIXTURE_SET_ID,
+        "official_split_id": B4_OFFICIAL_SPLIT_ID,
+        "official_fixture_count": B4_OFFICIAL_FIXTURE_COUNT,
+        "official_trial_count": B4_OFFICIAL_TRIAL_COUNT,
+    }
+    if any(source[field] != value for field, value in expected_source_identity.items()):
+        raise AgentEvaluationError("B4 scripted report source is not the official frozen contract")
+    try:
+        reproduced = await evaluate_b4_scripted_fixtures(
+            Path(source["fixtures_path"]),
+            Path(source["split_path"]),
+        )
+    except AgentEvaluationError:
+        raise
+    except Exception as error:
+        raise AgentEvaluationError("B4 scripted report could not be reproduced") from error
+    expected = dict(report)
+    actual = dict(reproduced)
+    expected.pop("generated_at")
+    actual.pop("generated_at")
+    if _canonical_report_json(expected) != _canonical_report_json(actual):
+        raise AgentEvaluationError("B4 scripted report is not reproducible")
+
+
+def _canonical_report_json(value: Any) -> str:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as error:
+        raise AgentEvaluationError("B4 report contains non-canonical JSON values") from error
 
 
 def validate_b4_real_review_source(
@@ -2074,8 +2197,10 @@ async def evaluate_b4_scripted_fixtures(
     split_path: Path,
 ) -> dict[str, Any]:
     """用脚本模型执行 B4 Gate 的完整离线控制面，不产生真实模型或外部工具调用。"""
-    raw, payload = _load_fixtures(fixtures_path)
-    split = _load_evaluation_split(split_path, payload)
+    resolved_fixtures_path = fixtures_path.resolve()
+    resolved_split_path = split_path.resolve()
+    raw, payload = _load_fixtures(resolved_fixtures_path)
+    split = _load_evaluation_split(resolved_split_path, payload)
     budget = AgentBudget.model_validate(payload["budget"])
     trial_rows = []
     b1_rows = []
@@ -2153,18 +2278,38 @@ async def evaluate_b4_scripted_fixtures(
         promotion_eligible=False,
         score_split=split.primary_score_split,
     )
+    fixtures_sha256 = hashlib.sha256(raw).hexdigest()
+    split_sha256 = hashlib.sha256(split.raw).hexdigest()
+    official_contract = _is_official_scripted_contract(
+        payload,
+        split,
+        fixtures_sha256=fixtures_sha256,
+        split_sha256=split_sha256,
+        trial_count=len(trial_rows),
+    )
     return {
         "schema_version": B4_EVALUATION_SCHEMA_VERSION,
-        "evaluation_id": B4_EVALUATION_ID,
+        "evaluation_id": (
+            B4_EVALUATION_ID if official_contract else B4_CUSTOM_SCRIPTED_EVALUATION_ID
+        ),
+        "evaluation_qualification": (
+            "official_frozen_fixture" if official_contract else "custom_unqualified"
+        ),
         "evaluation_contract": _evaluation_contract(),
         "fixture_set_id": payload["fixture_set_id"],
         "split_id": split.split_id,
         "generated_at": datetime.now(UTC).isoformat(),
         "source": {
-            "fixtures_path": str(fixtures_path),
-            "fixtures_sha256": hashlib.sha256(raw).hexdigest(),
-            "split_path": str(split_path),
-            "split_sha256": hashlib.sha256(split.raw).hexdigest(),
+            "fixtures_path": resolved_fixtures_path.as_posix(),
+            "fixtures_sha256": fixtures_sha256,
+            "official_fixtures_sha256": B4_OFFICIAL_FIXTURES_SHA256,
+            "split_path": resolved_split_path.as_posix(),
+            "split_sha256": split_sha256,
+            "official_split_sha256": B4_OFFICIAL_SPLIT_SHA256,
+            "official_fixture_set_id": B4_OFFICIAL_FIXTURE_SET_ID,
+            "official_split_id": B4_OFFICIAL_SPLIT_ID,
+            "official_fixture_count": B4_OFFICIAL_FIXTURE_COUNT,
+            "official_trial_count": B4_OFFICIAL_TRIAL_COUNT,
         },
         "summary": {
             "fixture_count": len(payload["fixtures"]),
@@ -2203,6 +2348,24 @@ async def evaluate_b4_scripted_fixtures(
             "multi-trial run passes this gate.",
         ],
     }
+
+
+def _is_official_scripted_contract(
+    payload: dict[str, Any],
+    split: _B4EvaluationSplit,
+    *,
+    fixtures_sha256: str,
+    split_sha256: str,
+    trial_count: int,
+) -> bool:
+    return (
+        fixtures_sha256 == B4_OFFICIAL_FIXTURES_SHA256
+        and split_sha256 == B4_OFFICIAL_SPLIT_SHA256
+        and payload["fixture_set_id"] == B4_OFFICIAL_FIXTURE_SET_ID
+        and split.split_id == B4_OFFICIAL_SPLIT_ID
+        and len(payload["fixtures"]) == B4_OFFICIAL_FIXTURE_COUNT
+        and trial_count == B4_OFFICIAL_TRIAL_COUNT
+    )
 
 
 async def evaluate_b4_real_fixtures(

@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -7,12 +8,18 @@ from pathlib import Path
 import pytest
 import tools.nbtriage_maintainer.agent_evaluation as agent_evaluation
 from tools.nbtriage_maintainer.agent_evaluation import (
+    B4_CUSTOM_SCRIPTED_EVALUATION_ID,
+    B4_EVALUATION_ID,
+    B4_OFFICIAL_FIXTURES_SHA256,
+    B4_OFFICIAL_SPLIT_SHA256,
     AgentEvaluationError,
     RealGatePartialAudit,
     _evaluation_source_digest,
     b4_real_partial_report_path,
     evaluate_b4_real_fixtures,
     evaluate_b4_scripted_fixtures,
+    load_b4_scripted_report,
+    validate_b4_scripted_report,
 )
 from tools.nbtriage_maintainer.cli import main
 from tools.nbtriage_maintainer.evaluation import write_new_evaluation_report
@@ -251,6 +258,8 @@ def _partial_audit(path: Path) -> RealGatePartialAudit:
 def test_scripted_b4_gate_is_explicitly_not_promotion_eligible() -> None:
     report = asyncio.run(evaluate_b4_scripted_fixtures(FIXTURES, SPLIT))
 
+    assert report["evaluation_id"] == B4_EVALUATION_ID
+    assert report["evaluation_qualification"] == "official_frozen_fixture"
     assert report["summary"] == {
         "fixture_count": 4,
         "trial_count": 8,
@@ -284,8 +293,20 @@ def test_scripted_b4_report_stays_sanitized_and_bound_to_versioned_inputs() -> N
 
     assert report["schema_version"] == 3
     assert report["fixture_set_id"] == "b4-bounded-agent-v1"
-    assert report["source"]["fixtures_sha256"]
-    assert report["source"]["split_sha256"]
+    assert report["source"] == {
+        "fixtures_path": FIXTURES.resolve().as_posix(),
+        "fixtures_sha256": B4_OFFICIAL_FIXTURES_SHA256,
+        "official_fixtures_sha256": B4_OFFICIAL_FIXTURES_SHA256,
+        "split_path": SPLIT.resolve().as_posix(),
+        "split_sha256": B4_OFFICIAL_SPLIT_SHA256,
+        "official_split_sha256": B4_OFFICIAL_SPLIT_SHA256,
+        "official_fixture_set_id": "b4-bounded-agent-v1",
+        "official_split_id": "b4-gate-v1",
+        "official_fixture_count": 4,
+        "official_trial_count": 8,
+    }
+    assert hashlib.sha256(FIXTURES.read_bytes()).hexdigest() == B4_OFFICIAL_FIXTURES_SHA256
+    assert hashlib.sha256(SPLIT.read_bytes()).hexdigest() == B4_OFFICIAL_SPLIT_SHA256
     completed = [row for row in report["trials"] if row["status"] == "completed"]
     assert all(row["candidate"] is not None for row in completed)
     assert all(row["review_context"] is not None for row in completed)
@@ -298,6 +319,139 @@ def test_scripted_b4_report_stays_sanitized_and_bound_to_versioned_inputs() -> N
     assert "GOLD-" not in serialized
     assert "chain_of_thought" not in serialized
     assert "content_sha256" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("target", "mutation"),
+    [
+        ("fixtures", "change_gold"),
+        ("fixtures", "change_case"),
+        ("fixtures", "change_budget"),
+        ("fixtures", "reorder"),
+        ("fixtures", "delete"),
+        ("split", "reorder"),
+        ("split", "move_fixture"),
+    ],
+)
+def test_custom_scripted_inputs_cannot_claim_official_identity(
+    tmp_path: Path,
+    target: str,
+    mutation: str,
+) -> None:
+    fixture_payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    split_payload = json.loads(SPLIT.read_text(encoding="utf-8"))
+    if target == "fixtures":
+        fixtures = fixture_payload["fixtures"]
+        if mutation == "change_gold":
+            fixtures[0]["gold"]["expected_fault_phase"] = "connect"
+        elif mutation == "change_case":
+            fixtures[0]["case"]["source"]["title"] += " custom"
+        elif mutation == "change_budget":
+            fixture_payload["budget"]["max_turns"] += 1
+        elif mutation == "reorder":
+            fixtures.reverse()
+        else:
+            removed = fixtures.pop()
+            for entries in split_payload["splits"].values():
+                entries[:] = [
+                    entry for entry in entries if entry["fixture_id"] != removed["fixture_id"]
+                ]
+    elif mutation == "reorder":
+        split_payload["splits"]["regression"].reverse()
+    else:
+        moved = split_payload["splits"]["regression"].pop()
+        split_payload["splits"]["forward_hidden"].append(moved)
+
+    fixtures_path = tmp_path / "fixtures.json"
+    split_path = tmp_path / "split.json"
+    fixtures_path.write_text(json.dumps(fixture_payload), encoding="utf-8")
+    split_path.write_text(json.dumps(split_payload), encoding="utf-8")
+
+    report = asyncio.run(evaluate_b4_scripted_fixtures(fixtures_path, split_path))
+
+    assert report["evaluation_id"] == B4_CUSTOM_SCRIPTED_EVALUATION_ID
+    assert report["evaluation_qualification"] == "custom_unqualified"
+    assert report["promotion_gate"]["promotion_eligible"] is False
+    assert report["promotion_gate"]["passed"] is False
+    assert report["promotion_gate"]["decision"] == "not_eligible_scripted_evidence_only"
+    assert report["source"]["fixtures_sha256"] != B4_OFFICIAL_FIXTURES_SHA256 or (
+        report["source"]["split_sha256"] != B4_OFFICIAL_SPLIT_SHA256
+    )
+
+
+def test_scripted_report_loader_strictly_replays_official_report(tmp_path: Path) -> None:
+    report = asyncio.run(evaluate_b4_scripted_fixtures(FIXTURES, SPLIT))
+    validate_b4_scripted_report(report)
+    report_path = tmp_path / "scripted.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    raw, loaded = load_b4_scripted_report(report_path)
+
+    assert json.loads(raw) == report
+    assert loaded == report
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error_message"),
+    [
+        ("handwritten", "fields are invalid"),
+        ("metric", "not reproducible"),
+        ("source_hash", "official frozen contract"),
+        ("duplicate_key", "failed to load B4 scripted report"),
+    ],
+)
+def test_scripted_report_loader_rejects_tampering_without_external_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    error_message: str,
+) -> None:
+    report = asyncio.run(evaluate_b4_scripted_fixtures(FIXTURES, SPLIT))
+    report_path = tmp_path / "scripted.json"
+    if mutation == "handwritten":
+        raw = json.dumps(
+            {
+                "schema_version": 3,
+                "evaluation_id": B4_EVALUATION_ID,
+                "evaluation_qualification": "official_frozen_fixture",
+            }
+        )
+    elif mutation == "duplicate_key":
+        raw = '{"schema_version":3,"schema_version":3}'
+    else:
+        if mutation == "metric":
+            report["metrics"]["b4"]["task_success_rate"] = 1.0
+        else:
+            report["source"]["fixtures_sha256"] = "0" * 64
+        raw = json.dumps(report)
+    report_path.write_text(raw, encoding="utf-8")
+
+    def fail_external_call(*args: object, **kwargs: object) -> None:
+        raise AssertionError("scripted validation attempted an external call")
+
+    monkeypatch.setattr(agent_evaluation, "evaluate_b4_real_fixtures", fail_external_call)
+
+    with pytest.raises(AgentEvaluationError, match=error_message):
+        load_b4_scripted_report(report_path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("scripted_model_steps", True),
+        ("real_provider_requests", 0.0),
+        ("scripted_model_steps", float("nan")),
+    ],
+)
+def test_scripted_report_validator_rejects_json_type_aliases(
+    field: str,
+    value: object,
+) -> None:
+    report = asyncio.run(evaluate_b4_scripted_fixtures(FIXTURES, SPLIT))
+    report["summary"][field] = value
+
+    with pytest.raises(AgentEvaluationError):
+        validate_b4_scripted_report(report)
 
 
 def test_gold_marker_in_agent_visible_case_is_detected(tmp_path: Path) -> None:
