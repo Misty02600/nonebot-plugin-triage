@@ -519,19 +519,9 @@ def _validate_source_report_binding(
         return None, None
     if source_report_path is None:
         raise AnswerQualityEvaluationError("candidate quality requires its source B4 report")
-    from tools.nbtriage_maintainer.agent_evaluation import (
-        AgentEvaluationError,
-        load_b4_real_review_source_bundle,
-    )
-
-    try:
-        source_bundle = load_b4_real_review_source_bundle(source_report_path)
-    except AgentEvaluationError as error:
-        raise AnswerQualityEvaluationError(f"source B4 report is invalid: {error}") from error
-    report_artifact = source_bundle.report
-    report = report_artifact.payload
+    report_raw, report = _load_object(source_report_path, "source B4 report")
     source = fixtures["source_evaluation"]
-    if report_artifact.sha256 != source["report_sha256"]:
+    if hashlib.sha256(report_raw).hexdigest() != source["report_sha256"]:
         raise AnswerQualityEvaluationError("source B4 report content does not match its digest")
     summary = report.get("summary")
     promotion_gate = report.get("promotion_gate")
@@ -567,30 +557,34 @@ def _validate_source_report_binding(
         build_b4_answer_quality_review_payloads,
     )
 
-    expected_artifacts = {
-        "audit": source_bundle.partial_audit,
-        "fixtures": source_bundle.fixtures,
-        "split": source_bundle.split,
-    }
-    for source_name, artifact in expected_artifacts.items():
-        if source[f"{source_name}_path"] != artifact.path.as_posix():
-            raise AnswerQualityEvaluationError(
-                f"source B4 {source_name} path does not match the report source"
-            )
-        if source[f"{source_name}_sha256"] != artifact.sha256:
-            raise AnswerQualityEvaluationError(f"source B4 {source_name} does not match its digest")
+    fixtures_source_path = Path(source["fixtures_path"])
+    split_source_path = Path(source["split_path"])
+    audit_source_path = Path(source["audit_path"])
+    audit_raw, audit = _load_object(audit_source_path, "source B4 partial audit")
+    if hashlib.sha256(audit_raw).hexdigest() != source["audit_sha256"]:
+        raise AnswerQualityEvaluationError("source B4 partial audit does not match its digest")
     try:
         replayed, _ = build_b4_answer_quality_review_payloads(
-            source_bundle=source_bundle,
+            report_raw=report_raw,
+            report=report,
+            audit_path=audit_source_path,
+            audit_raw=audit_raw,
+            audit=audit,
+            fixtures_path=fixtures_source_path,
+            split_path=split_source_path,
             rubric=rubric,
         )
     except AnswerReviewExportError as error:
         raise AnswerQualityEvaluationError(
             f"candidate source projection cannot be replayed: {error}"
         ) from error
+    if source["fixtures_sha256"] != _file_sha256(fixtures_source_path, "source B4 fixtures"):
+        raise AnswerQualityEvaluationError("source B4 fixtures do not match their digest")
+    if source["split_sha256"] != _file_sha256(split_source_path, "source B4 split"):
+        raise AnswerQualityEvaluationError("source B4 split does not match its digest")
     if replayed != fixtures:
         raise AnswerQualityEvaluationError("candidate fixtures do not match replayed B4 projection")
-    return report_artifact.path.as_posix(), report_artifact.sha256
+    return str(source_report_path), hashlib.sha256(report_raw).hexdigest()
 
 
 def _validate_annotations(
@@ -743,6 +737,13 @@ def _is_sha256(value: Any) -> bool:
 
 def _is_revision(value: Any, *, prefix: str) -> bool:
     return isinstance(value, str) and value.startswith(prefix) and _is_sha256(value[len(prefix) :])
+
+
+def _file_sha256(path: Path, label: str) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as error:
+        raise AnswerQualityEvaluationError(f"failed to load {label} {path}: {error}") from error
 
 
 def _ratio(numerator: int, denominator: int) -> float:
