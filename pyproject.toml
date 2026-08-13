@@ -15,6 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
+    "griffelib==2.1.0",
     "nonebot2>=2.5,<2.6",
     "nonebot-plugin-alconna>=0.62,<0.63",
     "nonebot-plugin-localstore>=0.7.4,<0.8",
@@ -27,41 +28,38 @@ Repository = "https://github.com/Misty02600/nonebot-plugin-triage"
 Documentation = "https://github.com/Misty02600/nonebot-plugin-triage#readme"
 
 [project.optional-dependencies]
-model-anthropic = [
-    "anthropic==0.121.0",
-    "pydantic-ai-slim[anthropic]==2.27.0",
-]
-model-openai = [
-    "openai==2.53.0",
-    "pydantic-ai-slim[openai]==2.27.0",
-]
-onebot = [
-    "nonebot-adapter-onebot>=2.4,<2.5",
-]
+anthropic = ["pydantic-ai-slim[anthropic]==2.27.0"]
+openai = ["pydantic-ai-slim[openai]==2.27.0"]
+onebot = ["nonebot-adapter-onebot>=2.4,<2.5"]
+discord = ["nonebot-adapter-discord>=1.1,<1.2"]
 
 [build-system]
-requires = ["hatchling>=1.27,<1.28"]
-build-backend = "hatchling.build"
+requires = ["uv_build>=0.10.0,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["nbtriage", "nonebot_plugin_triage"]
 
 [dependency-groups]
 maintainer = [
+    "markdown-it-py==4.2.0",
     "mlflow==3.14.0",
-    "openai==2.53.0",
     "pydantic-ai-slim[openai]==2.27.0",
+    "tree-sitter==0.25.2",
+    "tree-sitter-typescript==0.23.2",
 ]
 dev = [
-    "anthropic==0.121.0",
     "commitizen>=4.1.0,<5.0.0",
     "git-cliff>=2.11.0,<3.0.0",
     { include-group = "test" },
     "nb-cli>=1.4.2,<2.0.0",
-    "openai==2.53.0",
     "prek>=0.2.0,<1.0.0",
     "pydantic-ai-slim[anthropic,openai]==2.27.0",
     "twine>=6.2.0,<7.0.0",
 ]
 test = [
     "basedpyright>=1.31.0",
+    "nonebot-adapter-discord>=1.1,<1.2",
     "nonebot-adapter-onebot>=2.4,<2.5",
     "nonebot2[fastapi]>=2.5,<2.6",
     "nonebug>=0.4.3,<1.0.0",
@@ -76,27 +74,4 @@ nonebot-plugin-triage = ["nonebot_plugin_triage"]
 [tool.nonebot.adapters]
 nonebot-adapter-onebot = [
     { name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11" },
-]
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/nbtriage", "src/nonebot_plugin_triage"]
-
-[tool.hatch.build.targets.sdist]
-exclude = [
-    "/.code-notes",
-    "/.learning",
-    "/.tours/personal",
-    "/AGENTS.md",
-    "/artifacts",
-    "/data",
-    "/docs/evaluations",
-    "/docs/operations",
-    "/docs/oracle-runs",
-    "/docs/scratch",
-    "/evals/snapshots",
-    "/logs",
-    "/mlartifacts",
-    "/mlruns",
-    "/reports",
-    "/tools",
 ]

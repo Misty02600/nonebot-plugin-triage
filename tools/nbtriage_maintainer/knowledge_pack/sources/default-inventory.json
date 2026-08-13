@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "id": "napcat-user-docs",
+      "component": "napcat",
+      "kind": "user_docs",
+      "applicability": "snapshot_only",
+      "revision": "03148e9f97afc87bc7475e5f150f2a079dc1bc77",
+      "source_url": "https://github.com/NapNeko/NapCatDocs",
+      "root": "napcat-docs",
+      "include": ["src/guide/**/*.md", "src/develop/**/*.md"],
+      "distribution": "redistributable"
+    },
+    {
+      "id": "napcat-openapi-4.18.18",
+      "component": "napcat",
+      "kind": "api_spec",
+      "applicability": "exact_version",
+      "version": "4.18.18",
+      "revision": "03148e9f97afc87bc7475e5f150f2a079dc1bc77",
+      "source_url": "https://github.com/NapNeko/NapCatDocs",
+      "root": "napcat-docs",
+      "include": ["src/api/4.18.18/openapi.json"],
+      "distribution": "redistributable"
+    },
+    {
+      "id": "napcat-source-4.18.18",
+      "component": "napcat",
+      "kind": "source_code",
+      "applicability": "exact_version",
+      "version": "4.18.18",
+      "revision": "0fcd0e80e07b85deeed24d85e09e62cbfdb2dfe3",
+      "source_url": "https://github.com/NapNeko/NapCatQQ",
+      "root": "napcat-source",
+      "include": ["packages/**/*.ts", "packages/**/*.tsx"],
+      "distribution": "local_only"
+    },
+    {
+      "id": "nonebot-docs-2.5",
+      "component": "nonebot2",
+      "kind": "user_docs",
+      "applicability": "declared_range",
+      "version": "2.5.*",
+      "revision": "c0f9a494bcd308c2ec530ba60c167f9145d21aec",
+      "source_url": "https://github.com/nonebot/nonebot2",
+      "root": "nonebot2",
+      "include": ["**/*.md", "**/*.mdx"],
+      "distribution": "redistributable"
+    }
+  ]
+}

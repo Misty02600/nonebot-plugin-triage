@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "case_id": "napcat-versioned-api",
+      "query": "获取群信息 group_id",
+      "component": "napcat",
+      "version": "4.18.18",
+      "expected_locators": ["openapi.json#post /get_group_info"]
+    },
+    {
+      "case_id": "napcat-rolling-guide",
+      "query": "热重载后插件行为异常 plugin_cleanup",
+      "component": "napcat",
+      "version": "4.17.0",
+      "expected_locators": ["src/develop/plugin/hot-reload.md#热重载开发 > 常见问题 > 热重载后插件行为异常？"]
+    },
+    {
+      "case_id": "napcat-typescript-source",
+      "query": "getGroupInfo callApi",
+      "component": "napcat",
+      "version": "4.18.18",
+      "expected_locators": ["group.ts#function_declaration:getGroupInfo"]
+    },
+    {
+      "case_id": "nonebot-matcher-docs",
+      "query": "Matcher 事件响应",
+      "component": "nonebot2",
+      "version": "2.5.0",
+      "expected_locators": ["api/matcher.md#nonebot.matcher"]
+    }
+  ]
+}

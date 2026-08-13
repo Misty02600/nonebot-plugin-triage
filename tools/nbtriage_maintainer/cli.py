@@ -1166,8 +1166,7 @@ def _run_evaluate_b4_real(args: argparse.Namespace) -> int:
             "b1_symbol": "create_openai_responses_b1_client",
             "agent_symbol": "create_openai_responses_agent_step_client",
             "install_hint": (
-                "install the 'model-openai' extra: "
-                'pip install "nonebot-plugin-triage[model-openai]"'
+                "install the 'openai' extra: pip install \"nonebot-plugin-triage[openai]\""
             ),
         },
         "anthropic-messages": {
@@ -1176,8 +1175,7 @@ def _run_evaluate_b4_real(args: argparse.Namespace) -> int:
             "b1_symbol": "create_anthropic_messages_b1_client",
             "agent_symbol": "create_anthropic_messages_agent_step_client",
             "install_hint": (
-                "install the 'model-anthropic' extra: "
-                'pip install "nonebot-plugin-triage[model-anthropic]"'
+                "install the 'anthropic' extra: pip install \"nonebot-plugin-triage[anthropic]\""
             ),
         },
         "deepseek-responses": {
@@ -1492,7 +1490,7 @@ def _load_model_symbol(
     symbol_name: str,
     *,
     install_hint: str = (
-        "install the 'model-openai' extra: pip install \"nonebot-plugin-triage[model-openai]\""
+        "install the 'openai' extra: pip install \"nonebot-plugin-triage[openai]\""
     ),
 ) -> Any:
     try:
