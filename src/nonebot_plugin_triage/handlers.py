@@ -376,6 +376,14 @@ async def _capability_guidance_result(
         public_result = await shadow.search_public(content, type(bot.adapter))
         if public_result is not None and public_result.hits:
             fallback = format_public_capability_guidance(public_result)
+            if any(
+                annotation.capability_id == public_result.hits[0].record.capability_id
+                for annotation in public_result.annotations
+            ):
+                return _GuidanceResult(
+                    fallback,
+                    _shadow_topic_labels(public_result.hits[:8]),
+                )
             answer_request = build_public_guidance_request(content, public_result)
             if answer_request is not None:
                 outcome = await plugin_runtime.public_guidance_service.answer(answer_request)

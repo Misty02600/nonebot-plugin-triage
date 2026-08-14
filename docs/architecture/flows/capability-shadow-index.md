@@ -20,6 +20,12 @@ disclosure + PlatformScope + analysis_issues + RecordState
        原子构建本地 SQLite FTS5 索引
                 ↓
 当前 adapter 的 ServingView / 鉴权后的维护者域
+
+可选 auto 注释（只接收当前已注册 public 记录）
+                ↓
+有界已加载源码 + 策略允许的相关配置值
+                ↓
+公开教学注释 cache（无源码、配置值和 Evidence 定位）
 ```
 
 采集器不额外导入插件，也不执行 Matcher、Rule、Permission 或 handler。keyword / regex 等可确定入口保存
@@ -39,6 +45,11 @@ Matcher 角色或跨 Matcher 支撑关系。
 能力 ID 白名单在 FTS 排名和 `limit` 前应用，结果反序列化后再次执行 ServingView 检查。`restricted`、平台不
 匹配和带 issue 的记录不会先进入模型再被隐藏。维护者域必须先在模型外完成 SUPERUSER 鉴权。
 
+自动教学注释沿用同一门禁，并且必须由当前 runtime 记录反向定位已经加载的模块。它不会遍历静态制品并把
+“源码存在”解释成“Bot 当前可用”；加载失败、`not_observed`、restricted、平台未知或带 issue 的能力即使留有
+旧注释 cache，本轮也不会提供。部署者选择 `auto` 时无需逐条人工审核，但仍不能绕过运行时注册、披露、平台
+和 Evidence 闭包；选择默认 `off` 时整个源码与配置分析链不运行。
+
 ## 状态与失败语义
 
 - 制品版本、VCS commit、有界相对路径与文件摘要用于部署清单和诊断，不构成逐能力源码身份合同。
@@ -46,6 +57,8 @@ Matcher 角色或跨 Matcher 支撑关系。
 - 新索引在临时文件完整写入并校验后替换目标；构建失败保留最近可用索引。
 - LocalStore 路径只在启动刷新阶段解析；解析失败、cache 不可写或版本不兼容时记录稳定错误类型并降级，
   不阻止插件加载、`triage` 或模型语义分流。
+- 自动注释按能力串行生成并独立失败；某个插件的源码不可读、模型输出无效或请求失败时，该能力退回确定性
+  元数据说明，其他能力和基础 SQLite 索引继续可用。
 - deployment 未刷新、刷新失败、snapshot / deployment 任一 partial 或索引 stale 时，普通查询失败关闭；维护者
   仍可读取最近快照并看到 partial / stale 标记。
 - `opaque` Permission、Rule 和 handler 条件只表示无法静态求值；能力说明不等于执行授权，实际执行仍由原

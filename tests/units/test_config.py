@@ -54,6 +54,12 @@ def test_shared_triage_cooldown_has_a_bounded_default() -> None:
         NBTriageConfig(nbtriage_cooldown_seconds=0)
 
 
+def test_auto_capability_annotations_require_model_transport() -> None:
+    assert NBTriageConfig().nbtriage_capability_annotation_mode == "off"
+    with pytest.raises(ValidationError, match="configured model transport"):
+        NBTriageConfig(nbtriage_capability_annotation_mode="auto")
+
+
 def test_readme_configuration_table_covers_every_public_field() -> None:
     readme = (Path(__file__).parents[2] / "README.md").read_text(encoding="utf-8")
     table = readme.split("## 配置", 1)[1].split("OpenCode Go 配置示例", 1)[0]

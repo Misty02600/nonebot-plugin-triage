@@ -69,6 +69,7 @@ plugins = ["nonebot_plugin_triage"]
 | `NBTRIAGE_COOLDOWN_SECONDS` | `2` | 同一适配器、Bot、会话和用户每次进入 `triage` 后，在该秒数内再次发送任何 `triage` 请求都会被拒绝；首轮、续问、空输入、超长输入、教学、澄清和报障共用窗口。窗口只在当前进程内存中，重启清空，不是跨进程配额或模型费用预算。 |
 | `NBTRIAGE_RATE_LIMIT_MAX_SCOPES` | `4096` | 当前进程入口限流表最多保留的不同 `适配器 + Bot + 会话 + 用户` scope 数；容量满时淘汰最旧 scope 并累计 drop 计数。它限制内存键数量，不提高单个用户频率，也不提供跨进程协调。 |
 | `NBTRIAGE_CAPABILITY_VISIBILITY_TIMEOUT_SECONDS` | `0.25` | 收集显式 Alconna 能力时，等待单个第三方 Provider 异步可见性判断的最长秒数；超时、异常或返回 false 的能力不会进入本轮公开说明。它不控制模型请求或能力影子后台刷新。 |
+| `NBTRIAGE_CAPABILITY_ANNOTATION_MODE` | `off` | `off` 只使用运行时元数据与已有公开事实，不把能力源码或配置值发送给模型；`auto` 在启动后的后台任务中，对本次已成功注册、明确公开且证据完整的命令读取有界 handler 源码与策略允许的相关配置值，直接生成无需人工审核的公开教学注释。加载失败、未观察到、受限、平台未知或有分析问题的能力不会生成或提供注释；单项失败只让该能力退回原说明。 |
 | `NBTRIAGE_OBSERVATION_MAX_ENTRIES` | `10000` | 当前进程最多保留的 NoneBot 生命周期观察记录数，用于 Reply 关联后的可信失败复核；容量满时旧记录被淘汰，原始 API data/result 不会存入该 buffer，重启后清空。 |
 | `NBTRIAGE_OBSERVATION_RETENTION_SECONDS` | `900` | 生命周期观察记录可参与故障证据关联的最长秒数；过期记录不能再支持 Incident，同时也界定受理服务接受证据的时间范围。它不是日志保存期。 |
 | `NBTRIAGE_REFERENCE_MAX_ENTRIES` | `4096` | 当前进程最多保留的出站消息引用索引数，用于把用户 Reply 的 `message_id` 精确关联到近期 Bot 运行；容量满时旧引用被淘汰，索引保存 HMAC scope 而不是平台身份原文。 |
@@ -85,8 +86,8 @@ plugins = ["nonebot_plugin_triage"]
 | `NBTRIAGE_KNOWLEDGE_PACK_SHA256` | 未设置 | 与 URL 成对固定 knowledge pack 压缩包的 64 位十六进制 SHA-256；下载内容不匹配时拒绝安装并继续 no-knowledge 模式。它校验制品身份，不表示制品来源或许可证已自动获准。 |
 | `NBTRIAGE_MODEL_BACKEND` | 未设置 | 与 `NBTRIAGE_MODEL_NAME` 成对选择语义模型 transport；未设置时每轮语义判断保守 abstain。当前已准入值为 `opencode-go-chat`。 |
 | `NBTRIAGE_MODEL_NAME` | 未设置 | 与 backend 成对选择已通过精确任务资格和评测的模型；当前已准入值为 `deepseek-v4-flash`，其他名称会在启动时拒绝。 |
-| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 单次语义或公开能力回答请求的最长等待时间；当前 OpenCode Go 运行合同要求精确为 60 秒，两类请求都不自动重试。语义请求超时会 abstain，回答请求超时会退回确定性能力说明。 |
-| `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 单次模型结构化输出的 token 上限；语义 assessment 与 Answer Agent 都使用该值。默认值即当前 OpenCode Go 运行合同值，不匹配时启动失败。它不限制用户输入长度，也不是累计费用预算。 |
+| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 单次语义、公开能力回答或自动教学注释请求的最长等待时间；当前 OpenCode Go 运行合同要求精确为 60 秒，三类请求都不自动重试。语义请求超时会 abstain，回答或注释超时会退回确定性能力说明。 |
+| `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 单次模型结构化输出的 token 上限；语义 assessment、Answer Agent 与自动教学注释都使用该值。默认值即当前 OpenCode Go 运行合同值，不匹配时启动失败。它不限制用户输入长度，也不是累计费用预算。 |
 | `NBTRIAGE_RESTRICTED_CONFIG` | `[]` | JSON 数组，列出禁止把实际值交给能力分析模型的 NoneBot 顶层配置键；键名大小写不敏感，`FOO__BAR` 等嵌套写法按顶层 `foo` 整项限制。命中后在读取实际值前拒绝；它不会删除 NoneBot 配置、禁止分析公开 schema/源码，也不表示未列出的整份 `.env` 会被发送。 |
 
 OpenCode Go 配置示例：
@@ -96,13 +97,14 @@ NBTRIAGE_MODEL_BACKEND=opencode-go-chat
 NBTRIAGE_MODEL_NAME=deepseek-v4-flash
 NBTRIAGE_MODEL_TIMEOUT_SECONDS=60
 NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS=240
+NBTRIAGE_CAPABILITY_ANNOTATION_MODE=auto
 ```
 
 密钥只从进程环境变量 `OPENCODE_API_KEY` 读取，不写入 `NBTriageConfig`。语义 assessment 只发送当前单条、
 规范化并通过秘密守门的 `triage` 请求文字；公开能力 Answer Agent 另发送同一问题与本轮已经过滤为 public
-的能力名、描述、用法或示例。两类请求都不会发送 Reply / Thread 历史、身份、配置、环境变量、日志、源码、
-运行证据、证据位置或 restricted 能力。每个 Agent 各最多一次请求、零自动重试，不切换模型。语义失败会
-abstain；回答失败或非法引用会退回确定性模板。语义客户端使用 Pydantic AI
+的能力名、描述、用法或示例。这两类在线回答请求都不会发送 Reply / Thread 历史、身份、配置、环境变量、
+日志、源码、运行证据、证据位置或 restricted 能力。每个 Agent 各最多一次请求、零自动重试，不切换模型。
+语义失败会 abstain；回答失败或非法引用会退回确定性模板。语义客户端使用 Pydantic AI
 `Agent(output_type=SupportSemanticAssessment)`；当前
 OpenCode Go Profile 以 `final_result` output tool 承载闭合结果，该 tool 只用于结构化返回，插件不会把它
 升级为业务工具或副作用授权。
@@ -129,9 +131,14 @@ exploration。分类不接收身份，选中行为探索后才执行模型外 `S
 NBTRIAGE_RESTRICTED_CONFIG='["DISCORD_BOTS", "PLUGIN_COOKIE"]'
 ```
 
-当前版本已实现从已加载插件的 handler 源码提取标准 Config 引用、在读取前应用策略、对未受限值做有界
-瞬时投影，并装配一次性能力分析请求；这些库级组件尚未接入 Bot handler 或获准真实模型，因此设置该项
-本身不会触发读取、发送或持久化配置。分析链也不会发送整份 `.env`、完整 Config 或枚举进程环境。
+`NBTRIAGE_CAPABILITY_ANNOTATION_MODE=auto` 是另一条显式选择的数据边界：后台注释任务每轮最多分析 16
+个当前能力，并从当前 runtime
+snapshot 出发，只读取已经加载模块中与公开命令直接关联的有界函数源码，并在读取配置值前应用
+`NBTRIAGE_RESTRICTED_CONFIG`；它不会扫描整份 `.env`、完整 Config、日志、消息、用户身份或进程环境。
+模型输出必须引用本轮 Evidence，且在写入 LocalStore cache 前删除 Evidence ID、源码位置和配置符号；cache
+只保存公开教学文本与证据指纹。旧 cache 只有在能力仍于当前 runtime 成功注册且指纹一致时才能提供，因此
+插件加载失败或本轮未观察到的能力不会成为普通用户可见的“幽灵帮助”。该自动注释任务目前仅按受控
+dogfood 合同开放，尚未完成独立真实模型 held-out 质量 Gate。
 
 ## 使用
 
@@ -163,11 +170,12 @@ Target 且平台结构合法的 Receipt；当前验证范围为 OneBot V11 与 D
 后台任务读取标准 `pyproject.toml` 的 NoneBot 声明、安装制品 revision 和实际已加载模块做
 `registered / not_observed / runtime_only` 协调，再从已加载的 Plugin、Matcher、Alconna 结构、插件元数据
 和轻量本地源码摘要原子生成全文索引。同一轮 deployment 构建只枚举一次 distribution package map。每个
-命令或 Matcher 保持独立记录，不分析 handler 效果、推断跨 Matcher 角色，也不做逐文件模块源码对齐。它不调用
+命令或 Matcher 保持独立记录；基础索引不分析 handler 效果、推断跨 Matcher 角色，也不做逐文件模块源码对齐。它不调用
 第三方 Rule、Permission、handler 或命令解析，也不读取
 `.env`、日志和运行数据。每条记录分别保存 `public / restricted` 受众、`all / explicit / unknown`
 平台范围、具体 `analysis_issues`、执行约束和记录状态。确定命令入口、当前 adapter 在范围内、没有分析问题、
-记录状态不是 `conflicted / stale`、快照明确完整且索引新鲜时才进入普通用户检索。动态、被动、冲突或证据
+记录状态不是 `conflicted / stale`、快照明确完整且索引新鲜时才进入普通用户检索。启用自动教学注释时，
+源码分析只补充满足这些运行时条件的现有记录，不会把静态扫描结果升级成“当前可用”事实。动态、被动、冲突或证据
 不足的能力会保留对应 issue，不要求部署者逐命令审核。代表部署开发 / 维护者的 `SUPERUSER`、
 `CommandMeta.hide=True`
 或停用能力会以 `restricted` 写入本地索引，但普通检索不会返回。只有先在模型外确认

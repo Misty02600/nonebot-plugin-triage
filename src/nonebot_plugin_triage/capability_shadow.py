@@ -27,6 +27,8 @@ from nbtriage.capabilities import (
     capability_index_public_records,
     search_capability_index,
 )
+from nbtriage.capability_analysis import CapabilityAnalysisClient
+from nbtriage.capability_annotations import CapabilityTeachingAnnotation
 from nbtriage.capability_deployment import (
     CapabilityDeployment,
     build_capability_deployment,
@@ -39,12 +41,15 @@ from nbtriage.public_guidance import (
     PublicGuidanceFactField,
     PublicGuidanceRequest,
 )
+from nonebot_plugin_triage.capability_annotations import CapabilityAnnotationService
 from nonebot_plugin_triage.capability_snapshot import build_capability_snapshot
+from nonebot_plugin_triage.config_policy import ConfigValuePolicy
 from nonebot_plugin_triage.support_intake import (
     registered_public_alconna_capability_paths,
 )
 
 _CAPABILITY_SHADOW_FILENAME = "capability-shadow.sqlite3"
+_CAPABILITY_ANNOTATION_FILENAME = "capability-annotations.json"
 
 
 def _resolve_capability_shadow_cache_file(filename: str) -> Path:
@@ -120,6 +125,7 @@ class PublicCapabilitySearch:
     hits: tuple[CapabilitySearchHit, ...]
     partial: bool | None
     stale: bool = False
+    annotations: tuple[CapabilityTeachingAnnotation, ...] = ()
 
 
 class CapabilityShadowService:
@@ -138,6 +144,7 @@ class CapabilityShadowService:
         public_paths: Callable[[], Collection[str]] = (registered_public_alconna_capability_paths),
         deployment_builder: DeploymentBuilder = build_capability_deployment,
         runtime_modules: Callable[[], Collection[str]] = _loaded_plugin_module_names,
+        annotation_service: CapabilityAnnotationService | None = None,
     ) -> None:
         if isinstance(path, Path):
             self._path: Path | None = path
@@ -152,7 +159,9 @@ class CapabilityShadowService:
         self._public_paths = public_paths
         self._deployment_builder = deployment_builder
         self._runtime_modules = runtime_modules
+        self._annotation_service = annotation_service
         self._deployment: CapabilityDeployment | None = None
+        self._latest_snapshot: CapabilitySnapshot | None = None
         self._status = CapabilityShadowStatus(
             served_generation=served.generation,
             partial=served.partial,
@@ -240,9 +249,21 @@ class CapabilityShadowService:
                 type(error).__name__,
             )
             return None
+        safe_hits = tuple(
+            hit for hit in hits if _record_is_publicly_servable(hit.record, adapter_type)
+        )
+        annotations = ()
+        if self._annotation_service is not None:
+            annotations = tuple(
+                annotation
+                for hit in safe_hits
+                if (annotation := self._annotation_service.get(hit.record.capability_id))
+                is not None
+            )
         return PublicCapabilitySearch(
-            tuple(hit for hit in hits if _record_is_publicly_servable(hit.record, adapter_type)),
+            safe_hits,
             partial=self._status.partial,
+            annotations=annotations,
         )
 
     def refresh_deployment(self) -> CapabilityShadowStatus:
@@ -251,6 +272,7 @@ class CapabilityShadowService:
         return self._status
 
     def refresh(self) -> CapabilityShadowStatus:
+        self._latest_snapshot = None
         self._refresh_deployment_safely()
         snapshot = self._snapshot_builder(explicit_public_alconna_paths=self._public_paths())
         restricted_count = sum(
@@ -276,6 +298,7 @@ class CapabilityShadowService:
             partial=snapshot.manifest.partial,
             error_code=None,
         )
+        self._latest_snapshot = snapshot
         return self._status
 
     def _refresh_deployment_safely(self) -> None:
@@ -350,6 +373,16 @@ class CapabilityShadowService:
     async def refresh_in_background(self) -> None:
         """把有界但可能较慢的制品扫描和索引构建移出启动关键路径。"""
         await asyncio.to_thread(self.refresh_safely)
+        snapshot = self._latest_snapshot
+        if self._annotation_service is not None and snapshot is not None:
+            try:
+                await self._annotation_service.refresh(snapshot)
+            except Exception as error:
+                logger.warning(
+                    "NoneBot Triage capability annotation refresh failed; "
+                    "the deterministic capability index remains active ({})",
+                    type(error).__name__,
+                )
 
     def _resolve_path_safely(self) -> bool:
         try:
@@ -383,13 +416,31 @@ def register_capability_shadow(
     *,
     startup_registrar: Callable[[Callable[[], object]], object] | None = None,
     cache_file_resolver: Callable[[str], Path] = _resolve_capability_shadow_cache_file,
+    annotation_client_factory: Callable[[], CapabilityAnalysisClient] | None = None,
+    config_policy: ConfigValuePolicy | None = None,
+    annotation_analysis_revision: str | None = None,
 ) -> CapabilityShadowService:
     """注册后台能力快照刷新，并把 LocalStore 路径解析延后到启动阶段。"""
     if startup_registrar is None:
         from nonebot import get_driver
 
         startup_registrar = get_driver().on_startup
-    service = CapabilityShadowService(lambda: cache_file_resolver(_CAPABILITY_SHADOW_FILENAME))
+    annotation_service = None
+    if annotation_client_factory is not None:
+        if config_policy is None or annotation_analysis_revision is None:
+            raise ValueError(
+                "auto capability annotations require config policy and analysis revision"
+            )
+        annotation_service = CapabilityAnnotationService(
+            lambda: cache_file_resolver(_CAPABILITY_ANNOTATION_FILENAME),
+            client_factory=annotation_client_factory,
+            config_policy=config_policy,
+            analysis_revision=annotation_analysis_revision,
+        )
+    service = CapabilityShadowService(
+        lambda: cache_file_resolver(_CAPABILITY_SHADOW_FILENAME),
+        annotation_service=annotation_service,
+    )
     background_tasks: set[asyncio.Task[None]] = set()
 
     async def schedule_refresh() -> None:
@@ -523,17 +574,25 @@ def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
     if not safe_hits:
         return ""
     primary = safe_hits[0].record
+    annotations = {item.capability_id: item for item in result.annotations}
+    annotation = annotations.get(primary.capability_id)
     header = _public_capability_label(primary)
     if header is None:
         return ""
     lines = [header]
     description = _public_claim_text(primary.claims, "description", limit=240)
+    if description is None and annotation is not None:
+        description = annotation.summary
     if description:
         lines.append(description)
     usage = _public_claim_text(primary.claims, "usage", limit=240)
     if usage:
         lines.append(f"用法：{usage}")
-    else:
+    annotation_guidance = _annotation_guidance(annotation)
+    if annotation_guidance:
+        label = "补充" if usage else "使用说明"
+        lines.append(f"{label}：{'；'.join(annotation_guidance)}")
+    elif not usage:
         lines.append("当前索引还没有可靠的完整用法。")
     if len(safe_hits) > 1:
         alternatives = [
@@ -619,6 +678,8 @@ def _append_public_guidance_fact(
     text: str,
     basis: PublicGuidanceFactBasis,
 ) -> None:
+    if len(facts) >= 32:
+        return
     if any(
         fact.capability == capability and fact.field is field and fact.text == text
         for fact in facts
@@ -631,6 +692,23 @@ def _append_public_guidance_fact(
             field=field,
             text=text,
             basis=basis,
+        )
+    )
+
+
+def _annotation_guidance(
+    annotation: CapabilityTeachingAnnotation | None,
+) -> tuple[str, ...]:
+    if annotation is None:
+        return ()
+    return tuple(
+        dict.fromkeys(
+            (
+                *annotation.supported_subjects,
+                *annotation.input_requirements,
+                *annotation.behavior_boundaries,
+                *annotation.constraints,
+            )
         )
     )
 

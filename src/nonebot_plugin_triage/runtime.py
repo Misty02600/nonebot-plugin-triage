@@ -17,6 +17,10 @@ from nbtriage.support_threads import (
     OutboundThreadReferenceIndex,
     SupportThreadTurnCoordinator,
 )
+from nonebot_plugin_triage.capability_annotation_runtime import (
+    CAPABILITY_ANNOTATION_ANALYSIS_REVISION,
+    create_capability_annotation_client_factory,
+)
 from nonebot_plugin_triage.capability_shadow import (
     CapabilityShadowService,
     register_capability_shadow,
@@ -160,13 +164,24 @@ def create_plugin_runtime(
     semantic_assessment_service = semantic_assessment_service_factory(config)
     public_guidance_service = public_guidance_service_factory(config)
     config_value_policy = ConfigValuePolicy.from_keys(config.nbtriage_restricted_config)
+    capability_annotation_client_factory = create_capability_annotation_client_factory(config)
     observer.register()
     reference_bridge.register()
     thread_reference_bridge.register()
     outgoing_reference_providers = _create_outgoing_reference_providers(reference_bridge)
     for provider in outgoing_reference_providers:
         provider.register()
-    capability_shadow = register_capability_shadow()
+    capability_shadow = register_capability_shadow(
+        annotation_client_factory=capability_annotation_client_factory,
+        config_policy=(
+            config_value_policy if capability_annotation_client_factory is not None else None
+        ),
+        annotation_analysis_revision=(
+            CAPABILITY_ANNOTATION_ANALYSIS_REVISION
+            if capability_annotation_client_factory is not None
+            else None
+        ),
+    )
     knowledge_pack = register_knowledge_pack(config)
     return NBTriagePluginRuntime(
         observer=observer,

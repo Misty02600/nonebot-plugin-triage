@@ -21,6 +21,7 @@ ModelName = Annotated[
 ]
 ModelBackend = Literal["anthropic-messages", "openai-responses", "opencode-go-chat"]
 TrialModeName = Literal["off", "observe"]
+CapabilityAnnotationMode = Literal["off", "auto"]
 
 
 class NBTriageConfig(BaseModel):
@@ -29,6 +30,7 @@ class NBTriageConfig(BaseModel):
     nbtriage_cooldown_seconds: int = Field(default=2, ge=1, le=86_400)
     nbtriage_rate_limit_max_scopes: int = Field(default=4_096, ge=1, le=1_000_000)
     nbtriage_capability_visibility_timeout_seconds: float = Field(default=0.25, gt=0, le=5)
+    nbtriage_capability_annotation_mode: CapabilityAnnotationMode = "off"
     nbtriage_knowledge_pack_url: (
         Annotated[
             str,
@@ -156,4 +158,9 @@ class NBTriageConfig(BaseModel):
                 raise ValueError("knowledge pack URL must be an HTTPS asset URL")
         if (self.nbtriage_model_backend is None) is not (self.nbtriage_model_name is None):
             raise ValueError("model backend and model name must be configured together")
+        if (
+            self.nbtriage_capability_annotation_mode == "auto"
+            and self.nbtriage_model_backend is None
+        ):
+            raise ValueError("auto capability annotations require a configured model transport")
         return self

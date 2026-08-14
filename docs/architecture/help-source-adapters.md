@@ -60,17 +60,19 @@ NoneBot `SUPERUSER` 只决定当前事件是否可以读取维护者可见的能
 素材不复制进 MIT 核心；会动态执行 Python / Jinja / JavaScript 模板、第三方回调或全局预处理器的路径也
 不接入。
 
-当前产品运行路径没有把 README、源码或配置值发送给能力分析模型。库级实现已经可以从当前能力记录裁剪
-handler EvidenceUnit、提取标准 Config 引用、在策略判定后瞬时投影值，并通过禁用工具的单次 Direct
-Request 客户端取得严格结构化结果；只有假模型测试使用这条链。后续真实源码证据外发仍按 ADR-0025 的来源与
-EvidenceUnit 边界处理；配置值则由 ADR-0029 的部署策略单独守门，不能借源码授权一并放开。
+产品仍以 NoneBot 本轮成功注册的 runtime snapshot 作为“当前可用”真相，不用静态扫描替代它。部署者显式设置
+`NBTRIAGE_CAPABILITY_ANNOTATION_MODE=auto` 后，启动后台任务才会从其中明确公开、平台已知、无分析问题且有
+观察到命令头的记录裁剪 handler EvidenceUnit，提取标准 Config 引用，在策略判定后瞬时投影值，并通过无业务
+工具的单次 Agent 结构化调用生成公开教学注释。源码只补充已注册记录：加载失败、未观察到或只在静态制品中
+存在的插件不会进入普通用户帮助；单项分析失败也不会隐藏其他已注册能力或阻断基础索引。
 
 `NBTRIAGE_RESTRICTED_CONFIG` 已实现为顶层 NoneBot 配置键的 JSON deny-list，运行时持有的
 `ConfigValuePolicy` 在任何值读取前按大小写不敏感顶层键判定，`__` 嵌套键按顶层整项限制。投影器只读
 已经存在、类型与源码 revision 均匹配的 Pydantic 配置实例，并拒绝 restricted、缺失、Secret、嵌套模型、
 自定义对象和超限值；不会调用 `get_plugin_config()`、validator、`model_dump()` 或任意属性逻辑。第一版不
-追踪绕过标准 Config 链的 `os.getenv()` 等读取；拿不到安全的有效值时保留 unknown。Bot handler、启动后台
-分析和真实模型资格尚未接入，因此这项库级能力不会自行触发配置读取或模型请求。
+追踪绕过标准 Config 链的 `os.getenv()` 等读取；拿不到安全的有效值时保留 unknown。`off` 是默认值，不读取
+或发送源码与配置值；`auto` 是部署者对该专用后台任务的显式数据准入，并直接采用校验后的注释，不要求人工
+审核。LocalStore cache 只保存公开文本和证据指纹，不保存源码、配置值、Evidence ID 或源码位置。
 
 ## 后续来源接口
 

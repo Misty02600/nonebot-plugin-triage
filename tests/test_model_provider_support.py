@@ -13,7 +13,7 @@ def test_model_provider_support_matrix_keeps_unqualified_rows_out_of_supported_s
     assert "| Google | GenAI |" in matrix
     assert "| 任意第三方 | OpenAI-compatible Chat / Responses |" in matrix
     assert "| OpenCode Go | Chat Completions |" in matrix
-    assert matrix.count("| 实验性 |") == 4
+    assert matrix.count("| 实验性 |") == 5
     assert matrix.count("| 不支持 |") == 2
     assert matrix.count("| 支持 |") == 1
     assert "传输无关的 v5 请求投影与输出 schema" in matrix
