@@ -32,6 +32,13 @@ from nbtriage.capability_deployment import (
     build_capability_deployment,
 )
 from nbtriage.capability_reconciliation import PluginRuntimeStatus
+from nbtriage.public_guidance import (
+    PUBLIC_GUIDANCE_SCHEMA_VERSION,
+    PublicGuidanceFact,
+    PublicGuidanceFactBasis,
+    PublicGuidanceFactField,
+    PublicGuidanceRequest,
+)
 from nonebot_plugin_triage.capability_snapshot import build_capability_snapshot
 from nonebot_plugin_triage.support_intake import (
     registered_public_alconna_capability_paths,
@@ -539,6 +546,106 @@ def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
     return "\n".join(lines)
 
 
+def build_public_guidance_request(
+    question: str,
+    result: PublicCapabilitySearch,
+) -> PublicGuidanceRequest | None:
+    """把当前公开 ServingView 投影成无路径、无配置、无受限记录的回答事实。"""
+    if result.partial is not False or result.stale:
+        return None
+    safe_hits = tuple(
+        hit for hit in result.hits if _record_is_publicly_servable_without_adapter(hit.record)
+    )
+    facts: list[PublicGuidanceFact] = []
+    for hit in safe_hits[:5]:
+        record = hit.record
+        label = _public_capability_label(record)
+        if label is None:
+            continue
+        _append_public_guidance_fact(
+            facts,
+            capability=label,
+            field=PublicGuidanceFactField.HEADER,
+            text=label,
+            basis=PublicGuidanceFactBasis.OBSERVED,
+        )
+        for field in (
+            PublicGuidanceFactField.DESCRIPTION,
+            PublicGuidanceFactField.USAGE,
+            PublicGuidanceFactField.EXAMPLE,
+        ):
+            value = _public_claim_text(record.claims, field.value, limit=400)
+            if value:
+                _append_public_guidance_fact(
+                    facts,
+                    capability=label,
+                    field=field,
+                    text=value,
+                    basis=PublicGuidanceFactBasis.DECLARED,
+                )
+        metadata = _public_plugin_metadata(record.claims)
+        for field in (
+            PublicGuidanceFactField.DESCRIPTION,
+            PublicGuidanceFactField.USAGE,
+        ):
+            value = metadata.get(field.value)
+            if not isinstance(value, str):
+                continue
+            cleaned = _safe_text(value, limit=400)
+            if not cleaned or (field is PublicGuidanceFactField.USAGE and label not in cleaned):
+                continue
+            _append_public_guidance_fact(
+                facts,
+                capability=label,
+                field=field,
+                text=cleaned,
+                basis=PublicGuidanceFactBasis.DECLARED,
+            )
+    normalized_question = _safe_text(question, limit=2_000)
+    if not normalized_question or not facts:
+        return None
+    return PublicGuidanceRequest(
+        schema_version=PUBLIC_GUIDANCE_SCHEMA_VERSION,
+        question=normalized_question,
+        facts=tuple(facts),
+    )
+
+
+def _append_public_guidance_fact(
+    facts: list[PublicGuidanceFact],
+    *,
+    capability: str,
+    field: PublicGuidanceFactField,
+    text: str,
+    basis: PublicGuidanceFactBasis,
+) -> None:
+    if any(
+        fact.capability == capability and fact.field is field and fact.text == text
+        for fact in facts
+    ):
+        return
+    facts.append(
+        PublicGuidanceFact(
+            fact_id=f"f{len(facts) + 1}",
+            capability=capability,
+            field=field,
+            text=text,
+            basis=basis,
+        )
+    )
+
+
+def _public_plugin_metadata(claims: tuple[Claim, ...]) -> dict[str, object]:
+    candidates = [
+        claim.value
+        for claim in claims
+        if claim.field == "plugin.metadata"
+        and claim.basis is ClaimBasis.DECLARED
+        and isinstance(claim.value, dict)
+    ]
+    return candidates[0] if len(candidates) == 1 else {}
+
+
 def _claim_text(claims: tuple[Claim, ...], field: str, *, limit: int) -> str | None:
     priority = {
         ClaimBasis.OBSERVED: 0,
@@ -723,6 +830,7 @@ __all__ = (
     "CapabilityShadowStatus",
     "MaintainerCapabilitySearch",
     "PublicCapabilitySearch",
+    "build_public_guidance_request",
     "format_maintainer_capability_guidance",
     "format_public_capability_guidance",
     "register_capability_shadow",

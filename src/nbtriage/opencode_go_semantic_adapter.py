@@ -11,6 +11,7 @@ from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RequestUsage
 
+from nbtriage.public_guidance_model_adapter import PydanticAIPublicGuidanceClient
 from nbtriage.support_semantic_model_adapter import PydanticAISupportSemanticClient
 
 OPENCODE_GO_CHAT_PROVIDER_ID = "opencode-go-chat-completions"
@@ -82,16 +83,10 @@ def create_opencode_go_support_semantic_client(
     if max_output_tokens < 1:
         raise ValueError("max_output_tokens must be positive")
 
-    sdk_client = AsyncOpenAI(
+    pydantic_model = _create_opencode_go_chat_model(
         api_key=api_key,
-        base_url=OPENCODE_GO_BASE_URL,
-        timeout=timeout_seconds,
-        max_retries=0,
-    )
-    pydantic_model = OpenCodeGoChatModel(
-        model,
-        provider=OpenCodeGoProvider(openai_client=sdk_client),
-        profile=OPENCODE_GO_MODEL_PROFILE,
+        model=model,
+        timeout_seconds=timeout_seconds,
     )
     return PydanticAISupportSemanticClient(
         pydantic_model,
@@ -99,12 +94,65 @@ def create_opencode_go_support_semantic_client(
         max_output_tokens=max_output_tokens,
         expected_provider=OPENCODE_GO_PROVIDER_SYSTEM,
         expected_model=model,
-        model_settings=OpenAIChatModelSettings(
-            parallel_tool_calls=False,
-            tool_choice="auto",
-            temperature=0,
-            extra_body={"thinking": {"type": "disabled"}},
+        model_settings=_opencode_go_model_settings(),
+    )
+
+
+def create_opencode_go_public_guidance_client(
+    *,
+    api_key: str,
+    model: str,
+    timeout_seconds: float = 60.0,
+    max_output_tokens: int,
+) -> PydanticAIPublicGuidanceClient:
+    """构造 OpenCode Go 的单次公开能力回答客户端。"""
+    if not api_key.strip():
+        raise ValueError("OpenCode Go API key must not be blank")
+    if model not in OPENCODE_GO_SEMANTIC_MODELS:
+        raise ValueError("OpenCode Go public guidance model is not supported")
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    if max_output_tokens < 1:
+        raise ValueError("max_output_tokens must be positive")
+    return PydanticAIPublicGuidanceClient(
+        _create_opencode_go_chat_model(
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
         ),
+        timeout_seconds=timeout_seconds,
+        max_output_tokens=max_output_tokens,
+        expected_provider=OPENCODE_GO_PROVIDER_SYSTEM,
+        expected_model=model,
+        model_settings=_opencode_go_model_settings(),
+    )
+
+
+def _create_opencode_go_chat_model(
+    *,
+    api_key: str,
+    model: str,
+    timeout_seconds: float,
+) -> OpenCodeGoChatModel:
+    sdk_client = AsyncOpenAI(
+        api_key=api_key,
+        base_url=OPENCODE_GO_BASE_URL,
+        timeout=timeout_seconds,
+        max_retries=0,
+    )
+    return OpenCodeGoChatModel(
+        model,
+        provider=OpenCodeGoProvider(openai_client=sdk_client),
+        profile=OPENCODE_GO_MODEL_PROFILE,
+    )
+
+
+def _opencode_go_model_settings() -> OpenAIChatModelSettings:
+    return OpenAIChatModelSettings(
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        temperature=0,
+        extra_body={"thinking": {"type": "disabled"}},
     )
 
 
@@ -191,6 +239,7 @@ __all__ = (
     "OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS",
     "OpenCodeGoChatModel",
     "OpenCodeGoProvider",
+    "create_opencode_go_public_guidance_client",
     "create_opencode_go_support_semantic_client",
     "normalized_opencode_go_cost_microusd",
 )

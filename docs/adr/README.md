@@ -49,3 +49,4 @@
 | [ADR-0045](0045-use-one-triage-cooldown-and-localstore-capability-cache.md) | 已采纳 | 固定命令与入口边界，只保留统一 triage 冷却，并默认用 LocalStore cache 管理能力影子 |
 | [ADR-0046](0046-merge-internal-reasoning-into-behavior-exploration.md) | 已采纳 | 用行为探索目标统一内部原因与维护证据请求，保留独立现象字段和模型外 SUPERUSER 鉴权 |
 | [ADR-0047](0047-reuse-pydantic-ai-provider-extras.md) | 已采纳 | 直接复用 Pydantic AI 的 `anthropic` / `openai` Provider extras，不再重复锁 SDK 或提供 OpenCode Go 同义 extra |
+| [ADR-0048](0048-use-public-facts-for-guidance-answer-agent.md) | 已采纳 | guidance 路由后用当前问题与模型外过滤的公开能力事实驱动受控 Answer Agent，失败退回确定性说明 |

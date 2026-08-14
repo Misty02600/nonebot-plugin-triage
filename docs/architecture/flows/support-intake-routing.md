@@ -13,14 +13,16 @@ triage + request text + optional Reply
                  ↓
 场景、长度、入口限流和最小上下文边界
                  ↓
-语义 assessment（模型只产出 goals / observation / maintenance depth）
+语义 assessment（模型只产出 goals / observation）
                  ↓
 公开用法 / 参数 / 权限 / 场景 / 可信运行回执初检（模型外）
                  ↓
 确定性 router（唯一 action / authorization 决策者）
    ├─ 未配置 / 请求期失败 → abstain → CLARIFY
-   ├─ GUIDANCE → SHOW_GUIDANCE → public 事实
-   ├─ BEHAVIOR_EXPLANATION 或 MAINTENANCE_DETAIL → BEHAVIOR_EXPLORATION_CANDIDATE
+   ├─ GUIDANCE → SHOW_GUIDANCE → 模型外过滤 public 事实
+   │                            → Answer Agent → 自然语言回答 + 事实 ID
+   │                            └─ 不可用 / 失败 / 非法输出 → 确定性说明
+   ├─ BEHAVIOR_EXPLORATION → BEHAVIOR_EXPLORATION_CANDIDATE
    │                                  └─ 当前明确回复未接通；不读取受限证据
    ├─ FEATURE_FEEDBACK → FEATURE_FEEDBACK_CANDIDATE
    │                                  └─ 当前明确回复未接通；不建 incident / 外部工单
@@ -56,7 +58,10 @@ service 和 router；若未来合格 transport 返回 `reported_observation`，�
 transport 后，`SHOW_GUIDANCE` 与满足模型外可信失败条件的 `OPEN_INCIDENT` 已可达。behavior candidate 已在
 分类后执行模型外 SUPERUSER 鉴权，但内部证据取证与解释仍缺少下游编排。澄清 Thread 的续答为空、超长、refuse 或 assessment 再次 unresolved（包括 abstain）时
 立即关闭且不再追问；guidance Thread 遇到空或超长续答时，会返回提示并在发送成功后登记新的续接点。
-只有 router 明确选择 `SHOW_GUIDANCE`，guidance Thread 才会继续能力检索；旧回答在处理轮 Claim 时立即失效，
+只有 router 明确选择 `SHOW_GUIDANCE`，guidance Thread 才会继续能力检索；显式 Provider 或当前 adapter 的
+public 能力影子命中后，handler 构造仅含当前问题、公开能力名、描述、用法和示例的 Answer Agent 请求。该
+Agent 没有工具，每轮最多再调用 Provider 一次；输出必须包含实际使用的事实 ID，未知 ID、秘密、超时、
+transport 失败或非法 schema 都退回原确定性说明，不阻断 Thread 回复。旧回答在处理轮 Claim 时立即失效，
 只有新回答成功发送并取得唯一、同作用域且平台结构合法的 Receipt 后才建立新的续接点。发送、取消、
 多结果、绑定或处理失败不会复活旧引用，也不会重发已经可能到达平台的回答。续问转报障
 时不会把 Bot 的教学回答当作用户故障证据。
@@ -112,6 +117,10 @@ authorization 字段；`ASSESSED` 至少包含一个目标或独立信号，未�
 - assessment 请求不得包含 Reply / origin 正文、以往请求或 Thread 历史、用户 / Bot / 会话身份与 scope、
   配置、环境变量、日志、运行证据、源码、能力索引内容、`restricted` 证据或关联标识。固定 Prompt 版本、
   task 标识和输出 Schema 只能承载协议控制信息，不能夹带这些上下文；
+- Answer Agent 是独立出站投影：只接收当前单条规范化问题与已经在模型外限制为当前 adapter、public、完整、
+  非 stale 的能力事实。它不接收 evidence locator、源码、Config 引用或值、身份、运行证据、restricted 记录；
+  问题或任一事实疑似含凭据时网络前拒绝。当前只有离线合约与受控 dogfood 准入，尚无独立真实 held-out
+  回答质量资格；
 - OpenCode Go 的 Provider/API/model/task、资格试验与数美元预算已由 ADR-0041 单独确认；结构化输出能力与
   默认方式由 Pydantic AI ModelProfile 决定，详见 ADR-0042；其他组合仍不得
   从数据类别授权中推导资格。`SUPERUSER` 的本地鉴权也不扩大远端投影；
@@ -172,5 +181,6 @@ Reply 并复核失败；复核通过后才生成编号，把结构化运行状�
 - [ADR-0043：分离支持目标、现象陈述与维护证据深度](../../adr/0043-separate-support-goals-observations-and-maintenance-depth.md)
 - [ADR-0044：语义 assessment 直接使用 Pydantic AI Agent output_type](../../adr/0044-use-pydantic-ai-agent-output-type-for-support-semantics.md)
 - [ADR-0046：统一行为探索目标](../../adr/0046-merge-internal-reasoning-into-behavior-exploration.md)
+- [ADR-0048：用公开事实驱动受控 Answer Agent](../../adr/0048-use-public-facts-for-guidance-answer-agent.md)
 - [Alconna 能力与解析回执](alconna-capability-and-parse-receipts.md)
 - [运行观察入口](runtime-observation-intake.md)

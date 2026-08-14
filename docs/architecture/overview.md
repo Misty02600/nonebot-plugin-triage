@@ -121,7 +121,7 @@ LLM 只能提出引用既有 Evidence ID 与 revision 的语义 Claim，不能�
 静态推导与仍然未知，并保留 partial、stale、冲突和 opaque 边界。当前已经实现部署声明 / 制品 / 运行模块
 协调、有界 handler/config AST、策略先行的有效配置瞬时投影、一次性语义分析合同和结构化 Agent
 客户端；统一支持 router 也已有 `BEHAVIOR_EXPLORATION_CANDIDATE` action，但 Matcher 仍把它当作澄清，
-请求者鉴权、行为取证和解释编排尚未接入 `triage` 产品运行路径，也没有持久语义知识或完整
+请求者鉴权已经接入，行为取证和解释编排尚未接入 `triage` 产品运行路径，也没有持久语义知识或完整
 行为解释卡。长期
 产品与安全边界见
 [ADR-0025](../adr/0025-explain-plugin-behavior-from-deployment-evidence.md)。
@@ -171,6 +171,7 @@ LLM 只能提出引用既有 Evidence ID 与 revision 的语义 Claim，不能�
 | Alconna `triage` Matcher / support intake adapter | 每轮以必选指令接收自由文本；结构化 Reply 命中时续接最近一次 Triage 回答；首轮与续问每轮调用一次 required assessment service，再按纯 router 决策 | Alconna / UniSeg 提供命令、Reply / Target 和发送抽象；Thread 索引另行判断归属、scope、TTL 与 latest-only；私聊、群聊和频道统一处理调用者鉴权，私聊故障受理仍由报障服务拒绝；未配置 transport 时保守澄清，配置 ADR-0041 精确组合后可进入 guidance 与可信 incident 初检 | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support_intake.py` |
 | `SupportAssessmentRequest` / `SupportSemanticAssessment` | 冻结语义 assessment v2 的最小请求投影和受限多标签输出 | 请求闭合为版本号与当前单条规范化文字；输出只包含需求 signals 或澄清 / abstain 原因，不包含 action、回答或副作用授权 | `src/nbtriage/support_semantics.py` |
 | semantic Agent output client / assessment service / support router | 直接以 `SupportSemanticAssessment` 作为 Pydantic AI Agent `output_type`，由 OpenCode Go Profile 选中 required 单一不可执行 output tool，并用一次请求取得受限 signals；把秘密、不可用 transport、超时、失败和非法输出收敛为 abstain；再映射为一个确定性 action | Prompt 不含当前文字；payload 只有闭合请求投影；项目不手写 output schema、tool 名称或响应 part parser；instrument 关闭；模型不产生 action 或授权；router 不读原文；只有安全通过的 `incident_intake + reported_observation` 与模型外可信失败证据同时存在，才签发进程内、不可序列化且绑定精确 decision 与 `LiveReportRequest` 的建单授权 | `src/nbtriage/opencode_go_semantic_adapter.py`、`src/nbtriage/support_semantic_model_adapter.py`、`src/nonebot_plugin_triage/semantic_runtime.py`、`src/nonebot_plugin_triage/semantic_assessment.py`、`src/nbtriage/support_routing.py` |
+| public capability Answer Agent | router 选择 guidance 后，把显式 Provider 或能力影子的 public 事实交给第二个 Pydantic AI Agent，返回自然语言回答与事实 ID | 只接收当前问题和模型外过滤的公开能力名、描述、用法、示例；无工具、单请求、零 retry；秘密、未知引用、非法输出或 transport 失败退回确定性模板；OpenCode Go 当前只有受控 dogfood 资格，尚无独立真实 held-out 回答质量 Gate | `src/nbtriage/public_guidance.py`、`src/nbtriage/public_guidance_model_adapter.py`、`src/nonebot_plugin_triage/public_guidance.py`、`src/nonebot_plugin_triage/public_guidance_runtime.py`、`src/nonebot_plugin_triage/handlers.py` |
 | `LiveReportService` | 只在持有 router 签发且绑定精确 decision 与当前 `LiveReportRequest` 的建单授权时建立最小 `LiveIncident` | 原子消费授权后检查场景并再次解析同一 Reply；只有运行失败复核通过才生成编号和写状态；每轮已在统一 `triage` 入口消费一次限流，不再执行 Incident 二次限流；无 Reply、引用未命中、成功或空回执失败关闭；无模型、网络、Probe 或外部写入 | `src/nonebot_plugin_triage/live_reports.py` |
 | `NBTriageConfig` / `ConfigValuePolicy` / capability analysis | 配置精确 transport 身份和预算，无产品启用开关；把部署者声明的受限顶层键变成读取前策略，并把当前能力的有界源码与未受限配置投影装配成一次性分析请求 | backend/model 必须成对；当前 `QUALIFIED_PLUGIN_MODELS` 只表达旧 B1 backend/model 资格且为空，尚未实现按 semantic-assessment task / API / profile 的运行资格门；语义 assessment 仍无合格真实 transport；能力分析链只有假模型测试、未接 handler；不读整份 `.env` / Config，不重新运行 validator，不持久化值 | `src/nonebot_plugin_triage/config.py`、`src/nonebot_plugin_triage/config_policy.py`、`src/nonebot_plugin_triage/config_projection.py`、`src/nonebot_plugin_triage/capability_analysis_adapter.py`、`src/nbtriage/capability_analysis.py`、`src/nbtriage/capability_model_adapter.py` |
 | `IncidentQueryService` / Alconna query Matcher | 让维护者按不透明受理编号查看短期白名单摘要，并识别活动 TTL 内的相似显式报障 | `SUPERUSER` 在读取前守门；cluster 只基于最小失败标识且不代表底层异常总数；不返回聊天、平台身份、correlation ID、API 参数或任意日志 | `src/nbtriage/live_incidents.py`、`src/nbtriage/incident_queries.py`、`src/nonebot_plugin_triage/incident_queries.py`、`src/nonebot_plugin_triage/handlers.py` |
@@ -207,7 +208,8 @@ NoneBot public hooks → event-state correlation → runtime observer → bounde
 
 [optional @Bot] triage + free text → model-external guards → semantic assessment
                  ├─→ unconfigured / request failure → abstain + clarification
-                 ├─→ guidance signal → router → public capability
+                 ├─→ guidance signal → router → public capability facts → Answer Agent
+                 │                                                   └─→ deterministic fallback
                  └─→ observation signal + trusted runtime failure → router authorization
                           ├─→ Reply hit → keyed reference index → evidence bundle ─┐
                           └─→ no/missed Reply → empty evidence ────────────────────┤
@@ -223,7 +225,8 @@ triage request text → semantic assessment → trusted minimal signals → dete
                          ├─→ guidance / behavior candidate / clarify / refuse
                          └─→ observation + trusted failure → bound one-shot authorization → future SupportCase
 
-explicit public Alconna provider → deterministic guidance formatter
+explicit public Alconna provider ─┐
+public capability shadow ─────────┴─→ bounded public facts → Answer Agent / deterministic fallback
 registered Alconna AST → repository-only rich capability snapshot
 existing Arparma ─────→ minimal parse receipt ─────────→ trusted command_status
 
@@ -349,7 +352,7 @@ current runtime capability record → bounded handler/config EvidenceUnit
 - 部署本地能力影子不得调用任意第三方 Rule、Permission、handler、behavior 或 executor；绝对本机路径、Token、配置原文和私密日志不得进入索引；SUPERUSER、`CommandMeta.hide=True` 与内部管理能力必须保存为 `restricted`。普通用户的召回、源码工具和模型上下文从源头排除它们，并对精确询问表现为未找到；SUPERUSER 鉴权只开放确定性维护者视图，不自动授权把 restricted 源码交给 LLM，模型深查需要独立显式授权；
 - Matcher 注册、LLM 语义相似或同属一个插件都不能单独证明跨 Matcher 的 Capability 身份。当前不生成这类
   映射；每条记录必须独立通过结构、披露、平台和完整性门禁，动态入口证据不足时继续失败关闭；
-- 能力回答由事实输出合同约束而不是固定话术：模型可自行组织语言；公开能力有可靠证据时应说明可观察的场景、角色和限流条件，整项 restricted 能力仍不得借权限说明向普通用户暴露；Config 引用与语义输出合同已有库级实现，自定义约束解释及在线模型尚未接入；
+- 能力回答由事实输出合同约束而不是固定话术：公开能力 Answer Agent 已接入 Handler，可根据问题和模型外过滤的事实组织语言并返回事实 ID；整项 restricted 能力、配置、源码、证据位置和运行证据不进入请求。当前 OpenCode Go 只完成离线合约并准入受控 dogfood，尚未完成独立真实 held-out 回答质量 Gate；
 - 配置值模型输入由部署者策略守门：`NBTRIAGE_RESTRICTED_CONFIG` 按大小写不敏感的顶层 NoneBot 键整项拒绝；只有当前能力源码可证明引用、运行时类型与 revision 对齐且未受限的有界值可以瞬时进入单次分析请求。完整 `.env`、完整 Config、`os.environ` 枚举、受限值及任何配置值持久化始终禁止；
 - 不自动创建 Issue、PR、评论或标签；
 - Token 只从进程环境读取，不写仓库、不进入缓存或报告、不输出；

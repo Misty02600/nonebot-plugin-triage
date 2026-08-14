@@ -39,6 +39,7 @@ def isolate_live_semantic_transport(
 ) -> None:
     """普通 pytest 不得因维护者本机配置而调用真实语义 Provider。"""
     from nonebot_plugin_triage import handlers
+    from nonebot_plugin_triage.public_guidance import PublicGuidanceService
     from nonebot_plugin_triage.semantic_assessment import SemanticAssessmentService
 
     monkeypatch.setattr(
@@ -47,5 +48,6 @@ def isolate_live_semantic_transport(
         replace(
             handlers.plugin_runtime,
             semantic_assessment_service=SemanticAssessmentService(None, timeout_seconds=1),
+            public_guidance_service=PublicGuidanceService(None, timeout_seconds=1),
         ),
     )

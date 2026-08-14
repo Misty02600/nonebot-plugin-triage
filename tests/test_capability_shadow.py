@@ -41,6 +41,7 @@ from nonebot_plugin_triage.capability_shadow import (
     CapabilityShadowService,
     MaintainerCapabilitySearch,
     PublicCapabilitySearch,
+    build_public_guidance_request,
     format_maintainer_capability_guidance,
     format_public_capability_guidance,
     register_capability_shadow,
@@ -891,6 +892,46 @@ def test_public_guidance_does_not_invent_usage_when_only_header_is_known() -> No
     )
 
     assert message == "搜图\n当前索引还没有可靠的完整用法。"
+
+
+def test_public_guidance_request_projects_matching_plugin_metadata_usage() -> None:
+    record = CapabilityRecord(
+        capability_id="command:image",
+        owner="image-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim("command.header", "搜图", ClaimBasis.OBSERVED),
+            Claim(
+                "plugin.metadata",
+                {
+                    "description": "以图搜图插件",
+                    "usage": "使用指令 `搜图 -h` 查看帮助",
+                    "internal": "MUST_NOT_APPEAR",
+                },
+                ClaimBasis.DECLARED,
+            ),
+        ),
+    )
+
+    request = build_public_guidance_request(
+        "搜图怎么使用？",
+        PublicCapabilitySearch(
+            hits=(CapabilitySearchHit(record=record, score=100.0),),
+            partial=False,
+        ),
+    )
+
+    assert request is not None
+    assert request.question == "搜图怎么使用？"
+    assert [(fact.field.value, fact.text) for fact in request.facts] == [
+        ("header", "搜图"),
+        ("description", "以图搜图插件"),
+        ("usage", "使用指令 `搜图 -h` 查看帮助"),
+    ]
+    assert "MUST_NOT_APPEAR" not in request.model_dump_json()
 
 
 @pytest.mark.parametrize(

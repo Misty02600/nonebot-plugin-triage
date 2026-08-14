@@ -26,6 +26,7 @@ from nonebot_plugin_alconna import (
 )
 
 from nbtriage.capabilities import CapabilitySearchHit
+from nbtriage.public_guidance import PublicGuidanceExecutionStatus
 from nbtriage.runtime_observations import ObservationOutcome
 from nbtriage.support_routing import (
     SupportRoutingAction,
@@ -47,6 +48,7 @@ from nbtriage.support_threads import (
 )
 from nonebot_plugin_triage import plugin_config
 from nonebot_plugin_triage.capability_shadow import (
+    build_public_guidance_request,
     format_public_capability_guidance,
 )
 from nonebot_plugin_triage.incident_queries import format_incident_lookup
@@ -62,6 +64,7 @@ from nonebot_plugin_triage.product_contract import (
 )
 from nonebot_plugin_triage.runtime import create_plugin_runtime
 from nonebot_plugin_triage.support_intake import (
+    build_explicit_public_guidance_request,
     collect_visible_alconna_capabilities,
     format_capability_guidance,
     matching_public_capabilities,
@@ -351,8 +354,20 @@ async def _capability_guidance_result(
     )
     public_matches = matching_public_capabilities(content, capabilities)
     if public_matches:
+        fallback = format_capability_guidance(content, capabilities)
+        answer_request = build_explicit_public_guidance_request(content, public_matches)
+        if answer_request is not None:
+            outcome = await plugin_runtime.public_guidance_service.answer(answer_request)
+            if (
+                outcome.execution_status is PublicGuidanceExecutionStatus.COMPLETED
+                and outcome.answer is not None
+            ):
+                return _GuidanceResult(
+                    outcome.answer.answer,
+                    tuple(item.header for item in public_matches[:8]),
+                )
         return _GuidanceResult(
-            format_capability_guidance(content, capabilities),
+            fallback,
             tuple(item.header for item in public_matches[:8]),
         )
 
@@ -360,8 +375,20 @@ async def _capability_guidance_result(
     if shadow is not None:
         public_result = await shadow.search_public(content, type(bot.adapter))
         if public_result is not None and public_result.hits:
+            fallback = format_public_capability_guidance(public_result)
+            answer_request = build_public_guidance_request(content, public_result)
+            if answer_request is not None:
+                outcome = await plugin_runtime.public_guidance_service.answer(answer_request)
+                if (
+                    outcome.execution_status is PublicGuidanceExecutionStatus.COMPLETED
+                    and outcome.answer is not None
+                ):
+                    return _GuidanceResult(
+                        outcome.answer.answer,
+                        _shadow_topic_labels(public_result.hits[:8]),
+                    )
             return _GuidanceResult(
-                format_public_capability_guidance(public_result),
+                fallback,
                 _shadow_topic_labels(public_result.hits[:8]),
             )
 

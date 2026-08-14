@@ -30,6 +30,7 @@ from nonebot_plugin_triage.knowledge_pack_runtime import (
 from nonebot_plugin_triage.live_reports import LiveReportService
 from nonebot_plugin_triage.model_runtime import NBTriageModelService, create_model_service
 from nonebot_plugin_triage.nonebot_runtime import NoneBotRuntimeObserver
+from nonebot_plugin_triage.public_guidance import PublicGuidanceServiceLike
 from nonebot_plugin_triage.semantic_assessment import (
     SemanticAssessmentService,
     SemanticAssessmentServiceLike,
@@ -50,6 +51,12 @@ def _create_semantic_assessment_service(
     config: NBTriageConfig,
 ) -> SemanticAssessmentService:
     return create_semantic_assessment_service(config)
+
+
+def _create_public_guidance_service(config: NBTriageConfig) -> PublicGuidanceServiceLike:
+    from nonebot_plugin_triage.public_guidance_runtime import create_public_guidance_service
+
+    return create_public_guidance_service(config)
 
 
 def _create_outgoing_reference_providers(
@@ -84,6 +91,7 @@ class NBTriagePluginRuntime:
     trials: LiveTrialService
     model_service: NBTriageModelService | None
     semantic_assessment_service: SemanticAssessmentServiceLike
+    public_guidance_service: PublicGuidanceServiceLike
     capability_shadow: CapabilityShadowService | None
     knowledge_pack: KnowledgePackService | None
     config_value_policy: ConfigValuePolicy
@@ -98,6 +106,9 @@ def create_plugin_runtime(
     semantic_assessment_service_factory: Callable[
         [NBTriageConfig], SemanticAssessmentServiceLike
     ] = _create_semantic_assessment_service,
+    public_guidance_service_factory: Callable[
+        [NBTriageConfig], PublicGuidanceServiceLike
+    ] = _create_public_guidance_service,
     trial_service_factory: Callable[[NBTriageConfig], LiveTrialService] = (create_trial_service),
 ) -> NBTriagePluginRuntime:
     runtime_buffer = RuntimeObservationBuffer(
@@ -147,6 +158,7 @@ def create_plugin_runtime(
     query_service = IncidentQueryService(incident_buffer)
     model_service = model_service_factory(config)
     semantic_assessment_service = semantic_assessment_service_factory(config)
+    public_guidance_service = public_guidance_service_factory(config)
     config_value_policy = ConfigValuePolicy.from_keys(config.nbtriage_restricted_config)
     observer.register()
     reference_bridge.register()
@@ -170,6 +182,7 @@ def create_plugin_runtime(
         trials=trial_service,
         model_service=model_service,
         semantic_assessment_service=semantic_assessment_service,
+        public_guidance_service=public_guidance_service,
         capability_shadow=capability_shadow,
         knowledge_pack=knowledge_pack,
         config_value_policy=config_value_policy,

@@ -29,8 +29,11 @@ UniSeg Receipt 登记下一条续接点；本地合同测试覆盖 OneBot V11 �
 每次非空 `triage` 现在都默认经过版本化语义 assessment service。未配置 transport 时，runtime 装配
 unavailable service并让本轮 abstain；配置已准入的 OpenCode Go 精确组合后，首轮与续问会各发起一次受限
 语义请求，且不会回退到词表或固定话术。
-模型合同只允许输出四类目标、现象陈述和维护证据深度，确定性 router 才决定 action；模型不能回答、鉴权或
-直接建单。只有模型同时识别到明确 `incident_intake` 目标与 `reported_observation`、模型外 Reply correlation
+语义模型只输出四类目标和现象陈述，确定性 router 才决定 action；它不能回答、鉴权或直接建单。router
+选择公开能力指导后，插件会从显式 Provider 或能力影子构造只含公开事实的闭合请求，再调用独立的 Answer
+Agent 组织自然语言回答；因此一轮 guidance 最多产生两次远端请求。Answer Agent 没有工具，不能读取受限
+能力、源码、配置或运行证据，失败、超时、引用未知事实或输出非法时会退回确定性模板。
+只有语义模型同时识别到明确 `incident_intake` 目标与 `reported_observation`、模型外 Reply correlation
 对应的可信运行证据明确失败，router 才会为精确
 `LiveReportRequest` 签发进程内授权；报障服务一次性消费该授权后才能进入故障受理。插件不执行求助文本里的
 命令，也不会自动创建 Issue。没有 Reply、引用未命中、只有成功生命周期或空回执时，报告保持未验证并
@@ -82,8 +85,8 @@ plugins = ["nonebot_plugin_triage"]
 | `NBTRIAGE_KNOWLEDGE_PACK_SHA256` | 未设置 | 与 URL 成对固定 knowledge pack 压缩包的 64 位十六进制 SHA-256；下载内容不匹配时拒绝安装并继续 no-knowledge 模式。它校验制品身份，不表示制品来源或许可证已自动获准。 |
 | `NBTRIAGE_MODEL_BACKEND` | 未设置 | 与 `NBTRIAGE_MODEL_NAME` 成对选择语义模型 transport；未设置时每轮语义判断保守 abstain。当前已准入值为 `opencode-go-chat`。 |
 | `NBTRIAGE_MODEL_NAME` | 未设置 | 与 backend 成对选择已通过精确任务资格和评测的模型；当前已准入值为 `deepseek-v4-flash`，其他名称会在启动时拒绝。 |
-| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 单次语义请求的最长等待时间；当前 OpenCode Go 资格要求精确为 60 秒，超时后本轮 abstain，不自动重试。 |
-| `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 模型结构化语义输出的 token 上限；默认值即当前 OpenCode Go 精确资格值，不匹配时启动失败。它不限制用户输入长度，也不是累计费用预算。 |
+| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 单次语义或公开能力回答请求的最长等待时间；当前 OpenCode Go 运行合同要求精确为 60 秒，两类请求都不自动重试。语义请求超时会 abstain，回答请求超时会退回确定性能力说明。 |
+| `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 单次模型结构化输出的 token 上限；语义 assessment 与 Answer Agent 都使用该值。默认值即当前 OpenCode Go 运行合同值，不匹配时启动失败。它不限制用户输入长度，也不是累计费用预算。 |
 | `NBTRIAGE_RESTRICTED_CONFIG` | `[]` | JSON 数组，列出禁止把实际值交给能力分析模型的 NoneBot 顶层配置键；键名大小写不敏感，`FOO__BAR` 等嵌套写法按顶层 `foo` 整项限制。命中后在读取实际值前拒绝；它不会删除 NoneBot 配置、禁止分析公开 schema/源码，也不表示未列出的整份 `.env` 会被发送。 |
 
 OpenCode Go 配置示例：
@@ -95,12 +98,19 @@ NBTRIAGE_MODEL_TIMEOUT_SECONDS=60
 NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS=240
 ```
 
-密钥只从进程环境变量 `OPENCODE_API_KEY` 读取，不写入 `NBTriageConfig`。该 transport 只向固定 Go endpoint
-发送当前单条、规范化并通过秘密守门的 `triage` 请求文字；不会发送 Reply / Thread 历史、身份、配置、
-日志、源码、运行证据、能力索引或 restricted 证据。每轮最多一次请求、零自动重试；失败或非法输出会
-abstain，不切换模型。语义客户端使用 Pydantic AI `Agent(output_type=SupportSemanticAssessment)`；当前
+密钥只从进程环境变量 `OPENCODE_API_KEY` 读取，不写入 `NBTriageConfig`。语义 assessment 只发送当前单条、
+规范化并通过秘密守门的 `triage` 请求文字；公开能力 Answer Agent 另发送同一问题与本轮已经过滤为 public
+的能力名、描述、用法或示例。两类请求都不会发送 Reply / Thread 历史、身份、配置、环境变量、日志、源码、
+运行证据、证据位置或 restricted 能力。每个 Agent 各最多一次请求、零自动重试，不切换模型。语义失败会
+abstain；回答失败或非法引用会退回确定性模板。语义客户端使用 Pydantic AI
+`Agent(output_type=SupportSemanticAssessment)`；当前
 OpenCode Go Profile 以 `final_result` output tool 承载闭合结果，该 tool 只用于结构化返回，插件不会把它
 升级为业务工具或副作用授权。
+
+Answer Agent 使用 `Agent(output_type=PublicGuidanceAnswer)`，输出最多 1000 字回答及实际使用的公开事实 ID；
+它不执行命令，也不能把模型文本升级为工具或授权。该回答任务已经完成闭合 schema、隐私守门、假 HTTP
+wire、Handler 回归和一次最小真实 Provider smoke，可用于当前 Bot 的受控在线测试；尚未完成独立真实模型
+held-out 回答质量 Gate，不是广泛生产承诺。
 
 当前语义字段的中文对应为：`guidance`（公开能力指导）、`behavior_exploration`（行为探索）、
 `incident_intake`（故障受理）、`feature_feedback`（功能建议）；另有

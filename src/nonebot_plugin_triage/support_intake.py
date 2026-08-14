@@ -9,6 +9,14 @@ from inspect import isawaitable
 from arclet.alconna import Alconna, Empty, command_manager
 from nonebot.adapters import Bot, Event
 
+from nbtriage.public_guidance import (
+    PUBLIC_GUIDANCE_SCHEMA_VERSION,
+    PublicGuidanceFact,
+    PublicGuidanceFactBasis,
+    PublicGuidanceFactField,
+    PublicGuidanceRequest,
+)
+
 
 @dataclass(frozen=True)
 class SupportRequest:
@@ -141,6 +149,43 @@ def matching_public_capabilities(
 ) -> tuple[PublicCapability, ...]:
     """返回查询明确命中的显式公开能力，供高置信来源优先回答。"""
     return _matching_capabilities(query, capabilities)
+
+
+def build_explicit_public_guidance_request(
+    query: str,
+    capabilities: tuple[PublicCapability, ...],
+) -> PublicGuidanceRequest | None:
+    facts: list[PublicGuidanceFact] = []
+    for capability in capabilities[:5]:
+        for field, value in (
+            (PublicGuidanceFactField.HEADER, capability.header),
+            (PublicGuidanceFactField.DESCRIPTION, capability.description),
+            (PublicGuidanceFactField.USAGE, capability.usage),
+            (PublicGuidanceFactField.EXAMPLE, capability.example),
+        ):
+            if not value:
+                continue
+            facts.append(
+                PublicGuidanceFact(
+                    fact_id=f"f{len(facts) + 1}",
+                    capability=capability.header,
+                    field=field,
+                    text=value,
+                    basis=(
+                        PublicGuidanceFactBasis.OBSERVED
+                        if field is PublicGuidanceFactField.HEADER
+                        else PublicGuidanceFactBasis.DECLARED
+                    ),
+                )
+            )
+    normalized = " ".join(query.split())
+    if not normalized or not facts:
+        return None
+    return PublicGuidanceRequest(
+        schema_version=PUBLIC_GUIDANCE_SCHEMA_VERSION,
+        question=normalized,
+        facts=tuple(facts),
+    )
 
 
 async def _provider_is_visible(

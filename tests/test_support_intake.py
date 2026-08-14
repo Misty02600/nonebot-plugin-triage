@@ -9,6 +9,7 @@ from nonebot.adapters import Bot, Event
 
 from nonebot_plugin_triage.support_intake import (
     PublicCapability,
+    build_explicit_public_guidance_request,
     collect_visible_alconna_capabilities,
     format_capability_guidance,
     normalize_support_request,
@@ -16,6 +17,28 @@ from nonebot_plugin_triage.support_intake import (
     registered_public_alconna_capability_paths,
     unregister_public_alconna_capability,
 )
+
+
+def test_explicit_capability_builds_public_guidance_facts() -> None:
+    request = build_explicit_public_guidance_request(
+        "提醒怎么使用？",
+        (
+            PublicCapability(
+                header="提醒",
+                description="创建提醒",
+                usage="提醒 <时间> <内容>",
+                example="提醒 10分钟后 喝水",
+            ),
+        ),
+    )
+
+    assert request is not None
+    assert [(fact.field.value, fact.text) for fact in request.facts] == [
+        ("header", "提醒"),
+        ("description", "创建提醒"),
+        ("usage", "提醒 <时间> <内容>"),
+        ("example", "提醒 10分钟后 喝水"),
+    ]
 
 
 @pytest.mark.parametrize(

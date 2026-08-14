@@ -1,11 +1,12 @@
 # 模型 Provider 支持矩阵
 
-最后更新：2026-08-13
+最后更新：2026-08-14
 
 这份矩阵描述 NoneBot Triage Agent 的受控 B1 单次结构化输出与 B4 单步原生工具调用，不代表 Pydantic AI
 或厂商 SDK 的全部能力。Pydantic AI `ModelProfile` 负责模型传输能力和默认结构化输出方式；每一行只按
 `Provider + API 族 + 精确 model + task/schema/Prompt + 隐私策略 + 预算 + 评测 revision` 准入。“OpenAI-compatible”本身不是
-支持声明。B1、B4 和支持入口语义 assessment 的合约分别记账，不能用其中一项资格自动推导另一项。
+支持声明。B1、B4、支持入口语义 assessment 和公开能力 Answer Agent 的合约分别记账，不能用其中一项资格
+自动推导另一项。
 
 ## 状态含义
 
@@ -27,6 +28,11 @@ assessment service，首轮与续问每轮调用一次；通用 client 以 `outp
 `restricted` 证据均不得进入请求。该数据批准本身不是任一 Provider/model 的“支持”证据。OpenCode Go 的
 精确 Provider/API/model/task、数美元资格预算和真实合成调用已由 ADR-0041 另行授权并通过 held-out Gate；
 其他组合仍没有可发起请求的资格。
+
+公开能力 Answer Agent 是另一项任务：router 选中 guidance 后，它只接收当前单条问题与已经在模型外过滤为
+public 的能力事实，返回带事实 ID 引用的自然语言回答。当前 OpenCode Go 实现已通过闭合 schema、秘密守门、
+单次 required output tool、零 retry、Provider 身份和 Handler 回退的离线合约，但还没有独立真实模型 held-out
+回答质量 Gate。因此它只作为当前 Bot 的受控 dogfood 能力，不继承 semantic assessment 的“支持”资格。
 
 `evaluate-b4-real` 已提供 DeepSeek Responses、OpenAI Responses 与 Anthropic Messages 的同模型多 trial
 harness。报告显式绑定 Prompt/schema/policy/source revision 与冻结 regression / forward-hidden split；
@@ -53,6 +59,7 @@ ModelProfile 中表达。测试注入 fake service只验证调用编排，不改
 | Google | GenAI | 未选择 | 未定义 | 未执行 | 未执行 | 不支持 | 候选后续 API 族，尚无 adapter |
 | 任意第三方 | OpenAI-compatible Chat / Responses | 任意 URL / 模型 | 不提供 | 未执行 | 未执行 | 不支持 | 必须逐 Provider、API 族和 model profile 新增行，禁止由兼容标签继承支持 |
 | OpenCode Go | Chat Completions | `deepseek-v4-flash`；non-thinking；required 单一 Pydantic AI Agent output tool；60 秒 / 240 token；Prompt v5 | 复用 `openai` extra：`pydantic-ai-slim[openai]==2.27.0`；不声明内容重复的 OpenCode Go extra | 假 HTTP 覆盖最小 payload、Agent `output_type` 生成的唯一 tool、零 retry、身份/usage/费用与本地双层校验 | taxonomy v5 冻结后首次运行全新 40 条、未写入 Prompt 的纯合成 held-out：schema / status 1.000、全字段精确匹配 0.975；40 请求；50,197 / 3,774 token；1,782 microUSD | 支持 | 仅限 `support-semantic-v5-prompt-v1` 与 `opencode-go-heldout-40-20260813-v5-taxonomy`；滚动模型别名或任一 profile 变化必须重跑 Gate；详见 ADR-0046 |
+| OpenCode Go | Chat Completions | `deepseek-v4-flash`；non-thinking；required 单一 `PublicGuidanceAnswer` output tool；60 秒 / 240 token；Prompt `public-guidance-answer-v1-prompt-v1` | 复用 `openai` extra | 闭合问题 / public facts 输入、唯一 output tool、秘密零请求、引用 ID 校验、零 retry、Provider 身份与 Handler 确定性回退均通过；无工具 | 1 条纯公开“搜图用法”真实 smoke 成功；尚未执行独立真实模型 held-out 回答质量 Gate | 实验性 | 仅用于当前 Bot 受控 dogfood；任务记录为 `opencode-go-public-guidance-smoke-1-20260814-v1`，不能继承上一行 semantic 资格；详见 ADR-0048 |
 
 ## 既有 B4 测试 transport 与本次资格的关系
 

@@ -59,7 +59,7 @@ class SemanticAssessmentService:
             canonical_request = parse_support_assessment_request(request.model_dump(mode="json"))
         except (AttributeError, SupportSemanticContractError):
             return _failed(SupportAssessmentExecutionStatus.INVALID_OUTPUT)
-        if _contains_credential(canonical_request.request_text):
+        if contains_credential(canonical_request.request_text):
             return _failed(SupportAssessmentExecutionStatus.POLICY_BLOCKED)
         if self._client_factory is None:
             return _failed(SupportAssessmentExecutionStatus.TRANSPORT_UNAVAILABLE)
@@ -118,7 +118,7 @@ def _failed(status: SupportAssessmentExecutionStatus) -> SupportAssessmentOutcom
     )
 
 
-def _contains_credential(text: str) -> bool:
+def contains_credential(text: str) -> bool:
     if any(pattern.search(text) for pattern in _ADDITIONAL_SECRET_PATTERNS):
         return True
     for pattern in SECRET_PATTERNS:
@@ -137,6 +137,7 @@ __all__ = (
     "SemanticAssessmentServiceLike",
     "SupportSemanticAssessmentClient",
     "SupportSemanticAssessmentClientFactory",
+    "contains_credential",
     "create_semantic_assessment_service",
     "create_unavailable_semantic_assessment_service",
 )
