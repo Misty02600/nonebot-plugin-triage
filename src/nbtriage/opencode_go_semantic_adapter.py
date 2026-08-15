@@ -11,7 +11,11 @@ from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RequestUsage
 
-from nbtriage.capability_model_adapter import PydanticAICapabilityAnalysisClient
+from nbtriage.bug_agent import PydanticAIBugAssessmentAgent
+from nbtriage.capability_model_adapter import (
+    CapabilityAnalysisToolRuntimeFactory,
+    PydanticAICapabilityAnalysisClient,
+)
 from nbtriage.public_guidance_model_adapter import PydanticAIPublicGuidanceClient
 from nbtriage.support_semantic_model_adapter import PydanticAISupportSemanticClient
 
@@ -22,10 +26,20 @@ OPENCODE_GO_SEMANTIC_MODELS = frozenset({"deepseek-v4-flash"})
 OPENCODE_GO_SEMANTIC_MAX_OUTPUT_TOKENS = 240
 OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS = 60.0
 OPENCODE_GO_SEMANTIC_API_FAMILY = "chat-completions"
-OPENCODE_GO_SEMANTIC_TASK = "support-semantic-v5"
+OPENCODE_GO_SEMANTIC_TASK = "support-semantic-v7"
 OPENCODE_GO_SEMANTIC_PRIVACY_POLICY = "current-request-text-only-v1"
 OPENCODE_GO_SEMANTIC_BUDGET_PROFILE = "single-call-60s-240-v1"
-OPENCODE_GO_SEMANTIC_EVALUATION = "opencode-go-heldout-40-20260813-v5-taxonomy"
+OPENCODE_GO_SEMANTIC_EVALUATION = "opencode-go-forward-heldout-40-20260815-v7-prompt-v5-zh-e"
+OPENCODE_GO_BUG_ASSESSMENT_TASK = "bug-assessment-agent-v1"
+OPENCODE_GO_BUG_ASSESSMENT_PRIVACY_POLICY = "bounded-visible-conversation-source-log-design-v1"
+OPENCODE_GO_BUG_ASSESSMENT_BUDGET_PROFILE = (
+    "agent-9req-1conversation-plus-6evidence-tool-output-correction-120k-0.50usd-v3"
+)
+OPENCODE_GO_BUG_ASSESSMENT_EVALUATION = (
+    "opencode-go-bug-forward-heldout-16-20260815-v1-prompt-v8-zh-d"
+)
+OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS = 120.0
+OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS = 800
 OPENCODE_GO_MODEL_PROFILE = OpenAIModelProfile(
     supports_tools=True,
     supports_json_schema_output=False,
@@ -135,8 +149,9 @@ def create_opencode_go_capability_analysis_client(
     model: str,
     timeout_seconds: float = 60.0,
     max_output_tokens: int,
+    tool_runtime_factory: CapabilityAnalysisToolRuntimeFactory | None = None,
 ) -> PydanticAICapabilityAnalysisClient:
-    """构造 OpenCode Go 的单次公开能力注释客户端。"""
+    """构造 OpenCode Go 的有界 Agentic 公开能力注释客户端。"""
     if not api_key.strip():
         raise ValueError("OpenCode Go API key must not be blank")
     if model not in OPENCODE_GO_SEMANTIC_MODELS:
@@ -146,6 +161,33 @@ def create_opencode_go_capability_analysis_client(
     if max_output_tokens < 1:
         raise ValueError("max_output_tokens must be positive")
     return PydanticAICapabilityAnalysisClient(
+        _create_opencode_go_chat_model(
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+        ),
+        timeout_seconds=timeout_seconds,
+        max_output_tokens=max_output_tokens,
+        expected_provider=OPENCODE_GO_PROVIDER_SYSTEM,
+        expected_model=model,
+        model_settings=_opencode_go_model_settings(),
+        tool_runtime_factory=tool_runtime_factory,
+    )
+
+
+def create_opencode_go_bug_assessment_agent(
+    *,
+    api_key: str,
+    model: str,
+    timeout_seconds: float = OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
+    max_output_tokens: int = OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
+) -> PydanticAIBugAssessmentAgent:
+    """构造使用原生 Tools 和 output_type 的 OpenCode Go Bug Agent。"""
+    if not api_key.strip():
+        raise ValueError("OpenCode Go API key must not be blank")
+    if model not in OPENCODE_GO_SEMANTIC_MODELS:
+        raise ValueError("OpenCode Go bug assessment model is not supported")
+    return PydanticAIBugAssessmentAgent(
         _create_opencode_go_chat_model(
             api_key=api_key,
             model=model,
@@ -257,6 +299,12 @@ def _nonnegative_int(value: object) -> int | None:
 
 __all__ = (
     "OPENCODE_GO_BASE_URL",
+    "OPENCODE_GO_BUG_ASSESSMENT_BUDGET_PROFILE",
+    "OPENCODE_GO_BUG_ASSESSMENT_EVALUATION",
+    "OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS",
+    "OPENCODE_GO_BUG_ASSESSMENT_PRIVACY_POLICY",
+    "OPENCODE_GO_BUG_ASSESSMENT_TASK",
+    "OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS",
     "OPENCODE_GO_CHAT_PROVIDER_ID",
     "OPENCODE_GO_MODEL_PROFILE",
     "OPENCODE_GO_PROVIDER_SYSTEM",
@@ -270,6 +318,7 @@ __all__ = (
     "OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS",
     "OpenCodeGoChatModel",
     "OpenCodeGoProvider",
+    "create_opencode_go_bug_assessment_agent",
     "create_opencode_go_capability_analysis_client",
     "create_opencode_go_public_guidance_client",
     "create_opencode_go_support_semantic_client",

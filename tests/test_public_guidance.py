@@ -119,3 +119,19 @@ def test_public_guidance_service_blocks_secret_in_fact_before_client_creation() 
 
     assert outcome.execution_status is PublicGuidanceExecutionStatus.POLICY_BLOCKED
     assert created == 0
+
+
+def test_public_guidance_service_keeps_explicit_reply_content_unchanged() -> None:
+    answer = PublicGuidanceAnswer(
+        schema_version=PUBLIC_GUIDANCE_SCHEMA_VERSION,
+        answer="回复图片后发送“搜图”。",
+        cited_fact_ids=("f2",),
+    )
+    client = _Client(answer)
+    reply_context = "Authorization: Bearer visible-group-message"
+    request = _request().model_copy(update={"conversation_context": reply_context})
+
+    outcome = asyncio.run(PublicGuidanceService(lambda: client, timeout_seconds=1).answer(request))
+
+    assert outcome.execution_status is PublicGuidanceExecutionStatus.COMPLETED
+    assert client.requests[0].conversation_context == reply_context

@@ -12,6 +12,7 @@ class CapabilityAnalysisError(ValueError):
 
 class SemanticClaimKind(StrEnum):
     SUMMARY = "summary"
+    USAGE = "usage"
     SYNONYM = "synonym"
     SUPPORTED_SUBJECT = "supported_subject"
     INPUT_REQUIREMENT = "input_requirement"
@@ -27,6 +28,36 @@ class SemanticConstraintKind(StrEnum):
     OTHER = "other"
 
 
+class TeachingRole(StrEnum):
+    ALL = "all"
+    ADMIN = "admin"
+    OWNER = "owner"
+    SUPERUSER = "superuser"
+    CUSTOM = "custom"
+
+
+class RateLimitPolicy(StrEnum):
+    COOLDOWN = "cooldown"
+    QUOTA = "quota"
+    CONCURRENCY = "concurrency"
+    CUSTOM = "custom"
+
+
+class RateLimitScope(StrEnum):
+    USER = "user"
+    SCENE = "scene"
+    BOT = "bot"
+    GLOBAL = "global"
+    CUSTOM = "custom"
+    UNKNOWN = "unknown"
+
+
+class InteractionMode(StrEnum):
+    SINGLE_TURN = "single_turn"
+    BOT_GUIDED = "bot_guided"
+    MULTI_TURN = "multi_turn"
+
+
 @dataclass(frozen=True)
 class CapabilityIdentity:
     capability_id: str
@@ -40,6 +71,53 @@ class CapabilityIdentity:
         _bounded_text(self.kind, "kind", max_length=64)
         if self.adapter is not None:
             _bounded_text(self.adapter, "adapter", max_length=256)
+
+
+@dataclass(frozen=True)
+class CapabilitySourceContext:
+    module_name: str
+    plugin_source_revision: str
+
+    def __post_init__(self) -> None:
+        _bounded_text(self.module_name, "source module_name", max_length=256)
+        _bounded_text(
+            self.plugin_source_revision,
+            "plugin_source_revision",
+            max_length=256,
+        )
+
+
+@dataclass(frozen=True)
+class CapabilityAnalysisBaseline:
+    """只用于减少文案漂移的上一版公开注释，不属于事实 Evidence。"""
+
+    summary: str | None = None
+    usages: tuple[str, ...] = ()
+    synonyms: tuple[str, ...] = ()
+    supported_subjects: tuple[str, ...] = ()
+    input_requirements: tuple[str, ...] = ()
+    behavior_boundaries: tuple[str, ...] = ()
+    requirements: tuple[str, ...] = ()
+    interaction_mode: InteractionMode | None = None
+    interaction_steps: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.summary is not None:
+            _bounded_text(self.summary, "baseline summary", max_length=1_000)
+        if self.interaction_mode is not None and not isinstance(
+            self.interaction_mode, InteractionMode
+        ):
+            raise CapabilityAnalysisError("baseline interaction_mode is invalid")
+        for label, values in (
+            ("baseline usages", self.usages),
+            ("baseline synonyms", self.synonyms),
+            ("baseline supported_subjects", self.supported_subjects),
+            ("baseline input_requirements", self.input_requirements),
+            ("baseline behavior_boundaries", self.behavior_boundaries),
+            ("baseline requirements", self.requirements),
+            ("baseline interaction_steps", self.interaction_steps),
+        ):
+            _bounded_text_tuple(values, label, max_items=24, max_length=1_000)
 
 
 @dataclass(frozen=True)
@@ -89,12 +167,22 @@ class UnknownConfigReference:
 class CapabilityAnalysisRequest:
     capability: CapabilityIdentity
     evidence_units: tuple[CapabilityEvidenceUnit, ...]
+    source_context: CapabilitySourceContext | None = None
     config_projections: tuple[ConfigProjection, ...] = field(default=(), repr=False)
     unknown_config: tuple[UnknownConfigReference, ...] = ()
+    previous_annotation: CapabilityAnalysisBaseline | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.capability, CapabilityIdentity):
             raise CapabilityAnalysisError("capability must be CapabilityIdentity")
+        if self.source_context is not None and not isinstance(
+            self.source_context, CapabilitySourceContext
+        ):
+            raise CapabilityAnalysisError("source_context must be CapabilitySourceContext")
+        if self.previous_annotation is not None and not isinstance(
+            self.previous_annotation, CapabilityAnalysisBaseline
+        ):
+            raise CapabilityAnalysisError("previous_annotation must be CapabilityAnalysisBaseline")
         _bounded_instances(
             self.evidence_units,
             CapabilityEvidenceUnit,
@@ -146,6 +234,9 @@ class SemanticConstraint:
     statement: str
     evidence_ids: tuple[str, ...]
     config_reference_ids: tuple[str, ...] = ()
+    role: TeachingRole | None = None
+    rate_limit_policy: RateLimitPolicy | None = None
+    rate_limit_scope: RateLimitScope | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SemanticConstraintKind):
@@ -153,12 +244,52 @@ class SemanticConstraint:
         _bounded_text(self.statement, "constraint statement", max_length=1_000)
         _evidence_ids(self.evidence_ids, "constraint evidence_ids")
         _config_reference_ids(self.config_reference_ids, "constraint config_reference_ids")
+        if self.role is not None and not isinstance(self.role, TeachingRole):
+            raise CapabilityAnalysisError("constraint role is invalid")
+        if self.rate_limit_policy is not None and not isinstance(
+            self.rate_limit_policy, RateLimitPolicy
+        ):
+            raise CapabilityAnalysisError("constraint rate_limit_policy is invalid")
+        if self.rate_limit_scope is not None and not isinstance(
+            self.rate_limit_scope, RateLimitScope
+        ):
+            raise CapabilityAnalysisError("constraint rate_limit_scope is invalid")
+        if self.kind is SemanticConstraintKind.ROLE:
+            if self.role is None:
+                raise CapabilityAnalysisError("role constraint requires role metadata")
+        elif self.role is not None:
+            raise CapabilityAnalysisError("only role constraints may define role metadata")
+        if self.kind is SemanticConstraintKind.RATE_LIMIT:
+            if self.rate_limit_policy is None or self.rate_limit_scope is None:
+                raise CapabilityAnalysisError("rate-limit constraint requires policy and scope")
+        elif self.rate_limit_policy is not None or self.rate_limit_scope is not None:
+            raise CapabilityAnalysisError("only rate-limit constraints may define rate metadata")
+
+
+@dataclass(frozen=True)
+class SemanticInteraction:
+    mode: InteractionMode
+    steps: tuple[str, ...]
+    evidence_ids: tuple[str, ...]
+    config_reference_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mode, InteractionMode):
+            raise CapabilityAnalysisError("interaction mode is invalid")
+        _bounded_text_tuple(self.steps, "interaction steps", max_items=8, max_length=1_000)
+        _evidence_ids(self.evidence_ids, "interaction evidence_ids")
+        _config_reference_ids(
+            self.config_reference_ids,
+            "interaction config_reference_ids",
+        )
 
 
 @dataclass(frozen=True)
 class CapabilityAnalysisOutput:
     claims: tuple[SemanticClaim, ...] = ()
     constraints: tuple[SemanticConstraint, ...] = ()
+    interaction: SemanticInteraction | None = None
+    evidence_units: tuple[CapabilityEvidenceUnit, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         _bounded_instances(self.claims, SemanticClaim, "claims", max_items=64)
@@ -168,6 +299,17 @@ class CapabilityAnalysisOutput:
             "constraints",
             max_items=64,
         )
+        if self.interaction is not None and not isinstance(self.interaction, SemanticInteraction):
+            raise CapabilityAnalysisError("interaction must be SemanticInteraction")
+        _bounded_instances(
+            self.evidence_units,
+            CapabilityEvidenceUnit,
+            "output evidence_units",
+            max_items=16,
+        )
+        evidence_ids = [item.evidence_id for item in self.evidence_units]
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise CapabilityAnalysisError("output evidence units contain duplicate IDs")
 
 
 class CapabilityAnalysisClient(Protocol):
@@ -175,7 +317,7 @@ class CapabilityAnalysisClient(Protocol):
 
 
 class CapabilityAnalysisService:
-    """执行一次无工具分析调用，并在返回前校验证据引用闭包。"""
+    """执行一次有界分析调用，并在返回前校验静态与工具 Evidence 引用闭包。"""
 
     def __init__(self, client: CapabilityAnalysisClient) -> None:
         self._client = client
@@ -186,10 +328,17 @@ class CapabilityAnalysisService:
         output = await self._client.analyze(request)
         if not isinstance(output, CapabilityAnalysisOutput):
             raise CapabilityAnalysisError("client must return CapabilityAnalysisOutput")
-        allowed = {item.evidence_id for item in request.evidence_units}
+        request_evidence = {item.evidence_id for item in request.evidence_units}
+        dynamic_evidence = {item.evidence_id for item in output.evidence_units}
+        overlap = request_evidence.intersection(dynamic_evidence)
+        if overlap:
+            raise CapabilityAnalysisError(
+                f"analysis output duplicates request evidence IDs: {sorted(overlap)}"
+            )
+        allowed = request_evidence.union(dynamic_evidence)
         referenced = {
             evidence_id
-            for item in (*output.claims, *output.constraints)
+            for item in (*output.claims, *output.constraints, *_interaction_items(output))
             for evidence_id in item.evidence_ids
         }
         unavailable = referenced.difference(allowed)
@@ -200,7 +349,7 @@ class CapabilityAnalysisService:
         allowed_config = {item.reference_id for item in request.config_projections}
         referenced_config = {
             reference_id
-            for item in (*output.claims, *output.constraints)
+            for item in (*output.claims, *output.constraints, *_interaction_items(output))
             for reference_id in item.config_reference_ids
         }
         unavailable_config = referenced_config.difference(allowed_config)
@@ -210,6 +359,10 @@ class CapabilityAnalysisService:
                 f"{sorted(unavailable_config)}"
             )
         return output
+
+
+def _interaction_items(output: CapabilityAnalysisOutput) -> tuple[SemanticInteraction, ...]:
+    return (output.interaction,) if output.interaction is not None else ()
 
 
 @dataclass
@@ -248,6 +401,19 @@ def _bounded_instances(
         )
     if any(not isinstance(item, expected) for item in value):
         raise CapabilityAnalysisError(f"{label} contains an invalid item")
+
+
+def _bounded_text_tuple(
+    value: object,
+    label: str,
+    *,
+    max_items: int,
+    max_length: int,
+) -> None:
+    if not isinstance(value, tuple) or len(value) > max_items:
+        raise CapabilityAnalysisError(f"{label} must be a bounded tuple")
+    for item in value:
+        _bounded_text(item, label, max_length=max_length)
 
 
 def _evidence_ids(value: tuple[str, ...], label: str) -> None:
@@ -304,6 +470,7 @@ def _validate_config_value(value: object, *, depth: int = 0) -> None:
 
 
 __all__ = (
+    "CapabilityAnalysisBaseline",
     "CapabilityAnalysisClient",
     "CapabilityAnalysisError",
     "CapabilityAnalysisOutput",
@@ -311,11 +478,17 @@ __all__ = (
     "CapabilityAnalysisService",
     "CapabilityEvidenceUnit",
     "CapabilityIdentity",
+    "CapabilitySourceContext",
     "ConfigProjection",
     "FakeCapabilityAnalysisClient",
+    "InteractionMode",
+    "RateLimitPolicy",
+    "RateLimitScope",
     "SemanticClaim",
     "SemanticClaimKind",
     "SemanticConstraint",
     "SemanticConstraintKind",
+    "SemanticInteraction",
+    "TeachingRole",
     "UnknownConfigReference",
 )

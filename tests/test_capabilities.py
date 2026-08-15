@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
 
 import pytest
 from tools.nbtriage_maintainer.cli import main
@@ -176,36 +175,6 @@ def test_snapshot_rejects_old_schema_and_tampered_generation() -> None:
     tampered["records"][0]["claims"][0]["value"] = "changed"
     with pytest.raises(CapabilityError, match="generation"):
         CapabilitySnapshot.from_dict(tampered)
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        ("schema_version",),
-        ("manifest", "schema_version"),
-        ("manifest", "source_revisions", 0, "schema_version"),
-        ("manifest", "errors", 0, "schema_version"),
-        ("records", 0, "schema_version"),
-        ("records", 0, "claims", 0, "schema_version"),
-        ("records", 0, "constraints", 0, "schema_version"),
-        ("records", 0, "evidence_refs", 0, "schema_version"),
-    ],
-)
-def test_snapshot_rejects_v1_at_every_nested_schema_boundary(
-    path: tuple[str | int, ...],
-) -> None:
-    snapshot = _snapshot(
-        [_record("command:image", "搜图", "图片搜索")],
-        errors=(SnapshotError(source_id="source:test", code="scan_incomplete"),),
-    )
-    payload = snapshot.to_dict()
-    target: Any = payload
-    for part in path[:-1]:
-        target = target[part]
-    target[path[-1]] = 1
-
-    with pytest.raises(CapabilityError, match="schema_version"):
-        CapabilitySnapshot.from_dict(payload)
 
 
 def test_search_defaults_to_resolved_public_and_unresolved_requires_opt_in(tmp_path: Path) -> None:

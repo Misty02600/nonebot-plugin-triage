@@ -241,6 +241,9 @@ flowchart TD
   tool wire、返回身份 / fingerprint、cache hit/miss 费用和单请求失败。它没有公开 extra、CLI/backend、
   插件配置或支持资格，也不改变本 ADR 的 B1 native-schema 契约；获授权的 native JSON Schema 探测返回
   HTTP 400，只作为测试事实保留；
+- 2026-08-14：为接入 `pydantic-ai-harness==0.20.0` 的共享只读工具，全部 Provider extras 与开发组
+  统一升级并精确锁定到 `pydantic-ai-slim==2.28.0`。原有 Model / Provider / Profile 分层与领域资格表
+  继续有效；升级后的结构化输出、工具调用和假 HTTP 适配回归需作为新的实现证据维护；
 - 采纳只确认适配层和安全边界，不确认默认 Provider、默认模型或真实付费调用。
 
 ## 证据来源

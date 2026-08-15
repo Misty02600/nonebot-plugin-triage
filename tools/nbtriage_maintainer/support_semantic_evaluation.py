@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -8,12 +9,13 @@ from typing import Any
 from nbtriage.model_usage import provider_response_identity
 from nbtriage.opencode_go_semantic_adapter import (
     OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
-    OPENCODE_GO_SEMANTIC_EVALUATION,
     OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
+    OPENCODE_GO_SEMANTIC_TASK,
     normalized_opencode_go_cost_microusd,
 )
 from nbtriage.support_semantic_model_adapter import (
     SUPPORT_SEMANTIC_PROMPT_ID,
+    SYSTEM_INSTRUCTION,
     PydanticAISupportSemanticClient,
     SupportSemanticModelAdapterError,
 )
@@ -22,7 +24,16 @@ from nbtriage.support_semantics import (
     SupportAssessmentRequest,
 )
 
-SUPPORT_SEMANTIC_EVALUATION_ID = "support-semantic-opencode-go-v5"
+SUPPORT_SEMANTIC_EVALUATION_ID = "support-semantic-opencode-go-v7"
+SUPPORT_SEMANTIC_CANDIDATE_EVALUATION_REVISION = (
+    "opencode-go-forward-heldout-40-20260815-v7-prompt-v5-zh-e"
+)
+SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SET_ID = "support-semantic-v7-forward-heldout-40-20260815-e-v5-zh"
+SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SHA256 = (
+    "c3135a9414995375a3ca7da7295d30672002155126638c20f1785dd40fc27d5e"
+)
+_QUALIFIED_PROVIDER = "opencode-go"
+_QUALIFIED_MODEL = "deepseek-v4-flash"
 
 
 class SupportSemanticEvaluationError(RuntimeError):
@@ -38,15 +49,21 @@ async def evaluate_support_semantics(
     max_model_calls: int,
     declared_budget_usd: float,
 ) -> dict[str, Any]:
-    payload = json.loads(fixtures_path.read_text(encoding="utf-8"))
+    fixture_raw = fixtures_path.read_bytes()
+    fixture_sha256 = hashlib.sha256(fixture_raw).hexdigest()
+    payload = json.loads(fixture_raw)
     cases = payload.get("cases")
     split = payload.get("split")
+    fixture_set_id = payload.get("fixture_set_id")
+    declared_contract = payload.get("qualification_contract", {})
     if (
         payload.get("schema_version") != 1
+        or not isinstance(fixture_set_id, str)
         or payload.get("semantic_schema_version") != SUPPORT_SEMANTIC_SCHEMA_VERSION
         or payload.get("synthetic_only") is not True
         or payload.get("contains_real_user_data") is not False
         or split not in ("development", "held_out")
+        or not isinstance(declared_contract, dict)
         or not isinstance(cases, list)
         or not cases
     ):
@@ -64,6 +81,7 @@ async def evaluate_support_semantics(
     exact = 0
     status_correct = 0
     schema_valid = 0
+    case_ids: set[str] = set()
     for case in cases:
         case_id = case.get("case_id")
         text = case.get("text")
@@ -79,6 +97,9 @@ async def evaluate_support_semantics(
             or type(expected_observation) is not bool
         ):
             raise SupportSemanticEvaluationError("invalid support semantic fixture case")
+        if case_id in case_ids:
+            raise SupportSemanticEvaluationError("duplicate support semantic fixture case id")
+        case_ids.add(case_id)
 
         client = client_factory()
         try:
@@ -163,7 +184,32 @@ async def evaluate_support_semantics(
     count = len(rows)
     exact_rate = exact / count
     status_rate = status_correct / count
-    qualification_eligible = split == "held_out"
+    expected_contract = _expected_qualification_contract()
+    qualification_checks = {
+        "held_out_split": split == "held_out",
+        "fixture_set_id": fixture_set_id == SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SET_ID,
+        "fixture_sha256": fixture_sha256 == SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SHA256,
+        "provider": provider == _QUALIFIED_PROVIDER,
+        "model": model == _QUALIFIED_MODEL,
+        "task": declared_contract.get("task") == expected_contract["task"],
+        "schema_version": (
+            declared_contract.get("schema_version") == expected_contract["schema_version"]
+        ),
+        "prompt_id": declared_contract.get("prompt_id") == expected_contract["prompt_id"],
+        "prompt_sha256": (
+            declared_contract.get("prompt_sha256") == expected_contract["prompt_sha256"]
+        ),
+        "privacy_policy": (
+            declared_contract.get("privacy_policy") == expected_contract["privacy_policy"]
+        ),
+        "budget_profile": (
+            declared_contract.get("budget_profile") == expected_contract["budget_profile"]
+        ),
+        "contract_provider": (declared_contract.get("provider") == expected_contract["provider"]),
+        "contract_model": declared_contract.get("model") == expected_contract["model"],
+        "contract_exact": declared_contract == expected_contract,
+    }
+    qualification_eligible = all(qualification_checks.values())
     passed = (
         qualification_eligible
         and schema_valid == count
@@ -174,14 +220,18 @@ async def evaluate_support_semantics(
     return {
         "schema_version": 1,
         "evaluation_id": SUPPORT_SEMANTIC_EVALUATION_ID,
-        "fixture_set_id": payload["fixture_set_id"],
+        "fixture_set_id": fixture_set_id,
+        "fixture_sha256": fixture_sha256,
         "split": split,
         "provider": provider,
         "model": model,
+        "task": OPENCODE_GO_SEMANTIC_TASK,
+        "semantic_schema_version": SUPPORT_SEMANTIC_SCHEMA_VERSION,
         "privacy_policy": OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
         "budget_profile": OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
-        "evaluation_revision": OPENCODE_GO_SEMANTIC_EVALUATION,
+        "evaluation_revision": SUPPORT_SEMANTIC_CANDIDATE_EVALUATION_REVISION,
         "prompt_id": SUPPORT_SEMANTIC_PROMPT_ID,
+        "prompt_sha256": expected_contract["prompt_sha256"],
         "summary": {
             "case_count": count,
             "provider_requests": count,
@@ -196,6 +246,7 @@ async def evaluate_support_semantics(
         "quality_gate": {
             "status": "passed" if passed else "failed",
             "qualification_eligible": qualification_eligible,
+            "qualification_checks": qualification_checks,
             "minimum_exact_match_rate": 0.9,
             "required_schema_valid_rate": 1.0,
             "required_status_accuracy": 1.0,
@@ -204,8 +255,24 @@ async def evaluate_support_semantics(
     }
 
 
+def _expected_qualification_contract() -> dict[str, object]:
+    return {
+        "provider": _QUALIFIED_PROVIDER,
+        "model": _QUALIFIED_MODEL,
+        "task": OPENCODE_GO_SEMANTIC_TASK,
+        "schema_version": SUPPORT_SEMANTIC_SCHEMA_VERSION,
+        "prompt_id": SUPPORT_SEMANTIC_PROMPT_ID,
+        "prompt_sha256": hashlib.sha256(SYSTEM_INSTRUCTION.encode("utf-8")).hexdigest(),
+        "privacy_policy": OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
+        "budget_profile": OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
+    }
+
+
 __all__ = (
+    "SUPPORT_SEMANTIC_CANDIDATE_EVALUATION_REVISION",
     "SUPPORT_SEMANTIC_EVALUATION_ID",
+    "SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SET_ID",
+    "SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SHA256",
     "SupportSemanticEvaluationError",
     "evaluate_support_semantics",
 )

@@ -2,28 +2,40 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import keyword
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 from types import ModuleType
-
-from pydantic import BaseModel
 
 from nbtriage.capabilities import CapabilityRecord, ClaimBasis, Disclosure
 from nbtriage.capability_analysis import (
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
     CapabilityIdentity,
+    CapabilitySourceContext,
     ConfigProjection,
     UnknownConfigReference,
 )
-from nonebot_plugin_triage.config_policy import ConfigValuePolicy, normalize_config_root
-from nonebot_plugin_triage.config_projection import (
-    ConfigProjectionError,
-    project_config_values,
+from nbtriage.capability_source_evidence import (
+    CapabilitySourceEvidenceError,
+    CapabilitySourceEvidencePack,
+    build_capability_source_evidence,
+)
+from nbtriage.framework_semantics import (
+    PermissionSemanticProfile,
+    uninfo_permission_profile,
+)
+from nonebot_plugin_triage.config_policy import ConfigValuePolicy
+from nonebot_plugin_triage.runtime_config_evidence import (
+    RuntimeConfigEvidenceReader,
+    RuntimeConfigOmission,
+    RuntimeConfigReference,
+    RuntimeConfigValueEvidence,
+    runtime_config_reference_id,
 )
 
 _MAX_MODULES = 16
@@ -52,6 +64,7 @@ class _FunctionReference:
     function: str
     line: int | None
     source_revision: str
+    closure_freevars: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -68,9 +81,7 @@ class _ConfigReference:
 
     @property
     def reference_id(self) -> str:
-        payload = "\0".join((self.module, self.binding, self.field))
-        digest = hashlib.sha256(payload.encode("utf-8", errors="surrogatepass")).hexdigest()
-        return f"config:{digest}"
+        return runtime_config_reference_id(self.module, self.binding, self.field)
 
     @property
     def source_symbol(self) -> str:
@@ -90,17 +101,21 @@ def build_capability_analysis_request(
     policy: ConfigValuePolicy,
     *,
     source_policy: AnalysisSourcePolicy = AnalysisSourcePolicy.STANDARD,
+    source_pack_cache: dict[str, CapabilitySourceEvidencePack] | None = None,
+    permission_semantic_profiles: tuple[PermissionSemanticProfile, ...] | None = None,
 ) -> CapabilityAnalysisRequest:
-    """从运行时能力记录装配一次有界、无工具的语义分析请求。
+    """从运行时能力记录装配确定性 Evidence Pack 与工具准入上下文。
 
-    适配器只读取已经加载模块的 Python 文件，以及模块全局变量中已经构造完成的
-    Pydantic 配置实例。配置顶层键先经过部署策略，再由显式 ``key -> field`` 映射
-    交给一次性投影器；本函数不会导入模块、执行插件或调用模型。
+    适配器只读取已加载插件的 Python 源码、runtime 命令事实，以及模块全局变量中
+    已经构造完成的 Pydantic 配置实例。配置顶层键先经过部署策略，再由显式
+    ``key -> field`` 映射交给一次性投影器；本函数不会导入模块、执行插件或调用模型。
 
     Args:
         record: 运行时快照生成的单项能力记录。
         policy: 部署者配置的配置值限制策略。
         source_policy: 源码准入策略；只有维护者明确授权的本地诊断才能读取受限能力源码。
+        source_pack_cache: 同一插件多条能力共享的进程内源码结构缓存。
+        permission_semantic_profiles: Triage 维护的稳定便捷权限语义；省略时使用内置语义表。
 
     Returns:
         可交给能力分析服务的一次性请求。
@@ -117,14 +132,31 @@ def build_capability_analysis_request(
     _enforce_source_policy(record, source_policy)
 
     handler_references = _handler_references(record)
+    if any(item.closure_freevars for item in handler_references):
+        raise CapabilityAnalysisAdapterError("parameterized handler requires family-level analysis")
     config_references = _config_references(record)
     module_root = _plugin_module_root(record)
     source_root = _plugin_source_root(module_root)
+    source_pack = _source_evidence_pack(
+        module_root,
+        source_root,
+        cache=source_pack_cache,
+        permission_semantic_profiles=(
+            _permission_semantic_profiles()
+            if permission_semantic_profiles is None
+            else permission_semantic_profiles
+        ),
+    )
+    if not _source_inventory_complete(source_pack.partial_errors):
+        raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
     targets = _analysis_targets(handler_references, config_references)
     parsed_modules: dict[str, _ParsedModule] = {}
-    evidence_units: list[CapabilityEvidenceUnit] = []
+    evidence_units: list[CapabilityEvidenceUnit] = [
+        _runtime_fact_evidence(record),
+        _source_structure_evidence(record, source_pack, handler_references),
+    ]
     accepted_targets: set[tuple[str, str]] = set()
-    total_chars = 0
+    total_chars = sum(len(item.content) for item in evidence_units)
 
     for target in targets:
         parsed = parsed_modules.get(target.module)
@@ -161,7 +193,7 @@ def build_capability_analysis_request(
         total_chars += len(content)
         accepted_targets.add((target.module, target.function))
 
-    if not evidence_units:
+    if not accepted_targets:
         raise CapabilityAnalysisAdapterError("capability has no readable bounded handler evidence")
 
     projections, unknown = _project_referenced_config(
@@ -177,10 +209,188 @@ def build_capability_analysis_request(
             owner=record.owner,
             kind=record.kind,
         ),
+        source_context=CapabilitySourceContext(
+            module_name=module_root,
+            plugin_source_revision=source_pack.source_revision,
+        ),
         evidence_units=tuple(evidence_units),
         config_projections=projections,
         unknown_config=unknown,
     )
+
+
+def _source_evidence_pack(
+    module_root: str,
+    source_root: tuple[Path, bool],
+    *,
+    cache: dict[str, CapabilitySourceEvidencePack] | None,
+    permission_semantic_profiles: tuple[PermissionSemanticProfile, ...],
+) -> CapabilitySourceEvidencePack:
+    if cache is not None and (cached := cache.get(module_root)) is not None:
+        return cached
+    try:
+        pack = build_capability_source_evidence(
+            module_root,
+            source_root[0],
+            permission_semantic_profiles=permission_semantic_profiles,
+        )
+    except CapabilitySourceEvidenceError as error:
+        raise CapabilityAnalysisAdapterError("plugin source evidence is unavailable") from error
+    if cache is not None:
+        cache[module_root] = pack
+    return pack
+
+
+def _permission_semantic_profiles() -> tuple[PermissionSemanticProfile, ...]:
+    return (uninfo_permission_profile(),)
+
+
+def _runtime_fact_evidence(record: CapabilityRecord) -> CapabilityEvidenceUnit:
+    allowed_fields = {
+        "command.path",
+        "command.header",
+        "command.literals",
+        "command.aliases",
+        "command.prefixes",
+        "command.force_whitespace",
+        "command.enabled",
+        "command.arguments",
+        "command.components",
+        "trigger.factory",
+        "trigger.entries",
+        "description",
+        "usage",
+        "example",
+        "matcher.type",
+    }
+    claims = [
+        {
+            "field": claim.field,
+            "value": claim.value,
+            "basis": claim.basis.value,
+        }
+        for claim in record.claims
+        if claim.field in allowed_fields
+    ]
+    constraints = [
+        {
+            "kind": item.kind,
+            "operation": item.operation,
+            "evaluability": item.evaluability.value,
+            "payload": item.payload,
+        }
+        for item in record.constraints
+    ]
+    payload = {
+        "claims": sorted(claims, key=_canonical_json_sort_key),
+        "constraints": sorted(constraints, key=_canonical_json_sort_key),
+        "platform_scope": record.platform_scope.to_dict(),
+        "state": record.state.value,
+        "disclosure": record.disclosure.value,
+    }
+    content = _bounded_evidence_json(payload, "runtime capability facts")
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return CapabilityEvidenceUnit(
+        evidence_id=f"evidence:runtime:{digest}",
+        source_kind="runtime_capability_facts",
+        content=content,
+        revision=f"sha256:{digest}",
+    )
+
+
+def _canonical_json_sort_key(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _source_structure_evidence(
+    record: CapabilityRecord,
+    pack: CapabilitySourceEvidencePack,
+    handlers: tuple[_FunctionReference, ...],
+) -> CapabilityEvidenceUnit:
+    handler_names = {item.function for item in handlers}
+    observed_entries = {
+        value
+        for field in ("command.header", "command.path", "command.literals")
+        for raw in _claim_values(record, field, evidence_kind="matcher_source")
+        for value in ((raw,) if isinstance(raw, str) else raw if isinstance(raw, list) else ())
+        if isinstance(value, str)
+    }
+    selected_handlers = tuple(item for item in pack.handlers if item.name in handler_names)
+    matcher_names = {name for item in selected_handlers for name in item.matcher_names}
+    selected_registrations = tuple(
+        item
+        for item in pack.registrations
+        if (
+            set(item.handlers).intersection(handler_names)
+            or (item.matcher_name is not None and item.matcher_name in matcher_names)
+        )
+        and (not item.entries or bool(set(item.entries).intersection(observed_entries)))
+    )
+    related_functions = handler_names.union(
+        helper for item in selected_handlers for helper in item.direct_helpers
+    )
+    registration_owners = {
+        item.matcher_name or f"{item.factory}@{item.source.line}" for item in selected_registrations
+    }
+    related_owners = related_functions.union(registration_owners)
+    payload = {
+        "extractor_generation": pack.generation,
+        "registrations": [asdict(item) for item in selected_registrations],
+        "handlers": [asdict(item) for item in selected_handlers],
+        "config_references": [
+            asdict(item)
+            for item in pack.config_references
+            if item.handler_name in handler_names or item.function_name in related_functions
+        ],
+        "symbols": [asdict(item) for item in pack.symbols if item.owner in related_owners],
+        "permission_constraints": [
+            asdict(item)
+            for item in pack.permission_constraints
+            if item.owner in registration_owners
+        ],
+        "opaque_or_partial": bool(pack.partial_errors),
+    }
+    content = _bounded_evidence_json(payload, "Matcher source structure")
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return CapabilityEvidenceUnit(
+        evidence_id=f"evidence:structure:{digest}",
+        source_kind="matcher_source_structure",
+        content=content,
+        revision=f"sha256:{pack.generation}",
+    )
+
+
+def _bounded_evidence_json(payload: object, label: str) -> str:
+    content = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    if not content or len(content) > _MAX_FUNCTION_CHARS:
+        raise CapabilityAnalysisAdapterError(f"{label} exceeds the evidence budget")
+    return content
+
+
+def _source_inventory_complete(errors: tuple[str, ...]) -> bool:
+    incomplete_prefixes = (
+        "byte_limit_exceeded",
+        "directory_limit_exceeded",
+        "entry_unreadable:",
+        "file_limit_exceeded",
+        "file_too_large:",
+        "file_unreadable:",
+        "source_not_utf8:",
+        "symlink_excluded:",
+    )
+    return not any(error.startswith(incomplete_prefixes) for error in errors)
 
 
 def _enforce_source_policy(
@@ -252,12 +462,18 @@ def _handler_references(record: CapabilityRecord) -> tuple[_FunctionReference, .
             function = item.get("function")
             line = item.get("line")
             source_revision = item.get("source_revision")
+            closure_freevars = item.get("closure_freevars", [])
             if (
                 not isinstance(module, str)
                 or not _valid_module_name(module)
                 or not isinstance(function, str)
                 or not isinstance(source_revision, str)
                 or not _valid_source_revision(source_revision)
+                or not isinstance(closure_freevars, list)
+                or any(
+                    not isinstance(name, str) or not name.isidentifier()
+                    for name in closure_freevars
+                )
             ):
                 continue
             if not function.isidentifier():
@@ -268,6 +484,7 @@ def _handler_references(record: CapabilityRecord) -> tuple[_FunctionReference, .
                     function=function,
                     line=line if isinstance(line, int) and line > 0 else None,
                     source_revision=source_revision,
+                    closure_freevars=tuple(sorted(set(closure_freevars))),
                 )
             )
     return tuple(sorted(references, key=lambda item: (item.module, item.function, item.line or 0)))
@@ -361,6 +578,7 @@ def _analysis_targets(
                 item.function,
                 item.line,
                 item.source_revision,
+                (),
             ),
         )
     return tuple(
@@ -486,81 +704,45 @@ def _project_referenced_config(
 ) -> tuple[tuple[ConfigProjection, ...], tuple[UnknownConfigReference, ...]]:
     projections: list[ConfigProjection] = []
     unknown: list[UnknownConfigReference] = []
-    for reference in references:
-        if (reference.module, reference.function) not in accepted_targets:
+    eligible = tuple(
+        reference
+        for reference in references
+        if (reference.module, reference.function) in accepted_targets
+        and reference.module in parsed_modules
+    )
+    approved: dict[str, RuntimeConfigReference] = {}
+    conflicts: set[str] = set()
+    for reference in eligible:
+        public_reference = RuntimeConfigReference(
+            reference_id=reference.reference_id,
+            module=reference.module,
+            binding=reference.binding,
+            field_name=reference.field,
+            config_key=reference.key,
+            config_type=reference.config_type,
+            source_revision=reference.source_revision,
+        )
+        previous = approved.get(reference.reference_id)
+        if previous is not None and previous != public_reference:
+            conflicts.add(reference.reference_id)
             continue
-        if not _module_belongs_to_plugin(reference.module, module_root):
-            unknown.append(
-                UnknownConfigReference(
-                    reference.reference_id,
-                    reference.source_symbol,
-                    "module_not_allowed",
-                )
-            )
+        approved[reference.reference_id] = public_reference
+
+    reader = RuntimeConfigEvidenceReader(
+        owner_module=module_root,
+        references=(
+            reference
+            for reference_id, reference in approved.items()
+            if reference_id not in conflicts
+        ),
+        policy=policy,
+    )
+    processed: set[str] = set()
+    for reference in eligible:
+        if reference.reference_id in processed:
             continue
-        parsed = parsed_modules.get(reference.module)
-        if parsed is None:
-            unknown.append(
-                UnknownConfigReference(
-                    reference.reference_id,
-                    reference.source_symbol,
-                    "module_unavailable",
-                )
-            )
-            continue
-        if parsed.revision != reference.source_revision:
-            unknown.append(
-                UnknownConfigReference(
-                    reference.reference_id,
-                    reference.source_symbol,
-                    "source_revision_mismatch",
-                )
-            )
-            continue
-        config = vars(parsed.module).get(reference.binding)
-        if not isinstance(config, BaseModel):
-            unknown.append(
-                UnknownConfigReference(
-                    reference.reference_id,
-                    reference.source_symbol,
-                    "config_instance_unavailable",
-                )
-            )
-            continue
-        if not _module_belongs_to_plugin(type(config).__module__, module_root):
-            unknown.append(
-                UnknownConfigReference(
-                    reference.reference_id,
-                    reference.source_symbol,
-                    "config_type_not_allowed",
-                )
-            )
-            continue
-        if _qualified_type_name(type(config)) != reference.config_type:
-            unknown.append(
-                UnknownConfigReference(
-                    reference.reference_id,
-                    reference.source_symbol,
-                    "config_type_mismatch",
-                )
-            )
-            continue
-        if not _reference_matches_runtime_model(reference, config):
-            unknown.append(
-                UnknownConfigReference(
-                    reference.reference_id,
-                    reference.source_symbol,
-                    "config_key_mismatch",
-                )
-            )
-            continue
-        try:
-            projection = project_config_values(
-                config=config,
-                key_to_field={reference.key: reference.field},
-                policy=policy,
-            )
-        except ConfigProjectionError:
+        processed.add(reference.reference_id)
+        if reference.reference_id in conflicts:
             unknown.append(
                 UnknownConfigReference(
                     reference.reference_id,
@@ -569,37 +751,20 @@ def _project_referenced_config(
                 )
             )
             continue
-        if projection.entries:
+        result = reader.read(reference.reference_id)
+        if isinstance(result, RuntimeConfigValueEvidence):
             projections.append(
-                ConfigProjection(
-                    reference.reference_id,
-                    reference.source_symbol,
-                    projection.entries[0].value,
+                ConfigProjection(result.reference_id, result.source_symbol, result.value)
+            )
+        elif isinstance(result, RuntimeConfigOmission):
+            unknown.append(
+                UnknownConfigReference(
+                    result.reference_id,
+                    result.source_symbol or reference.source_symbol,
+                    result.reason.value,
                 )
             )
-            continue
-        reason = projection.omissions[0].reason.value if projection.omissions else "unavailable"
-        unknown.append(
-            UnknownConfigReference(reference.reference_id, reference.source_symbol, reason)
-        )
     return tuple(projections), tuple(unknown)
-
-
-def _reference_matches_runtime_model(reference: _ConfigReference, config: BaseModel) -> bool:
-    field_info = type(config).model_fields.get(reference.field)
-    if field_info is None:
-        return False
-    alias = field_info.validation_alias or field_info.alias or reference.field
-    if not isinstance(alias, str):
-        return False
-    try:
-        return normalize_config_root(alias) == normalize_config_root(reference.key)
-    except ValueError:
-        return False
-
-
-def _qualified_type_name(value: type[object]) -> str:
-    return f"{value.__module__}:{value.__qualname__}"
 
 
 def _module_locator(module: str, function: str, line: int) -> str:

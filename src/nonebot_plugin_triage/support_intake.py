@@ -154,6 +154,8 @@ def matching_public_capabilities(
 def build_explicit_public_guidance_request(
     query: str,
     capabilities: tuple[PublicCapability, ...],
+    *,
+    conversation_context: str | None = None,
 ) -> PublicGuidanceRequest | None:
     facts: list[PublicGuidanceFact] = []
     for capability in capabilities[:5]:
@@ -184,6 +186,7 @@ def build_explicit_public_guidance_request(
     return PublicGuidanceRequest(
         schema_version=PUBLIC_GUIDANCE_SCHEMA_VERSION,
         question=normalized,
+        conversation_context=conversation_context,
         facts=tuple(facts),
     )
 

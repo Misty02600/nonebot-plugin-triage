@@ -9,6 +9,7 @@ import pytest
 from nonebot.matcher import current_matcher
 
 import nonebot_plugin_triage.nonebot_runtime as nonebot_runtime
+from nbtriage.bug_logs import CorrelatedBugLogBuffer, bug_log_bundle_evidence
 from nbtriage.runtime_observations import RuntimeObservationBuffer
 from nonebot_plugin_triage.nonebot_runtime import (
     NBTRIAGE_CORRELATION_STATE_KEY,
@@ -127,6 +128,37 @@ async def test_failure_keeps_exception_type_and_modules_without_message_or_local
     assert bundle.observations[0].stack_modules == ("tests.test_nonebot_runtime",)
     assert "MESSAGE_MUST_NOT_LEAK" not in serialized
     assert "LOCAL_VALUE_MUST_NOT_LEAK" not in serialized
+
+
+@pytest.mark.anyio
+async def test_failure_also_keeps_full_traceback_in_separate_bug_log_buffer() -> None:
+    runtime_buffer = RuntimeObservationBuffer(max_entries=32, retention_seconds=60)
+    log_buffer = CorrelatedBugLogBuffer(max_entries=32, retention_seconds=60)
+    sequence = count(1)
+    observer = NoneBotRuntimeObserver(
+        runtime_buffer,
+        bug_log_buffer=log_buffer,
+        clock=lambda: datetime(2026, 8, 9, 1, 2, 3, tzinfo=UTC),
+        id_factory=lambda: f"id-{next(sequence)}",
+    )
+    state = {NBTRIAGE_CORRELATION_STATE_KEY: "corr-with-log"}
+    matcher = FakeMatcher(state)
+
+    try:
+        raise ValueError("VISIBLE_DIAGNOSTIC_CONTEXT")
+    except ValueError as error:
+        await observer.observe_matcher_completed(FakeBot(), matcher, state, error)
+
+    bundle = log_buffer.capture(
+        "corr-with-log",
+        generated_at=datetime(2026, 8, 9, 1, 2, 4, tzinfo=UTC),
+    )
+    evidence = bug_log_bundle_evidence(bundle)
+
+    assert len(bundle.logs) == 1
+    assert "VISIBLE_DIAGNOSTIC_CONTEXT" in bundle.logs[0].traceback_text
+    assert "test_nonebot_runtime.py" in bundle.logs[0].traceback_text
+    assert "VISIBLE_DIAGNOSTIC_CONTEXT" in evidence[0].body
 
 
 @pytest.mark.anyio

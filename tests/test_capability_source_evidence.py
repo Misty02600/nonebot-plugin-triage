@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from nbtriage.capability_analysis import TeachingRole
 from nbtriage.capability_source_evidence import (
     SourceEvidenceLimits,
     StructuralSymbolKind,
     build_capability_source_evidence,
 )
+from nbtriage.framework_semantics import PublicConstraintKind, uninfo_permission_profile
 
 
 def _write(path: Path, content: str) -> Path:
@@ -77,7 +79,6 @@ async def handle_search():
     assert {item.kind for item in pack.symbols} == {
         StructuralSymbolKind.PERMISSION,
         StructuralSymbolKind.RULE,
-        StructuralSymbolKind.LIMITER_CANDIDATE,
     }
 
 
@@ -110,6 +111,59 @@ async def triage_handler():
         ("triage_handler",),
         (),
     ]
+
+
+def test_resolves_supported_uninfo_permissions_without_confusing_local_names(
+    tmp_path: Path,
+) -> None:
+    source = _write(
+        tmp_path / "plugin.py",
+        """\
+from nonebot_plugin_uninfo import ADMIN as UNINFO_ADMIN, GROUP, MEMBER
+import nonebot_plugin_uninfo as uninfo
+from another_library import PRIVATE
+
+first = on_command("first", permission=UNINFO_ADMIN())
+second = on_command("second", permission=GROUP)
+third = on_command("third", permission=uninfo.OWNER())
+fourth = on_command("fourth", permission=PRIVATE)
+
+def ADMIN():
+    return object()
+
+fifth = on_command("fifth", permission=ADMIN())
+sixth = on_command("sixth", permission=MEMBER())
+""",
+    )
+    profile = uninfo_permission_profile()
+
+    pack = build_capability_source_evidence(
+        "example_plugin",
+        source,
+        permission_semantic_profiles=(profile,),
+    )
+
+    assert [
+        (item.kind, item.operation, item.teaching_role, item.owner)
+        for item in pack.permission_constraints
+    ] == [
+        (PublicConstraintKind.ROLE, "administrator_or_owner", TeachingRole.ADMIN, "first"),
+        (PublicConstraintKind.SCENE, "group_chat", None, "second"),
+        (PublicConstraintKind.ROLE, "owner", TeachingRole.OWNER, "third"),
+        (
+            PublicConstraintKind.ROLE,
+            "not_administrator_or_owner",
+            TeachingRole.CUSTOM,
+            "sixth",
+        ),
+    ]
+    assert pack.semantic_revisions == (profile.revision,)
+
+
+def test_uninfo_permission_profile_has_a_stable_revision() -> None:
+    current = uninfo_permission_profile()
+
+    assert current.revision == uninfo_permission_profile().revision
 
 
 def test_tracks_imported_config_binding_without_reading_values(tmp_path: Path) -> None:

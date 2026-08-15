@@ -4,6 +4,8 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from nonebot import logger
+
 from nbtriage.public_guidance import (
     PUBLIC_GUIDANCE_PROMPT_ID,
     PUBLIC_GUIDANCE_SCHEMA_VERSION,
@@ -15,10 +17,10 @@ from nonebot_plugin_triage.public_guidance import (
 )
 
 PUBLIC_GUIDANCE_MAX_OUTPUT_TOKENS = 240
-PUBLIC_GUIDANCE_TASK = "public-guidance-answer-v1"
-PUBLIC_GUIDANCE_PRIVACY_POLICY = "current-text-and-public-capability-facts-v1"
+PUBLIC_GUIDANCE_TASK = "public-guidance-answer-v2"
+PUBLIC_GUIDANCE_PRIVACY_POLICY = "current-text-explicit-reply-and-public-facts-v1"
 PUBLIC_GUIDANCE_BUDGET_PROFILE = "single-call-60s-240-v1"
-PUBLIC_GUIDANCE_EVALUATION = "opencode-go-public-guidance-smoke-1-20260814-v1"
+PUBLIC_GUIDANCE_EVALUATION = "pending-opencode-go-public-guidance-v2-prompt-v2-zh"
 
 
 @dataclass(frozen=True)
@@ -102,8 +104,17 @@ def create_public_guidance_service(config: NBTriageConfig) -> PublicGuidanceServ
             None,
             timeout_seconds=config.nbtriage_model_timeout_seconds,
         )
+    try:
+        client_factory = create_opencode_go_public_guidance_client_factory(config)
+    except ValueError as error:
+        logger.warning(
+            "NoneBot Triage public guidance is unavailable; deterministic guidance "
+            "remains active ({})",
+            type(error).__name__,
+        )
+        client_factory = None
     return PublicGuidanceService(
-        create_opencode_go_public_guidance_client_factory(config),
+        client_factory,
         timeout_seconds=config.nbtriage_model_timeout_seconds,
     )
 

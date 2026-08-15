@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-13 |
+| 已采纳；Thread 续接点结算由 ADR-0060 部分替代 | 2026-08-13 |
 
 ## 当时遇到了什么
 
@@ -93,6 +93,8 @@ OneBot 出站 Provider 还承担另一项独立职责：把 Matcher 内 Bot 输�
 - 细化 [ADR-0033](0033-serialize-support-thread-turns-with-single-use-reply-claims.md) 的“适配器确认发送成功
   并取得合法 message ID”：确认来源改为当前 Matcher 返回并经插件严格校验的 UniSeg Receipt；Claim、
   lease 和提交时机不变。
+- [ADR-0060](0060-use-scope-thread-and-post-route-conversation-context.md) 不再用 Receipt message ID 建立 Thread
+  续接点；当前 Matcher 拥有发送事务、发送失败关闭，以及运行证据关联与 Thread 状态隔离的边界仍保留。
 - 极窄地替代 [ADR-0006](0006-cross-platform-alconna-entry-and-reference-providers.md) 第 2 项和 ADR-0031
   第 3 项绝对不读 Reply origin 的边界：仅允许读取 adapter 的结构化引用类型与消息 ID 并交叉校验；不读取
   正文、作者或其他字段。

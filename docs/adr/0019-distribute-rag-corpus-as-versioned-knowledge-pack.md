@@ -73,7 +73,8 @@
   归档 SHA-256。插件只有同时配置精确 HTTPS 资产 URL 与 SHA-256 时，才在 NoneBot 启动后创建后台下载
   任务；下载、摘要、manifest 或 SQLite 校验失败均回退到明确的无知识库模式，不阻断 Bot 启动。
 - 运行副本写入 LocalStore cache，不进入 `site-packages`；未配置知识包时只记录一次启动警告，不进行网络
-  请求。当前仍未把知识检索接入用户回答或模型输入，也未发布正式知识包资产。
+  请求。Bug assessment Agent 已通过只读 `search_design_rag` 工具消费已安装知识包，并由运行时按当前安装
+  的组件精确版本限定检索；当前仍未发布正式知识包资产，因此没有配置资产的部署继续使用无知识模式。
 - 当前验证覆盖配置成对校验、HTTPS 限制、后台下载、完整性与兼容校验、失败回退、分发许可门和归档成员。
 - 独立工作流只发布已经人工创建的 Draft Release：它从 `knowledge-v*` tag checkout 发布合同，复核候选资产
   与 tag commit 的绑定和全部完整性条件，成功后发布 Draft；不会改动插件 `v*` / PyPI 发布链。

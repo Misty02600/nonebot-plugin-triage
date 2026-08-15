@@ -41,7 +41,14 @@ from nbtriage.public_guidance import (
     PublicGuidanceFactField,
     PublicGuidanceRequest,
 )
-from nonebot_plugin_triage.capability_annotations import CapabilityAnnotationService
+from nonebot_plugin_triage.capability_annotations import (
+    CapabilityAnnotationEvidenceValidator,
+    CapabilityAnnotationService,
+)
+from nonebot_plugin_triage.capability_help_display import (
+    CapabilityHelpDisplayWriter,
+    resolve_capability_help_display_data_dir,
+)
 from nonebot_plugin_triage.capability_snapshot import build_capability_snapshot
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
 from nonebot_plugin_triage.support_intake import (
@@ -145,6 +152,7 @@ class CapabilityShadowService:
         deployment_builder: DeploymentBuilder = build_capability_deployment,
         runtime_modules: Callable[[], Collection[str]] = _loaded_plugin_module_names,
         annotation_service: CapabilityAnnotationService | None = None,
+        help_display_writer: CapabilityHelpDisplayWriter | None = None,
     ) -> None:
         if isinstance(path, Path):
             self._path: Path | None = path
@@ -160,6 +168,7 @@ class CapabilityShadowService:
         self._deployment_builder = deployment_builder
         self._runtime_modules = runtime_modules
         self._annotation_service = annotation_service
+        self._help_display_writer = help_display_writer
         self._deployment: CapabilityDeployment | None = None
         self._latest_snapshot: CapabilitySnapshot | None = None
         self._status = CapabilityShadowStatus(
@@ -209,6 +218,15 @@ class CapabilityShadowService:
             stale=self._status.stale,
         )
 
+    async def search_for_bug_assessment(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+    ) -> MaintainerCapabilitySearch | None:
+        """为已获准的内部 Bug task 定位 subject；结果不得直接投影给普通用户。"""
+        return await self.search_for_maintainer(query, limit=limit)
+
     async def search_public(
         self,
         query: str,
@@ -243,6 +261,14 @@ class CapabilityShadowService:
                 capability_ids=capability_ids,
                 limit=limit,
             )
+            if self._annotation_service is not None:
+                hits = _augment_hits_with_annotation_terms(
+                    hits,
+                    public_records,
+                    query,
+                    self._annotation_service.get,
+                    limit=limit,
+                )
         except CapabilityIndexError as error:
             logger.warning(
                 "NoneBot Triage public capability search failed ({})",
@@ -383,6 +409,25 @@ class CapabilityShadowService:
                     "the deterministic capability index remains active ({})",
                     type(error).__name__,
                 )
+                return
+            if self._help_display_writer is not None:
+                try:
+                    paths = await asyncio.to_thread(
+                        self._help_display_writer.refresh,
+                        snapshot,
+                        self._annotation_service.get,
+                    )
+                except Exception as error:
+                    logger.warning(
+                        "NoneBot Triage capability help display refresh failed; "
+                        "annotations remain active ({})",
+                        type(error).__name__,
+                    )
+                else:
+                    logger.info(
+                        "NoneBot Triage capability help displays refreshed: files={}",
+                        len(paths),
+                    )
 
     def _resolve_path_safely(self) -> bool:
         try:
@@ -416,9 +461,11 @@ def register_capability_shadow(
     *,
     startup_registrar: Callable[[Callable[[], object]], object] | None = None,
     cache_file_resolver: Callable[[str], Path] = _resolve_capability_shadow_cache_file,
+    help_display_directory_resolver: Callable[[], Path] = resolve_capability_help_display_data_dir,
     annotation_client_factory: Callable[[], CapabilityAnalysisClient] | None = None,
     config_policy: ConfigValuePolicy | None = None,
     annotation_analysis_revision: str | None = None,
+    annotation_evidence_validator: CapabilityAnnotationEvidenceValidator | None = None,
 ) -> CapabilityShadowService:
     """注册后台能力快照刷新，并把 LocalStore 路径解析延后到启动阶段。"""
     if startup_registrar is None:
@@ -426,20 +473,22 @@ def register_capability_shadow(
 
         startup_registrar = get_driver().on_startup
     annotation_service = None
+    help_display_writer = None
     if annotation_client_factory is not None:
         if config_policy is None or annotation_analysis_revision is None:
-            raise ValueError(
-                "auto capability annotations require config policy and analysis revision"
-            )
+            raise ValueError("capability annotations require config policy and analysis revision")
         annotation_service = CapabilityAnnotationService(
             lambda: cache_file_resolver(_CAPABILITY_ANNOTATION_FILENAME),
             client_factory=annotation_client_factory,
             config_policy=config_policy,
             analysis_revision=annotation_analysis_revision,
+            evidence_validator=annotation_evidence_validator,
         )
+        help_display_writer = CapabilityHelpDisplayWriter(help_display_directory_resolver)
     service = CapabilityShadowService(
         lambda: cache_file_resolver(_CAPABILITY_SHADOW_FILENAME),
         annotation_service=annotation_service,
+        help_display_writer=help_display_writer,
     )
     background_tasks: set[asyncio.Task[None]] = set()
 
@@ -588,6 +637,10 @@ def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
     usage = _public_claim_text(primary.claims, "usage", limit=240)
     if usage:
         lines.append(f"用法：{usage}")
+    elif annotation is not None and annotation.usages:
+        rendered_usages = tuple(item.replace("{command}", header) for item in annotation.usages)
+        lines.append(f"用法：{' / '.join(rendered_usages)}")
+        usage = rendered_usages[0]
     annotation_guidance = _annotation_guidance(annotation)
     if annotation_guidance:
         label = "补充" if usage else "使用说明"
@@ -608,6 +661,8 @@ def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
 def build_public_guidance_request(
     question: str,
     result: PublicCapabilitySearch,
+    *,
+    conversation_context: str | None = None,
 ) -> PublicGuidanceRequest | None:
     """把当前公开 ServingView 投影成无路径、无配置、无受限记录的回答事实。"""
     if result.partial is not False or result.stale:
@@ -615,6 +670,7 @@ def build_public_guidance_request(
     safe_hits = tuple(
         hit for hit in result.hits if _record_is_publicly_servable_without_adapter(hit.record)
     )
+    annotations = {item.capability_id: item for item in result.annotations}
     facts: list[PublicGuidanceFact] = []
     for hit in safe_hits[:5]:
         record = hit.record
@@ -660,14 +716,62 @@ def build_public_guidance_request(
                 text=cleaned,
                 basis=PublicGuidanceFactBasis.DECLARED,
             )
+        _append_annotation_guidance_facts(
+            facts,
+            capability=label,
+            annotation=annotations.get(record.capability_id),
+        )
     normalized_question = _safe_text(question, limit=2_000)
     if not normalized_question or not facts:
         return None
     return PublicGuidanceRequest(
         schema_version=PUBLIC_GUIDANCE_SCHEMA_VERSION,
         question=normalized_question,
+        conversation_context=conversation_context,
         facts=tuple(facts),
     )
+
+
+def _append_annotation_guidance_facts(
+    facts: list[PublicGuidanceFact],
+    *,
+    capability: str,
+    annotation: CapabilityTeachingAnnotation | None,
+) -> None:
+    """把公开教学注释收窄为当前 Answer Agent 已支持的事实字段。"""
+    if annotation is None:
+        return
+    if annotation.summary:
+        _append_public_guidance_fact(
+            facts,
+            capability=capability,
+            field=PublicGuidanceFactField.DESCRIPTION,
+            text=annotation.summary,
+            basis=PublicGuidanceFactBasis.DECLARED,
+        )
+    for usage in annotation.usages:
+        _append_public_guidance_fact(
+            facts,
+            capability=capability,
+            field=PublicGuidanceFactField.USAGE,
+            text=usage.replace("{command}", capability),
+            basis=PublicGuidanceFactBasis.DECLARED,
+        )
+    for text in (
+        *annotation.synonyms,
+        *annotation.supported_subjects,
+        *annotation.input_requirements,
+        *annotation.behavior_boundaries,
+        *(item.text for item in annotation.requirements),
+        *((annotation.interaction.steps) if annotation.interaction is not None else ()),
+    ):
+        _append_public_guidance_fact(
+            facts,
+            capability=capability,
+            field=PublicGuidanceFactField.DESCRIPTION,
+            text=text,
+            basis=PublicGuidanceFactBasis.DECLARED,
+        )
 
 
 def _append_public_guidance_fact(
@@ -704,13 +808,46 @@ def _annotation_guidance(
     return tuple(
         dict.fromkeys(
             (
-                *annotation.supported_subjects,
                 *annotation.input_requirements,
                 *annotation.behavior_boundaries,
-                *annotation.constraints,
+                *(item.text for item in annotation.requirements),
             )
         )
     )
+
+
+def _augment_hits_with_annotation_terms(
+    hits: list[CapabilitySearchHit],
+    records: tuple[CapabilityRecord, ...],
+    query: str,
+    annotation_lookup: Callable[[str], CapabilityTeachingAnnotation | None],
+    *,
+    limit: int,
+) -> list[CapabilitySearchHit]:
+    """用注释同义词和主题补召回，不替代 runtime 公开能力门禁。"""
+    normalized_query = " ".join(query.casefold().split())
+    if not normalized_query:
+        return hits
+    accepted = {hit.record.capability_id for hit in hits}
+    augmented = list(hits)
+    for record in records:
+        if record.capability_id in accepted:
+            continue
+        annotation = annotation_lookup(record.capability_id)
+        if annotation is None:
+            continue
+        terms = (*annotation.synonyms, *annotation.supported_subjects)
+        if not any(
+            (term_normalized := " ".join(term.casefold().split()))
+            and (term_normalized in normalized_query or normalized_query in term_normalized)
+            for term in terms
+        ):
+            continue
+        augmented.append(CapabilitySearchHit(record=record, score=0.0))
+        accepted.add(record.capability_id)
+        if len(augmented) >= limit:
+            break
+    return augmented[:limit]
 
 
 def _public_plugin_metadata(claims: tuple[Claim, ...]) -> dict[str, object]:

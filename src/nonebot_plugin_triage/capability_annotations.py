@@ -5,7 +5,7 @@ import os
 import tempfile
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from nonebot import logger
@@ -20,6 +20,7 @@ from nbtriage.capabilities import (
     RecordState,
 )
 from nbtriage.capability_analysis import (
+    CapabilityAnalysisBaseline,
     CapabilityAnalysisClient,
     CapabilityAnalysisRequest,
     CapabilityAnalysisService,
@@ -27,19 +28,22 @@ from nbtriage.capability_analysis import (
 from nbtriage.capability_annotations import (
     CapabilityAnnotationCache,
     CapabilityAnnotationError,
+    CapabilityAnnotationEvidenceRef,
     CapabilityTeachingAnnotation,
     capability_analysis_fingerprint,
     project_capability_annotation,
 )
+from nbtriage.capability_source_evidence import CapabilitySourceEvidencePack
 from nonebot_plugin_triage.capability_analysis_adapter import (
     CapabilityAnalysisAdapterError,
     build_capability_analysis_request,
 )
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
 
-_MAX_ANALYSES_PER_REFRESH = 16
-
 CapabilityAnalysisClientFactory = Callable[[], CapabilityAnalysisClient]
+CapabilityAnnotationEvidenceValidator = Callable[
+    [CapabilityAnalysisRequest, tuple[CapabilityAnnotationEvidenceRef, ...]], bool
+]
 
 
 @dataclass(frozen=True)
@@ -67,7 +71,7 @@ class CapabilityAnnotationService:
         client_factory: CapabilityAnalysisClientFactory,
         config_policy: ConfigValuePolicy,
         analysis_revision: str,
-        max_analyses_per_refresh: int = _MAX_ANALYSES_PER_REFRESH,
+        evidence_validator: CapabilityAnnotationEvidenceValidator | None = None,
     ) -> None:
         if not callable(client_factory):
             raise TypeError("client_factory must be callable")
@@ -75,12 +79,6 @@ class CapabilityAnnotationService:
             raise TypeError("config_policy must be ConfigValuePolicy")
         if not isinstance(analysis_revision, str) or not analysis_revision:
             raise ValueError("analysis_revision must be a non-empty string")
-        if (
-            not isinstance(max_analyses_per_refresh, int)
-            or isinstance(max_analyses_per_refresh, bool)
-            or not 1 <= max_analyses_per_refresh <= 256
-        ):
-            raise ValueError("max_analyses_per_refresh must be between 1 and 256")
         if isinstance(path, Path):
             self._path: Path | None = path
             self._path_resolver: Callable[[], Path] | None = None
@@ -90,7 +88,7 @@ class CapabilityAnnotationService:
         self._client_factory = client_factory
         self._config_policy = config_policy
         self._analysis_revision = analysis_revision
-        self._max_analyses_per_refresh = max_analyses_per_refresh
+        self._evidence_validator = evidence_validator
         self._current_fingerprints: dict[str, str] = {}
         self._annotations: dict[str, CapabilityTeachingAnnotation] = {}
         self._refresh_lock = asyncio.Lock()
@@ -112,9 +110,12 @@ class CapabilityAnnotationService:
         if not isinstance(snapshot, CapabilitySnapshot):
             raise TypeError("snapshot must be CapabilitySnapshot")
         async with self._refresh_lock:
-            prepared, skipped = await asyncio.to_thread(self._prepare, snapshot)
             cache = await asyncio.to_thread(_read_cache, self._resolved_path())
             cached = {item.capability_id: item for item in cache.annotations}
+            prepared, skipped = await asyncio.to_thread(self._prepare, snapshot, cached)
+            prepared_requests = {
+                item.request.capability.capability_id: item.request for item in prepared
+            }
             self._current_fingerprints = {
                 item.request.capability.capability_id: item.fingerprint for item in prepared
             }
@@ -122,6 +123,10 @@ class CapabilityAnnotationService:
                 capability_id: annotation
                 for capability_id, annotation in cached.items()
                 if self._current_fingerprints.get(capability_id) == annotation.request_fingerprint
+                and self._cached_evidence_is_current(
+                    prepared_requests[capability_id],
+                    annotation,
+                )
             }
             generated = 0
             failed = 0
@@ -130,7 +135,7 @@ class CapabilityAnnotationService:
                 for item in prepared
                 if item.request.capability.capability_id not in self._annotations
             ]
-            for item in missing[: self._max_analyses_per_refresh]:
+            for item in missing:
                 try:
                     client = self._client_factory()
                     output = await CapabilityAnalysisService(client).analyze(item.request)
@@ -161,7 +166,6 @@ class CapabilityAnnotationService:
                         "NoneBot Triage capability annotation cache write failed ({})",
                         type(error).__name__,
                     )
-            skipped += max(0, len(missing) - self._max_analyses_per_refresh)
             self._status = CapabilityAnnotationRefreshStatus(
                 eligible_count=len(prepared),
                 cached_count=len(prepared) - len(missing),
@@ -191,12 +195,18 @@ class CapabilityAnnotationService:
     def _prepare(
         self,
         snapshot: CapabilitySnapshot,
+        cached: dict[str, CapabilityTeachingAnnotation],
     ) -> tuple[tuple[_PreparedAnalysis, ...], int]:
         prepared: list[_PreparedAnalysis] = []
         skipped = 0
+        source_pack_cache: dict[str, CapabilitySourceEvidencePack] = {}
         for record in _ordered_eligible_records(snapshot.records):
             try:
-                request = build_capability_analysis_request(record, self._config_policy)
+                request = build_capability_analysis_request(
+                    record,
+                    self._config_policy,
+                    source_pack_cache=source_pack_cache,
+                )
                 fingerprint = capability_analysis_fingerprint(
                     request,
                     analysis_revision=self._analysis_revision,
@@ -204,8 +214,48 @@ class CapabilityAnnotationService:
             except (CapabilityAnalysisAdapterError, CapabilityAnnotationError):
                 skipped += 1
                 continue
+            previous = cached.get(record.capability_id)
+            if previous is not None and previous.request_fingerprint != fingerprint:
+                request = replace(
+                    request,
+                    previous_annotation=_analysis_baseline(previous),
+                )
             prepared.append(_PreparedAnalysis(request, fingerprint))
         return tuple(prepared), skipped
+
+    def _cached_evidence_is_current(
+        self,
+        request: CapabilityAnalysisRequest,
+        annotation: CapabilityTeachingAnnotation,
+    ) -> bool:
+        if not annotation.evidence_manifest:
+            return True
+        if self._evidence_validator is None:
+            return False
+        try:
+            return self._evidence_validator(request, annotation.evidence_manifest)
+        except Exception:
+            return False
+
+
+def _analysis_baseline(
+    annotation: CapabilityTeachingAnnotation,
+) -> CapabilityAnalysisBaseline:
+    return CapabilityAnalysisBaseline(
+        summary=annotation.summary,
+        usages=annotation.usages,
+        synonyms=annotation.synonyms,
+        supported_subjects=annotation.supported_subjects,
+        input_requirements=annotation.input_requirements,
+        behavior_boundaries=annotation.behavior_boundaries,
+        requirements=tuple(item.text for item in annotation.requirements),
+        interaction_mode=(
+            annotation.interaction.mode if annotation.interaction is not None else None
+        ),
+        interaction_steps=(
+            annotation.interaction.steps if annotation.interaction is not None else ()
+        ),
+    )
 
 
 def _ordered_eligible_records(
@@ -285,6 +335,7 @@ def _write_cache(path: Path, cache: CapabilityAnnotationCache) -> None:
 
 __all__ = (
     "CapabilityAnalysisClientFactory",
+    "CapabilityAnnotationEvidenceValidator",
     "CapabilityAnnotationRefreshStatus",
     "CapabilityAnnotationService",
 )

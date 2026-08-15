@@ -41,15 +41,15 @@ def _reply_event(*, message_id: int) -> Any:
     )
 
 
-def _unresolved_reply_event(*, message_id: int) -> Any:
+def _unresolved_reply_event(*, message_id: int, user_id: int) -> Any:
     original_message = Message([MessageSegment.reply(8_100_001), MessageSegment.text(" triage")])
     return fake_group_message_event_v11(
         message_id=message_id,
-        user_id=9_100_001,
+        user_id=user_id,
         message=Message(original_message),
         original_message=Message(original_message),
         raw_message="[CQ:reply,id=8100001] triage",
-        sender=Sender(user_id=9_100_001, nickname="tester"),
+        sender=Sender(user_id=user_id, nickname="tester"),
         reply=None,
         to_me=False,
     )
@@ -111,7 +111,8 @@ async def test_support_command_survives_unresolved_onebot_reply_preprocessing(
         lambda *_: True,
     )
 
-    event = _unresolved_reply_event(message_id=9_100_003)
+    user_id = 9_100_010 if reply_lookup == "failed" else 9_100_011
+    event = _unresolved_reply_event(message_id=9_100_003, user_id=user_id)
 
     async def get_msg(**_: Any) -> dict[str, Any]:
         if reply_lookup == "failed":

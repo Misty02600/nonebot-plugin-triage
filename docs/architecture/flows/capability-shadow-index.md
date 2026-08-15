@@ -21,11 +21,18 @@ disclosure + PlatformScope + analysis_issues + RecordState
                 ↓
 当前 adapter 的 ServingView / 鉴权后的维护者域
 
-可选 auto 注释（只接收当前已注册 public 记录）
+后台教学注释（只接收当前已注册 public 记录）
                 ↓
-有界已加载源码 + 策略允许的相关配置值
+runtime 命令事实 + ast-grep Matcher 结构 + 内存配置投影
+                ↓ 首包不足时
+批准根只读 glob/search/read + Jedi 转到定义
                 ↓
-公开教学注释 cache（无源码、配置值和 Evidence 定位）
+公开教学注释 cache（无正文/配置值；保留动态 Evidence revision 清单）
+                ├─→ 当前问题 + 公开事实 → Answer Agent → 上下文相关教学回答
+                │                              └─→ 失败时确定性注释模板
+                └─→ 当前 runtime 命令事实 + 单一规范展示形式
+                                                ↓
+                         LocalStore data/help-display/<module>.yml
 ```
 
 采集器不额外导入插件，也不执行 Matcher、Rule、Permission 或 handler。keyword / regex 等可确定入口保存
@@ -47,8 +54,19 @@ Matcher 角色或跨 Matcher 支撑关系。
 
 自动教学注释沿用同一门禁，并且必须由当前 runtime 记录反向定位已经加载的模块。它不会遍历静态制品并把
 “源码存在”解释成“Bot 当前可用”；加载失败、`not_observed`、restricted、平台未知或带 issue 的能力即使留有
-旧注释 cache，本轮也不会提供。部署者选择 `auto` 时无需逐条人工审核，但仍不能绕过运行时注册、披露、平台
-和 Evidence 闭包；选择默认 `off` 时整个源码与配置分析链不运行。
+旧注释 cache，本轮也不会提供。注释无需逐条人工审核，但仍不能绕过运行时注册、披露、平台和 Evidence
+闭包。插件不提供独立的教学注释开关；只有合格模型 transport 可用时才组装注释任务，缺少模型配置、密钥或
+任务资格时跳过模型增强，确定性能力索引与插件启动不受影响。
+
+教学工具不能读取 `.env*`、凭据、数据库、日志、Migut Help 人工 YAML、评测 Gold 或本任务生成的
+help-display。Bot 项目、目标插件及其 LocalStore config/data/cache 是按任务批准的文件根；当前解释器的
+依赖 Python 源码只进入导航 profile，不允许在整个依赖环境自由 glob。Jedi 只提供从已知文件位置转到定义，
+定义位置本身不能作为结论，必须再经受控 `read_file` 取得可引用 Evidence。
+
+完整刷新后，插件还会把当前公开注释投影为一插件一文件的最小帮助展示 YAML，写入 LocalStore 管理的
+`data/help-display/`。每条命令只有一个 `display`，模型只能围绕确定性的命令头补充参数或回复上下文；源码、
+Evidence、配置值、指纹和审核状态都不会进入文件。当前版本没有草稿、审核或发布流程，刷新会直接更新本
+生成器标记的文件；该目录也没有接入 Migut Help，所以这些文件目前不会成为用户可见帮助。
 
 ## 状态与失败语义
 
@@ -59,6 +77,11 @@ Matcher 角色或跨 Matcher 支撑关系。
   不阻止插件加载、`triage` 或模型语义分流。
 - 自动注释按能力串行生成并独立失败；某个插件的源码不可读、模型输出无效或请求失败时，该能力退回确定性
   元数据说明，其他能力和基础 SQLite 索引继续可用。
+- 插件受管 Python 源码 inventory 不完整、含未处理 symlink 或分析期间 revision 改变时，不发布新注释；
+  插件源码任意变化会让该插件的全部教学注释重算。源码与其他生成输入均未变化且动态 Evidence revision
+  仍匹配时，逐字复用缓存并不调用模型。
+- 展示 YAML 只在完整 snapshot 和注释刷新成功后更新；partial snapshot 保留现有文件，完整刷新会删除本生成器
+  标记、但本轮已不再对应任何公开 runtime 能力的陈旧文件，不删除同目录中的其他文件。
 - deployment 未刷新、刷新失败、snapshot / deployment 任一 partial 或索引 stale 时，普通查询失败关闭；维护者
   仍可读取最近快照并看到 partial / stale 标记。
 - `opaque` Permission、Rule 和 handler 条件只表示无法静态求值；能力说明不等于执行授权，实际执行仍由原
@@ -72,3 +95,5 @@ Matcher 角色或跨 Matcher 支撑关系。
 - [ADR-0032：分离能力受众、平台范围与分析问题](../../adr/0032-separate-capability-audience-analysis-and-platform-status.md)
 - [ADR-0036：保持能力影子确定且以记录为单位](../../adr/0036-keep-capability-shadow-deterministic-and-record-oriented.md)
 - [ADR-0045：统一 triage 冷却并用 LocalStore 管理能力 cache](../../adr/0045-use-one-triage-cooldown-and-localstore-capability-cache.md)
+- [ADR-0058：用确定性证据与有界源码导航生成教学注释](../../adr/0058-use-deterministic-evidence-and-bounded-navigation-for-teaching-annotations.md)
+- [ADR-0059：跨 Agent 链路共享只读证据访问工具](../../adr/0059-share-read-only-evidence-access-across-agent-flows.md)

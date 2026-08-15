@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-13 |
+| 已采纳；Reply Claim 由 ADR-0060 部分替代 | 2026-08-13 |
 
 ## 当时遇到了什么
 
@@ -52,6 +52,8 @@ Reply 引用、再读取 Thread，随后独立完成检索、更新上下文、�
   的提交时机；保留显式 `triage`、Reply 选择 Thread、HMAC 作用域、每轮限流与不使用 Waiter 的决定。
 - 细化 [ADR-0030](0030-continue-support-thread-by-exact-reply.md) 保留下来的 latest-only Thread 生命周期；
   不恢复其已经被 ADR-0031 替代的免命令入口。
+- [ADR-0060](0060-use-scope-thread-and-post-route-conversation-context.md) 以稳定作用域 Claim 替代 Reply Claim
+  和 Reply 绑定提交；单活动 lease、`BUSY`、TTL、失败关闭与单进程内存边界继续有效。
 - 服从 [ADR-0023](0023-defer-orm-until-durable-business-state.md) 的短期内存策略。
 
 ## 落实与确认

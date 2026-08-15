@@ -98,7 +98,7 @@ def _scripted_report() -> dict[str, Any]:
         "split_id": "b4-gate-v1",
         "generated_at": "2026-08-10T12:00:00+00:00",
         "evaluation_contract": {
-            "prompt_ids": {"b1": "b1-rag-only-v3"},
+            "prompt_ids": {"b1": "b1-rag-only-v4-zh"},
             "code_revision": "nbtriage-source-sha256:abc",
         },
         "source": {
@@ -203,7 +203,7 @@ def test_publish_maps_stable_fields_and_preserves_exact_artifact(
     assert mlflow.experiment_name == "nbtriage/evaluations"
     run = mlflow.runs[0]
     assert run.params["nbtriage.evaluation_id"] == "b4-bounded-agent-scripted-v1"
-    assert run.params["nbtriage.evaluation_contract.prompt_ids.b1"] == "b1-rag-only-v3"
+    assert run.params["nbtriage.evaluation_contract.prompt_ids.b1"] == "b1-rag-only-v4-zh"
     assert run.metrics["summary.fixture_count"] == 4.0
     assert run.metrics["summary.synthetic_only"] == 1.0
     assert run.metrics["metrics.b4.task_success_rate"] == 0.75

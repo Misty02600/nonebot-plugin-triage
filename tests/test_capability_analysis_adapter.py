@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -51,6 +52,7 @@ def _record(
     plugin_module_name: str | None = None,
     disclosure: Disclosure = Disclosure.PUBLIC,
     superuser_only: bool = False,
+    command_header: str | None = None,
 ) -> CapabilityRecord:
     plugin_evidence_id = "evidence:plugin"
     matcher_evidence_id = "evidence:matcher"
@@ -73,6 +75,15 @@ def _record(
             Claim(
                 "config.references",
                 config_references,
+                ClaimBasis.OBSERVED,
+                (matcher_evidence_id,),
+            )
+        )
+    if command_header is not None:
+        claims.append(
+            Claim(
+                "command.header",
+                command_header,
                 ClaimBasis.OBSERVED,
                 (matcher_evidence_id,),
             )
@@ -208,19 +219,113 @@ async def handle_search():
     )
 
     assert request.capability.owner == module.__name__
-    assert {unit.content.splitlines()[0] for unit in request.evidence_units} == {
+    assert {
+        unit.content.splitlines()[0]
+        for unit in request.evidence_units
+        if unit.source_kind == "python_function"
+    } == {
         "def build_limit():",
         "async def handle_search():",
     }
     assert all(str(tmp_path) not in (unit.locator or "") for unit in request.evidence_units)
     assert all(
-        unit.locator and unit.locator.startswith(module.__name__) for unit in request.evidence_units
+        unit.locator and unit.locator.startswith(module.__name__)
+        for unit in request.evidence_units
+        if unit.source_kind == "python_function"
     )
     assert {(type(item.value), item.value) for item in request.config_projections} == {
         (bool, True),
         (int, 3),
     }
     assert request.unknown_config == ()
+
+
+def test_parameterized_runtime_handler_requires_family_analysis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def create_handler(command):
+    async def handler():
+        return command
+    return handler
+
+handler = create_handler("搜图")
+""",
+    )
+    reference = _handler_reference(module, "handler", 2)
+    reference["closure_freevars"] = ["command"]
+
+    with pytest.raises(
+        CapabilityAnalysisAdapterError,
+        match="parameterized handler requires family-level analysis",
+    ):
+        build_capability_analysis_request(
+            _record(
+                module.__name__,
+                handlers=[reference],
+                config_references=[],
+            ),
+            ConfigValuePolicy(),
+        )
+
+
+def test_includes_resolved_uninfo_permission_without_dependency_navigation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uninfo = ModuleType("nonebot_plugin_uninfo")
+    uninfo.ADMIN = lambda: object()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, uninfo.__name__, uninfo)
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+from nonebot_plugin_uninfo import ADMIN
+
+def on_command(*args, **kwargs):
+    return object()
+
+async def handle():
+    return True
+
+matcher = on_command("secure", permission=ADMIN(), handlers=[handle])
+""",
+    )
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle", 6)],
+            config_references=[],
+            command_header="secure",
+        ),
+        ConfigValuePolicy(),
+    )
+
+    structure = next(
+        item for item in request.evidence_units if item.source_kind == "matcher_source_structure"
+    )
+    payload = json.loads(structure.content)
+    assert payload["permission_constraints"] == [
+        {
+            "kind": "role",
+            "operation": "administrator_or_owner",
+            "owner": "matcher",
+            "teaching_role": "admin",
+            "source": {
+                "digest": payload["permission_constraints"][0]["source"]["digest"],
+                "end_line": 9,
+                "line": 9,
+                "locator": Path(module.__dict__["__file__"]).name,
+            },
+        }
+    ]
+    assert any(
+        item["kind"] == "permission" and item["symbol"] == "ADMIN" for item in payload["symbols"]
+    )
 
 
 def test_restricted_missing_and_opaque_values_become_hashed_unknown_references(

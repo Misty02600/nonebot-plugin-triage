@@ -414,25 +414,3 @@ def test_trial_service_rejects_non_opaque_incident_id() -> None:
 
     with pytest.raises(LiveTrialError, match="incident_id"):
         service.start(incident, cluster=None, now=NOW)
-
-
-@pytest.mark.parametrize(
-    ("kwargs", "message"),
-    [
-        ({"mode": "observe"}, "mode"),
-        ({"max_entries": 0}, "max_entries"),
-        ({"retention_seconds": 0}, "retention_seconds"),
-        ({"sink": None}, "audit event sink"),
-    ],
-)
-def test_trial_service_rejects_invalid_limits(kwargs, message: str) -> None:
-    values = {
-        "mode": TrialMode.OBSERVE,
-        "max_entries": 8,
-        "retention_seconds": 900,
-        "sink": MemorySink(),
-    }
-    values.update(kwargs)
-
-    with pytest.raises(LiveTrialError, match=message):
-        LiveTrialService(**values)

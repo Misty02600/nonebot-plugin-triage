@@ -21,7 +21,7 @@ ModelName = Annotated[
 ]
 ModelBackend = Literal["anthropic-messages", "openai-responses", "opencode-go-chat"]
 TrialModeName = Literal["off", "observe"]
-CapabilityAnnotationMode = Literal["off", "auto"]
+BugSourceBackendName = Literal["bounded-text", "serena"]
 
 
 class NBTriageConfig(BaseModel):
@@ -30,7 +30,6 @@ class NBTriageConfig(BaseModel):
     nbtriage_cooldown_seconds: int = Field(default=2, ge=1, le=86_400)
     nbtriage_rate_limit_max_scopes: int = Field(default=4_096, ge=1, le=1_000_000)
     nbtriage_capability_visibility_timeout_seconds: float = Field(default=0.25, gt=0, le=5)
-    nbtriage_capability_annotation_mode: CapabilityAnnotationMode = "off"
     nbtriage_knowledge_pack_url: (
         Annotated[
             str,
@@ -77,11 +76,13 @@ class NBTriageConfig(BaseModel):
         le=1_073_741_824,
     )
     nbtriage_trial_log_backup_count: int = Field(default=5, ge=1, le=100)
+    nbtriage_bug_source_backend: BugSourceBackendName = "bounded-text"
     nbtriage_model_backend: ModelBackend | None = None
     nbtriage_model_name: ModelName | None = None
     nbtriage_model_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
     nbtriage_model_max_output_tokens: int = Field(default=240, ge=1, le=8_192)
     nbtriage_restricted_config: frozenset[str] = Field(default_factory=frozenset)
+    nbtriage_evidence_denied_patterns: tuple[str, ...] = ()
 
     @field_validator("nbtriage_restricted_config", mode="before")
     @classmethod
@@ -91,6 +92,32 @@ class NBTriageConfig(BaseModel):
         if len(value) > 256:
             raise ValueError("restricted config must contain at most 256 keys")
         return frozenset(normalize_config_root(item) for item in value)
+
+    @field_validator("nbtriage_evidence_denied_patterns", mode="before")
+    @classmethod
+    def normalize_evidence_denied_patterns(cls, value: Any) -> tuple[str, ...]:
+        """规范化部署者追加的只读证据相对路径 glob。"""
+        if isinstance(value, str) or not isinstance(value, (list, tuple, set, frozenset)):
+            raise ValueError("evidence denied patterns must be a JSON array of relative globs")
+        if len(value) > 256:
+            raise ValueError("evidence denied patterns must contain at most 256 entries")
+        accepted: dict[str, str] = {}
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("evidence denied patterns must contain only strings")
+            pattern = item.strip()
+            if (
+                not pattern
+                or len(pattern) > 512
+                or "\x00" in pattern
+                or "\\" in pattern
+                or pattern.startswith("/")
+                or ":" in pattern
+                or any(part == ".." for part in pattern.split("/"))
+            ):
+                raise ValueError("evidence denied patterns must use bounded relative POSIX globs")
+            accepted.setdefault(pattern.casefold(), pattern)
+        return tuple(accepted[key] for key in sorted(accepted))
 
     @model_validator(mode="before")
     @classmethod
@@ -113,6 +140,10 @@ class NBTriageConfig(BaseModel):
                 ),
                 "nbtriage_capability_shadow_path": (
                     "the capability shadow is stored in the LocalStore cache"
+                ),
+                "nbtriage_capability_annotation_mode": (
+                    "capability annotations follow the qualified model transport "
+                    "and have no separate mode"
                 ),
             }
             removed = next((key for key in removed_settings if key in data), None)
@@ -158,9 +189,4 @@ class NBTriageConfig(BaseModel):
                 raise ValueError("knowledge pack URL must be an HTTPS asset URL")
         if (self.nbtriage_model_backend is None) is not (self.nbtriage_model_name is None):
             raise ValueError("model backend and model name must be configured together")
-        if (
-            self.nbtriage_capability_annotation_mode == "auto"
-            and self.nbtriage_model_backend is None
-        ):
-            raise ValueError("auto capability annotations require a configured model transport")
         return self

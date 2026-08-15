@@ -1,6 +1,6 @@
 # 模型 Provider 支持矩阵
 
-最后更新：2026-08-14
+最后更新：2026-08-15
 
 这份矩阵描述 NoneBot Triage Agent 的受控 B1 单次结构化输出与 B4 单步原生工具调用，不代表 Pydantic AI
 或厂商 SDK 的全部能力。Pydantic AI `ModelProfile` 负责模型传输能力和默认结构化输出方式；每一行只按
@@ -15,56 +15,81 @@
 - **不支持**：尚无实现、明确不满足 native schema / 零工具边界，或尚未进入计划。
 
 已采纳的产品契约要求每轮非空 `triage` 请求默认经过受限语义 assessment，不设产品级模型启用开关。
-传输无关的 v5 请求投影与输出 schema、一次性失败关闭 service、固定 Prompt 的结构化 Pydantic AI Agent client
+传输无关的 v7 请求投影与输出 schema、一次性失败关闭 service、固定 Prompt 的结构化 Pydantic AI Agent client
 和确定性 router 已经实现；模型只产出 signals，不产出 action 或 authorization。插件 runtime 必须持有
 assessment service，首轮与续问每轮调用一次；通用 client 以 `output_mode=auto` 消费 ModelProfile，不维护
-第二份传输能力结构，也不会在失败后切换输出方式。router 签发的进程内授权绑定精确 `LiveReportRequest`，建单
-服务会在副作用前原子验证并一次性消费，不能重放或换请求。OpenCode Go semantic factory 与任务资格门
-已经实现；未配置 transport 时 unavailable service 仍 abstain 并保守澄清。这不是可选的
-词表产品模式。真实 API 资格绑定精确模型、调用上限、token 上限和费用预算。
+第二份传输能力结构，也不会在失败后切换输出方式。OpenCode Go semantic factory 与任务资格门已经实现；
+当前中文 Prompt v5 已通过精确绑定的 40 条 forward-heldout，schema、status 与 exact 均为 1.000，
+`QUALIFIED_SEMANTIC_TASKS` 只登记该精确组合。底层 factory 严格拒绝未资格组合，插件组装层把未资格
+任务变成 unavailable / abstain，且不会发起请求。这不是词表产品模式，也不能由 capability annotation 的
+provisional 资格推导。
 
 维护者已经单独批准语义 assessment 的数据类别：只允许发送当前单条、经规范化和模型前秘密守门的
 `triage` 请求文字。Reply / Thread 历史、身份与 scope、配置、环境变量、日志、源码、运行证据、能力索引和
 `restricted` 证据均不得进入请求。该数据批准本身不是任一 Provider/model 的“支持”证据。OpenCode Go 的
-精确 Provider/API/model/task、数美元资格预算和真实合成调用已由 ADR-0041 另行授权并通过 held-out Gate；
-其他组合仍没有可发起请求的资格。
+精确 Provider/API/model/task、数美元资格预算和真实合成调用已由 ADR-0041 另行授权；历史结果只属于当时
+精确 Prompt。当前中文 v7 Prompt v5 已通过自己的真实 forward-heldout，没有继承英文 Prompt v4 的资格。
 
-公开能力 Answer Agent 是另一项任务：router 选中 guidance 后，它只接收当前单条问题与已经在模型外过滤为
-public 的能力事实，返回带事实 ID 引用的自然语言回答。当前 OpenCode Go 实现已通过闭合 schema、秘密守门、
-单次 required output tool、零 retry、Provider 身份和 Handler 回退的离线合约，但还没有独立真实模型 held-out
-回答质量 Gate。因此它只作为当前 Bot 的受控 dogfood 能力，不继承 semantic assessment 的“支持”资格。
+普通用户 Bug 判定是独立任务，不继承 semantic assessment、guidance、能力注释或历史 B4 smoke 的资格。
+[ADR-0053](../adr/0053-allow-relevant-source-and-log-bodies-for-bug-assessment.md) 允许独立合格的 Bug Agent
+接收与本案相关的源码、关联日志、完整 traceback 和获准设计摘录，并要求这些部署证据在出站前清理秘密。
+[ADR-0060](../adr/0060-use-scope-thread-and-post-route-conversation-context.md) 另允许直接 Reply 进入路由后任务；
+[ADR-0061](../adr/0061-read-latest-bounded-conversation-window-for-bug-assessment.md) 把 Bug 聊天读取收窄为当前会话
+最新有界窗口，并允许投影会话关系所需的消息 / 用户 ID、角色和段元数据。聊天正文不做凭据或个人信息遮蔽；
+平台 transport envelope 不进入。[ADR-0065](../adr/0065-only-expose-conversation-history-for-supported-platforms.md)
+进一步规定：只有已绑定真实历史 Provider 时才暴露聊天工具，其他平台不使用本地滚动窗口模拟能力。
+当前已经实现 Pydantic AI 原生 Agent / Tools、闭合 candidate schema、确定性 reconciliation、有界源码 / 日志 /
+设计 / 对话工具、LocalStore reviewed catalog 与插件运行接线。中文 Prompt v6 与 v7 的冻结失败结果不回写、
+不重算，也不向新 Prompt 继承。Prompt v8 先用 5 条 development case 验证“没有会话历史 Provider 时不调用
+不存在的工具”等边界，再只运行一次全新的 16 条 forward-heldout。该正式 Gate 的 schema、verdict、occurrence、
+responsibility、citation、budget、usage、scenario 与 safety 均为 1.000，16 / 16 通过；共消耗 166,393 input /
+6,116 output tokens、5,724 microUSD。`QUALIFIED_BUG_TASKS` 只登记这一个精确组合，完整 trajectory 仅保存在
+本地 `reports/`。
+2026-08-14 的 OpenCode Go 官方资料列出
+`deepseek-v4-flash` 不用于训练、保留为 0 天，
+同时注明 ZDR 当期只有效至 2026-08-31；后续资格运行必须重新核对，不能从 semantic 支持行永久继承。
+
+公开能力 Answer Agent 是另一项任务：router 选中 guidance 后，它接收当前单条问题、模型外过滤为 public 的
+能力事实、经 Evidence 闭包校验的公开教学注释，以及有界的首轮 / 直接 Reply 可见正文，返回带事实 ID 引用的自然语言回答。Conversation Context
+只能消歧，不能成为能力事实或权限。当前 v2 实现已通过闭合 schema、单次 required output tool、零 retry、
+Provider 身份和 Handler 回退的离线合约，并完成 Reply 指代与恶意 Reply 权限覆盖两条真实 smoke；仍没有独立
+held-out 回答质量 Gate，因此只属于 provisional dogfood。
 
 `evaluate-b4-real` 已提供 DeepSeek Responses、OpenAI Responses 与 Anthropic Messages 的同模型多 trial
 harness。报告显式绑定 Prompt/schema/policy/source revision 与冻结 regression / forward-hidden split；
 B1/B4 后验结构拒绝作为 trial 失败计量，只有无法恢复 usage/cost 等边界才中止整场。DeepSeek 首轮因响应后 usage 审计缺口失败关闭；run-2 又在约 32.5 秒后以 `cost_unknown`
 失败且没有 partial。run-3 的新审计保留了 10 个 attempt、9 个 response、527 microUSD 已知费用与最后一个
 未知响应，但仍无 success report。三次失败都不构成质量或 Provider 线上资格证据。OpenAI 与 Anthropic
-尚未执行。OpenCode Go 的 B4 历史 smoke 不构成产品资格；只有独立 `support-semantic-v5` held-out Gate
-支持下表的 semantic-assessment 行。
+尚未执行。OpenCode Go 的 B4、semantic v6 / 英文 v7 Prompt v4 与 Bug 英文 Prompt v4 / v5 历史结果都不能
+继承给当前中文 Prompt。
 
-插件保留窄 transport 身份与预算配置，但已删除产品级 `enabled` 字段。未配置 backend/model 表示没有
-transport，runtime 因此装配 unavailable service；这不是用户可切换的“关闭 semantic assessment”模式。
+插件保留窄 transport 身份与预算配置，但已删除产品级 `enabled` 字段。未配置 backend/model 时，semantic、
+教学注释与 Answer 子服务进入 unavailable，完整插件仍可通过商城式无私有密钥导入并保留确定性能力索引；
+已配置 transport 但缺少密钥或任务资格不匹配时，对应模型增强记录降级而不阻断启动。这不是独立的产品开关。
 现有 `QUALIFIED_PLUGIN_MODELS` 仍只是 B1 的精确 `(backend, model)` 注册表且当前为空。semantic assessment
 使用独立的 `QUALIFIED_SEMANTIC_TASKS`，绑定 Provider、API 族、精确 model、task/schema/Prompt、隐私策略、
-预算与评测 revision，并已接入 semantic service factory。Tool/Native 支持及默认选择只在 Pydantic AI
-ModelProfile 中表达。测试注入 fake service只验证调用编排，不改变资格表。
+预算与评测 revision，并已接入 semantic service factory；当前集合只含中文 Prompt v5 的精确组合。
+Bug 使用独立的精确资格集合，当前只含中文 Prompt v8 的精确组合。Tool/Native 支持及默认选择只在 Pydantic AI ModelProfile 中表达。测试注入 fake service 只验证
+调用编排，不改变资格表。
 
 ## 当前矩阵
 
 | Provider | API 族 | model / profile | 安装依赖 | 离线合约 | 获授权线上门 | 当前状态 | 主要证据或缺口 |
 |---|---|---|---|---|---|---|---|
-| OpenAI | Responses | 尚未固定发布模型；profile 必须声明 native JSON Schema 与 function tools | `openai`：`pydantic-ai-slim[openai]==2.27.0`；底层 SDK 由 Pydantic AI extra 声明，基础 wheel 不安装模型依赖 | B1 Direct Request JSON Schema 与 B4 `function_call` 假 HTTP 合约通过 | 未执行新 adapter 资格实测 | 实验性 | `tests/test_model_adapters.py`、`tests/test_agent_provider_adapters.py`；线上门未完成，不能作为默认 Provider |
-| DeepSeek | Responses | `deepseek-v4-flash` 滚动别名；`reasoning=none`；`temperature=0`；Provider wire 不承诺 OpenAI strict 字段 | 仓库 `maintainer` group：`pydantic-ai-slim[openai]==2.27.0`；底层 OpenAI SDK 由该 Provider extra 声明；使用显式 `DeepSeekProvider` 和固定官方 endpoint；不提供插件 extra，适配器不进入 wheel | B1 Direct Request 原生 JSON Schema 与 B4 `function_call` 假 HTTP 合约通过；`store=false`、零 SDK retry、usage / request ID / cost 归一化已覆盖；B4 参数仍由 Pydantic 与领域层本地复核 | 有旧直接 SDK B1 工件；三次正式 B4 Gate 均失败关闭且无完整报告。run-3 partial 证明可恢复已知响应/费用与未知请求边界，但不提供 promotion decision | 实验性 | 仅供维护者评测；`tools/nbtriage_maintainer/deepseek_adapter.py`、`src/nbtriage/pydantic_agent_adapter.py`、三份中止记录与离线 tests；滚动别名和未完成线上门阻止正式支持 |
-| Anthropic | Messages | 尚未固定发布模型；profile 必须声明 native JSON Schema 与 tools；离线合约使用 `claude-sonnet-4-5` | `anthropic`：`pydantic-ai-slim[anthropic]==2.27.0`；底层 SDK 由 Pydantic AI extra 声明，基础 wheel 与 `openai` extra 均不安装 Anthropic SDK | B1 native JSON Schema 与 B4 `tool_use` 假 HTTP 合约通过 | 未执行资格实测 | 实验性 | `tests/test_model_adapters.py`、`tests/test_agent_provider_adapters.py`；线上门未完成，离线模型名不构成发布承诺 |
+| OpenAI | Responses | 尚未固定发布模型；profile 必须声明 native JSON Schema 与 function tools | `openai`：`pydantic-ai-slim[openai]==2.28.0`；底层 SDK 由 Pydantic AI extra 声明，基础 wheel 不安装模型依赖 | B1 Direct Request JSON Schema 与 B4 `function_call` 假 HTTP 合约通过 | 未执行新 adapter 资格实测 | 实验性 | `tests/test_model_adapters.py`、`tests/test_agent_provider_adapters.py`；线上门未完成，不能作为默认 Provider |
+| DeepSeek | Responses | `deepseek-v4-flash` 滚动别名；`reasoning=none`；`temperature=0`；Provider wire 不承诺 OpenAI strict 字段 | 仓库 `maintainer` group：`pydantic-ai-slim[openai]==2.28.0`；底层 OpenAI SDK 由该 Provider extra 声明；使用显式 `DeepSeekProvider` 和固定官方 endpoint；不提供插件 extra，适配器不进入 wheel | B1 Direct Request 原生 JSON Schema 与 B4 `function_call` 假 HTTP 合约通过；`store=false`、零 SDK retry、usage / request ID / cost 归一化已覆盖；B4 参数仍由 Pydantic 与领域层本地复核 | 有旧直接 SDK B1 工件；三次正式 B4 Gate 均失败关闭且无完整报告。run-3 partial 证明可恢复已知响应/费用与未知请求边界，但不提供 promotion decision | 实验性 | 仅供维护者评测；`tools/nbtriage_maintainer/deepseek_adapter.py`、`src/nbtriage/pydantic_agent_adapter.py`、三份中止记录与离线 tests；滚动别名和未完成线上门阻止正式支持 |
+| Anthropic | Messages | 尚未固定发布模型；profile 必须声明 native JSON Schema 与 tools；离线合约使用 `claude-sonnet-4-5` | `anthropic`：`pydantic-ai-slim[anthropic]==2.28.0`；底层 SDK 由 Pydantic AI extra 声明，基础 wheel 与 `openai` extra 均不安装 Anthropic SDK | B1 native JSON Schema 与 B4 `tool_use` 假 HTTP 合约通过 | 未执行资格实测 | 实验性 | `tests/test_model_adapters.py`、`tests/test_agent_provider_adapters.py`；线上门未完成，离线模型名不构成发布承诺 |
 | Google | GenAI | 未选择 | 未定义 | 未执行 | 未执行 | 不支持 | 候选后续 API 族，尚无 adapter |
 | 任意第三方 | OpenAI-compatible Chat / Responses | 任意 URL / 模型 | 不提供 | 未执行 | 未执行 | 不支持 | 必须逐 Provider、API 族和 model profile 新增行，禁止由兼容标签继承支持 |
-| OpenCode Go | Chat Completions | `deepseek-v4-flash`；non-thinking；required 单一 Pydantic AI Agent output tool；60 秒 / 240 token；Prompt v5 | 复用 `openai` extra：`pydantic-ai-slim[openai]==2.27.0`；不声明内容重复的 OpenCode Go extra | 假 HTTP 覆盖最小 payload、Agent `output_type` 生成的唯一 tool、零 retry、身份/usage/费用与本地双层校验 | taxonomy v5 冻结后首次运行全新 40 条、未写入 Prompt 的纯合成 held-out：schema / status 1.000、全字段精确匹配 0.975；40 请求；50,197 / 3,774 token；1,782 microUSD | 支持 | 仅限 `support-semantic-v5-prompt-v1` 与 `opencode-go-heldout-40-20260813-v5-taxonomy`；滚动模型别名或任一 profile 变化必须重跑 Gate；详见 ADR-0046 |
-| OpenCode Go | Chat Completions | `deepseek-v4-flash`；non-thinking；required 单一 `PublicGuidanceAnswer` output tool；60 秒 / 240 token；Prompt `public-guidance-answer-v1-prompt-v1` | 复用 `openai` extra | 闭合问题 / public facts 输入、唯一 output tool、秘密零请求、引用 ID 校验、零 retry、Provider 身份与 Handler 确定性回退均通过；无工具 | 1 条纯公开“搜图用法”真实 smoke 成功；尚未执行独立真实模型 held-out 回答质量 Gate | 实验性 | 仅用于当前 Bot 受控 dogfood；任务记录为 `opencode-go-public-guidance-smoke-1-20260814-v1`，不能继承上一行 semantic 资格；详见 ADR-0048 |
-| OpenCode Go | Chat Completions | `deepseek-v4-flash`；non-thinking；Pydantic AI Agent 结构化 claims / constraints；60 秒 / 240 token；Prompt `capability-teaching-annotation-v1-prompt-v1` | 复用 `openai` extra | 运行时记录先行、有界已加载源码与 deny-list 后配置投影、Evidence 引用闭包、零业务工具、零 retry、公开文本去实现细节与 LocalStore 无源码 cache 已通过本地合同测试 | 尚未执行真实 Provider held-out；不继承 semantic 或 Answer Agent 资格 | 实验性 | 仅在部署者显式选择 `NBTRIAGE_CAPABILITY_ANNOTATION_MODE=auto` 时用于受控 dogfood；加载失败、未观察到或 restricted 能力不会进入任务 |
+| OpenCode Go | Chat Completions | `deepseek-v4-flash`；non-thinking；required 单一 Pydantic AI Agent output tool；60 秒 / 240 token；中文 `support-semantic-v7-prompt-v5-zh` | 复用 `openai` extra：`pydantic-ai-slim[openai]==2.28.0`；不声明内容重复的 OpenCode Go extra | 假 HTTP 覆盖最小 payload、Agent `output_type` 生成的唯一 tool、零 retry、身份/usage/费用与本地双层校验 | 40 条独立 forward-heldout：schema / status / exact 均为 1.000；81,920 input / 3,736 output tokens；1,667 microUSD | 受控试用 | `QUALIFIED_SEMANTIC_TASKS` 只含 `opencode-go-forward-heldout-40-20260815-v7-prompt-v5-zh-e` 精确组合 |
+| OpenCode Go | Chat Completions | `deepseek-v4-flash`；non-thinking；Pydantic AI Agent `BugAssessmentCandidate` output tool + 会话 / 运行 / 日志 / 源码 / 设计 / 部署只读 Tools；120 秒 / 800 output token；中文 Prompt `bug-assessment-agent-v1-prompt-v8-zh` | 复用 `openai` extra | 原生 Tool / `prepare` 收缩、最新 conversation 窗口、闭合参数与 output、零 Provider retry、一次 output correction、Evidence ID / revision reconciliation、请求 / token / 费用上限均通过离线合同；最多 9 请求、1 次独立聊天 + 6 次通用证据读取；没有历史 Provider 时初始信封明确禁止调用不存在的聊天工具；Provider 并行越界调用不读取证据 | 全新 16 条 forward-heldout：schema、verdict、occurrence、responsibility、citation、budget、usage、scenario、safety 均 1.000；166,393 input / 6,116 output tokens、5,724 microUSD | 受控试用 | `QUALIFIED_BUG_TASKS` 只含 `opencode-go-bug-forward-heldout-16-20260815-v1-prompt-v8-zh-d` 精确组合；聊天正文与必要身份关系不遮蔽，源码 / 日志仍清理；详见 ADR-0050、0053、0060、0061、0064、0065 |
+| OpenCode Go | Chat Completions | `deepseek-v4-flash`；non-thinking；required 单一 `PublicGuidanceAnswer` output tool；60 秒 / 240 token；中文 Prompt `public-guidance-answer-v2-prompt-v2-zh` | 复用 `openai` extra | 闭合 question / conversation_context / public facts 输入、唯一 output tool、事实引用校验、零 retry、Provider 身份与 Handler 确定性回退均通过；无工具 | 中文 Prompt 的纯合成最小真实 smoke 已通过并正确引用公开 fact；尚无独立 held-out | 实验性 | 仅用于受控 dogfood；任务记录为 `pending-opencode-go-public-guidance-v2-prompt-v2-zh`，不能继承 semantic 资格；详见 ADR-0048、0060 |
+| OpenCode Go | Chat Completions | `deepseek-v4-flash`；non-thinking；Pydantic AI Agent 结构化 claims / constraints / 单一 `{command}` 展示形式；最多 6 请求 / 5 次证据工具 / 120k total token / 0.05 美元；60 秒 / 512 output token；中文 Prompt `capability-teaching-annotation-v1-prompt-v5-zh` | `openai` extra 同时安装 Pydantic AI Harness 0.20.0 与 Jedi 0.20.0 | runtime / ast-grep / 内存配置首包、Triage 维护的 Uninfo 常用 Permission 稳定语义、只读 FileSystem、Direct Jedi、动态 Evidence 引用闭包、插件与文件 revision 复核、公开文本去实现细节、无正文 cache 与 data 展示 YAML 投影已通过本地合同测试；真实最小 smoke 在 240 token 下截断，改用独立 512-token 预算后成功返回 4 条 claim 与 1 条 constraint | 中文 Prompt 尚未执行真实 Provider held-out；不继承 semantic 或 Answer Agent 资格 | 实验性 | 作为插件强制后台链用于受控 dogfood；任务记录为 `opencode-go-capability-agent-contract-v6-zh-local`；`.env*`、凭据、教学日志、人工帮助和评测 Gold 不可读；加载失败、未观察到或 restricted 能力不会进入任务，生成 YAML 尚未接入 Migut Help |
 
 ## 既有 B4 测试 transport 与本次资格的关系
 
-OpenCode Go 现在仅以 ADR-0046 的 `support-semantic-v5` 精确组合进入上表。仓库另保留一条 B4-only 测试
+OpenCode Go 当前只有任务级实现；`support-semantic-v7` 中文 Prompt v5 与 Bug Prompt v8 已分别进入自己的精确资格集合。仓库另保留
+一条 B4-only 测试
 transport，用于在获授权时探索
 真实模型的 tool calling：固定 Go Chat endpoint、`OPENCODE_API_KEY`、`deepseek-v4-flash`、非思考模式、
 `parallel_tool_calls=false`、一次请求和零 SDK retry，并用独立审计身份归一化返回 model、request ID、
@@ -152,6 +177,11 @@ DeepSeek 的 `deepseek-v4-flash` 不是固定 snapshot。后续每份真实报�
 - [ADR-0042：由 Pydantic AI ModelProfile 决定结构化输出方式](../adr/0042-use-pydantic-ai-model-profile-for-structured-output.md)
 - [ADR-0043：分离支持目标、现象陈述与维护证据深度](../adr/0043-separate-support-goals-observations-and-maintenance-depth.md)
 - [ADR-0044：语义 assessment 直接使用 Pydantic AI Agent output_type](../adr/0044-use-pydantic-ai-agent-output-type-for-support-semantics.md)
+- [ADR-0052：把 Bug 定义到整个 Bot 软件责任链](../adr/0052-define-bug-across-the-bot-software-responsibility-chain.md)
+- [ADR-0053：允许 Bug Agent 使用相关源码与日志正文](../adr/0053-allow-relevant-source-and-log-bodies-for-bug-assessment.md)
+- [ADR-0060：用作用域 Thread 承接一次补充并在路由后投影会话上下文](../adr/0060-use-scope-thread-and-post-route-conversation-context.md)
+- [ADR-0061：为 Bug 判断读取当前会话最新有界聊天窗口](../adr/0061-read-latest-bounded-conversation-window-for-bug-assessment.md)
+- [ADR-0065：只为明确支持的平台提供 Bug 会话历史工具](../adr/0065-only-expose-conversation-history-for-supported-platforms.md)
 - [ADR-0012：让 Pydantic AI Deferred Tools 位于领域 Agent runtime 之后](../adr/0012-use-pydantic-ai-deferred-tools-behind-domain-runtime.md)
 - [有界 Agent 单步与恢复流程](flows/bounded-agent-step.md)
 - [OpenCode Go](https://opencode.ai/docs/go/)

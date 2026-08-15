@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "bug-assessment-v1-development-v7-20260815-a",
+  "split": "development",
+  "bug_schema_version": 1,
+  "synthetic_only": true,
+  "contains_real_user_data": false,
+  "qualification_contract": {
+    "provider": "opencode-go",
+    "model": "deepseek-v4-flash",
+    "task": "bug-assessment-agent-v1",
+    "schema_version": 1,
+    "prompt_id": "bug-assessment-agent-v1-prompt-v7-zh",
+    "prompt_sha256": "8026165a6c1824fc03ff94e6a7c1e911e8930ba4aab8659e52d0be184ca0c807",
+    "privacy_policy": "bounded-visible-conversation-source-log-design-v1",
+    "budget_profile": "agent-9req-1conversation-plus-6evidence-tool-output-correction-120k-0.50usd-v3"
+  },
+  "cases": [
+    {
+      "case_id": "d01-single-runtime-filename-loss",
+      "coverage": [
+        "conversation_latest_window",
+        "conversation_speaker_identity_and_roles"
+      ],
+      "request_text": "请结合群里最新消息判断：成员发出的 report-final.pdf 被机器人转发成了 download，这是不是 Bug？",
+      "adapter": "OneBot V11",
+      "subject_id": "file_bridge.forward",
+      "source_revision": "source-development-v7-a",
+      "contract_revision": "contract-development-v7-a",
+      "deployment_generation": "deployment-development-v7-a",
+      "reply": [],
+      "conversation_pages": [
+        {
+          "schema_version": 1,
+          "evidence_id": "conversation-window-d01",
+          "kind": "conversation_context",
+          "source": "fixture-latest-window",
+          "body": "{\"schema_version\":2,\"page_number\":1,\"availability\":\"complete\",\"adapter\":\"OneBot V11\",\"platform\":\"qq\",\"conversation_type\":\"group\",\"conversation_id\":\"group-development-1\",\"bot_id\":\"bot-development-1\",\"request_actor_id\":\"user-maintainer\",\"request_actor_roles\":[\"admin\"],\"messages\":[{\"schema_version\":2,\"message_id\":\"msg-1\",\"reply_to_message_id\":null,\"sent_at\":1786752000,\"sender_id\":\"user-member\",\"sender_name\":\"测试成员\",\"sender_roles\":[\"member\"],\"is_bot\":false,\"is_request_actor\":false,\"is_current_request\":false,\"segment_types\":[\"file\",\"text\"],\"content\":\"发送文件 report-final.pdf\"},{\"schema_version\":2,\"message_id\":\"msg-2\",\"reply_to_message_id\":\"msg-1\",\"sent_at\":1786752001,\"sender_id\":\"bot-development-1\",\"sender_name\":\"测试机器人\",\"sender_roles\":[],\"is_bot\":true,\"is_request_actor\":false,\"is_current_request\":false,\"segment_types\":[\"file\"],\"content\":\"发送文件 download\"},{\"schema_version\":2,\"message_id\":\"msg-3\",\"reply_to_message_id\":\"msg-2\",\"sent_at\":1786752002,\"sender_id\":\"user-maintainer\",\"sender_name\":\"维护者\",\"sender_roles\":[\"admin\"],\"is_bot\":false,\"is_request_actor\":true,\"is_current_request\":true,\"segment_types\":[\"text\"],\"content\":\"请结合最新消息判断文件名丢失是不是 Bug\"}],\"has_more\":false,\"partial\":false}",
+          "revision": "conversation-development-v7-a",
+          "current": true,
+          "partial": false
+        }
+      ],
+      "evidence": {
+        "public": [
+          {
+            "schema_version": 1,
+            "evidence_id": "contract-d01",
+            "kind": "public_contract",
+            "source": "fixture-contract",
+            "body": "文件桥接的公开合同：输入文件存在可见文件名时，转发消息必须保留该文件名。",
+            "revision": "contract-development-v7-a",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "runtime": [
+          {
+            "schema_version": 1,
+            "evidence_id": "runtime-d01",
+            "kind": "runtime_observation",
+            "source": "fixture-runtime-correlation",
+            "body": "同一条完整且未丢失的 correlation 记录：输入可见文件名 report-final.pdf；输出文件名 download；handler 与发送 API 均完成，无外部服务错误。",
+            "revision": "deployment-development-v7-a",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "logs": [],
+        "source": [
+          {
+            "schema_version": 1,
+            "evidence_id": "source-d01",
+            "kind": "source_code",
+            "source": "fixture-bot-integration",
+            "body": "Bot 集成层的转换函数在构造统一文件段时固定写入 name='download'，没有传递输入段已有的可见文件名。",
+            "revision": "source-development-v7-a",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "design": [],
+        "deployment": []
+      },
+      "expected_conversation_tool_calls": 1,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "bug",
+      "expected_occurrence": "single_observed",
+      "expected_responsibility_candidates": [
+        "bot_integration"
+      ]
+    }
+  ]
+}

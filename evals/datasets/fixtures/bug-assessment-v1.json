@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "bug-assessment-v1-development-8",
+  "split": "development",
+  "bug_schema_version": 1,
+  "synthetic_only": true,
+  "contains_real_user_data": false,
+  "cases": [
+    {
+      "case_id": "d01-target-plugin-repeated",
+      "request_text": "提醒昨晚连续发送了两次，请判断是不是 Bug。",
+      "adapter": "OneBot V11", "subject_id": "reminder.send", "source_revision": "src-r1", "contract_revision": "contract-r1", "deployment_generation": "deploy-r1",
+      "evidence": {
+        "public": [{"schema_version":1,"evidence_id":"d01.public","kind":"public_contract","source":"fixture:public","body":"Contract: one scheduled reminder produces exactly one outgoing message.","revision":"contract-r1","current":true,"partial":false}],
+        "runtime": [],
+        "logs": [{"schema_version":1,"evidence_id":"d01.log","kind":"correlated_log","source":"fixture:log","body":"same_signature_count=3; complete retention window; handler emitted twice for one schedule_id.","revision":"log-r1","current":true,"partial":false}],
+        "source": [{"schema_version":1,"evidence_id":"d01.source","kind":"source_code","source":"fixture:source","body":"relative_path=reminder/handler.py\nTarget plugin source registers the same reminder callback twice and both registrations call send().","revision":"src-r1","current":true,"partial":false}],
+        "design": [], "deployment": []
+      },
+      "expected_verdict": "bug", "expected_occurrence": "repeated", "expected_responsibility_candidates": ["target_plugin"]
+    },
+    {
+      "case_id": "d02-adapter-single",
+      "request_text": "刚才引用回复发到了错误消息上，请判断是不是 Bug。",
+      "adapter": "OneBot V11", "subject_id": "reply.quote", "source_revision": "src-r2", "contract_revision": "contract-r2", "deployment_generation": "deploy-r2",
+      "evidence": {
+        "public": [{"schema_version":1,"evidence_id":"d02.public","kind":"public_contract","source":"fixture:public","body":"Contract: a reply must quote the exact inbound message selected by the user.","revision":"contract-r2","current":true,"partial":false}],
+        "runtime": [],
+        "logs": [{"schema_version":1,"evidence_id":"d02.log","kind":"correlated_log","source":"fixture:log","body":"same_signature_count=1; buffer_dropped_count=0; adapter encoded reply_id=old-42 instead of selected=new-77.","revision":"log-r2","current":true,"partial":false}],
+        "source": [{"schema_version":1,"evidence_id":"d02.source","kind":"source_code","source":"fixture:source","body":"relative_path=adapter/reply.py\nAdapter integration uses cached previous_message_id when constructing the reply segment. Responsibility: adapter.","revision":"src-r2","current":true,"partial":false}],
+        "design": [], "deployment": []
+      },
+      "expected_verdict": "bug", "expected_occurrence": "single_observed", "expected_responsibility_candidates": ["adapter"]
+    },
+    {
+      "case_id": "d03-public-precondition",
+      "request_text": "普通群员执行清理命令被拒绝，这是不是 Bug？",
+      "adapter": "OneBot V11", "subject_id": "cleanup.run", "source_revision": "src-r3", "contract_revision": "contract-r3", "deployment_generation": "deploy-r3",
+      "evidence": {
+        "public": [{"schema_version":1,"evidence_id":"d03.public","kind":"public_contract","source":"fixture:public","body":"Public contract: cleanup requires the caller to be a group administrator.","revision":"contract-r3","current":true,"partial":false}],
+        "runtime": [{"schema_version":1,"evidence_id":"d03.runtime","kind":"runtime_observation","source":"fixture:runtime","body":"One attempt; permission check returned caller_role=member and denied before handler.","revision":"run-r3","current":true,"partial":false}],
+        "logs": [], "source": [], "design": [], "deployment": []
+      },
+      "expected_verdict": "not_bug", "expected_occurrence": "single_observed", "expected_responsibility_candidates": ["user_input"]
+    },
+    {
+      "case_id": "d04-intentional-config",
+      "request_text": "当前部署没有发送欢迎消息，请判断是不是 Bug。",
+      "adapter": "OneBot V11", "subject_id": "welcome.send", "source_revision": "src-r4", "contract_revision": "contract-r4", "deployment_generation": "deploy-r4",
+      "evidence": {
+        "public": [{"schema_version":1,"evidence_id":"d04.public","kind":"public_contract","source":"fixture:public","body":"Contract: welcome messages are emitted only when the deployment enables the welcome feature.","revision":"contract-r4","current":true,"partial":false}],
+        "runtime": [], "logs": [], "source": [], "design": [],
+        "deployment": [{"schema_version":1,"evidence_id":"d04.deploy","kind":"deployment_context","source":"fixture:deployment","body":"Safe derived state: welcome feature intentionally disabled by operator policy; no execution attempted.","revision":"deploy-r4","current":true,"partial":false}]
+      },
+      "expected_verdict": "not_bug", "expected_occurrence": "unknown", "expected_responsibility_candidates": ["intentional_configuration"]
+    },
+    {
+      "case_id": "d05-external-transient",
+      "request_text": "天气查询刚才提示上游暂时不可用，这算 Bug 吗？",
+      "adapter": "OneBot V11", "subject_id": "weather.query", "source_revision": "src-r5", "contract_revision": "contract-r5", "deployment_generation": "deploy-r5",
+      "evidence": {
+        "public": [], "runtime": [],
+        "logs": [{"schema_version":1,"evidence_id":"d05.log","kind":"correlated_log","source":"fixture:log","body":"same_signature_count=1; buffer_dropped_count=0; upstream returned HTTP 503; Bot caught it and returned the documented retry message.","revision":"log-r5","current":true,"partial":false}],
+        "source": [],
+        "design": [{"schema_version":1,"evidence_id":"d05.design","kind":"design_rag","source":"fixture:design","body":"Design: one upstream 503 is a transient external-service failure when the Bot catches it and emits the retry response; it is not a Bot software defect.","revision":"design-r5","current":true,"partial":false}],
+        "deployment": []
+      },
+      "expected_verdict": "not_bug", "expected_occurrence": "single_observed", "expected_responsibility_candidates": ["external_service"]
+    },
+    {
+      "case_id": "d06-missing-expectation",
+      "request_text": "点歌刚才没回复，请判断是不是 Bug。",
+      "adapter": "OneBot V11", "subject_id": "music.play", "source_revision": "src-r6", "contract_revision": "contract-r6", "deployment_generation": "deploy-r6",
+      "evidence": {
+        "public": [], "runtime": [],
+        "logs": [{"schema_version":1,"evidence_id":"d06.log","kind":"correlated_log","source":"fixture:log","body":"same_signature_count=1; buffer_dropped_count=0; request entered matcher; no exception recorded.","revision":"log-r6","current":true,"partial":false}],
+        "source": [], "design": [], "deployment": []
+      },
+      "expected_verdict": "unknown", "expected_occurrence": "single_observed", "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "d07-partial-log",
+      "request_text": "语音转写失败多次，是不是 Bug？",
+      "adapter": "OneBot V11", "subject_id": "speech.transcribe", "source_revision": "src-r7", "contract_revision": "contract-r7", "deployment_generation": "deploy-r7",
+      "evidence": {
+        "public": [{"schema_version":1,"evidence_id":"d07.public","kind":"public_contract","source":"fixture:public","body":"Contract: valid audio should yield text or a documented user-facing rejection.","revision":"contract-r7","current":true,"partial":false}],
+        "runtime": [],
+        "logs": [{"schema_version":1,"evidence_id":"d07.log","kind":"correlated_log","source":"fixture:log","body":"same_signature_count=4; buffer_dropped_count=7; traceback tail only.","revision":"log-r7","current":true,"partial":true}],
+        "source": [], "design": [], "deployment": []
+      },
+      "expected_verdict": "unknown", "expected_occurrence": "unknown", "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "d08-deployment-code",
+      "request_text": "机器人刚才把同一事件处理了两次，请判断是不是 Bug。",
+      "adapter": "OneBot V11", "subject_id": "bot.dispatch", "source_revision": "src-r8", "contract_revision": "contract-r8", "deployment_generation": "deploy-r8",
+      "evidence": {
+        "public": [],
+        "runtime": [{"schema_version":1,"evidence_id":"d08.runtime","kind":"runtime_observation","source":"fixture:runtime","body":"same event_id reached two Bot integration dispatchers; repeated in three correlations.","revision":"run-r8","current":true,"partial":false}],
+        "logs": [],
+        "source": [{"schema_version":1,"evidence_id":"d08.source","kind":"source_code","source":"fixture:source","body":"relative_path=deployment/bootstrap.py\nDeployment integration registers the adapter event bridge twice during startup. Responsibility: deployment_code.","revision":"src-r8","current":true,"partial":false}],
+        "design": [{"schema_version":1,"evidence_id":"d08.design","kind":"design_rag","source":"fixture:design","body":"Design: each adapter event_id must enter the Bot integration dispatcher exactly once.","revision":"design-r8","current":true,"partial":false}],
+        "deployment": []
+      },
+      "expected_verdict": "bug", "expected_occurrence": "repeated", "expected_responsibility_candidates": ["deployment_code"]
+    }
+  ]
+}

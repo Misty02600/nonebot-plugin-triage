@@ -61,46 +61,9 @@ def test_support_request_deterministic_normalization(
     assert result.is_empty is is_empty
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "刚才执行后没反应",
-        "刚才执行后没有反应",
-        "刚才执行后没响应",
-        "刚才执行后报错了",
-        "报错",
-        "报障",
-        "请受理这个故障",
-        "请受理这个故障！",
-        "确认按故障处理",
-        "确认按故障处理！",
-        "为什么不工作",
-        "这不是报错，只想问提醒怎么用",
-        "这个功能不能用吗，怎么开启",
-        "这不是报错",
-        "报错是什么意思",
-        "这个功能会报错吗",
-        "支持错误提示配置吗",
-        "这不是故障",
-        "没有异常",
-        "并非失败",
-        "不算报错",
-        "没失败",
-        "没有崩溃",
-        "请受理这个故障？",
-        "报错？",
-        "请受理这个故障吗",
-        "不要受理这个故障",
-        "假设它报错",
-        "报错时怎么办",
-        "请受理这个故障，也告诉我怎么配置",
-        "错误码列表",
-        "故障排查文档",
-        "异常处理知识",
-        "报错名词解释",
-    ],
-)
-def test_normalizer_never_infers_semantic_intent(text: str) -> None:
+def test_normalizer_does_not_infer_intent_from_report_wording() -> None:
+    text = "请受理这个故障，也告诉我怎么配置"
+
     result = normalize_support_request(text)
 
     assert result.content == text

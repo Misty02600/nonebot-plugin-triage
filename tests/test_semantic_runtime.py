@@ -11,21 +11,6 @@ from nonebot_plugin_triage.semantic_runtime import (
 )
 
 
-def test_semantic_qualification_contains_task_policy_not_transport_capabilities() -> None:
-    qualification = OPENCODE_GO_SEMANTIC_QUALIFICATION
-
-    assert frozenset({qualification}) == QUALIFIED_SEMANTIC_TASKS
-    assert qualification.provider == "opencode-go"
-    assert qualification.api_family == "chat-completions"
-    assert qualification.model == "deepseek-v4-flash"
-    assert qualification.task == "support-semantic-v5"
-    assert qualification.schema_version == 5
-    assert qualification.prompt_id == "support-semantic-v5-prompt-v1"
-    assert qualification.privacy_policy == "current-request-text-only-v1"
-    assert qualification.budget_profile == "single-call-60s-240-v1"
-    assert qualification.evaluation == "opencode-go-heldout-40-20260813-v5-taxonomy"
-
-
 def _config(model: str = "deepseek-v4-flash") -> NBTriageConfig:
     return NBTriageConfig(
         nbtriage_model_backend="opencode-go-chat",
@@ -33,6 +18,16 @@ def _config(model: str = "deepseek-v4-flash") -> NBTriageConfig:
         nbtriage_model_timeout_seconds=60,
         nbtriage_model_max_output_tokens=240,
     )
+
+
+def test_chinese_prompt_uses_its_exact_product_qualification_gate() -> None:
+    qualification = OPENCODE_GO_SEMANTIC_QUALIFICATION
+
+    assert qualification.task == "support-semantic-v7"
+    assert qualification.schema_version == 7
+    assert qualification.prompt_id == "support-semantic-v7-prompt-v5-zh"
+    assert qualification.evaluation == "opencode-go-forward-heldout-40-20260815-v7-prompt-v5-zh-e"
+    assert frozenset({qualification}) == QUALIFIED_SEMANTIC_TASKS
 
 
 def test_semantic_factory_requires_exact_task_qualification_before_secret() -> None:
@@ -46,16 +41,11 @@ def test_semantic_factory_requires_exact_task_qualification_before_secret() -> N
 
 def test_semantic_factory_requires_opencode_key_without_exposing_it() -> None:
     with pytest.raises(SemanticRuntimeConfigurationError, match="OPENCODE_API_KEY"):
-        create_opencode_go_semantic_client_factory(_config(), environ={})
-
-
-def test_semantic_factory_is_lazy_and_creates_a_fresh_single_call_client() -> None:
-    factory = create_opencode_go_semantic_client_factory(
-        _config(),
-        environ={"OPENCODE_API_KEY": "fixture-key"},
-    )
-
-    assert factory() is not factory()
+        create_opencode_go_semantic_client_factory(
+            _config(),
+            environ={},
+            qualified_tasks=frozenset({OPENCODE_GO_SEMANTIC_QUALIFICATION}),
+        )
 
 
 @pytest.mark.parametrize(
@@ -77,4 +67,5 @@ def test_semantic_factory_requires_the_qualified_runtime_profile(
         create_opencode_go_semantic_client_factory(
             NBTriageConfig.model_validate(payload),
             environ={"OPENCODE_API_KEY": "fixture-key"},
+            qualified_tasks=frozenset({OPENCODE_GO_SEMANTIC_QUALIFICATION}),
         )

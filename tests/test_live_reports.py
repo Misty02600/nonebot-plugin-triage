@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import pytest
 from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
+from nbtriage import support_routing
 from nbtriage.incident_queries import IncidentQueryService
 from nbtriage.live_incidents import LiveIncidentBuffer
 from nbtriage.live_trials import LiveTrialService, TrialAuditEvent, TrialMode
@@ -59,11 +60,7 @@ def make_request(
 
 
 def handle_authorized(service: LiveReportService, request: LiveReportRequest):
-    routing = route_support_assessment(
-        _incident_outcome(),
-        trusted_runtime_failure=request.reply_reference is not None,
-        incident_request_binding=request,
-    )
+    routing = _legacy_incident_routing(request)
     authorization = routing.incident_authorization
     assert authorization is not None
     return service.handle(
@@ -79,9 +76,20 @@ def _incident_outcome() -> SupportAssessmentOutcome:
         SupportSemanticAssessment(
             schema_version=SUPPORT_SEMANTIC_SCHEMA_VERSION,
             status=SupportAssessmentStatus.ASSESSED,
-            goals=(SupportGoal.INCIDENT_INTAKE,),
+            goals=(SupportGoal.BUG_ASSESSMENT,),
             reported_observation=True,
         ),
+    )
+
+
+def _legacy_incident_routing(request: LiveReportRequest):
+    outcome = _incident_outcome()
+    assessment = outcome.assessment
+    assert assessment is not None
+    return support_routing._authorized_incident_decision(  # pyright: ignore[reportPrivateUsage]
+        outcome.execution_status,
+        assessment,
+        request,
     )
 
 
@@ -177,7 +185,6 @@ def test_report_service_rejects_missing_router_authorization_before_side_effects
                 reported_observation=False,
             ),
         ),
-        incident_request_binding=make_request(),
     )
 
     assert unresolved.incident_authorization is None
@@ -192,11 +199,7 @@ def test_report_service_rejects_missing_router_authorization_before_side_effects
 def test_report_authorization_is_bound_to_exact_request_and_consumed_on_mismatch() -> None:
     service, _, incidents = make_service()
     authorized_request = make_request(actor_scope="actor-a")
-    routing = route_support_assessment(
-        _incident_outcome(),
-        trusted_runtime_failure=True,
-        incident_request_binding=authorized_request,
-    )
+    routing = _legacy_incident_routing(authorized_request)
     authorization = routing.incident_authorization
     assert authorization is not None
 
@@ -219,11 +222,7 @@ def test_report_authorization_is_bound_to_exact_request_and_consumed_on_mismatch
 def test_report_authorization_can_create_at_most_one_incident() -> None:
     service, _, incidents = make_service(failed=True)
     request = make_request()
-    routing = route_support_assessment(
-        _incident_outcome(),
-        trusted_runtime_failure=True,
-        incident_request_binding=request,
-    )
+    routing = _legacy_incident_routing(request)
     authorization = routing.incident_authorization
     assert authorization is not None
 
@@ -255,11 +254,7 @@ def test_service_rechecks_reply_failure_before_rate_limit_or_incident_id(
 
     service, _, incidents = make_service(id_factory=next_id)
     request = make_request(reply_reference=reply_reference)
-    routing = route_support_assessment(
-        _incident_outcome(),
-        trusted_runtime_failure=True,
-        incident_request_binding=request,
-    )
+    routing = _legacy_incident_routing(request)
     authorization = routing.incident_authorization
     assert authorization is not None
 
@@ -283,11 +278,7 @@ def test_service_rechecks_failed_outcome_before_rate_limit_or_incident_id() -> N
 
     service, _, incidents = make_service(failed=False, id_factory=next_id)
     request = make_request()
-    routing = route_support_assessment(
-        _incident_outcome(),
-        trusted_runtime_failure=True,
-        incident_request_binding=request,
-    )
+    routing = _legacy_incident_routing(request)
     authorization = routing.incident_authorization
     assert authorization is not None
 
@@ -303,18 +294,10 @@ def test_service_rechecks_failed_outcome_before_rate_limit_or_incident_id() -> N
 
 
 def test_unlinked_or_unresolved_report_cannot_obtain_incident_authorization() -> None:
-    for request in (
-        make_request(reply_reference=None),
-        make_request(reply_reference="unknown-message"),
-    ):
-        decision = route_support_assessment(
-            _incident_outcome(),
-            trusted_runtime_failure=False,
-            incident_request_binding=request,
-        )
+    decision = route_support_assessment(_incident_outcome())
 
-        assert decision.action is not SupportRoutingAction.OPEN_INCIDENT
-        assert decision.incident_authorization is None
+    assert decision.action is not SupportRoutingAction.OPEN_INCIDENT
+    assert decision.incident_authorization is None
 
 
 def test_repeated_authorized_report_has_no_second_incident_cooldown() -> None:

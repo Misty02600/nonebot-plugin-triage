@@ -37,11 +37,11 @@
       "distribution": "local_only"
     },
     {
-      "id": "nonebot-docs-2.5",
+      "id": "nonebot-docs-2.5.0",
       "component": "nonebot2",
       "kind": "user_docs",
-      "applicability": "declared_range",
-      "version": "2.5.*",
+      "applicability": "exact_version",
+      "version": "2.5.0",
       "revision": "c0f9a494bcd308c2ec530ba60c167f9145d21aec",
       "source_url": "https://github.com/nonebot/nonebot2",
       "root": "nonebot2",

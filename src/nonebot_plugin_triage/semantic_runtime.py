@@ -74,7 +74,7 @@ def create_opencode_go_semantic_client_factory(
     )
     if qualification not in qualified_tasks:
         raise SemanticRuntimeConfigurationError(
-            "semantic model is not qualified for support-semantic-v5"
+            "semantic model is not qualified for support-semantic-v7"
         )
     if config.nbtriage_model_timeout_seconds != OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS:
         raise SemanticRuntimeConfigurationError(

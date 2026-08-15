@@ -50,7 +50,7 @@ from nbtriage.safety import detect_case_safety_risks
 
 AGENT_RUN_SCHEMA_VERSION = 2
 AGENT_STEP_SCHEMA_VERSION = 1
-AGENT_PROMPT_ID = "b4-bounded-evidence-v1"
+AGENT_PROMPT_ID = "b4-bounded-evidence-v2-zh"
 AGENT_ACTION_SCHEMA_ID = "b4-agent-action-v1"
 AGENT_POLICY_ID = "b4-bounded-evidence-policy-v1"
 
@@ -532,7 +532,7 @@ class AgentStepRequest(_AgentModel):
     schema_version: Literal[1] = AGENT_STEP_SCHEMA_VERSION
     provider: str
     model: str
-    prompt_id: Literal["b4-bounded-evidence-v1"] = AGENT_PROMPT_ID
+    prompt_id: Literal["b4-bounded-evidence-v2-zh"] = AGENT_PROMPT_ID
     run_id: str
     case_id: str
     case_input: dict[str, Any]

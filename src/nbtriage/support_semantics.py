@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-SUPPORT_SEMANTIC_SCHEMA_VERSION = 5
+SUPPORT_SEMANTIC_SCHEMA_VERSION = 7
 SUPPORT_REQUEST_TEXT_MAX_CHARS = 8_000
 
 
@@ -19,7 +19,7 @@ class SupportGoal(StrEnum):
 
     GUIDANCE = "guidance"
     BEHAVIOR_EXPLORATION = "behavior_exploration"
-    INCIDENT_INTAKE = "incident_intake"
+    BUG_ASSESSMENT = "bug_assessment"
     FEATURE_FEEDBACK = "feature_feedback"
 
 
@@ -61,7 +61,7 @@ class SupportAssessmentRequest(_StrictContractModel):
     历史消息及运行证据都不属于此请求，也不能借由新增字段混入传输负载。
     """
 
-    schema_version: Literal[5]
+    schema_version: Literal[7]
     request_text: Annotated[
         str,
         Field(min_length=1, max_length=SUPPORT_REQUEST_TEXT_MAX_CHARS, repr=False),
@@ -85,7 +85,7 @@ class SupportAssessmentRequest(_StrictContractModel):
 class SupportSemanticAssessment(_StrictContractModel):
     """语义理解结果，只表达多目标需求和是否报告了实际现象。"""
 
-    schema_version: Literal[5]
+    schema_version: Literal[7]
     status: SupportAssessmentStatus
     goals: Annotated[tuple[SupportGoal, ...], Field(max_length=len(SupportGoal))]
     reported_observation: bool

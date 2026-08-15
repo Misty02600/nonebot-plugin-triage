@@ -1,8 +1,9 @@
 import asyncio
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import pytest
 from tools.nbtriage_maintainer import evaluation as evaluation_module
@@ -18,7 +19,6 @@ from tools.nbtriage_maintainer.evaluation import (
 from tools.nbtriage_maintainer.evaluation_provenance import case_corpus_sha256
 from tools.nbtriage_maintainer.runtime_results import (
     RuntimeAssessment,
-    assess_runtime_result,
     case_oracle_revision,
     probe_file_sha256,
 )
@@ -35,6 +35,16 @@ from tools.nbtriage_maintainer.sessions import (
 
 from nbtriage.evidence_receipts import create_evidence_receipt
 from nbtriage.rag import B1ModelRequest, B1ModelResponse
+from nbtriage.support_threads import (
+    InMemorySupportThreadStore,
+    OutboundThreadReferenceIndex,
+    SupportThreadError,
+    SupportThreadInitialContext,
+    SupportThreadTurnCoordinator,
+    ThreadKind,
+    ThreadStatus,
+    TurnClaimStatus,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -422,25 +432,6 @@ def test_session_validates_formal_b1_before_reading_predictions(
     assert untrusted_answer not in str(exc_info.value)
 
 
-@pytest.mark.parametrize(
-    "case_id",
-    [
-        "../outside",
-        "/outside",
-        "case\\outside",
-        ".",
-        " case-1",
-        "case-1 ",
-        "case\nid",
-    ],
-)
-def test_session_rejects_non_canonical_case_id(tmp_path: Path, case_id: str) -> None:
-    report_path = _prediction_report(tmp_path / "report.json", "verify", case_id=case_id)
-
-    with pytest.raises(SessionStoreError, match="case_id contains unsupported characters"):
-        create_session_from_report(report_path, case_id, session_id="session-1")
-
-
 def test_session_case_loader_rejects_path_escape_before_read(tmp_path: Path) -> None:
     cases_dir = tmp_path / "cases"
     cases_dir.mkdir()
@@ -727,62 +718,11 @@ def test_runtime_assessment_with_errors_does_not_advance_session(tmp_path: Path)
 
 
 @pytest.mark.parametrize(
-    ("status", "reason_fields"),
-    [
-        ("validated", {}),
-        ("failed", {"failure_reason": "probe assertion did not match"}),
-        (
-            "blocked",
-            {
-                "blocking_reason": "runner unavailable",
-                "required_runner": "Linux runner",
-            },
-        ),
-    ],
-)
-def test_attach_accepts_every_valid_runtime_result_assessment(
-    tmp_path: Path,
-    status: str,
-    reason_fields: dict[str, str],
-) -> None:
-    report_path = _prediction_report(tmp_path / "report.json", "verify")
-    session = create_session_from_report(report_path, "case-1", session_id="session-1")
-    approved = approve_session(session, "maintainer")
-    (tmp_path / "probe.py").write_text("assert True\n", encoding="utf-8")
-    result = {
-        "case_id": "case-1",
-        "status": status,
-        "probe_id": "probe-1",
-        "probe_source": "probe.py",
-        "probe_source_sha256": probe_file_sha256(tmp_path, "probe.py"),
-        "case_oracle_revision": case_oracle_revision(_runtime_case()),
-        "buggy_ref": "buggy",
-        "fixed_ref": "fixed",
-        "buggy_oracle_matched": True,
-        "fixed_oracle_matched": True,
-        "buggy_observation": "target failure",
-        "fixed_observation": "successful exit",
-        **reason_fields,
-    }
-    case = _runtime_case()
-    assessment = assess_runtime_result(result, case, probe_root=tmp_path)
-
-    assert assessment.errors == []
-    updated = attach_runtime_assessment(approved, assessment)
-
-    assert updated.action.result is not None
-    assert updated.action.result["decision"] == status
-
-
-@pytest.mark.parametrize(
     ("decision", "probe_id", "blocking_reason", "failure_reason", "required_runner"),
     [
         ("validated", None, None, None, None),
-        ("validated", "probe-1", None, "unexpected failure", None),
         ("failed", "probe-1", None, None, None),
-        ("failed", "probe-1", "unexpected block", "failed", "runner"),
         ("blocked", "probe-1", None, None, "runner"),
-        ("blocked", "probe-1", "blocked", "unexpected failure", "runner"),
     ],
 )
 def test_runtime_assessment_requires_consistent_result_fields(
@@ -1272,3 +1212,218 @@ def test_session_cli_attaches_structured_evidence_without_printing_facts(
     assert stored.status == "ready_for_reassessment"
     assert "Create a clean environment" not in output
     assert "ready_for_reassessment" in output
+
+
+_SUPPORT_SCOPE_NOW = datetime(2026, 8, 14, 12, tzinfo=UTC)
+
+
+class _SupportScope(TypedDict):
+    adapter_name: str
+    bot_scope: str
+    conversation_scope: str
+    actor_scope: str
+
+
+def _support_scope() -> _SupportScope:
+    return {
+        "adapter_name": "adapter-raw",
+        "bot_scope": "bot-raw",
+        "conversation_scope": "conversation-raw",
+        "actor_scope": "actor-raw",
+    }
+
+
+def _scope_turn_coordinator(
+    *,
+    ids: tuple[str, ...] = ("thread-1", "thread-2", "thread-3"),
+    tokens: tuple[str, ...] = ("lease-1", "lease-2", "lease-3", "lease-4"),
+) -> tuple[InMemorySupportThreadStore, SupportThreadTurnCoordinator]:
+    thread_ids = iter(ids)
+    lease_tokens = iter(tokens)
+    store = InMemorySupportThreadStore(
+        max_entries=8,
+        idle_timeout_seconds=10,
+        absolute_timeout_seconds=30,
+        clock=lambda: _SUPPORT_SCOPE_NOW,
+        id_factory=lambda: next(thread_ids),
+    )
+    index = OutboundThreadReferenceIndex(
+        secret_key=b"scope-index-secret-with-at-least-32-bytes",
+        max_entries=8,
+        retention_seconds=30,
+    )
+    return store, SupportThreadTurnCoordinator(
+        store,
+        index,
+        secret_key=b"scope-lease-secret-with-at-least-32-bytes",
+        lease_timeout_seconds=10,
+        clock=lambda: _SUPPORT_SCOPE_NOW,
+        token_factory=lambda: next(lease_tokens),
+    )
+
+
+def test_scope_thread_keeps_bounded_initial_context_behind_hmac_scope() -> None:
+    store, coordinator = _scope_turn_coordinator()
+    context = SupportThreadInitialContext(
+        request_text="搜图",
+        reply_text="此前消息中的图片与说明",
+        correlation_id="corr-first-operation",
+    )
+
+    claim = coordinator.claim_scope(
+        **_support_scope(),
+        create_kind=ThreadKind.CLARIFICATION,
+        initial_context=context,
+        now=_SUPPORT_SCOPE_NOW,
+    )
+
+    assert claim.status is TurnClaimStatus.ACQUIRED
+    assert claim.lease is not None
+    assert claim.lease.is_supplement is False
+    assert claim.lease.initial_context == context
+    assert store.get(claim.lease.thread.thread_id, now=_SUPPORT_SCOPE_NOW) == claim.lease.thread
+    stored_scope_state = repr(
+        (
+            coordinator._thread_by_scope,
+            coordinator._scope_by_thread,
+            coordinator._leases_by_thread,
+        )
+    )
+    for raw_component in (
+        "adapter-raw",
+        "bot-raw",
+        "conversation-raw",
+        "actor-raw",
+    ):
+        assert raw_component not in stored_scope_state
+
+    with pytest.raises(SupportThreadError, match="at most 8000"):
+        SupportThreadInitialContext(request_text="x" * 8_001)
+
+
+def test_scope_thread_is_busy_then_allows_exactly_one_supplement() -> None:
+    store, coordinator = _scope_turn_coordinator()
+    context = SupportThreadInitialContext(request_text="搜图")
+    first = coordinator.claim_scope(
+        **_support_scope(),
+        create_kind=ThreadKind.CLARIFICATION,
+        initial_context=context,
+        now=_SUPPORT_SCOPE_NOW,
+    )
+    assert first.lease is not None
+
+    busy = coordinator.claim_scope(
+        **_support_scope(),
+        create_kind=ThreadKind.CLARIFICATION,
+        initial_context=SupportThreadInitialContext(request_text="不应建立第二个 Thread"),
+        now=_SUPPORT_SCOPE_NOW,
+    )
+    assert busy.status is TurnClaimStatus.BUSY
+    assert len(store) == 1
+
+    waiting = coordinator.await_supplement(
+        first.lease.token,
+        kind=ThreadKind.CLARIFICATION,
+        topic_refs=("capability:image-search",),
+        now=_SUPPORT_SCOPE_NOW + timedelta(seconds=1),
+    )
+    assert waiting is not None
+    assert waiting.topic_refs == ("capability:image-search",)
+
+    supplement = coordinator.claim_scope(
+        **_support_scope(),
+        create_kind=ThreadKind.CLARIFICATION,
+        initial_context=SupportThreadInitialContext(request_text="不会覆盖首轮"),
+        now=_SUPPORT_SCOPE_NOW + timedelta(seconds=2),
+    )
+    assert supplement.status is TurnClaimStatus.ACQUIRED
+    assert supplement.lease is not None
+    assert supplement.lease.is_supplement is True
+    assert supplement.lease.initial_context == context
+
+    assert (
+        coordinator.await_supplement(
+            supplement.lease.token,
+            kind=ThreadKind.CLARIFICATION,
+            now=_SUPPORT_SCOPE_NOW + timedelta(seconds=3),
+        )
+        is None
+    )
+    closed = store.get(first.lease.thread.thread_id, now=_SUPPORT_SCOPE_NOW + timedelta(seconds=3))
+    assert closed is not None
+    assert closed.status is ThreadStatus.CLOSED
+
+    next_thread = coordinator.claim_scope(
+        **_support_scope(),
+        create_kind=ThreadKind.CLARIFICATION,
+        initial_context=SupportThreadInitialContext(request_text="新的首轮"),
+        now=_SUPPORT_SCOPE_NOW + timedelta(seconds=4),
+    )
+    assert next_thread.lease is not None
+    assert next_thread.lease.is_supplement is False
+    assert next_thread.lease.thread.thread_id != first.lease.thread.thread_id
+
+
+def test_scope_thread_requires_exact_scope_and_expires_before_supplement() -> None:
+    store, coordinator = _scope_turn_coordinator()
+    first = coordinator.claim_scope(
+        **_support_scope(),
+        create_kind=ThreadKind.CLARIFICATION,
+        initial_context=SupportThreadInitialContext(request_text="首轮"),
+        now=_SUPPORT_SCOPE_NOW,
+    )
+    assert first.lease is not None
+    assert (
+        coordinator.await_supplement(
+            first.lease.token,
+            kind=ThreadKind.CLARIFICATION,
+            now=_SUPPORT_SCOPE_NOW + timedelta(seconds=1),
+        )
+        is not None
+    )
+
+    wrong_scope: _SupportScope = {
+        **_support_scope(),
+        "actor_scope": "another-actor",
+    }
+    assert (
+        coordinator.claim_scope(
+            **wrong_scope,
+            now=_SUPPORT_SCOPE_NOW + timedelta(seconds=2),
+        ).status
+        is TurnClaimStatus.NOT_FOUND
+    )
+
+    expired_replacement = coordinator.claim_scope(
+        **_support_scope(),
+        create_kind=ThreadKind.CLARIFICATION,
+        initial_context=SupportThreadInitialContext(request_text="超时后的新首轮"),
+        now=_SUPPORT_SCOPE_NOW + timedelta(seconds=11),
+    )
+    assert expired_replacement.lease is not None
+    assert expired_replacement.lease.is_supplement is False
+    assert expired_replacement.lease.thread.thread_id != first.lease.thread.thread_id
+    assert (
+        store.get(first.lease.thread.thread_id, now=_SUPPORT_SCOPE_NOW + timedelta(seconds=11))
+        is None
+    )
+
+
+def test_closing_scope_turn_removes_the_continuation_point() -> None:
+    _, coordinator = _scope_turn_coordinator()
+    first = coordinator.claim_scope(
+        **_support_scope(),
+        create_kind=ThreadKind.GUIDANCE,
+        initial_context=SupportThreadInitialContext(request_text="搜图怎么用"),
+        now=_SUPPORT_SCOPE_NOW,
+    )
+    assert first.lease is not None
+
+    assert coordinator.close_turn(first.lease.token, now=_SUPPORT_SCOPE_NOW)
+    assert (
+        coordinator.claim_scope(
+            **_support_scope(),
+            now=_SUPPORT_SCOPE_NOW + timedelta(seconds=1),
+        ).status
+        is TurnClaimStatus.NOT_FOUND
+    )

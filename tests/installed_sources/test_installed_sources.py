@@ -11,16 +11,11 @@ import pytest
 from nbtriage.installed_sources import (
     InstalledComponentSpec,
     InstalledSourceError,
-    RelationPrecision,
     SourceAvailability,
     SourceBinding,
-    SourceRelationKind,
-    build_installed_source_snapshot,
-    expand_relations,
-    inspect_symbol,
     public_framework_spec,
     resolve_installed_source,
-    search_symbols,
+    resolve_source_inventory,
 )
 
 
@@ -87,35 +82,6 @@ def _fixture(tmp_path: Path) -> tuple[InstalledComponentSpec, _Distribution]:
     return spec, distribution
 
 
-def test_builds_static_api_and_call_graph_without_importing(tmp_path: Path) -> None:
-    spec, distribution = _fixture(tmp_path)
-    assert "public_framework" not in sys.modules
-
-    snapshot = build_installed_source_snapshot(spec, distribution=distribution)
-
-    assert "public_framework" not in sys.modules
-    assert snapshot.revision.availability is SourceAvailability.AVAILABLE
-    assert snapshot.revision.version == "1.2.3"
-    assert snapshot.revision.files[0].locator == "public_framework/__init__.py"
-    assert all("tmp" not in item.source.locator for item in snapshot.symbols)
-    hits = search_symbols(snapshot, "public_api")
-    assert hits[0].symbol.canonical_path == "public_framework.api.public_api"
-    assert hits[0].symbol.signature == "public_api(value: str) -> str"
-    evidence = inspect_symbol(snapshot, hits[0].symbol.symbol_id)
-    assert evidence is not None
-    assert "return normalize(value)" in evidence.text
-    relations = expand_relations(
-        snapshot,
-        "public_framework.api.public_api",
-        kinds=(SourceRelationKind.CALLS,),
-    )
-    assert any(
-        relation.target_symbol == "public_framework.helpers.normalize"
-        and relation.precision is RelationPrecision.PRECISE
-        for relation in relations
-    )
-
-
 def test_content_change_invalidates_revision(tmp_path: Path) -> None:
     spec, distribution = _fixture(tmp_path)
     before = resolve_installed_source(spec, distribution=distribution)
@@ -140,7 +106,9 @@ def test_editable_source_url_is_not_exposed(tmp_path: Path) -> None:
     assert "/Users/private/bot" not in repr(revision)
 
 
-def test_editable_install_reads_existing_src_tree_without_importing(tmp_path: Path) -> None:
+def test_editable_install_inventory_reads_existing_src_tree_without_importing(
+    tmp_path: Path,
+) -> None:
     project = tmp_path / "checkout"
     package = project / "src" / "public_framework"
     package.mkdir(parents=True)
@@ -166,16 +134,16 @@ def test_editable_install_reads_existing_src_tree_without_importing(tmp_path: Pa
     assert loaded.__spec__.submodule_search_locations is not None
     loaded.__spec__.submodule_search_locations[:] = [str(package)]
 
-    snapshot = build_installed_source_snapshot(
+    inventory = resolve_source_inventory(
         spec,
         distribution=distribution,
         loaded_modules={"public_framework": loaded},
     )
 
-    assert snapshot.revision.origin.value == "editable"
-    assert snapshot.revision.binding is SourceBinding.RUNTIME_BOUND
-    assert snapshot.revision.files[0].locator == "public_framework/__init__.py"
-    assert search_symbols(snapshot, "installed_api")
+    assert inventory.revision.origin.value == "editable"
+    assert inventory.revision.binding is SourceBinding.RUNTIME_BOUND
+    assert inventory.revision.files[0].locator == "public_framework/__init__.py"
+    assert inventory.files[0].path == package / "__init__.py"
     assert "public_framework" not in sys.modules
 
 
@@ -247,39 +215,6 @@ def test_loaded_regular_install_is_bound_to_distribution_entry(tmp_path: Path) -
     assert revision.binding is SourceBinding.RUNTIME_BOUND
 
 
-def test_unresolved_external_alias_does_not_break_package(tmp_path: Path) -> None:
-    spec, distribution = _fixture(tmp_path)
-    init = tmp_path / "public_framework" / "__init__.py"
-    init.write_text(
-        "from unknown_external import External\nfrom .api import public_api\n", encoding="utf-8"
-    )
-
-    snapshot = build_installed_source_snapshot(spec, distribution=distribution)
-
-    external = next(item for item in snapshot.symbols if item.path == "public_framework.External")
-    assert external.alias_target == "unknown_external.External"
-    assert external.signature is None
-    assert search_symbols(snapshot, "public_api")
-
-
-def test_partially_resolved_external_alias_chain_does_not_break_package(
-    tmp_path: Path,
-) -> None:
-    spec, distribution = _fixture(tmp_path)
-    (tmp_path / "public_framework" / "types.py").write_text(
-        "from typing import Any\n",
-        encoding="utf-8",
-    )
-    distribution._files.append(_PackagePath("public_framework/types.py"))
-    init = tmp_path / "public_framework" / "__init__.py"
-    init.write_text("from .api import public_api\nfrom .types import Any\n", encoding="utf-8")
-
-    snapshot = build_installed_source_snapshot(spec, distribution=distribution)
-
-    assert search_symbols(snapshot, "public_api")
-    assert any(item.path == "public_framework.Any" for item in snapshot.symbols)
-
-
 def test_rejects_distribution_paths_outside_import_root(tmp_path: Path) -> None:
     spec, distribution = _fixture(tmp_path)
     secret = tmp_path / "secret.py"
@@ -289,30 +224,6 @@ def test_rejects_distribution_paths_outside_import_root(tmp_path: Path) -> None:
     revision = resolve_installed_source(spec, distribution=distribution)
 
     assert all("secret" not in item.locator for item in revision.files)
-
-
-def test_real_alconna_installation_resolves_public_alias() -> None:
-    spec = public_framework_spec("nonebot-plugin-alconna")
-
-    snapshot = build_installed_source_snapshot(spec)
-
-    hits = search_symbols(snapshot, "on_alconna", limit=5)
-    assert snapshot.revision.version.startswith("0.62.")
-    assert any(item.symbol.path == "nonebot_plugin_alconna.on_alconna" for item in hits)
-    assert any(
-        item.kind is SourceRelationKind.ALIASES
-        and item.source_symbol == "nonebot_plugin_alconna.on_alconna"
-        and item.target_symbol == "nonebot_plugin_alconna.matcher.on_alconna"
-        for item in snapshot.relations
-    )
-
-
-def test_real_nonebot_installation_resolves_public_command_factory() -> None:
-    snapshot = build_installed_source_snapshot(public_framework_spec("nonebot2"))
-
-    hits = search_symbols(snapshot, "on_command", limit=8)
-    assert snapshot.revision.version.startswith("2.5.")
-    assert any(item.symbol.path == "nonebot.on_command" for item in hits)
 
 
 def test_public_framework_catalog_rejects_arbitrary_distribution() -> None:

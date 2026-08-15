@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import cast
 
+import pytest
+
 from nbtriage.support_semantics import (
     SUPPORT_SEMANTIC_SCHEMA_VERSION,
     SupportAssessmentExecutionStatus,
@@ -11,7 +13,12 @@ from nbtriage.support_semantics import (
     SupportGoal,
     SupportSemanticAssessment,
 )
-from nonebot_plugin_triage.semantic_assessment import SemanticAssessmentService
+from nonebot_plugin_triage.config import NBTriageConfig
+from nonebot_plugin_triage.semantic_assessment import (
+    SemanticAssessmentService,
+    create_semantic_assessment_service,
+)
+from nonebot_plugin_triage.semantic_runtime import SemanticRuntimeConfigurationError
 
 
 def _request(text: str = "提醒为什么没有响应？") -> SupportAssessmentRequest:
@@ -46,6 +53,34 @@ class _Client:
 def test_unavailable_service_is_the_default_fail_closed_path() -> None:
     outcome = asyncio.run(SemanticAssessmentService(None, timeout_seconds=1).assess(_request()))
 
+    assert outcome.execution_status is SupportAssessmentExecutionStatus.TRANSPORT_UNAVAILABLE
+    assert outcome.assessment is None
+
+
+def test_unqualified_semantic_task_assembles_as_unavailable_without_calling_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = 0
+
+    def reject(_config: NBTriageConfig):
+        nonlocal called
+        called += 1
+        raise SemanticRuntimeConfigurationError("not qualified")
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.semantic_runtime.create_opencode_go_semantic_client_factory",
+        reject,
+    )
+    service = create_semantic_assessment_service(
+        NBTriageConfig(
+            nbtriage_model_backend="opencode-go-chat",
+            nbtriage_model_name="deepseek-v4-flash",
+        )
+    )
+
+    outcome = asyncio.run(service.assess(_request("这个怎么用？")))
+
+    assert called == 1
     assert outcome.execution_status is SupportAssessmentExecutionStatus.TRANSPORT_UNAVAILABLE
     assert outcome.assessment is None
 

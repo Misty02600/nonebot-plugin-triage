@@ -17,6 +17,11 @@ from nbtriage.capabilities import CapabilityIndexError, search_capability_index
 from nbtriage.evidence_receipts import EvidenceReceiptError, load_evidence_receipt
 from nbtriage.live_trials import LiveTrialError, summarize_trial_logs
 from nbtriage.model_contracts import B1ProviderError
+from nbtriage.opencode_go_semantic_adapter import (
+    OPENCODE_GO_SEMANTIC_MAX_OUTPUT_TOKENS,
+    OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS,
+    create_opencode_go_support_semantic_client,
+)
 from nbtriage.rag import B1Error
 from tools.nbtriage_maintainer.agent_evaluation import (
     AgentEvaluationError,
@@ -43,6 +48,10 @@ from tools.nbtriage_maintainer.bot_docs_evaluation import (
     DEFAULT_BOT_DOCS_FIXTURE_PATH,
     BotDocsEvaluationError,
     evaluate_bot_docs_retrieval,
+)
+from tools.nbtriage_maintainer.capability_teaching import (
+    CapabilityTeachingMaintenanceError,
+    analyze_capability_teaching,
 )
 from tools.nbtriage_maintainer.collector import ManifestError, collect_manifest
 from tools.nbtriage_maintainer.curation import (
@@ -91,6 +100,10 @@ from tools.nbtriage_maintainer.sessions import (
     attach_runtime_assessment,
     create_session_from_report,
     validate_case_id,
+)
+from tools.nbtriage_maintainer.support_semantic_evaluation import (
+    SupportSemanticEvaluationError,
+    evaluate_support_semantics,
 )
 from tools.nbtriage_maintainer.timeline import (
     enrich_gold_direct_commits,
@@ -263,6 +276,22 @@ def build_parser() -> argparse.ArgumentParser:
     bot_docs_evaluation_parser.add_argument(
         "--report", type=Path, default=Path("reports/bot-docs-retrieval.json")
     )
+
+    support_semantic_parser = subparsers.add_parser(
+        "evaluate-support-semantics",
+        help="Run the exact OpenCode Go support-semantic qualification contract.",
+    )
+    support_semantic_parser.add_argument(
+        "--fixtures",
+        type=Path,
+        default=Path("evals/datasets/fixtures/support-semantic-v7-forward-heldout.json"),
+    )
+    support_semantic_parser.add_argument("--report", type=Path, required=True)
+    support_semantic_parser.add_argument("--max-model-calls", type=_positive_int, default=40)
+    support_semantic_parser.add_argument(
+        "--declared-budget-usd", type=_positive_float, required=True
+    )
+    support_semantic_parser.add_argument("--confirm-paid-run", action="store_true")
 
     evaluation_parser = subparsers.add_parser(
         "evaluate-b0",
@@ -581,6 +610,18 @@ def build_parser() -> argparse.ArgumentParser:
     session_show_parser.add_argument(
         "--sessions-dir", type=Path, default=Path("artifacts/sessions")
     )
+
+    capability_teaching_parser = subparsers.add_parser(
+        "analyze-capability-teaching",
+        help="Generate teaching annotations for explicitly selected plugins in one Bot host.",
+    )
+    capability_teaching_parser.add_argument("--host-pyproject", type=Path, required=True)
+    capability_teaching_parser.add_argument(
+        "--plugin",
+        action="append",
+        required=True,
+        help="Exact loaded plugin module to analyze; repeat for multiple plugins.",
+    )
     return parser
 
 
@@ -614,6 +655,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_search_capabilities(args)
     if args.command == "evaluate-bot-docs-retrieval":
         return _run_evaluate_bot_docs_retrieval(args)
+    if args.command == "evaluate-support-semantics":
+        return _run_evaluate_support_semantics(args)
     if args.command == "evaluate-b0":
         return _run_evaluate_b0(args)
     if args.command == "evaluate-s3":
@@ -646,7 +689,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_session_attach_evidence(args)
     if args.command == "session-show":
         return _run_session_show(args)
+    if args.command == "analyze-capability-teaching":
+        return _run_analyze_capability_teaching(args)
     raise AssertionError(f"unhandled command: {args.command}")
+
+
+def _run_analyze_capability_teaching(args: argparse.Namespace) -> int:
+    try:
+        result = analyze_capability_teaching(
+            args.host_pyproject,
+            tuple(args.plugin),
+        )
+    except CapabilityTeachingMaintenanceError as error:
+        print(f"capability teaching analysis failed: {error}", file=sys.stderr)
+        return 1
+    print(result.to_json())
+    return 1 if result.failed else 0
 
 
 def _run_search_capabilities(args: argparse.Namespace) -> int:
@@ -977,6 +1035,53 @@ def _run_evaluate_bot_docs_retrieval(args: argparse.Namespace) -> int:
         f"{report['summary']['case_count']} case(s), "
         f"recall@5={hybrid['recall_at_5']:.3f}, "
         f"mrr={hybrid['mrr']:.3f}, "
+        f"gate={report['quality_gate']['status']}"
+    )
+    print(f"report: {args.report}")
+    return 0 if report["quality_gate"]["status"] == "passed" else 1
+
+
+def _run_evaluate_support_semantics(args: argparse.Namespace) -> int:
+    if not args.confirm_paid_run:
+        print(
+            "support semantic evaluation requires --confirm-paid-run",
+            file=sys.stderr,
+        )
+        return 2
+    api_key = os.environ.get("OPENCODE_API_KEY", "")
+    if not api_key.strip():
+        print("support semantic evaluation requires OPENCODE_API_KEY", file=sys.stderr)
+        return 1
+
+    model = "deepseek-v4-flash"
+    try:
+        _require_new_report_target(args.report)
+        report = asyncio.run(
+            evaluate_support_semantics(
+                args.fixtures,
+                client_factory=lambda: create_opencode_go_support_semantic_client(
+                    api_key=api_key,
+                    model=model,
+                    timeout_seconds=OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS,
+                    max_output_tokens=OPENCODE_GO_SEMANTIC_MAX_OUTPUT_TOKENS,
+                ),
+                provider="opencode-go",
+                model=model,
+                max_model_calls=args.max_model_calls,
+                declared_budget_usd=args.declared_budget_usd,
+            )
+        )
+        write_new_evaluation_report(args.report, report)
+    except (SupportSemanticEvaluationError, OSError, ValueError) as error:
+        print(f"support semantic evaluation failed: {error}", file=sys.stderr)
+        return 1
+
+    summary = report["summary"]
+    print(
+        "support semantic evaluation: "
+        f"{summary['case_count']} case(s), "
+        f"status={summary['status_accuracy']:.3f}, "
+        f"exact={summary['exact_match_rate']:.3f}, "
         f"gate={report['quality_gate']['status']}"
     )
     print(f"report: {args.report}")

@@ -60,19 +60,43 @@ NoneBot `SUPERUSER` 只决定当前事件是否可以读取维护者可见的能
 素材不复制进 MIT 核心；会动态执行 Python / Jinja / JavaScript 模板、第三方回调或全局预处理器的路径也
 不接入。
 
-产品仍以 NoneBot 本轮成功注册的 runtime snapshot 作为“当前可用”真相，不用静态扫描替代它。部署者显式设置
-`NBTRIAGE_CAPABILITY_ANNOTATION_MODE=auto` 后，启动后台任务才会从其中明确公开、平台已知、无分析问题且有
-观察到命令头的记录裁剪 handler EvidenceUnit，提取标准 Config 引用，在策略判定后瞬时投影值，并通过无业务
-工具的单次 Agent 结构化调用生成公开教学注释。源码只补充已注册记录：加载失败、未观察到或只在静态制品中
-存在的插件不会进入普通用户帮助；单项分析失败也不会隐藏其他已注册能力或阻断基础索引。
+产品仍以 NoneBot 本轮成功注册的 runtime snapshot 作为“当前可用”真相，不用静态扫描替代它。插件启动
+后台任务会从其中明确公开、平台已知、无分析问题且有
+观察到命令头的记录先进入教学分析。教学 Agent 会接收 runtime 命令结构、ast-grep
+Matcher 结构、已加载 handler 和内存配置投影组成的确定性 Evidence Pack；仅当首包不足时，才可通过共享
+只读 FileSystem 在批准根内 glob/search/read，或由 Jedi 从已读 Python 标识符转到当前环境依赖定义。源码
+只补充已注册记录：加载失败、未观察到或只在静态制品中存在的插件不会进入普通用户帮助；单项分析失败也
+不会隐藏其他已注册能力或阻断基础索引。
+
+插件源码中的 Matcher 注册、handler 装饰器、配置引用及 Rule / Permission / 限流候选由项目内固定、只读的
+ast-grep 规则提取；部署配置和模型都不能提交规则，也不开放 fix 或 rewrite。它只提供静态语法位置和候选
+关系，仍由 runtime snapshot 决定能力本轮是否存在，由 Triage 负责路径、预算、revision、Evidence 和
+partial / opaque 边界。
+
+宿主安装 Uninfo 时，静态首包还会临时解析 Permission 表达式的 import 绑定，把已
+确认来自 Uninfo 的 `MEMBER / ADMIN / OWNER` 与 `PRIVATE / GROUP / GUILD` 直接投影为角色 / 场景约束。
+最终索引不保存 import 来源；同名本地符号不会套用该语义。模型被要求直接使用这些稳定事实，不再为每个
+插件重复打开 Uninfo 源码；实际安装版本既不作为启用门，也不单独触发教学注释失效。高级动态 Permission
+继续保持 opaque，必要时才走 Jedi / 文件补读。当前映射已用 nonemigut 的 0.11.1 源码复核。
 
 `NBTRIAGE_RESTRICTED_CONFIG` 已实现为顶层 NoneBot 配置键的 JSON deny-list，运行时持有的
 `ConfigValuePolicy` 在任何值读取前按大小写不敏感顶层键判定，`__` 嵌套键按顶层整项限制。投影器只读
 已经存在、类型与源码 revision 均匹配的 Pydantic 配置实例，并拒绝 restricted、缺失、Secret、嵌套模型、
 自定义对象和超限值；不会调用 `get_plugin_config()`、validator、`model_dump()` 或任意属性逻辑。第一版不
-追踪绕过标准 Config 链的 `os.getenv()` 等读取；拿不到安全的有效值时保留 unknown。`off` 是默认值，不读取
-或发送源码与配置值；`auto` 是部署者对该专用后台任务的显式数据准入，并直接采用校验后的注释，不要求人工
-审核。LocalStore cache 只保存公开文本和证据指纹，不保存源码、配置值、Evidence ID 或源码位置。
+追踪绕过标准 Config 链的 `os.getenv()` 等读取；拿不到安全的有效值时保留 unknown。教学注释没有独立开关；
+配置了合格模型 transport 时建立该专用后台任务，未配置或模型运行配置不可用时跳过模型增强并保留确定性索引。
+生成后直接采用校验通过的注释，不要求人工审核。公开查询会把命中的注释作为
+事实交给无工具 Answer Agent 结合当前问题组织回答，只有 Answer 失败时才直接使用确定性注释模板；同一注释
+还会投影成独立的展示 YAML。LocalStore cache 只保存公开
+文本、请求指纹，以及动态 `read_file` Evidence 的 ID、相对位置和 revision 清单；它不保存源码正文或配置
+值。教学文件策略硬拒绝 `.env*`、凭据与数据库，并额外拒绝日志、Migut Help 人工 YAML、评测 Gold 和本任务
+生成的 help-display，避免秘密外发与评价数据泄漏。
+
+当前结构化注释还允许模型提交至多一个含字面量 `{command}` 的规范展示形式；确定性的 runtime 命令头会在
+模型外替换该占位符，模型不能改名或创造命令。插件把结果按当前 Migut Help 可读取的最小字段
+`name / module_name / commands[].name / display / description` 写入自己的 LocalStore
+`data/help-display/`，一插件一份 YAML。该目录与 Migut Help 配置目录相互独立，当前没有导入、监听或发布
+接线；生成文件仅用于观察首版效果，完整刷新时会由生成器直接覆盖。
 
 ## 后续来源接口
 
@@ -115,3 +139,5 @@ SUPERUSER 身份自动进入 LLM。真正执行仍由原插件自己的 Matcher�
 - [ADR-0029：由部署者 deny-list 控制相关配置值进入模型](../adr/0029-control-model-config-values-with-deployment-deny-list.md)
 - [ADR-0032：分离能力受众、平台范围与分析问题](../adr/0032-separate-capability-audience-analysis-and-platform-status.md)
 - [ADR-0034：区分 Matcher 事实与用户可观察能力](../adr/0034-distinguish-matchers-from-user-observable-capabilities.md)
+- [ADR-0058：用确定性证据与有界源码导航生成教学注释](../adr/0058-use-deterministic-evidence-and-bounded-navigation-for-teaching-annotations.md)
+- [ADR-0059：跨 Agent 链路共享只读证据访问工具](../adr/0059-share-read-only-evidence-access-across-agent-flows.md)

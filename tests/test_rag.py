@@ -170,10 +170,10 @@ def test_b1_request_explains_normalized_version_contract() -> None:
     )
 
     assert request.prompt_id == B1_PROMPT_ID
-    assert "Never include a package name" in request.system_instruction
+    assert "绝不能包含包名" in request.system_instruction
     assert request.response_schema["version_values"]["example"] == ["0.54.2", "3.12"]
     assert request.response_schema["citations"]["items"]["enum"] == []
-    assert "case_input.case_id identifies the target" in request.system_instruction
+    assert "case_input.case_id 只标识分析目标" in request.system_instruction
 
 
 def test_b1_runner_validates_and_caches_response(tmp_path: Path) -> None:

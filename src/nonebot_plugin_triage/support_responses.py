@@ -13,6 +13,7 @@ from nonebot_plugin_alconna.uniseg import Receipt
 from nonebot_plugin_triage.thread_references import (
     OutgoingThreadBinding,
     SupportThreadReferenceBridge,
+    is_scope_supplement_binding,
     pop_outgoing_thread_binding,
 )
 from nonebot_plugin_triage.universal_references import adapter_name, conversation_scope
@@ -128,29 +129,35 @@ async def finish_support_response(
     target: Target,
     thread_bridge: SupportThreadReferenceBridge,
 ) -> NoReturn:
-    """发送一次支持回复，并用发送回执结算可续接 Thread 后结束 Matcher。"""
+    """发送支持回复；同作用域补充按发送成功结算，旧式 Reply 续接仍校验回执。"""
     binding: OutgoingThreadBinding | None = pop_outgoing_thread_binding(current_matcher.state)
     binding_finalized = binding is None
     try:
         receipt = await matcher.send(message)
         if binding is not None:
-            try:
-                reference = resolve_outgoing_receipt(
-                    receipt,
-                    bot=bot,
-                    expected_target=target,
-                )
-            except Exception:
-                reference = None
-            if reference is not None:
-                thread_bridge.settle_outgoing_binding(
-                    binding,
-                    adapter_name=adapter_name(bot),
-                    bot_scope=str(bot.self_id),
-                    target=target,
-                    message_reference=reference,
-                )
+            if is_scope_supplement_binding(binding):
+                settled = thread_bridge.await_scope_supplement(binding)
                 binding_finalized = True
+                if not settled:
+                    thread_bridge.fail_outgoing_binding(binding)
+            else:
+                try:
+                    reference = resolve_outgoing_receipt(
+                        receipt,
+                        bot=bot,
+                        expected_target=target,
+                    )
+                except Exception:
+                    reference = None
+                if reference is not None:
+                    thread_bridge.settle_outgoing_binding(
+                        binding,
+                        adapter_name=adapter_name(bot),
+                        bot_scope=str(bot.self_id),
+                        target=target,
+                        message_reference=reference,
+                    )
+                    binding_finalized = True
     finally:
         if binding is not None and not binding_finalized:
             thread_bridge.fail_outgoing_binding(binding)

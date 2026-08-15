@@ -17,6 +17,7 @@ from nbtriage.runtime_observations import OPAQUE_ID_PATTERN
 
 _MAX_TOPIC_REFS = 16
 _MAX_TOPIC_REFS_BYTES = 1_024
+_MAX_INITIAL_CONTEXT_CHARS = 8_000
 
 
 class SupportThreadError(ValueError):
@@ -45,6 +46,22 @@ class TurnClaimStatus(StrEnum):
 
 
 @dataclass(frozen=True)
+class SupportThreadInitialContext:
+    """首轮求助留给唯一一次补充轮使用的有界正文上下文。"""
+
+    request_text: str
+    reply_text: str | None = None
+    correlation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _bounded_context_text(self.request_text, field_name="request_text")
+        if self.reply_text is not None:
+            _bounded_context_text(self.reply_text, field_name="reply_text")
+        if self.correlation_id is not None:
+            _opaque_id(self.correlation_id, field_name="correlation_id")
+
+
+@dataclass(frozen=True)
 class SupportThreadRecord:
     """不含聊天正文和平台身份的短期支持线程状态。"""
 
@@ -64,6 +81,8 @@ class SupportTurnLease:
     thread: SupportThreadRecord
     acquired_at: datetime
     expires_at: datetime
+    is_supplement: bool = True
+    initial_context: SupportThreadInitialContext | None = None
 
 
 @dataclass(frozen=True)
@@ -525,11 +544,12 @@ class OutboundThreadReferenceIndex:
 @dataclass(frozen=True)
 class _ActiveTurnLease:
     token_digest: str
-    reply_digest: str
+    reply_digest: str | None
     scope_digest: str
     thread: SupportThreadRecord
     acquired_at: datetime
     expires_at: datetime
+    is_supplement: bool
 
 
 class SupportThreadTurnCoordinator:
@@ -558,6 +578,9 @@ class SupportThreadTurnCoordinator:
         self._leases_by_thread: dict[str, _ActiveTurnLease] = {}
         self._thread_by_token: dict[str, str] = {}
         self._thread_by_reply: dict[str, str] = {}
+        self._thread_by_scope: dict[str, str] = {}
+        self._scope_by_thread: dict[str, str] = {}
+        self._initial_context_by_thread: dict[str, SupportThreadInitialContext] = {}
         self._pending_initials: dict[str, datetime] = {}
         self._lock = threading.RLock()
 
@@ -653,6 +676,76 @@ class SupportThreadTurnCoordinator:
             self.store.close(current.thread_id, now=current_time)
             return True
 
+    def claim_scope(
+        self,
+        *,
+        adapter_name: str,
+        bot_scope: str,
+        conversation_scope: str,
+        actor_scope: str,
+        create_kind: ThreadKind | None = None,
+        topic_refs: Iterable[str] = (),
+        initial_context: SupportThreadInitialContext | None = None,
+        now: datetime | None = None,
+    ) -> TurnClaimResult:
+        """取得同一作用域的处理轮；没有活动 Thread 时可原子创建首轮。
+
+        首轮调用方在需要用户补充时调用 :meth:`await_supplement`。同一作用域随后
+        只能再取得一次补充轮；补充轮只能关闭，不能重新进入等待状态。
+        """
+        if create_kind is not None and not isinstance(create_kind, ThreadKind):
+            raise SupportThreadError("thread kind is invalid")
+        if initial_context is not None and type(initial_context) is not SupportThreadInitialContext:
+            raise SupportThreadError("initial_context is invalid")
+        current_time = _reference_time(now or self._clock())
+        scope_digest = self.index.scope_digest(
+            adapter_name=adapter_name,
+            bot_scope=bot_scope,
+            conversation_scope=conversation_scope,
+            actor_scope=actor_scope,
+        )
+        with self._atomic_state():
+            self._expire_pending_initials(current_time)
+            self._expire_leases(current_time)
+            self._prune_scope_bindings(current_time)
+            thread_id = self._thread_by_scope.get(scope_digest)
+            if thread_id is not None and thread_id in self._leases_by_thread:
+                return TurnClaimResult(TurnClaimStatus.BUSY)
+
+            thread = self.store.get(thread_id, now=current_time) if thread_id is not None else None
+            if thread is None or thread.status is not ThreadStatus.CONTINUABLE:
+                if thread_id is not None:
+                    self._drop_scope_thread(thread_id)
+                if create_kind is None:
+                    return TurnClaimResult(TurnClaimStatus.NOT_FOUND)
+                thread = self.store.create(
+                    create_kind,
+                    topic_refs=topic_refs,
+                    now=current_time,
+                )
+                self._bind_scope(
+                    scope_digest,
+                    thread.thread_id,
+                    initial_context=initial_context,
+                )
+                is_supplement = False
+            else:
+                is_supplement = True
+
+            try:
+                lease = self._activate_turn(
+                    thread,
+                    scope_digest=scope_digest,
+                    reply_digest=None,
+                    is_supplement=is_supplement,
+                    now=current_time,
+                )
+            except Exception:
+                with suppress(Exception):
+                    self._fail_claim_attempt(thread.thread_id, current_time)
+                raise
+            return TurnClaimResult(TurnClaimStatus.ACQUIRED, lease)
+
     def claim_reply(
         self,
         *,
@@ -711,38 +804,55 @@ class SupportThreadTurnCoordinator:
                 )
                 if consumed_thread != thread_id:
                     return TurnClaimResult(TurnClaimStatus.NOT_FOUND)
-                token = _opaque_id(self._token_factory(), field_name="lease token")
-                token_digest = self._token_digest(token)
-                if token_digest in self._thread_by_token:
-                    raise SupportThreadError("turn lease token already exists")
-                lease = SupportTurnLease(
-                    token=token,
-                    thread=thread,
-                    acquired_at=current_time,
-                    expires_at=min(
-                        current_time + timedelta(seconds=self.lease_timeout_seconds),
-                        thread.created_at + timedelta(seconds=self.store.absolute_timeout_seconds),
-                        thread.last_active_at + timedelta(seconds=self.store.idle_timeout_seconds),
-                    ),
-                )
-                active = _ActiveTurnLease(
-                    token_digest,
-                    reply_digest,
-                    scope_digest,
+                lease = self._activate_turn(
                     thread,
-                    lease.acquired_at,
-                    lease.expires_at,
+                    scope_digest=scope_digest,
+                    reply_digest=reply_digest,
+                    is_supplement=True,
+                    now=current_time,
                 )
-                self._leases_by_thread[thread_id] = active
-                self._thread_by_token[token_digest] = thread_id
-                self._thread_by_reply[reply_digest] = thread_id
-                self.store._protected_until[thread_id] = lease.expires_at
-                self.index._protected_until[thread_id] = lease.expires_at
             except Exception:
                 with suppress(Exception):
                     self._fail_claim_attempt(thread_id, current_time)
                 raise
             return TurnClaimResult(TurnClaimStatus.ACQUIRED, lease)
+
+    def await_supplement(
+        self,
+        lease_token: str,
+        *,
+        kind: ThreadKind,
+        topic_refs: Iterable[str] = (),
+        now: datetime | None = None,
+    ) -> SupportThreadRecord | None:
+        """提交首轮上下文并开放唯一一次同作用域补充。"""
+        current_time = _reference_time(now or self._clock())
+        with self._atomic_state():
+            self._expire_pending_initials(current_time)
+            self._expire_leases(current_time)
+            self._prune_scope_bindings(current_time)
+            active = self._active_lease(lease_token)
+            if active is None:
+                return None
+            thread_id = active.thread.thread_id
+            if (
+                active.reply_digest is not None
+                or active.is_supplement
+                or self._thread_by_scope.get(active.scope_digest) != thread_id
+            ):
+                self._fail_active(active, current_time)
+                return None
+            updated = self.store.update_context(
+                thread_id,
+                kind,
+                topic_refs,
+                now=current_time,
+            )
+            if updated is None:
+                self._fail_active(active, current_time)
+                return None
+            self._drop_active(active)
+            return updated
 
     def complete_turn(
         self,
@@ -763,6 +873,9 @@ class SupportThreadTurnCoordinator:
             self._expire_leases(current_time)
             active = self._active_lease(lease_token)
             if active is None:
+                return None
+            if active.reply_digest is None:
+                self._fail_active(active, current_time)
                 return None
             thread_id = active.thread.thread_id
             next_digest: str | None = None
@@ -855,6 +968,83 @@ class SupportThreadTurnCoordinator:
             self._fail_active(active, current_time)
             return True
 
+    def _activate_turn(
+        self,
+        thread: SupportThreadRecord,
+        *,
+        scope_digest: str,
+        reply_digest: str | None,
+        is_supplement: bool,
+        now: datetime,
+    ) -> SupportTurnLease:
+        if thread.thread_id in self._leases_by_thread:
+            raise SupportThreadError("support thread already has an active turn")
+        token = _opaque_id(self._token_factory(), field_name="lease token")
+        token_digest = self._token_digest(token)
+        if token_digest in self._thread_by_token:
+            raise SupportThreadError("turn lease token already exists")
+        lease = SupportTurnLease(
+            token=token,
+            thread=thread,
+            acquired_at=now,
+            expires_at=min(
+                now + timedelta(seconds=self.lease_timeout_seconds),
+                thread.created_at + timedelta(seconds=self.store.absolute_timeout_seconds),
+                thread.last_active_at + timedelta(seconds=self.store.idle_timeout_seconds),
+            ),
+            is_supplement=is_supplement,
+            initial_context=self._initial_context_by_thread.get(thread.thread_id),
+        )
+        active = _ActiveTurnLease(
+            token_digest,
+            reply_digest,
+            scope_digest,
+            thread,
+            lease.acquired_at,
+            lease.expires_at,
+            is_supplement,
+        )
+        self._leases_by_thread[thread.thread_id] = active
+        self._thread_by_token[token_digest] = thread.thread_id
+        if reply_digest is not None:
+            self._thread_by_reply[reply_digest] = thread.thread_id
+        self.store._protected_until[thread.thread_id] = lease.expires_at
+        self.index._protected_until[thread.thread_id] = lease.expires_at
+        return lease
+
+    def _bind_scope(
+        self,
+        scope_digest: str,
+        thread_id: str,
+        *,
+        initial_context: SupportThreadInitialContext | None,
+    ) -> None:
+        existing_thread = self._thread_by_scope.get(scope_digest)
+        existing_scope = self._scope_by_thread.get(thread_id)
+        if existing_thread not in {None, thread_id} or existing_scope not in {None, scope_digest}:
+            raise SupportThreadError("support scope is already bound to another thread")
+        self._thread_by_scope[scope_digest] = thread_id
+        self._scope_by_thread[thread_id] = scope_digest
+        if initial_context is not None:
+            self._initial_context_by_thread[thread_id] = initial_context
+
+    def _drop_scope_thread(self, thread_id: str) -> None:
+        self._initial_context_by_thread.pop(thread_id, None)
+        scope_digest = self._scope_by_thread.pop(thread_id, None)
+        if scope_digest is not None and self._thread_by_scope.get(scope_digest) == thread_id:
+            del self._thread_by_scope[scope_digest]
+
+    def _prune_scope_bindings(self, now: datetime) -> None:
+        self.store._prune(now)
+        stale = [
+            thread_id
+            for thread_id in self._scope_by_thread
+            if (record := self.store._entries.get(thread_id)) is None
+            or record.status is ThreadStatus.CLOSED
+        ]
+        for thread_id in stale:
+            self._drop_scope_thread(thread_id)
+
     def _active_lease(self, lease_token: str) -> _ActiveTurnLease | None:
         try:
             token_digest = self._token_digest(lease_token)
@@ -896,6 +1086,7 @@ class SupportThreadTurnCoordinator:
     def _fail_active(self, active: _ActiveTurnLease, now: datetime) -> None:
         self.index._drop_thread(active.thread.thread_id)
         self.store.close(active.thread.thread_id, now=now)
+        self._drop_scope_thread(active.thread.thread_id)
         self._drop_active(active)
 
     def _fail_claim_attempt(self, thread_id: str, now: datetime) -> None:
@@ -903,11 +1094,13 @@ class SupportThreadTurnCoordinator:
         active = self._leases_by_thread.pop(thread_id, None)
         if active is not None:
             self._thread_by_token.pop(active.token_digest, None)
-            self._thread_by_reply.pop(active.reply_digest, None)
+            if active.reply_digest is not None:
+                self._thread_by_reply.pop(active.reply_digest, None)
         self._pending_initials.pop(thread_id, None)
         self.store._protected_until.pop(thread_id, None)
         self.store._idle_protected_until.pop(thread_id, None)
         self.index._protected_until.pop(thread_id, None)
+        self._drop_scope_thread(thread_id)
         with suppress(Exception):
             self.index._drop_thread(thread_id)
         with suppress(Exception):
@@ -919,7 +1112,10 @@ class SupportThreadTurnCoordinator:
             del self._leases_by_thread[thread_id]
         if self._thread_by_token.get(active.token_digest) == thread_id:
             del self._thread_by_token[active.token_digest]
-        if self._thread_by_reply.get(active.reply_digest) == thread_id:
+        if (
+            active.reply_digest is not None
+            and self._thread_by_reply.get(active.reply_digest) == thread_id
+        ):
             del self._thread_by_reply[active.reply_digest]
         self.store._protected_until.pop(thread_id, None)
         self.store._idle_protected_until.pop(thread_id, None)
@@ -964,6 +1160,14 @@ def _topic_refs(values: Iterable[str]) -> tuple[str, ...]:
             f"topic_refs must contain at most {_MAX_TOPIC_REFS_BYTES} encoded bytes"
         )
     return normalized
+
+
+def _bounded_context_text(value: Any, *, field_name: str) -> str:
+    if type(value) is not str or len(value) > _MAX_INITIAL_CONTEXT_CHARS:
+        raise SupportThreadError(
+            f"{field_name} must be a string with at most {_MAX_INITIAL_CONTEXT_CHARS} characters"
+        )
+    return value
 
 
 def _bounded_component(value: Any, field_name: str) -> str:

@@ -33,27 +33,6 @@ class SourceBinding(StrEnum):
     UNRESOLVED = "unresolved"
 
 
-class SourceSymbolKind(StrEnum):
-    MODULE = "module"
-    CLASS = "class"
-    FUNCTION = "function"
-    ATTRIBUTE = "attribute"
-    TYPE_ALIAS = "type_alias"
-    ALIAS = "alias"
-
-
-class SourceRelationKind(StrEnum):
-    CONTAINS = "contains"
-    ALIASES = "aliases"
-    CALLS = "calls"
-
-
-class RelationPrecision(StrEnum):
-    PRECISE = "precise"
-    CANDIDATE = "candidate"
-    OPAQUE = "opaque"
-
-
 @dataclass(frozen=True)
 class InstalledComponentSpec:
     component: str
@@ -121,112 +100,6 @@ class InstalledSourceRevision:
             _bounded_text(issue, "issue", 256)
 
 
-@dataclass(frozen=True)
-class SourceSpan:
-    locator: str
-    line: int
-    end_line: int
-    digest: str
-
-    def __post_init__(self) -> None:
-        _relative_locator(self.locator)
-        if self.line < 1 or self.end_line < self.line:
-            raise InstalledSourceError("source span lines are invalid")
-        _digest(self.digest, "source span digest")
-
-
-@dataclass(frozen=True)
-class SourceSymbol:
-    symbol_id: str
-    component: str
-    path: str
-    canonical_path: str
-    name: str
-    kind: SourceSymbolKind
-    source: SourceSpan
-    signature: str | None = None
-    docstring: str | None = None
-    alias_target: str | None = None
-
-    def __post_init__(self) -> None:
-        _digest(self.symbol_id, "symbol_id")
-        _bounded_text(self.component, "component", 128)
-        _dotted_name(self.path, "symbol path")
-        _dotted_name(self.canonical_path, "canonical path")
-        _bounded_text(self.name, "symbol name", 256)
-        if not isinstance(self.kind, SourceSymbolKind):
-            raise InstalledSourceError("kind must be SourceSymbolKind")
-        if self.signature is not None:
-            _bounded_text(self.signature, "signature", 8_192)
-        if self.docstring is not None:
-            _bounded_text(self.docstring, "docstring", 16_384)
-        if self.alias_target is not None:
-            _dotted_name(self.alias_target, "alias target")
-
-
-@dataclass(frozen=True)
-class SourceRelation:
-    relation_id: str
-    component: str
-    source_symbol: str
-    target_symbol: str
-    kind: SourceRelationKind
-    precision: RelationPrecision
-    source: SourceSpan
-
-    def __post_init__(self) -> None:
-        _digest(self.relation_id, "relation_id")
-        _bounded_text(self.component, "component", 128)
-        _dotted_name(self.source_symbol, "source symbol")
-        _dotted_name(self.target_symbol, "target symbol")
-        if not isinstance(self.kind, SourceRelationKind):
-            raise InstalledSourceError("kind must be SourceRelationKind")
-        if not isinstance(self.precision, RelationPrecision):
-            raise InstalledSourceError("precision must be RelationPrecision")
-
-
-@dataclass(frozen=True)
-class SourceEvidence:
-    evidence_id: str
-    component: str
-    symbol_path: str
-    source: SourceSpan
-    text: str
-
-    def __post_init__(self) -> None:
-        _digest(self.evidence_id, "evidence_id")
-        _bounded_text(self.component, "component", 128)
-        _dotted_name(self.symbol_path, "symbol path")
-        _bounded_text(self.text, "source text", 128 * 1024)
-
-
-@dataclass(frozen=True)
-class InstalledSourceSnapshot:
-    revision: InstalledSourceRevision
-    symbols: tuple[SourceSymbol, ...]
-    relations: tuple[SourceRelation, ...]
-    evidence: tuple[SourceEvidence, ...]
-    partial_issues: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        if tuple(sorted(self.symbols, key=lambda item: item.path.casefold())) != self.symbols:
-            raise InstalledSourceError("symbols must use stable path order")
-        if tuple(sorted(self.relations, key=lambda item: item.relation_id)) != self.relations:
-            raise InstalledSourceError("relations must use stable id order")
-        if tuple(sorted(self.evidence, key=lambda item: item.evidence_id)) != self.evidence:
-            raise InstalledSourceError("evidence must use stable id order")
-        if len({item.symbol_id for item in self.symbols}) != len(self.symbols):
-            raise InstalledSourceError("symbol ids must be unique")
-        if len({item.evidence_id for item in self.evidence}) != len(self.evidence):
-            raise InstalledSourceError("evidence ids must be unique")
-
-
-@dataclass(frozen=True)
-class SourceSearchHit:
-    symbol: SourceSymbol
-    score: int
-
-
 def _bounded_text(value: str, label: str, maximum: int) -> str:
     if not isinstance(value, str) or not value or len(value) > maximum:
         raise InstalledSourceError(f"{label} must be a non-empty bounded string")
@@ -263,16 +136,7 @@ __all__ = [
     "InstalledSourceError",
     "InstalledSourceFile",
     "InstalledSourceRevision",
-    "InstalledSourceSnapshot",
-    "RelationPrecision",
     "SourceAvailability",
     "SourceBinding",
-    "SourceEvidence",
     "SourceOrigin",
-    "SourceRelation",
-    "SourceRelationKind",
-    "SourceSearchHit",
-    "SourceSpan",
-    "SourceSymbol",
-    "SourceSymbolKind",
 ]

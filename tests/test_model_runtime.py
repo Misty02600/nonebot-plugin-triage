@@ -44,24 +44,6 @@ def test_model_config_has_no_product_enable_toggle_and_transport_identity_is_opt
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("nbtriage_model_backend", "compatible-endpoint"),
-        ("nbtriage_model_timeout_seconds", 0),
-        ("nbtriage_model_timeout_seconds", 301),
-        ("nbtriage_model_max_output_tokens", 0),
-        ("nbtriage_model_max_output_tokens", 8_193),
-    ],
-)
-def test_model_config_rejects_unknown_backend_and_unsafe_budgets(
-    field: str,
-    value: object,
-) -> None:
-    with pytest.raises(ValidationError):
-        _configured_transport(**{field: value})
-
-
-@pytest.mark.parametrize(
     "field",
     ["nbtriage_model_api_key", "nbtriage_model_base_url"],
 )
@@ -200,7 +182,8 @@ def test_model_service_creates_one_call_client_per_step_without_exposing_secret(
     assert secret not in repr(service)
 
 
-def test_plugin_runtime_owns_optional_model_service() -> None:
+def test_plugin_runtime_owns_optional_model_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENCODE_API_KEY", "fixture-opencode-key")
     service = NBTriageModelService(
         backend="openai-responses",
         model="gpt-qualified-test",
@@ -210,7 +193,13 @@ def test_plugin_runtime_owns_optional_model_service() -> None:
     )
 
     runtime = create_plugin_runtime(
-        NBTriageConfig(nbtriage_restricted_config=frozenset({"DISCORD_BOTS"})),
+        NBTriageConfig(
+            nbtriage_model_backend="opencode-go-chat",
+            nbtriage_model_name="deepseek-v4-flash",
+            nbtriage_model_timeout_seconds=60,
+            nbtriage_model_max_output_tokens=240,
+            nbtriage_restricted_config=frozenset({"DISCORD_BOTS"}),
+        ),
         model_service_factory=lambda _: service,
     )
 

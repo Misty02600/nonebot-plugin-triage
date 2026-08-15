@@ -215,7 +215,7 @@ def _request_parameters() -> ModelRequestParameters:
         output_object=OutputObjectDefinition(
             B1StructuredOutput.model_json_schema(),
             name="b1_triage_output",
-            description="Strict NoneBot incident triage result.",
+            description="严格的 NoneBot incident triage 结构化结果。",
             strict=True,
         ),
         output_tools=[],

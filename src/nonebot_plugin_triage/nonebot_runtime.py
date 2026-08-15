@@ -4,6 +4,7 @@ import hashlib
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
+from traceback import format_exception
 from types import TracebackType
 from typing import Any
 from uuid import uuid4
@@ -16,6 +17,7 @@ from nonebot.message import run_postprocessor as register_run_postprocessor
 from nonebot.message import run_preprocessor as register_run_preprocessor
 from nonebot.typing import T_State
 
+from nbtriage.bug_logs import CorrelatedBugLogBuffer, build_correlated_bug_log
 from nbtriage.runtime_observations import (
     RUNTIME_OBSERVATION_SCHEMA_VERSION,
     ObservationKind,
@@ -50,10 +52,12 @@ class NoneBotRuntimeObserver:
         self,
         buffer: RuntimeObservationBuffer,
         *,
+        bug_log_buffer: CorrelatedBugLogBuffer | None = None,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] | None = None,
     ) -> None:
         self.buffer = buffer
+        self.bug_log_buffer = bug_log_buffer
         self._clock = clock or _utc_now
         self._id_factory = id_factory or _uuid_token
         self._dropped_count = 0
@@ -251,6 +255,21 @@ class NoneBotRuntimeObserver:
         )
         if not self.buffer.add(observation, now=now):
             self._record_drop()
+        if exception is not None and self.bug_log_buffer is not None:
+            source_name = matcher_name or api_name or event_name or "unknown.Source"
+            log = build_correlated_bug_log(
+                log_id=self._new_opaque_id("log"),
+                correlation_id=correlation_id,
+                occurred_at=now,
+                source_kind=kind.value,
+                source_name=source_name,
+                exception_type=_qualified_type_name(exception),
+                traceback_text="".join(
+                    format_exception(type(exception), exception, exception.__traceback__)
+                ),
+            )
+            if not self.bug_log_buffer.add(log, now=now):
+                self._record_drop()
 
     def _new_opaque_id(self, prefix: str) -> str:
         token = self._id_factory()

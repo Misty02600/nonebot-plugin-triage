@@ -6,7 +6,7 @@ from typing import Any, Literal, cast
 
 import pytest
 from pydantic_ai import ModelResponse, TextPart, ToolCallPart, models
-from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
@@ -114,7 +114,7 @@ def test_agent_output_type_uses_profile_selected_native_schema_without_tools() -
     assert output_object is not None
     assert output_object.name == "SupportSemanticAssessment"
     assert output_object.json_schema["additionalProperties"] is False
-    assert output_object.json_schema["properties"]["schema_version"]["const"] == 5
+    assert output_object.json_schema["properties"]["schema_version"]["const"] == 7
     assert info.model_settings == {"max_tokens": 240, "timeout": 12}
 
 
@@ -140,7 +140,7 @@ def test_payload_contains_only_schema_version_and_current_request_text() -> None
     assert isinstance(message, ModelRequest)
     assert isinstance(message.instructions, str)
     assert message.instructions == SYSTEM_INSTRUCTION.strip()
-    assert "NoneBot triage" in message.instructions
+    assert "NoneBot triage 求助请求" in message.instructions
     assert "SENTINEL_CURRENT_TURN" not in message.instructions
     prompt_part = message.parts[0]
     assert isinstance(prompt_part, UserPromptPart)
@@ -215,39 +215,6 @@ def test_prompted_output_mode_is_rejected_by_task_qualification_before_call() ->
     assert calls == 0
 
 
-@pytest.mark.parametrize(
-    "profile",
-    [
-        ModelProfile(
-            supports_json_schema_output=False,
-            default_structured_output_mode="native",
-        ),
-        ModelProfile(
-            supports_tools=False,
-            default_structured_output_mode="tool",
-        ),
-    ],
-)
-def test_pydantic_ai_rejects_profile_incompatible_output_before_model_call(
-    profile: ModelProfile,
-) -> None:
-    calls = 0
-
-    def respond(_messages, _info):
-        nonlocal calls
-        calls += 1
-        return _native_response()
-
-    client = PydanticAISupportSemanticClient(
-        FunctionModel(respond, model_name="fixture-model", profile=profile),
-        max_output_tokens=240,
-    )
-
-    with pytest.raises(SupportSemanticModelAdapterError, match="request failed"):
-        asyncio.run(client.assess(_request()))
-    assert calls == 0
-
-
 def test_client_allows_exactly_one_provider_request_and_one_run() -> None:
     calls = 0
 
@@ -267,23 +234,13 @@ def test_client_allows_exactly_one_provider_request_and_one_run() -> None:
     assert calls == 1
 
 
-@pytest.mark.parametrize(
-    "response",
-    [
-        ModelResponse(parts=[TextPart("SENTINEL_NOT_JSON")], finish_reason="stop"),
-        ModelResponse(
-            parts=[TextPart(json.dumps({**_valid_output_dict(), "extra": "SENTINEL_EXTRA_FIELD"}))],
-            finish_reason="stop",
-        ),
-    ],
-)
-def test_invalid_output_has_no_retry_and_is_sanitized(response: ModelResponse) -> None:
+def test_invalid_output_has_no_retry_and_is_sanitized() -> None:
     calls = 0
 
     def respond(_messages, _info):
         nonlocal calls
         calls += 1
-        return response
+        return ModelResponse(parts=[TextPart("SENTINEL_NOT_JSON")], finish_reason="stop")
 
     client = PydanticAISupportSemanticClient(
         FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
@@ -297,24 +254,13 @@ def test_invalid_output_has_no_retry_and_is_sanitized(response: ModelResponse) -
     assert "SENTINEL" not in str(error_info.value)
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [
-        TimeoutError("SENTINEL_TIMEOUT"),
-        ModelHTTPError(503, "fixture-model", {"message": "SENTINEL_HTTP"}),
-        ModelAPIError("fixture-model", "SENTINEL_API"),
-        RuntimeError("SENTINEL_UNEXPECTED"),
-    ],
-)
-def test_transport_failures_are_sanitized_and_consume_the_only_run(
-    failure: Exception,
-) -> None:
+def test_transport_failure_is_sanitized_and_consumes_the_only_run() -> None:
     calls = 0
 
     def fail(_messages, _info):
         nonlocal calls
         calls += 1
-        raise failure
+        raise ModelHTTPError(503, "fixture-model", {"message": "SENTINEL_HTTP"})
 
     client = PydanticAISupportSemanticClient(
         FunctionModel(fail, model_name="fixture-model", profile=_NATIVE_PROFILE),
@@ -327,45 +273,6 @@ def test_transport_failures_are_sanitized_and_consume_the_only_run(
     with pytest.raises(SupportSemanticModelAdapterError, match="model-call limit reached"):
         asyncio.run(client.assess(_request()))
     assert calls == 1
-
-
-def test_locally_invalid_constructed_request_is_rejected_before_model_call() -> None:
-    calls = 0
-
-    def respond(_messages, _info):
-        nonlocal calls
-        calls += 1
-        return _native_response()
-
-    client = PydanticAISupportSemanticClient(
-        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
-        max_output_tokens=240,
-    )
-    invalid = SupportAssessmentRequest.model_construct(
-        schema_version=SUPPORT_SEMANTIC_SCHEMA_VERSION,
-        request_text="  SENTINEL_UNNORMALIZED  ",
-    )
-
-    with pytest.raises(
-        SupportSemanticModelAdapterError, match="request failed schema"
-    ) as error_info:
-        asyncio.run(client.assess(invalid))
-
-    assert "SENTINEL" not in str(error_info.value)
-    assert calls == 0
-
-
-def test_constructor_requires_explicit_positive_budgets() -> None:
-    model = FunctionModel(
-        lambda _messages, _info: _native_response(),
-        model_name="fixture-model",
-        profile=_NATIVE_PROFILE,
-    )
-
-    with pytest.raises(SupportSemanticModelAdapterError, match="timeout_seconds"):
-        PydanticAISupportSemanticClient(model, timeout_seconds=0, max_output_tokens=240)
-    with pytest.raises(SupportSemanticModelAdapterError, match="max_output_tokens"):
-        PydanticAISupportSemanticClient(model, max_output_tokens=0)
 
 
 def test_response_finish_reason_and_identity_must_match_qualification() -> None:

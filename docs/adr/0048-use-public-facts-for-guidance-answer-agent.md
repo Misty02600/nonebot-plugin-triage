@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-14 |
+| 已采纳；上下文投影由 ADR-0060 部分替代 | 2026-08-14 |
 
 ## 当时遇到了什么
 
@@ -59,6 +59,8 @@ ADR-0027 已决定让模型根据公开事实组织语言，但当时明确没�
   Answer Agent 的 public facts 反向加入 semantic assessment 请求；
 - 结构化输出继续遵循 [ADR-0042](0042-use-pydantic-ai-model-profile-for-structured-output.md) 和
   [ADR-0044](0044-use-pydantic-ai-agent-output-type-for-support-semantics.md) 的框架原生抽象方向。
+- [ADR-0060](0060-use-scope-thread-and-post-route-conversation-context.md) 部分替代第 3 项：Guidance 路由后可
+  接收有界 Thread 与直接 Reply 上下文；模型外批准的 public 事实、零业务工具和安全输出边界不变。
 
 ## 相关文档
 

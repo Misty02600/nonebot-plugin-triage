@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from importlib.util import find_spec
 from typing import Protocol
 
+from nonebot import logger
+
+from nbtriage.bug_logs import CorrelatedBugLogBuffer
+from nbtriage.capability_analysis import CapabilityAnalysisClient
 from nbtriage.incident_queries import IncidentQueryService
 from nbtriage.live_incidents import LiveIncidentBuffer
 from nbtriage.live_trials import LiveTrialService
@@ -17,8 +21,18 @@ from nbtriage.support_threads import (
     OutboundThreadReferenceIndex,
     SupportThreadTurnCoordinator,
 )
+from nonebot_plugin_triage.bug_assessment_runtime import (
+    BugAssessmentServiceLike,
+    create_bug_assessment_runtime_service,
+)
+from nonebot_plugin_triage.bug_problem_store import (
+    LocalBugProblemRepository,
+    register_bug_problem_repository,
+)
+from nonebot_plugin_triage.capability_analysis_tools import CapabilityTeachingToolProvider
 from nonebot_plugin_triage.capability_annotation_runtime import (
     CAPABILITY_ANNOTATION_ANALYSIS_REVISION,
+    CapabilityAnnotationRuntimeConfigurationError,
     create_capability_annotation_client_factory,
 )
 from nonebot_plugin_triage.capability_shadow import (
@@ -63,6 +77,26 @@ def _create_public_guidance_service(config: NBTriageConfig) -> PublicGuidanceSer
     return create_public_guidance_service(config)
 
 
+def _create_capability_annotation_client_factory(
+    config: NBTriageConfig,
+    tool_provider: CapabilityTeachingToolProvider,
+) -> Callable[[], CapabilityAnalysisClient] | None:
+    if config.nbtriage_model_backend is None:
+        return None
+    try:
+        return create_capability_annotation_client_factory(
+            config,
+            tool_runtime_factory=tool_provider.create_runtime,
+        )
+    except CapabilityAnnotationRuntimeConfigurationError as error:
+        logger.warning(
+            "NoneBot Triage capability annotations are unavailable; "
+            "the deterministic capability index remains active ({})",
+            type(error).__name__,
+        )
+        return None
+
+
 def _create_outgoing_reference_providers(
     bridge: UniversalReferenceBridge,
 ) -> tuple[OutgoingReferenceProvider, ...]:
@@ -90,6 +124,9 @@ class NBTriagePluginRuntime:
     outgoing_reference_providers: tuple[OutgoingReferenceProvider, ...]
     support_rate_limiter: KeyedRateLimiter
     report_service: LiveReportService
+    bug_log_buffer: CorrelatedBugLogBuffer
+    bug_problem_repository: LocalBugProblemRepository
+    bug_assessment_service: BugAssessmentServiceLike
     query_service: IncidentQueryService
     incidents: LiveIncidentBuffer
     trials: LiveTrialService
@@ -119,7 +156,11 @@ def create_plugin_runtime(
         max_entries=config.nbtriage_observation_max_entries,
         retention_seconds=config.nbtriage_observation_retention_seconds,
     )
-    observer = NoneBotRuntimeObserver(runtime_buffer)
+    bug_log_buffer = CorrelatedBugLogBuffer(
+        max_entries=config.nbtriage_observation_max_entries,
+        retention_seconds=config.nbtriage_observation_retention_seconds,
+    )
+    observer = NoneBotRuntimeObserver(runtime_buffer, bug_log_buffer=bug_log_buffer)
     reference_index = PlatformMessageReferenceIndex(
         secret_key=secrets.token_bytes(32),
         max_entries=config.nbtriage_reference_max_entries,
@@ -164,7 +205,13 @@ def create_plugin_runtime(
     semantic_assessment_service = semantic_assessment_service_factory(config)
     public_guidance_service = public_guidance_service_factory(config)
     config_value_policy = ConfigValuePolicy.from_keys(config.nbtriage_restricted_config)
-    capability_annotation_client_factory = create_capability_annotation_client_factory(config)
+    capability_teaching_tools = CapabilityTeachingToolProvider(
+        additional_denied_patterns=config.nbtriage_evidence_denied_patterns,
+    )
+    capability_annotation_client_factory = _create_capability_annotation_client_factory(
+        config,
+        capability_teaching_tools,
+    )
     observer.register()
     reference_bridge.register()
     thread_reference_bridge.register()
@@ -173,16 +220,20 @@ def create_plugin_runtime(
         provider.register()
     capability_shadow = register_capability_shadow(
         annotation_client_factory=capability_annotation_client_factory,
-        config_policy=(
-            config_value_policy if capability_annotation_client_factory is not None else None
-        ),
-        annotation_analysis_revision=(
-            CAPABILITY_ANNOTATION_ANALYSIS_REVISION
-            if capability_annotation_client_factory is not None
-            else None
-        ),
+        config_policy=config_value_policy,
+        annotation_analysis_revision=CAPABILITY_ANNOTATION_ANALYSIS_REVISION,
+        annotation_evidence_validator=capability_teaching_tools.evidence_is_current,
     )
     knowledge_pack = register_knowledge_pack(config)
+    bug_problem_repository = register_bug_problem_repository()
+    bug_assessment_service = create_bug_assessment_runtime_service(
+        config,
+        repository=bug_problem_repository,
+        capability_shadow=capability_shadow,
+        knowledge_pack=knowledge_pack,
+        runtime_buffer=runtime_buffer,
+        log_buffer=bug_log_buffer,
+    )
     return NBTriagePluginRuntime(
         observer=observer,
         reference_bridge=reference_bridge,
@@ -192,6 +243,9 @@ def create_plugin_runtime(
         outgoing_reference_providers=outgoing_reference_providers,
         support_rate_limiter=support_rate_limiter,
         report_service=report_service,
+        bug_log_buffer=bug_log_buffer,
+        bug_problem_repository=bug_problem_repository,
+        bug_assessment_service=bug_assessment_service,
         query_service=query_service,
         incidents=incident_buffer,
         trials=trial_service,

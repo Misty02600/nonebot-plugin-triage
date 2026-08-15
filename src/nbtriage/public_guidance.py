@@ -7,9 +7,10 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-PUBLIC_GUIDANCE_SCHEMA_VERSION = 1
+PUBLIC_GUIDANCE_SCHEMA_VERSION = 2
 PUBLIC_GUIDANCE_QUESTION_MAX_CHARS = 2_000
-PUBLIC_GUIDANCE_PROMPT_ID = "public-guidance-answer-v1-prompt-v1"
+PUBLIC_GUIDANCE_REPLY_CONTEXT_MAX_CHARS = 16_000
+PUBLIC_GUIDANCE_PROMPT_ID = "public-guidance-answer-v2-prompt-v2-zh"
 
 
 class PublicGuidanceContractError(ValueError):
@@ -56,10 +57,19 @@ class PublicGuidanceFact(_StrictModel):
 
 
 class PublicGuidanceRequest(_StrictModel):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     question: Annotated[
         str,
         Field(min_length=1, max_length=PUBLIC_GUIDANCE_QUESTION_MAX_CHARS, repr=False),
+    ]
+    conversation_context: Annotated[
+        str | None,
+        Field(
+            default=None,
+            min_length=1,
+            max_length=PUBLIC_GUIDANCE_REPLY_CONTEXT_MAX_CHARS,
+            repr=False,
+        ),
     ]
     facts: Annotated[tuple[PublicGuidanceFact, ...], Field(min_length=1, max_length=32)]
 
@@ -68,6 +78,15 @@ class PublicGuidanceRequest(_StrictModel):
     def require_normalized_question(cls, value: str) -> str:
         if value != " ".join(value.split()) or _contains_forbidden_control(value):
             raise ValueError("public guidance question must be normalized visible text")
+        return value
+
+    @field_validator("conversation_context")
+    @classmethod
+    def require_visible_conversation_context(cls, value: str | None) -> str | None:
+        if value is not None and (
+            value != value.strip() or _contains_forbidden_control(value, allow_newline=True)
+        ):
+            raise ValueError("public guidance conversation context must contain visible text")
         return value
 
     @field_validator("facts")
@@ -82,7 +101,7 @@ class PublicGuidanceRequest(_StrictModel):
 
 
 class PublicGuidanceAnswer(_StrictModel):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     answer: Annotated[str, Field(min_length=1, max_length=1_000)]
     cited_fact_ids: Annotated[tuple[str, ...], Field(min_length=1, max_length=16)]
 
@@ -146,6 +165,7 @@ def _contains_forbidden_control(value: str, *, allow_newline: bool = False) -> b
 __all__ = (
     "PUBLIC_GUIDANCE_PROMPT_ID",
     "PUBLIC_GUIDANCE_QUESTION_MAX_CHARS",
+    "PUBLIC_GUIDANCE_REPLY_CONTEXT_MAX_CHARS",
     "PUBLIC_GUIDANCE_SCHEMA_VERSION",
     "PublicGuidanceAnswer",
     "PublicGuidanceContractError",

@@ -2,7 +2,13 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；基础领域切片已实现，尚未接入产品运行入口 | 2026-08-13 |
+| Griffe 后端已由 ADR-0057 替代并移除；来源安全合同继续有效 | 2026-08-13 |
+
+> 2026-08-14 后续决定：本 ADR 对 distribution inventory、安装版本绑定、源码 revision、批准路径与
+> Evidence 边界的决定继续有效；以 Griffe 作为依赖定义导航后端的决定由
+> [ADR-0057](0057-select-source-analysis-tools-by-evidence-stage.md) 替代。项目自有 Griffe reader 与直接依赖
+> 已于 2026-08-14 移除，distribution/RECORD、runtime binding、editable、源码 revision 与越界拒绝由
+> [ADR-0059](0059-share-read-only-evidence-access-across-agent-flows.md) 继续承接。
 
 ## 当时遇到了什么
 

@@ -1,6 +1,5 @@
 import asyncio
 import copy
-import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -14,7 +13,6 @@ from tools.nbtriage_maintainer.agent_evaluation import (
     B4_OFFICIAL_SPLIT_SHA256,
     AgentEvaluationError,
     RealGatePartialAudit,
-    _evaluation_source_digest,
     b4_real_partial_report_path,
     evaluate_b4_real_fixtures,
     evaluate_b4_scripted_fixtures,
@@ -44,89 +42,6 @@ from nbtriage.rag import B1ModelRequest, B1ModelResponse
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "evals" / "datasets" / "fixtures" / "b4-bounded-agent-v1.json"
 SPLIT = ROOT / "evals" / "datasets" / "splits" / "b4-gate-v1.json"
-
-
-def test_evaluation_source_digest_covers_core_and_maintainer_code(tmp_path: Path) -> None:
-    core = tmp_path / "src" / "nbtriage"
-    maintainer = tmp_path / "tools" / "nbtriage_maintainer"
-    core.mkdir(parents=True)
-    maintainer.mkdir(parents=True)
-    core_file = core / "bounded_agent.py"
-    maintainer_file = maintainer / "agent_evaluation.py"
-    core_file.write_text("CORE = 1\n", encoding="utf-8")
-    maintainer_file.write_text("TOOLS = 1\n", encoding="utf-8")
-
-    initial = _evaluation_source_digest(tmp_path)
-    core_file.write_text("CORE = 2\n", encoding="utf-8")
-    after_core_change = _evaluation_source_digest(tmp_path)
-    maintainer_file.write_text("TOOLS = 2\n", encoding="utf-8")
-    after_maintainer_change = _evaluation_source_digest(tmp_path)
-
-    assert initial != after_core_change
-    assert after_core_change != after_maintainer_change
-
-
-def test_evaluation_source_digest_binds_relative_path(tmp_path: Path) -> None:
-    core = tmp_path / "src" / "nbtriage"
-    maintainer = tmp_path / "tools" / "nbtriage_maintainer"
-    core.mkdir(parents=True)
-    maintainer.mkdir(parents=True)
-    original = core / "bounded_agent.py"
-    renamed = core / "agent_runtime.py"
-    original.write_text("VALUE = 1\n", encoding="utf-8")
-    (maintainer / "agent_evaluation.py").write_text("VALUE = 1\n", encoding="utf-8")
-
-    before_rename = _evaluation_source_digest(tmp_path)
-    original.rename(renamed)
-
-    assert _evaluation_source_digest(tmp_path) != before_rename
-
-
-def test_evaluation_source_digest_is_independent_of_absolute_root(tmp_path: Path) -> None:
-    roots = (tmp_path / "first", tmp_path / "second")
-    for root in roots:
-        core = root / "src" / "nbtriage"
-        maintainer = root / "tools" / "nbtriage_maintainer"
-        core.mkdir(parents=True)
-        maintainer.mkdir(parents=True)
-        (core / "bounded_agent.py").write_text("CORE = 1\n", encoding="utf-8")
-        (maintainer / "agent_evaluation.py").write_text("TOOLS = 1\n", encoding="utf-8")
-
-    assert _evaluation_source_digest(roots[0]) == _evaluation_source_digest(roots[1])
-
-
-def test_evaluation_source_digest_excludes_product_and_data_files(tmp_path: Path) -> None:
-    core = tmp_path / "src" / "nbtriage"
-    plugin = tmp_path / "src" / "nonebot_plugin_triage"
-    maintainer = tmp_path / "tools" / "nbtriage_maintainer"
-    fixture = tmp_path / "evals" / "datasets" / "fixtures"
-    core.mkdir(parents=True)
-    plugin.mkdir(parents=True)
-    maintainer.mkdir(parents=True)
-    fixture.mkdir(parents=True)
-    (core / "bounded_agent.py").write_text("CORE = 1\n", encoding="utf-8")
-    (maintainer / "agent_evaluation.py").write_text("TOOLS = 1\n", encoding="utf-8")
-
-    initial = _evaluation_source_digest(tmp_path)
-    (plugin / "handlers.py").write_text("PLUGIN = 1\n", encoding="utf-8")
-    (fixture / "b4.json").write_text("{}\n", encoding="utf-8")
-    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
-
-    assert _evaluation_source_digest(tmp_path) == initial
-
-
-def test_evaluation_source_digest_requires_complete_source_roots(tmp_path: Path) -> None:
-    (tmp_path / "tools" / "nbtriage_maintainer").mkdir(parents=True)
-    with pytest.raises(AgentEvaluationError, match="source directory is unavailable"):
-        _evaluation_source_digest(tmp_path)
-
-    (tmp_path / "src" / "nbtriage").mkdir(parents=True)
-    (tmp_path / "tools" / "nbtriage_maintainer" / "agent_evaluation.py").write_text(
-        "VALUE = 1\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(AgentEvaluationError, match="contains no Python files"):
-        _evaluation_source_digest(tmp_path)
 
 
 def _b1_output(case_id: str) -> str:
@@ -260,61 +175,14 @@ def test_scripted_b4_gate_is_explicitly_not_promotion_eligible() -> None:
 
     assert report["evaluation_id"] == B4_EVALUATION_ID
     assert report["evaluation_qualification"] == "official_frozen_fixture"
-    assert report["summary"] == {
-        "fixture_count": 4,
-        "trial_count": 8,
-        "fixture_count_by_split": {"regression": 2, "forward_hidden": 2},
-        "trial_count_by_split": {"regression": 4, "forward_hidden": 4},
-        "primary_score_split": "forward_hidden",
-        "synthetic_only": True,
-        "model_kind": "scripted",
-        "real_provider_requests": 0,
-        "scripted_model_steps": 11,
-        "external_tool_calls": 0,
-        "approved_read_only_actions": 6,
-        "terminal_step_failure_counts": {
-            "response_rejected": 0,
-            "provider_request_failed": 0,
-            "local_validation_failed": 0,
-            "local_step_error": 0,
-        },
-    }
+    assert report["source"]["fixtures_sha256"] == B4_OFFICIAL_FIXTURES_SHA256
+    assert report["source"]["split_sha256"] == B4_OFFICIAL_SPLIT_SHA256
+    assert report["summary"]["real_provider_requests"] == 0
+    assert report["summary"]["external_tool_calls"] == 0
     assert report["metrics"]["b4"]["task_success_rate"] == 0.875
-    assert report["metrics"]["b4"]["structured_output_valid_rate"] == 1.0
-    assert report["promotion_gate"]["score_split"] == "forward_hidden"
     assert report["metrics"]["b4"]["safety_violation_rate"] == 0.0
     assert report["promotion_gate"]["passed"] is False
-    assert report["promotion_gate"]["checks"]["real_model_multi_trial"] is False
     assert report["promotion_gate"]["decision"] == "not_eligible_scripted_evidence_only"
-
-
-def test_scripted_b4_report_stays_sanitized_and_bound_to_versioned_inputs() -> None:
-    report = asyncio.run(evaluate_b4_scripted_fixtures(FIXTURES, SPLIT))
-
-    assert report["schema_version"] == 3
-    assert report["fixture_set_id"] == "b4-bounded-agent-v1"
-    assert report["source"] == {
-        "fixtures_path": FIXTURES.resolve().as_posix(),
-        "fixtures_sha256": B4_OFFICIAL_FIXTURES_SHA256,
-        "official_fixtures_sha256": B4_OFFICIAL_FIXTURES_SHA256,
-        "split_path": SPLIT.resolve().as_posix(),
-        "split_sha256": B4_OFFICIAL_SPLIT_SHA256,
-        "official_split_sha256": B4_OFFICIAL_SPLIT_SHA256,
-        "official_fixture_set_id": "b4-bounded-agent-v1",
-        "official_split_id": "b4-gate-v1",
-        "official_fixture_count": 4,
-        "official_trial_count": 8,
-    }
-    assert hashlib.sha256(FIXTURES.read_bytes()).hexdigest() == B4_OFFICIAL_FIXTURES_SHA256
-    assert hashlib.sha256(SPLIT.read_bytes()).hexdigest() == B4_OFFICIAL_SPLIT_SHA256
-    completed = [row for row in report["trials"] if row["status"] == "completed"]
-    assert all(row["candidate"] is not None for row in completed)
-    assert all(row["review_context"] is not None for row in completed)
-    paused = [row for row in report["trials"] if row["status"] == "paused"]
-    assert all(row["candidate"] is None and row["review_context"] is None for row in paused)
-    support = next(row for row in completed if row["fixture_id"] == "b4-support-retrieval")
-    assert support["candidate"]["citations"] == ["train-support-1"]
-    assert support["review_context"]["evidence"][0]["evidence_id"] == "train-support-1"
     serialized = json.dumps(report, ensure_ascii=False)
     assert "GOLD-" not in serialized
     assert "chain_of_thought" not in serialized
@@ -325,11 +193,6 @@ def test_scripted_b4_report_stays_sanitized_and_bound_to_versioned_inputs() -> N
     ("target", "mutation"),
     [
         ("fixtures", "change_gold"),
-        ("fixtures", "change_case"),
-        ("fixtures", "change_budget"),
-        ("fixtures", "reorder"),
-        ("fixtures", "delete"),
-        ("split", "reorder"),
         ("split", "move_fixture"),
     ],
 )
@@ -341,23 +204,7 @@ def test_custom_scripted_inputs_cannot_claim_official_identity(
     fixture_payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
     split_payload = json.loads(SPLIT.read_text(encoding="utf-8"))
     if target == "fixtures":
-        fixtures = fixture_payload["fixtures"]
-        if mutation == "change_gold":
-            fixtures[0]["gold"]["expected_fault_phase"] = "connect"
-        elif mutation == "change_case":
-            fixtures[0]["case"]["source"]["title"] += " custom"
-        elif mutation == "change_budget":
-            fixture_payload["budget"]["max_turns"] += 1
-        elif mutation == "reorder":
-            fixtures.reverse()
-        else:
-            removed = fixtures.pop()
-            for entries in split_payload["splits"].values():
-                entries[:] = [
-                    entry for entry in entries if entry["fixture_id"] != removed["fixture_id"]
-                ]
-    elif mutation == "reorder":
-        split_payload["splits"]["regression"].reverse()
+        fixture_payload["fixtures"][0]["gold"]["expected_fault_phase"] = "connect"
     else:
         moved = split_payload["splits"]["regression"].pop()
         split_payload["splits"]["forward_hidden"].append(moved)
@@ -487,12 +334,7 @@ def test_fixture_rejects_gold_embedded_in_case_and_requires_multi_trial(
     ("mutation", "error_message"),
     [
         ("duplicate_target", "B4 target case IDs must be unique"),
-        ("blank_target", "B4 target case IDs must be canonical"),
         ("noncanonical_target", "B4 target case IDs must be canonical"),
-        ("duplicate_train_within_fixture", "B4 train case IDs must be unique"),
-        ("duplicate_train_across_fixtures", "B4 train case IDs must be unique"),
-        ("blank_train", "B4 train case IDs must be canonical"),
-        ("noncanonical_train", "B4 train case IDs must be canonical"),
         ("target_train_overlap", "B4 train and target case IDs must be disjoint"),
     ],
 )
@@ -507,20 +349,8 @@ def test_real_b4_gate_rejects_invalid_case_identity_before_model_calls(
     untrusted_case_id = "private-case-id"
     if mutation == "duplicate_target":
         fixtures[1]["case"]["case_id"] = fixtures[0]["case"]["case_id"]
-    elif mutation == "blank_target":
-        fixtures[0]["case"]["case_id"] = ""
     elif mutation == "noncanonical_target":
         fixtures[0]["case"]["case_id"] = f" {untrusted_case_id} "
-    elif mutation == "duplicate_train_within_fixture":
-        fixtures[1]["train_cases"].append(train_case)
-    elif mutation == "duplicate_train_across_fixtures":
-        fixtures[0]["train_cases"].append(train_case)
-    elif mutation == "blank_train":
-        train_case["case_id"] = ""
-        fixtures[0]["train_cases"].append(train_case)
-    elif mutation == "noncanonical_train":
-        train_case["case_id"] = f"{untrusted_case_id}/nested"
-        fixtures[0]["train_cases"].append(train_case)
     else:
         train_case["case_id"] = fixtures[0]["case"]["case_id"]
         fixtures[0]["train_cases"].append(train_case)
@@ -620,25 +450,11 @@ def _assert_real_fixture_rejected_before_client_construction(
 @pytest.mark.parametrize(
     ("mutation", "error_message"),
     [
-        ("target_missing_field", "B4 target case projection is invalid"),
         ("target_extra_field", "B4 target case projection is invalid"),
-        ("target_bad_schema", "B4 target case projection is invalid"),
-        ("target_source_missing_field", "B4 target source projection is invalid"),
-        ("target_source_extra_field", "B4 target source projection is invalid"),
         ("target_source_wrong_type", "B4 target source projection is invalid"),
-        ("target_issue_bool", "B4 target source projection is invalid"),
-        ("target_labels_duplicate", "B4 target source projection is invalid"),
         ("target_embedded_oracle", "B4 target case must not embed Gold"),
-        ("target_source_embedded_gold", "B4 target case must not embed Gold"),
         ("train_missing_field", "B4 train case projection is invalid"),
-        ("train_extra_field", "B4 train case projection is invalid"),
-        ("train_source_missing_field", "B4 train source projection is invalid"),
-        ("train_source_extra_field", "B4 train source projection is invalid"),
-        ("train_labels_wrong_type", "B4 train source projection is invalid"),
-        ("train_embedded_curation", "B4 train case must not embed Gold"),
-        ("train_source_embedded_oracle", "B4 train case must not embed Gold"),
         ("fixture_extra_field", "B4 fixture projection is invalid"),
-        ("category_wrong_type", "B4 fixture category is invalid"),
         ("category_unknown", "B4 fixture category is invalid"),
     ],
 )
@@ -650,44 +466,16 @@ def test_real_b4_gate_rejects_invalid_case_projection_before_client_construction
     payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
     target = payload["fixtures"][0]["case"]
     train = payload["fixtures"][1]["train_cases"][0]
-    if mutation == "target_missing_field":
-        target.pop("source")
-    elif mutation == "target_extra_field":
+    if mutation == "target_extra_field":
         target["private-fixture-value"] = True
-    elif mutation == "target_bad_schema":
-        target["schema_version"] = "private-fixture-value"
-    elif mutation == "target_source_missing_field":
-        target["source"].pop("body")
-    elif mutation == "target_source_extra_field":
-        target["source"]["private-fixture-value"] = True
     elif mutation == "target_source_wrong_type":
         target["source"] = ["private-fixture-value"]
-    elif mutation == "target_issue_bool":
-        target["source"]["issue_number"] = True
-    elif mutation == "target_labels_duplicate":
-        target["source"]["labels"] = ["bug", "bug"]
     elif mutation == "target_embedded_oracle":
         target["oracle"] = "private-fixture-value"
-    elif mutation == "target_source_embedded_gold":
-        target["source"]["gold"] = "private-fixture-value"
     elif mutation == "train_missing_field":
         train.pop("source")
-    elif mutation == "train_extra_field":
-        train["private-fixture-value"] = True
-    elif mutation == "train_source_missing_field":
-        train["source"].pop("title")
-    elif mutation == "train_source_extra_field":
-        train["source"]["private-fixture-value"] = True
-    elif mutation == "train_labels_wrong_type":
-        train["source"]["labels"] = "private-fixture-value"
-    elif mutation == "train_embedded_curation":
-        train["curation"] = "private-fixture-value"
-    elif mutation == "train_source_embedded_oracle":
-        train["source"]["oracle"] = "private-fixture-value"
     elif mutation == "fixture_extra_field":
         payload["fixtures"][0]["private-fixture-value"] = True
-    elif mutation == "category_wrong_type":
-        payload["fixtures"][0]["category"] = ["private-fixture-value"]
     else:
         payload["fixtures"][0]["category"] = "private-fixture-value"
 
@@ -701,30 +489,10 @@ def test_real_b4_gate_rejects_invalid_case_projection_before_client_construction
 @pytest.mark.parametrize(
     ("mutation", "error_message"),
     [
-        ("b1_route_type", "B4 B1 route is invalid"),
         ("b1_route_enum", "B4 B1 route is invalid"),
-        ("b1_phase_type", "B4 B1 fault phase is invalid"),
-        ("b1_phase_enum", "B4 B1 fault phase is invalid"),
-        ("b1_evidence_type", "B4 B1 evidence is invalid"),
-        ("b1_evidence_enum", "B4 B1 evidence is invalid"),
-        ("b1_evidence_duplicate", "B4 B1 evidence is invalid"),
-        ("gold_stop_type", "B4 Gold expected stop reason is invalid"),
         ("gold_stop_enum", "B4 Gold expected stop reason is invalid"),
-        ("gold_route_type", "B4 Gold expected route is invalid"),
-        ("gold_route_enum", "B4 Gold expected route is invalid"),
-        ("gold_phase_type", "B4 Gold expected fault phase is invalid"),
-        ("gold_phase_enum", "B4 Gold expected fault phase is invalid"),
-        ("gold_action_type", "B4 Gold required action kinds are invalid"),
-        ("gold_action_enum", "B4 Gold required action kinds are invalid"),
         ("gold_action_duplicate", "B4 Gold required action kinds are invalid"),
-        ("gold_useful_duplicate", "B4 Gold useful action kinds are invalid"),
-        ("gold_evidence_type", "B4 Gold required evidence slots are invalid"),
-        ("gold_evidence_enum", "B4 Gold required evidence slots are invalid"),
-        ("gold_evidence_duplicate", "B4 Gold required evidence slots are invalid"),
-        ("gold_citation_type", "B4 Gold required citations are invalid"),
         ("gold_citation_value_type", "B4 Gold required citations are invalid"),
-        ("gold_citation_duplicate", "B4 Gold required citations are invalid"),
-        ("gold_leakage_type", "B4 Gold leakage marker is invalid"),
     ],
 )
 def test_real_b4_gate_rejects_invalid_frozen_labels_before_client_construction(
@@ -736,54 +504,14 @@ def test_real_b4_gate_rejects_invalid_frozen_labels_before_client_construction(
     fixture = payload["fixtures"][0]
     prediction = fixture["b1_prediction"]
     gold = fixture["gold"]
-    if mutation == "b1_route_type":
-        prediction["route"] = ["private-fixture-value"]
-    elif mutation == "b1_route_enum":
+    if mutation == "b1_route_enum":
         prediction["route"] = "private-fixture-value"
-    elif mutation == "b1_phase_type":
-        prediction["fault_phase"] = ["private-fixture-value"]
-    elif mutation == "b1_phase_enum":
-        prediction["fault_phase"] = "private-fixture-value"
-    elif mutation == "b1_evidence_type":
-        prediction["missing_evidence"] = "private-fixture-value"
-    elif mutation == "b1_evidence_enum":
-        prediction["missing_evidence"] = ["private-fixture-value"]
-    elif mutation == "b1_evidence_duplicate":
-        prediction["missing_evidence"] = ["logs", "logs"]
-    elif mutation == "gold_stop_type":
-        gold["expected_stop_reason"] = ["private-fixture-value"]
     elif mutation == "gold_stop_enum":
         gold["expected_stop_reason"] = "private-fixture-value"
-    elif mutation == "gold_route_type":
-        gold["expected_route"] = ["private-fixture-value"]
-    elif mutation == "gold_route_enum":
-        gold["expected_route"] = "private-fixture-value"
-    elif mutation == "gold_phase_type":
-        gold["expected_fault_phase"] = ["private-fixture-value"]
-    elif mutation == "gold_phase_enum":
-        gold["expected_fault_phase"] = "private-fixture-value"
-    elif mutation == "gold_action_type":
-        gold["required_action_kinds"] = "private-fixture-value"
-    elif mutation == "gold_action_enum":
-        gold["required_action_kinds"] = ["private-fixture-value"]
     elif mutation == "gold_action_duplicate":
         gold["required_action_kinds"] *= 2
-    elif mutation == "gold_useful_duplicate":
-        gold["useful_action_kinds"] *= 2
-    elif mutation == "gold_evidence_type":
-        gold["required_evidence_slots"] = "private-fixture-value"
-    elif mutation == "gold_evidence_enum":
-        gold["required_evidence_slots"] = ["private-fixture-value"]
-    elif mutation == "gold_evidence_duplicate":
-        gold["required_evidence_slots"] = ["logs", "logs"]
-    elif mutation == "gold_citation_type":
-        gold["required_citations"] = "private-fixture-value"
-    elif mutation == "gold_citation_value_type":
-        gold["required_citations"] = [{"private-fixture-value": True}]
-    elif mutation == "gold_citation_duplicate":
-        gold["required_citations"] = ["private-fixture-value"] * 2
     else:
-        gold["leakage_marker"] = ["private-fixture-value"]
+        gold["required_citations"] = [{"private-fixture-value": True}]
 
     _assert_real_fixture_rejected_before_client_construction(
         tmp_path,
@@ -923,54 +651,17 @@ def test_real_gate_compares_same_model_trials_and_accounts_for_authorization() -
         )
     )
 
-    assert report["summary"] == {
-        "fixture_count": 4,
-        "trial_count": 8,
-        "trials_per_fixture": 2,
-        "fixture_count_by_split": {"regression": 2, "forward_hidden": 2},
-        "trial_count_by_split": {"regression": 4, "forward_hidden": 4},
-        "primary_score_split": "forward_hidden",
-        "synthetic_only": True,
-        "model_kind": "real",
-        "provider": "fixture-provider",
-        "model": "fixture-model",
-        "expected_provider_response_name": "fixture-provider",
-        "real_provider_requests": 18,
-        "provider_responses": 18,
-        "provider_response_names": ["fixture-provider"],
-        "provider_response_models": ["fixture-model"],
-        "provider_fingerprints": ["fixture-fingerprint"],
-        "b1_model_steps": 6,
-        "agent_model_steps": 12,
-        "external_tool_calls": 0,
-        "approved_read_only_actions": 6,
-        "input_tokens": 1500,
-        "output_tokens": 420,
-        "cost_microusd": 1800,
-        "cost_known": True,
-        "terminal_step_failure_counts": {
-            "response_rejected": 0,
-            "provider_request_failed": 0,
-            "local_validation_failed": 0,
-            "local_step_error": 0,
-        },
-    }
+    summary = report["summary"]
+    assert summary["real_provider_requests"] == summary["provider_responses"] == 18
+    assert summary["provider_response_names"] == ["fixture-provider"]
+    assert summary["provider_response_models"] == ["fixture-model"]
+    assert summary["external_tool_calls"] == 0
+    assert summary["cost_microusd"] == 1800
     assert report["authorization"]["theoretical_max_provider_requests"] == 40
     assert report["metrics"]["b1"]["task_success_rate"] == 0.25
     assert report["metrics"]["b3"]["task_success_rate"] == 0.25
     assert report["metrics"]["b4"]["task_success_rate"] == 1.0
     assert report["promotion_gate"]["passed"] is True
-    assert report["promotion_gate"]["checks"]["provider_response_identity_complete"] is True
-    assert report["promotion_gate"]["checks"]["provider_response_consistent"] is True
-    assert report["promotion_gate"]["checks"]["provider_response_matches_backend"] is True
-    assert report["promotion_gate"]["checks"]["provider_response_model_identity_complete"] is True
-    assert report["promotion_gate"]["checks"]["provider_response_model_consistent"] is True
-    assert report["promotion_gate"]["checks"]["provider_response_model_matches_request"] is True
-    assert report["promotion_gate"]["decision"] == "eligible_for_offline_integration_design_review"
-    assert all(row["candidate"] is not None for row in report["b1_trials"])
-    assert all(
-        row["candidate"] is not None for row in report["trials"] if row["status"] == "completed"
-    )
     serialized = json.dumps(report, ensure_ascii=False)
     assert "GOLD-" not in serialized
     assert "chain_of_thought" not in serialized

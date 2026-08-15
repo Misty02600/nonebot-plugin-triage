@@ -39,15 +39,16 @@ from nbtriage.support_threads import (
     ThreadStatus,
     TurnClaimStatus,
 )
-from nonebot_plugin_triage.handlers import _is_supported_thread_reply
 from nonebot_plugin_triage.support_responses import (
     finish_support_response,
     resolve_outgoing_receipt,
 )
 from nonebot_plugin_triage.thread_references import (
     InitialThreadBinding,
+    PreparedScopeSupplementBinding,
     SupportThreadReferenceBridge,
 )
+from nonebot_plugin_triage.universal_references import conversation_scope
 
 
 def _onebot_bot(self_id: str = "1") -> OneBotV11Bot:
@@ -308,7 +309,6 @@ async def test_discord_reply_round_trip_claims_guild_and_dm_thread(
 
     assert resolve_outgoing_receipt(receipt, bot=bot, expected_target=target) == "700"
     assert str(reply.id) == "700"
-    assert _is_supported_thread_reply(bot, event, reply)
     assert bridge.settle_outgoing_binding(
         InitialThreadBinding(thread.thread_id, event.get_user_id()),
         adapter_name=SupportAdapter.discord.value,
@@ -340,47 +340,6 @@ async def test_discord_reply_round_trip_claims_guild_and_dm_thread(
     assert claim.lease is not None and claim.lease.thread.thread_id == thread.thread_id
 
 
-async def test_discord_forward_reference_is_not_a_thread_reply() -> None:
-    bot = _discord_bot()
-    event = _discord_event(reference_type=MessageReferenceType.FORWARD)
-    message = await UniMessage.of(event.get_message(), bot=bot).attach_reply(event, bot)
-    reply = message.get(type(message[0]), 1)[0]
-
-    assert str(reply.id) == "700"
-    assert not _is_supported_thread_reply(bot, event, reply)
-
-
-async def test_discord_non_reply_message_reference_is_not_a_thread_reply() -> None:
-    bot = _discord_bot()
-    event = _discord_event(message_type=MessageType.DEFAULT)
-    message = await UniMessage.of(event.get_message(), bot=bot).attach_reply(event, bot)
-    reply = message.get(type(message[0]), 1)[0]
-
-    assert str(reply.id) == "700"
-    assert not _is_supported_thread_reply(bot, event, reply)
-
-
-async def test_discord_reply_id_must_match_origin_message_id() -> None:
-    bot = _discord_bot()
-    event = _discord_event()
-    message = await UniMessage.of(event.get_message(), bot=bot).attach_reply(event, bot)
-    reply = message.get(type(message[0]), 1)[0]
-    reply.origin.message_id = Snowflake(701)
-
-    assert str(reply.id) == "700"
-    assert not _is_supported_thread_reply(bot, event, reply)
-
-
-async def test_discord_unset_reference_type_is_treated_as_direct_reply() -> None:
-    bot = _discord_bot()
-    event = _discord_event(reference_type=UNSET)
-    message = await UniMessage.of(event.get_message(), bot=bot).attach_reply(event, bot)
-    reply = message.get(type(message[0]), 1)[0]
-
-    assert str(reply.id) == "700"
-    assert _is_supported_thread_reply(bot, event, reply)
-
-
 async def test_discord_reply_id_survives_failed_replied_message_fetch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -402,7 +361,6 @@ async def test_discord_reply_id_survives_failed_replied_message_fetch(
 
     assert event.reply is None
     assert str(reply.id) == "700"
-    assert _is_supported_thread_reply(bot, event, reply)
     assert bridge.settle_outgoing_binding(
         InitialThreadBinding(thread.thread_id, event.get_user_id()),
         adapter_name=SupportAdapter.discord.value,
@@ -648,3 +606,162 @@ async def test_finish_support_response_fails_closed_when_settlement_is_rejected(
         )
         is None
     )
+
+
+async def test_scope_supplement_settles_after_send_without_receipt() -> None:
+    store, coordinator, bridge = _thread_runtime()
+    target = _onebot_target()
+    claim = coordinator.claim_scope(
+        adapter_name=SupportAdapter.onebot11.value,
+        bot_scope="1",
+        conversation_scope=conversation_scope(target),
+        actor_scope="actor-200",
+        create_kind=ThreadKind.CLARIFICATION,
+    )
+    assert claim.status is TurnClaimStatus.ACQUIRED
+    assert claim.lease is not None and not claim.lease.is_supplement
+    current_matcher = cast(
+        Matcher,
+        SimpleNamespace(
+            state={
+                "_nbtriage_thread_binding": PreparedScopeSupplementBinding(
+                    lease_token=claim.lease.token,
+                    kind=ThreadKind.CLARIFICATION,
+                    topic_refs=("capability:search-image",),
+                )
+            }
+        ),
+    )
+
+    class FakeMatcher:
+        @classmethod
+        async def send(cls, _: object) -> object:
+            return None
+
+        @classmethod
+        async def finish(cls) -> None:
+            raise FinishedException
+
+    with pytest.raises(FinishedException):
+        await finish_support_response(
+            cast(type[AlconnaMatcher], FakeMatcher),
+            current_matcher,
+            message=UniMessage.text("请再补充一次"),
+            bot=_onebot_bot(),
+            target=target,
+            thread_bridge=bridge,
+        )
+
+    supplement = coordinator.claim_scope(
+        adapter_name=SupportAdapter.onebot11.value,
+        bot_scope="1",
+        conversation_scope=conversation_scope(target),
+        actor_scope="actor-200",
+    )
+    assert supplement.status is TurnClaimStatus.ACQUIRED
+    assert supplement.lease is not None and supplement.lease.is_supplement
+    assert supplement.lease.thread.topic_refs == ("capability:search-image",)
+    assert supplement.lease.thread.thread_id == claim.lease.thread.thread_id
+    assert bridge.dropped_count == 0
+    assert "_nbtriage_thread_binding" not in current_matcher.state
+    assert coordinator.close_turn(supplement.lease.token)
+    current = store.get(claim.lease.thread.thread_id)
+    assert current is not None and current.status is ThreadStatus.CLOSED
+
+
+async def test_scope_supplement_send_failure_closes_lease() -> None:
+    store, coordinator, bridge = _thread_runtime()
+    target = _onebot_target()
+    claim = coordinator.claim_scope(
+        adapter_name=SupportAdapter.onebot11.value,
+        bot_scope="1",
+        conversation_scope=conversation_scope(target),
+        actor_scope="actor-200",
+        create_kind=ThreadKind.CLARIFICATION,
+    )
+    assert claim.lease is not None
+    current_matcher = cast(
+        Matcher,
+        SimpleNamespace(
+            state={
+                "_nbtriage_thread_binding": PreparedScopeSupplementBinding(
+                    lease_token=claim.lease.token,
+                    kind=ThreadKind.CLARIFICATION,
+                    topic_refs=(),
+                )
+            }
+        ),
+    )
+
+    class FakeMatcher:
+        @classmethod
+        async def send(cls, _: object) -> object:
+            raise RuntimeError("send failed")
+
+        @classmethod
+        async def finish(cls) -> None:
+            raise AssertionError("finish must not run")
+
+    with pytest.raises(RuntimeError, match="send failed"):
+        await finish_support_response(
+            cast(type[AlconnaMatcher], FakeMatcher),
+            current_matcher,
+            message=UniMessage.text("请再补充一次"),
+            bot=_onebot_bot(),
+            target=target,
+            thread_bridge=bridge,
+        )
+
+    current = store.get(claim.lease.thread.thread_id)
+    assert current is not None and current.status is ThreadStatus.CLOSED
+    assert bridge.dropped_count == 1
+    assert "_nbtriage_thread_binding" not in current_matcher.state
+
+
+async def test_scope_supplement_rejected_settlement_fails_once() -> None:
+    store, coordinator, bridge = _thread_runtime()
+    target = _onebot_target()
+    claim = coordinator.claim_scope(
+        adapter_name=SupportAdapter.onebot11.value,
+        bot_scope="1",
+        conversation_scope=conversation_scope(target),
+        actor_scope="actor-200",
+        create_kind=ThreadKind.CLARIFICATION,
+    )
+    assert claim.lease is not None
+    assert coordinator.close_turn(claim.lease.token)
+    current_matcher = cast(
+        Matcher,
+        SimpleNamespace(
+            state={
+                "_nbtriage_thread_binding": PreparedScopeSupplementBinding(
+                    lease_token=claim.lease.token,
+                    kind=ThreadKind.CLARIFICATION,
+                    topic_refs=(),
+                )
+            }
+        ),
+    )
+
+    class FakeMatcher:
+        @classmethod
+        async def send(cls, _: object) -> object:
+            return object()
+
+        @classmethod
+        async def finish(cls) -> None:
+            raise FinishedException
+
+    with pytest.raises(FinishedException):
+        await finish_support_response(
+            cast(type[AlconnaMatcher], FakeMatcher),
+            current_matcher,
+            message=UniMessage.text("请再补充一次"),
+            bot=_onebot_bot(),
+            target=target,
+            thread_bridge=bridge,
+        )
+
+    current = store.get(claim.lease.thread.thread_id)
+    assert current is not None and current.status is ThreadStatus.CLOSED
+    assert bridge.dropped_count == 1

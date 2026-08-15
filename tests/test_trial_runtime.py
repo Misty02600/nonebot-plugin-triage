@@ -7,7 +7,6 @@ import pytest
 
 from nbtriage.live_trials import (
     LiveTrialError,
-    LiveTrialSummary,
     RotatingJsonlTrialEventSink,
     TrialFeedback,
     TrialMode,
@@ -18,7 +17,6 @@ from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.trials import (
     create_trial_service,
     format_trial_feedback_result,
-    format_trial_summary,
     parse_trial_feedback,
 )
 
@@ -115,26 +113,3 @@ def test_trial_feedback_formatter_does_not_echo_incident_or_free_text() -> None:
 
     assert message == "已记录试运行反馈：有用。"
     assert "trial-safe" not in message
-
-
-def test_trial_summary_formatter_exposes_only_aggregate_counters() -> None:
-    summary = LiveTrialSummary(
-        mode=TrialMode.OBSERVE,
-        strategy_version="intake-v1",
-        active_trial_count=3,
-        runtime_failure_count=2,
-        queried_trial_count=2,
-        useful_feedback_count=1,
-        incomplete_feedback_count=1,
-        incorrect_feedback_count=0,
-        unique_cluster_count=1,
-        dropped_trial_count=4,
-        audit_event_count=7,
-        dropped_event_count=5,
-    )
-
-    message = format_trial_summary(summary)
-
-    assert "活跃 3" in message
-    assert "有用 1 / 不完整 1 / 不正确 0" in message
-    assert "审计事件 7，日志丢弃 5" in message

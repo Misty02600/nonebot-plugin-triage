@@ -10,6 +10,13 @@ from nonebot.adapters.onebot.v11 import Adapter
 os.environ["ENVIRONMENT"] = "test"
 # 隔离维护者本地 `.env` 中可能残留的已删除 trial 路径；迁移错误由配置单测直接覆盖。
 os.environ["NBTRIAGE_TRIAL_LOG_PATH"] = ""
+# 测试使用假的合格配置覆盖模型增强路径，但不启动真实 Provider 请求。
+# 商城式无模型配置导入由独立子进程用例覆盖。
+os.environ["NBTRIAGE_MODEL_BACKEND"] = "opencode-go-chat"
+os.environ["NBTRIAGE_MODEL_NAME"] = "deepseek-v4-flash"
+os.environ["NBTRIAGE_MODEL_TIMEOUT_SECONDS"] = "60"
+os.environ["NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS"] = "240"
+os.environ["OPENCODE_API_KEY"] = "test-only-not-a-secret"
 
 
 def pytest_configure() -> None:
@@ -39,6 +46,9 @@ def isolate_live_semantic_transport(
 ) -> None:
     """普通 pytest 不得因维护者本机配置而调用真实语义 Provider。"""
     from nonebot_plugin_triage import handlers
+    from nonebot_plugin_triage.bug_assessment_runtime import (
+        UnavailableBugAssessmentService,
+    )
     from nonebot_plugin_triage.public_guidance import PublicGuidanceService
     from nonebot_plugin_triage.semantic_assessment import SemanticAssessmentService
 
@@ -49,5 +59,6 @@ def isolate_live_semantic_transport(
             handlers.plugin_runtime,
             semantic_assessment_service=SemanticAssessmentService(None, timeout_seconds=1),
             public_guidance_service=PublicGuidanceService(None, timeout_seconds=1),
+            bug_assessment_service=UnavailableBugAssessmentService(),
         ),
     )

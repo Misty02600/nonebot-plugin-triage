@@ -139,6 +139,7 @@ cython_debug/
 
 # Tool credentials and local state
 .pypirc
+.serena/
 .abstra/
 marimo/_static/
 marimo/_lsp/

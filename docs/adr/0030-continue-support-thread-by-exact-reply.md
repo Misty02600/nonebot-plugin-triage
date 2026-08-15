@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已替代；由 ADR-0031 替代 | 2026-08-12 |
+| 已替代；由 ADR-0031 替代，剩余边界由 ADR-0060 部分替代 | 2026-08-12 |
 
 ## 当时遇到了什么
 
@@ -54,6 +54,8 @@ Reply”时，这种 Matcher 才适合作为窄续问入口。不同适配器提
 - 本 ADR 的免命令续问入口、常驻 `on_message` Matcher 和适配器专用入站 Reply Provider 已由
   [ADR-0031](0031-require-triage-for-support-thread-continuation.md) 替代；Thread 生命周期、HMAC 作用域、
   latest-only、每轮限流与不使用 Waiter 的决定继续有效。
+- [ADR-0060](0060-use-scope-thread-and-post-route-conversation-context.md) 进一步替代 exact-Reply、latest-only 与
+  可持续 Guidance Thread；保留显式入口、不使用 Waiter、单进程短期内存和每轮限流边界。
 - 部分替代 [ADR-0020](0020-use-triage-command-for-natural-language-support.md) 的“每条支持消息都必须出现
   `triage`”触发细节；首次入口、自然语言不可信、Reply 作为故障证据以及只让疑似故障建单的边界不变。
 - 保留 [ADR-0006](0006-cross-platform-alconna-entry-and-reference-providers.md) 的 Provider 分层：入口覆盖、

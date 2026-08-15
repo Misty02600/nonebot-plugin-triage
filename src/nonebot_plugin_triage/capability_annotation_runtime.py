@@ -9,6 +9,7 @@ from nbtriage.capability_annotations import (
     CAPABILITY_ANNOTATION_PROMPT_ID,
     CAPABILITY_ANNOTATION_SCHEMA_VERSION,
 )
+from nbtriage.capability_model_adapter import CapabilityAnalysisToolRuntimeFactory
 from nbtriage.opencode_go_semantic_adapter import (
     OPENCODE_GO_SEMANTIC_API_FAMILY,
     OPENCODE_GO_SEMANTIC_MODELS,
@@ -16,13 +17,15 @@ from nbtriage.opencode_go_semantic_adapter import (
 )
 from nonebot_plugin_triage.config import NBTriageConfig
 
-CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-v1"
-CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS = 240
+CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v2"
+CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS = 4_096
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
-    "runtime-registered-public-capability-bounded-source-and-allowed-config-v1"
+    "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
 )
-CAPABILITY_ANNOTATION_BUDGET_PROFILE = "background-sequential-60s-240-v1"
-CAPABILITY_ANNOTATION_EVALUATION = "opencode-go-capability-annotation-contract-v1"
+CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
+    "background-sequential-8req-5read-navigation-tools-120k-4096out-0.05usd-v8"
+)
+CAPABILITY_ANNOTATION_EVALUATION = "opencode-go-capability-agent-contract-v10-zh-local"
 CAPABILITY_ANNOTATION_ANALYSIS_REVISION = (
     f"{CAPABILITY_ANNOTATION_TASK}:{CAPABILITY_ANNOTATION_PROMPT_ID}:"
     f"{CAPABILITY_ANNOTATION_EVALUATION}"
@@ -69,12 +72,11 @@ def create_capability_annotation_client_factory(
     provisional_tasks: frozenset[CapabilityAnnotationTaskQualification] = (
         PROVISIONAL_CAPABILITY_ANNOTATION_TASKS
     ),
-) -> Callable[[], CapabilityAnalysisClient] | None:
-    if config.nbtriage_capability_annotation_mode == "off":
-        return None
+    tool_runtime_factory: CapabilityAnalysisToolRuntimeFactory | None = None,
+) -> Callable[[], CapabilityAnalysisClient]:
     if config.nbtriage_model_backend != "opencode-go-chat":
         raise CapabilityAnnotationRuntimeConfigurationError(
-            "auto capability annotations require opencode-go-chat"
+            "capability annotations require opencode-go-chat"
         )
     model = config.nbtriage_model_name
     if model is None or model not in OPENCODE_GO_SEMANTIC_MODELS:
@@ -100,15 +102,11 @@ def create_capability_annotation_client_factory(
         raise CapabilityAnnotationRuntimeConfigurationError(
             "OpenCode Go capability annotation timeout must be 60 seconds"
         )
-    if config.nbtriage_model_max_output_tokens != CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS:
-        raise CapabilityAnnotationRuntimeConfigurationError(
-            "OpenCode Go capability annotation output limit must be 240 tokens"
-        )
     environment = os.environ if environ is None else environ
     api_key = environment.get("OPENCODE_API_KEY", "")
     if not api_key.strip():
         raise CapabilityAnnotationRuntimeConfigurationError(
-            "OPENCODE_API_KEY is required for auto capability annotations"
+            "OPENCODE_API_KEY is required for capability annotations"
         )
 
     def create_client() -> CapabilityAnalysisClient:
@@ -117,6 +115,7 @@ def create_capability_annotation_client_factory(
             model=model,
             timeout_seconds=config.nbtriage_model_timeout_seconds,
             max_output_tokens=CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS,
+            tool_runtime_factory=tool_runtime_factory,
         )
 
     return create_client

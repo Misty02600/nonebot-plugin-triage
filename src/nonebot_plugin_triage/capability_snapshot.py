@@ -894,6 +894,7 @@ def _matcher_handler_references(
                 "function": function_name,
                 "line": line,
                 "source_revision": source_revision,
+                "closure_freevars": sorted(call.__code__.co_freevars),
             }
         )
     return tuple(sorted(result, key=lambda item: (str(item["module"]), str(item["function"]))))

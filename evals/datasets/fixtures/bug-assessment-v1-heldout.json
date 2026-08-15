@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "bug-assessment-v1-heldout-16-20260814",
+  "split": "held_out",
+  "bug_schema_version": 1,
+  "synthetic_only": true,
+  "contains_real_user_data": false,
+  "cases": [
+    {
+      "case_id":"h01-plugin-duplicate-vote","request_text":"投票刚才把一张票算了两次，请判断是不是 Bug。","adapter":"OneBot V11","subject_id":"poll.vote","source_revision":"hs1","contract_revision":"hc1","deployment_generation":"hd1",
+      "evidence":{"public":[{"schema_version":1,"evidence_id":"h01.public","kind":"public_contract","source":"fixture:public","body":"Contract: each message_id contributes at most one vote.","revision":"hc1","current":true,"partial":false}],"runtime":[],"logs":[{"schema_version":1,"evidence_id":"h01.log","kind":"correlated_log","source":"fixture:log","body":"same_signature_count=4; buffer_dropped_count=0; one message_id inserted twice.","revision":"hl1","current":true,"partial":false}],"source":[{"schema_version":1,"evidence_id":"h01.source","kind":"source_code","source":"fixture:source","body":"relative_path=poll/handler.py\nTarget plugin retries insert without the documented idempotency guard. Responsibility: target_plugin.","revision":"hs1","current":true,"partial":false}],"design":[],"deployment":[]},
+      "expected_verdict":"bug","expected_occurrence":"repeated","expected_responsibility_candidates":["target_plugin"]
+    },
+    {
+      "case_id":"h02-framework-dispatch","request_text":"今天同一事件被框架分派了两次，这是 Bug 吗？","adapter":"OneBot V11","subject_id":"event.dispatch","source_revision":"hs2","contract_revision":"hc2","deployment_generation":"hd2",
+      "evidence":{"public":[],"runtime":[{"schema_version":1,"evidence_id":"h02.runtime","kind":"runtime_observation","source":"fixture:runtime","body":"One correlation shows the same event_id entering the framework dispatcher twice; complete buffer.","revision":"hr2","current":true,"partial":false}],"logs":[],"source":[{"schema_version":1,"evidence_id":"h02.source","kind":"source_code","source":"fixture:source","body":"relative_path=nonebot/message.py\nNoneBot framework branch appends the same processor twice after reconnect. Responsibility: nonebot_framework.","revision":"hs2","current":true,"partial":false}],"design":[{"schema_version":1,"evidence_id":"h02.design","kind":"design_rag","source":"fixture:design","body":"Framework design: one adapter event_id is dispatched exactly once per Bot connection.","revision":"hdesign2","current":true,"partial":false}],"deployment":[]},
+      "expected_verdict":"bug","expected_occurrence":"single_observed","expected_responsibility_candidates":["nonebot_framework"]
+    },
+    {
+      "case_id":"h03-dependency-parser","request_text":"依赖升级后日期参数持续解析错了，请判断是不是 Bug。","adapter":"OneBot V11","subject_id":"calendar.parse","source_revision":"hs3","contract_revision":"hc3","deployment_generation":"hd3",
+      "evidence":{"public":[{"schema_version":1,"evidence_id":"h03.public","kind":"public_contract","source":"fixture:public","body":"Contract: ISO date 2026-08-15 is parsed as 15 August 2026.","revision":"hc3","current":true,"partial":false}],"runtime":[],"logs":[{"schema_version":1,"evidence_id":"h03.log","kind":"correlated_log","source":"fixture:log","body":"same_signature_count=5; buffer_dropped_count=0; parser returns month and day swapped.","revision":"hl3","current":true,"partial":false}],"source":[{"schema_version":1,"evidence_id":"h03.source","kind":"source_code","source":"fixture:source","body":"relative_path=vendor/date_parser.py\nLocked dependency version 4.2 swaps ISO month/day in its parse_iso branch. Responsibility: dependency.","revision":"hs3","current":true,"partial":false}],"design":[],"deployment":[]},
+      "expected_verdict":"bug","expected_occurrence":"repeated","expected_responsibility_candidates":["dependency"]
+    },
+    {
+      "case_id":"h04-bot-integration","request_text":"这次跨插件转发丢了原始消息 ID，是不是 Bug？","adapter":"OneBot V11","subject_id":"bot.forward","source_revision":"hs4","contract_revision":"hc4","deployment_generation":"hd4",
+      "evidence":{"public":[],"runtime":[{"schema_version":1,"evidence_id":"h04.runtime","kind":"runtime_observation","source":"fixture:runtime","body":"One complete correlation: input message_id=m88, downstream integration receives message_id=null.","revision":"hr4","current":true,"partial":false}],"logs":[],"source":[{"schema_version":1,"evidence_id":"h04.source","kind":"source_code","source":"fixture:source","body":"relative_path=bot/bridge.py\nBot integration mapper omits message_id while translating the plugin event. Responsibility: bot_integration.","revision":"hs4","current":true,"partial":false}],"design":[{"schema_version":1,"evidence_id":"h04.design","kind":"design_rag","source":"fixture:design","body":"Integration contract: message_id must be preserved across the plugin bridge.","revision":"hdesign4","current":true,"partial":false}],"deployment":[]},
+      "expected_verdict":"bug","expected_occurrence":"single_observed","expected_responsibility_candidates":["bot_integration"]
+    },
+    {
+      "case_id":"h05-adapter-segment","request_text":"图片消息刚才被 Adapter 编成了错误段类型，请判断是不是 Bug。","adapter":"OneBot V11","subject_id":"image.send","source_revision":"hs5","contract_revision":"hc5","deployment_generation":"hd5",
+      "evidence":{"public":[{"schema_version":1,"evidence_id":"h05.public","kind":"public_contract","source":"fixture:public","body":"Contract: a valid image input is sent as an image segment, not plain text.","revision":"hc5","current":true,"partial":false}],"runtime":[],"logs":[{"schema_version":1,"evidence_id":"h05.log","kind":"correlated_log","source":"fixture:log","body":"same_signature_count=1; buffer_dropped_count=0; encoded segment type=text for valid image payload.","revision":"hl5","current":true,"partial":false}],"source":[{"schema_version":1,"evidence_id":"h05.source","kind":"source_code","source":"fixture:source","body":"relative_path=adapter/segment.py\nAdapter image predicate is inverted in the current branch. Responsibility: adapter.","revision":"hs5","current":true,"partial":false}],"design":[],"deployment":[]},
+      "expected_verdict":"bug","expected_occurrence":"single_observed","expected_responsibility_candidates":["adapter"]
+    },
+    {
+      "case_id":"h06-missing-parameter","request_text":"我没填城市就查天气，被提示参数不足，这是 Bug 吗？","adapter":"OneBot V11","subject_id":"weather.query","source_revision":"hs6","contract_revision":"hc6","deployment_generation":"hd6",
+      "evidence":{"public":[{"schema_version":1,"evidence_id":"h06.public","kind":"public_contract","source":"fixture:public","body":"Public contract: city is a required parameter; missing city returns parameter_required.","revision":"hc6","current":true,"partial":false}],"runtime":[{"schema_version":1,"evidence_id":"h06.runtime","kind":"runtime_observation","source":"fixture:runtime","body":"One attempt parsed city=null and returned parameter_required before the handler.","revision":"hr6","current":true,"partial":false}],"logs":[],"source":[],"design":[],"deployment":[]},
+      "expected_verdict":"not_bug","expected_occurrence":"single_observed","expected_responsibility_candidates":["user_input"]
+    },
+    {
+      "case_id":"h07-role-precondition","request_text":"普通成员暂停早报被拒绝，这属于 Bug 吗？","adapter":"OneBot V11","subject_id":"digest.pause","source_revision":"hs7","contract_revision":"hc7","deployment_generation":"hd7",
+      "evidence":{"public":[{"schema_version":1,"evidence_id":"h07.public","kind":"public_contract","source":"fixture:public","body":"Public contract: pausing the digest requires group administrator role.","revision":"hc7","current":true,"partial":false}],"runtime":[{"schema_version":1,"evidence_id":"h07.runtime","kind":"runtime_observation","source":"fixture:runtime","body":"One attempt with caller_role=member was denied by the documented role check.","revision":"hr7","current":true,"partial":false}],"logs":[],"source":[],"design":[],"deployment":[]},
+      "expected_verdict":"not_bug","expected_occurrence":"single_observed","expected_responsibility_candidates":["user_input"]
+    },
+    {
+      "case_id":"h08-disabled-feature","request_text":"当前 Bot 不发送每日摘要，请判断是不是 Bug。","adapter":"OneBot V11","subject_id":"digest.send","source_revision":"hs8","contract_revision":"hc8","deployment_generation":"hd8",
+      "evidence":{"public":[{"schema_version":1,"evidence_id":"h08.public","kind":"public_contract","source":"fixture:public","body":"Contract: daily digest runs only when the operator enables digest delivery.","revision":"hc8","current":true,"partial":false}],"runtime":[],"logs":[],"source":[],"design":[],"deployment":[{"schema_version":1,"evidence_id":"h08.deploy","kind":"deployment_context","source":"fixture:deployment","body":"Safe state: digest delivery intentionally disabled for this deployment generation.","revision":"hd8","current":true,"partial":false}]},
+      "expected_verdict":"not_bug","expected_occurrence":"unknown","expected_responsibility_candidates":["intentional_configuration"]
+    },
+    {
+      "case_id":"h09-upstream-timeout","request_text":"这次地图查询遇到上游超时并提示稍后重试，是 Bug 吗？","adapter":"OneBot V11","subject_id":"map.query","source_revision":"hs9","contract_revision":"hc9","deployment_generation":"hd9",
+      "evidence":{"public":[],"runtime":[],"logs":[{"schema_version":1,"evidence_id":"h09.log","kind":"correlated_log","source":"fixture:log","body":"same_signature_count=1; buffer_dropped_count=0; upstream timed out; Bot caught timeout and emitted retry_later.","revision":"hl9","current":true,"partial":false}],"source":[],"design":[{"schema_version":1,"evidence_id":"h09.design","kind":"design_rag","source":"fixture:design","body":"Design: an isolated upstream timeout is not a Bot Bug when timeout is caught and retry_later is returned.","revision":"hdesign9","current":true,"partial":false}],"deployment":[]},
+      "expected_verdict":"not_bug","expected_occurrence":"single_observed","expected_responsibility_candidates":["external_service"]
+    },
+    {
+      "case_id":"h10-operator-mode","request_text":"当前部署只允许手动同步，不会自动同步，这是 Bug 吗？","adapter":"OneBot V11","subject_id":"sync.auto","source_revision":"hs10","contract_revision":"hc10","deployment_generation":"hd10",
+      "evidence":{"public":[],"runtime":[],"logs":[],"source":[],"design":[{"schema_version":1,"evidence_id":"h10.design","kind":"design_rag","source":"fixture:design","body":"Design: manual_only mode deliberately disables the automatic scheduler.","revision":"hdesign10","current":true,"partial":false}],"deployment":[{"schema_version":1,"evidence_id":"h10.deploy","kind":"deployment_context","source":"fixture:deployment","body":"Safe derived state: synchronization mode is manual_only by operator selection.","revision":"hd10","current":true,"partial":false}]},
+      "expected_verdict":"not_bug","expected_occurrence":"unknown","expected_responsibility_candidates":["intentional_configuration"]
+    },
+    {
+      "case_id":"h11-log-without-contract","request_text":"搜索刚才没结果，请判断是不是 Bug。","adapter":"OneBot V11","subject_id":"search.query","source_revision":"hs11","contract_revision":"hc11","deployment_generation":"hd11",
+      "evidence":{"public":[],"runtime":[],"logs":[{"schema_version":1,"evidence_id":"h11.log","kind":"correlated_log","source":"fixture:log","body":"same_signature_count=1; buffer_dropped_count=0; matcher completed with zero results and no exception.","revision":"hl11","current":true,"partial":false}],"source":[],"design":[],"deployment":[]},
+      "expected_verdict":"unknown","expected_occurrence":"single_observed","expected_responsibility_candidates":[]
+    },
+    {
+      "case_id":"h12-stale-source","request_text":"当前归档失效是不是源码 Bug？","adapter":"OneBot V11","subject_id":"archive.run","source_revision":"hs12","contract_revision":"hc12","deployment_generation":"hd12",
+      "evidence":{"public":[{"schema_version":1,"evidence_id":"h12.public","kind":"public_contract","source":"fixture:public","body":"Contract: matching messages are archived.","revision":"hc12","current":true,"partial":false}],"runtime":[],"logs":[],"source":[{"schema_version":1,"evidence_id":"h12.source","kind":"source_code","source":"fixture:source","body":"relative_path=archive/old.py\nOld revision skipped all messages.","revision":"old-src","current":false,"partial":false}],"design":[],"deployment":[]},
+      "expected_verdict":"unknown","expected_occurrence":"unknown","expected_responsibility_candidates":[]
+    },
+    {
+      "case_id":"h13-partial-design","request_text":"连续欢迎两次是不是 Bug？","adapter":"OneBot V11","subject_id":"welcome.send","source_revision":"hs13","contract_revision":"hc13","deployment_generation":"hd13",
+      "evidence":{"public":[],"runtime":[{"schema_version":1,"evidence_id":"h13.runtime","kind":"runtime_observation","source":"fixture:runtime","body":"Two welcome sends observed for one join event.","revision":"hr13","current":true,"partial":false}],"logs":[],"source":[],"design":[{"schema_version":1,"evidence_id":"h13.design","kind":"design_rag","source":"fixture:design","body":"Truncated design fragment mentions welcome delivery but omits multiplicity.","revision":"hdesign13","current":true,"partial":true}],"deployment":[]},
+      "expected_verdict":"unknown","expected_occurrence":"unknown","expected_responsibility_candidates":[]
+    },
+    {
+      "case_id":"h14-conflicting-contract","request_text":"积分过期后仍可兑换是不是 Bug？","adapter":"OneBot V11","subject_id":"points.redeem","source_revision":"hs14","contract_revision":"hc14","deployment_generation":"hd14",
+      "evidence":{"public":[{"schema_version":1,"evidence_id":"h14.public","kind":"public_contract","source":"fixture:public","body":"Public contract says expired points cannot be redeemed.","revision":"hc14","current":true,"partial":false}],"runtime":[{"schema_version":1,"evidence_id":"h14.runtime","kind":"runtime_observation","source":"fixture:runtime","body":"One redemption with expired points succeeded.","revision":"hr14","current":true,"partial":false}],"logs":[],"source":[],"design":[{"schema_version":1,"evidence_id":"h14.design","kind":"design_rag","source":"fixture:design","body":"Current approved design says a seven-day grace period permits redemption after nominal expiry.","revision":"hdesign14","current":true,"partial":false}],"deployment":[]},
+      "expected_verdict":"unknown","expected_occurrence":"unknown","expected_responsibility_candidates":[]
+    },
+    {
+      "case_id":"h15-no-correlation","request_text":"语音刚才好像失败了，请判断是不是 Bug。","adapter":"OneBot V11","subject_id":"speech.synthesize","source_revision":"hs15","contract_revision":"hc15","deployment_generation":"hd15",
+      "evidence":{"public":[{"schema_version":1,"evidence_id":"h15.public","kind":"public_contract","source":"fixture:public","body":"Contract: valid text normally yields audio.","revision":"hc15","current":true,"partial":false}],"runtime":[],"logs":[],"source":[],"design":[],"deployment":[]},
+      "expected_verdict":"unknown","expected_occurrence":"unknown","expected_responsibility_candidates":[]
+    },
+    {
+      "case_id":"h16-source-without-expectation","request_text":"自动清理没有动作，请判断是不是 Bug。","adapter":"OneBot V11","subject_id":"cleanup.auto","source_revision":"hs16","contract_revision":"hc16","deployment_generation":"hd16",
+      "evidence":{"public":[],"runtime":[],"logs":[],"source":[{"schema_version":1,"evidence_id":"h16.source","kind":"source_code","source":"fixture:source","body":"relative_path=cleanup/task.py\nCurrent source returns early when no retention policy is available.","revision":"hs16","current":true,"partial":false}],"design":[],"deployment":[]},
+      "expected_verdict":"unknown","expected_occurrence":"unknown","expected_responsibility_candidates":[]
+    }
+  ]
+}

@@ -14,6 +14,8 @@ from nbtriage.capability_analysis import (
     CapabilityIdentity,
     ConfigProjection,
     FakeCapabilityAnalysisClient,
+    RateLimitPolicy,
+    RateLimitScope,
     SemanticClaim,
     SemanticClaimKind,
     SemanticConstraint,
@@ -153,6 +155,9 @@ def test_output_has_only_semantic_fields_and_evidence_ids() -> None:
         "statement",
         "evidence_ids",
         "config_reference_ids",
+        "role",
+        "rate_limit_policy",
+        "rate_limit_scope",
     }
     with pytest.raises(TypeError):
         cast(Any, SemanticClaim)(
@@ -191,6 +196,8 @@ def test_service_rejects_config_reference_ids_outside_request() -> None:
                 statement="存在调用间隔",
                 evidence_ids=("ev-handler",),
                 config_reference_ids=("cfg-missing",),
+                rate_limit_policy=RateLimitPolicy.COOLDOWN,
+                rate_limit_scope=RateLimitScope.USER,
             ),
         )
     )

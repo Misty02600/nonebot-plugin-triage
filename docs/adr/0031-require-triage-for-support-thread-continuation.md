@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；部分被替代 | 2026-08-12 |
+| 已采纳；Thread 选择与 Reply 边界由 ADR-0060 部分替代 | 2026-08-12 |
 
 ## 当时遇到了什么
 
@@ -72,6 +72,8 @@ Alconna / UniSeg 已经提供跨适配器的命令、`OriginalUniMsg`、结构�
 - 后续 [ADR-0033](0033-serialize-support-thread-turns-with-single-use-reply-claims.md) 把 Reply 的失效时机
   从“新回答发送成功后”提前为“处理轮 Claim 成功时”，并增加单 Thread active lease；本 ADR 的显式
   `triage` 入口和 Reply 选择 Thread 规则保持不变。
+- [ADR-0060](0060-use-scope-thread-and-post-route-conversation-context.md) 改由稳定作用域选择一次补充，并允许
+  Reply 可见正文在路由后进入专用任务；每轮显式 `triage`、Alconna / UniSeg 入口和重新鉴权仍保留。
 
 ## 落实与确认
 

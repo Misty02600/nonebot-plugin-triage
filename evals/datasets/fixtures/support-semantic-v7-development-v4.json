@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "support-semantic-v7-development-v4-20260815",
+  "split": "development",
+  "semantic_schema_version": 7,
+  "synthetic_only": true,
+  "contains_real_user_data": false,
+  "qualification_contract": {
+    "provider": "opencode-go",
+    "model": "deepseek-v4-flash",
+    "task": "support-semantic-v7",
+    "schema_version": 7,
+    "prompt_id": "support-semantic-v7-prompt-v4",
+    "prompt_sha256": "04f0f5625664fb0ddcec3b114361c6336dfaa0b693313c5d4c8838753b764a1b",
+    "privacy_policy": "current-request-text-only-v1",
+    "budget_profile": "single-call-60s-240-v1"
+  },
+  "cases": [
+    {"case_id":"dev01","text":"刚才说的那个入口要怎样操作？","expected_status":"assessed","expected_goals":["guidance"],"expected_reported_observation":false},
+    {"case_id":"dev02","text":"它具体要怎么调用？","expected_status":"assessed","expected_goals":["guidance"],"expected_reported_observation":false},
+    {"case_id":"dev03","text":"说明 NoneBot 依赖注入怎样得到当前操作者。","expected_status":"assessed","expected_goals":["behavior_exploration"],"expected_reported_observation":false},
+    {"case_id":"dev04","text":"解释框架内部如何把会话对象注入 handler。","expected_status":"assessed","expected_goals":["behavior_exploration"],"expected_reported_observation":false}
+  ]
+}

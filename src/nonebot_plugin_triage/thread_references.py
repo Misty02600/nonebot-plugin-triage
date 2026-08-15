@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, TypeGuard
 
 from nonebot.matcher import Matcher
 from nonebot.message import run_postprocessor as register_run_postprocessor
@@ -40,8 +40,18 @@ class PreparedContinuationBinding:
     topic_refs: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class PreparedScopeSupplementBinding:
+    lease_token: str
+    kind: ThreadKind
+    topic_refs: tuple[str, ...]
+
+
 OutgoingThreadBinding: TypeAlias = (
-    InitialThreadBinding | PendingContinuationBinding | PreparedContinuationBinding
+    InitialThreadBinding
+    | PendingContinuationBinding
+    | PreparedContinuationBinding
+    | PreparedScopeSupplementBinding
 )
 
 
@@ -207,6 +217,26 @@ class SupportThreadReferenceBridge:
             coordinator.fail_turn(binding.lease_token)
             return False
 
+    def await_scope_supplement(
+        self,
+        binding: PreparedScopeSupplementBinding,
+    ) -> bool:
+        """在提示消息发送成功后，开放唯一一次同作用域补充轮。"""
+        coordinator = self.coordinator
+        if coordinator is None:
+            return False
+        try:
+            return (
+                coordinator.await_supplement(
+                    binding.lease_token,
+                    kind=binding.kind,
+                    topic_refs=binding.topic_refs,
+                )
+                is not None
+            )
+        except Exception:
+            return False
+
     def close_turn(self, lease_token: str) -> bool:
         coordinator = self.coordinator
         if coordinator is None:
@@ -294,10 +324,22 @@ def pop_outgoing_thread_binding(state: dict[str, Any]) -> OutgoingThreadBinding 
         value
         if isinstance(
             value,
-            (InitialThreadBinding, PendingContinuationBinding, PreparedContinuationBinding),
+            (
+                InitialThreadBinding,
+                PendingContinuationBinding,
+                PreparedContinuationBinding,
+                PreparedScopeSupplementBinding,
+            ),
         )
         else None
     )
+
+
+def is_scope_supplement_binding(
+    binding: OutgoingThreadBinding,
+) -> TypeGuard[PreparedScopeSupplementBinding]:
+    """判断 binding 是否只需要发送成功、不需要平台消息引用即可结算。"""
+    return isinstance(binding, PreparedScopeSupplementBinding)
 
 
 __all__ = (
@@ -306,6 +348,8 @@ __all__ = (
     "OutgoingThreadBinding",
     "PendingContinuationBinding",
     "PreparedContinuationBinding",
+    "PreparedScopeSupplementBinding",
     "SupportThreadReferenceBridge",
+    "is_scope_supplement_binding",
     "pop_outgoing_thread_binding",
 )

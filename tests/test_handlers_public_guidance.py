@@ -14,6 +14,7 @@ from nbtriage.capabilities import (
     PlatformScope,
     RecordState,
 )
+from nbtriage.capability_annotations import CapabilityTeachingAnnotation
 from nbtriage.public_guidance import (
     PUBLIC_GUIDANCE_SCHEMA_VERSION,
     PublicGuidanceAnswer,
@@ -45,6 +46,16 @@ async def test_shadow_guidance_uses_answer_agent_output(monkeypatch: pytest.Monk
     result = PublicCapabilitySearch(
         hits=(CapabilitySearchHit(record=record, score=100.0),),
         partial=False,
+        annotations=(
+            CapabilityTeachingAnnotation(
+                capability_id="command:image",
+                request_fingerprint="a" * 64,
+                summary="根据图片查找相似内容。",
+                usages=("[回复图片] {command}",),
+                input_requirements=("回复一张图片后发送搜图。",),
+                behavior_boundaries=("没有图片时不会开始搜索。",),
+            ),
+        ),
     )
 
     class Shadow:
@@ -85,13 +96,20 @@ async def test_shadow_guidance_uses_answer_agent_output(monkeypatch: pytest.Monk
     guidance = await handlers._capability_guidance_result(
         SimpleNamespace(adapter=SimpleNamespace()),
         SimpleNamespace(),
-        "搜图功能怎么使用？",
+        "这个怎么使用？",
+        conversation_context="搜图",
     )
 
     assert guidance.message == "发送 `搜图 -h` 查看完整帮助。"
     assert guidance.matched_headers == ("搜图",)
     assert len(service.requests) == 1
+    assert service.requests[0].question == "这个怎么使用？"
+    assert service.requests[0].conversation_context == "搜图"
     assert [fact.text for fact in service.requests[0].facts] == [
         "搜图",
         "使用指令 `搜图 -h` 查看帮助",
+        "根据图片查找相似内容。",
+        "[回复图片] 搜图",
+        "回复一张图片后发送搜图。",
+        "没有图片时不会开始搜索。",
     ]

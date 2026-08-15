@@ -51,7 +51,7 @@ def _request() -> PublicGuidanceRequest:
     )
 
 
-def test_answer_agent_receives_only_public_question_and_facts() -> None:
+def test_answer_agent_receives_public_question_reply_context_and_facts() -> None:
     observed: dict[str, Any] = {}
 
     def respond(messages, info: AgentInfo) -> ModelResponse:
@@ -79,7 +79,8 @@ def test_answer_agent_receives_only_public_question_and_facts() -> None:
         max_output_tokens=240,
     )
 
-    answer = asyncio.run(client.answer(_request()))
+    request = _request().model_copy(update={"conversation_context": "[图片] 搜图"})
+    answer = asyncio.run(client.answer(request))
 
     assert answer.answer == "发送 `搜图 -h` 查看完整帮助。"
     messages = observed["messages"]
@@ -90,7 +91,8 @@ def test_answer_agent_receives_only_public_question_and_facts() -> None:
     prompt = message.parts[0]
     assert isinstance(prompt, UserPromptPart)
     payload = json.loads(cast(str, prompt.content))
-    assert payload == _request().model_dump(mode="json")
+    assert payload == request.model_dump(mode="json", exclude_none=True)
+    assert payload["conversation_context"] == "[图片] 搜图"
     serialized = cast(str, prompt.content).casefold()
     for forbidden in ("source", "locator", "config", "restricted", "environment", "token"):
         assert forbidden not in serialized

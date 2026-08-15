@@ -4,6 +4,9 @@
 |---|---|
 | 已采纳 | 2026-08-13 |
 
+> 2026-08-14：为接入共享只读 Harness，Provider extras 已整体从 `pydantic-ai-slim==2.27.0`
+> 精确升级到 `2.28.0`；本 ADR 的“直接复用上游 Provider extra、不重复声明 SDK”边界不变。
+
 ## 当时遇到了什么
 
 插件曾分别声明 `model-anthropic`、`model-openai` 和 `model-opencode-go` extras，并在每个 extra

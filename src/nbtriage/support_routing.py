@@ -26,6 +26,7 @@ class SupportRoutingAction(StrEnum):
     OPEN_INCIDENT = "open_incident"
     SHOW_GUIDANCE = "show_guidance"
     BEHAVIOR_EXPLORATION_CANDIDATE = "behavior_exploration_candidate"
+    BUG_ASSESSMENT_CANDIDATE = "bug_assessment_candidate"
     FEATURE_FEEDBACK_CANDIDATE = "feature_feedback_candidate"
     OUT_OF_SCOPE = "out_of_scope"
 
@@ -35,12 +36,13 @@ class SupportRoutingReason(StrEnum):
     ASSESSMENT_EXECUTION_FAILED = "assessment_execution_failed"
     ASSESSMENT_UNRESOLVED = "assessment_unresolved"
     UNSUPPORTED_REQUEST = "unsupported_request"
+    # 仅供已退出在线入口的 LiveIncident v1 兼容代码使用；语义路由不再产生该原因。
     TRUSTED_RUNTIME_FAILURE = "trusted_runtime_failure"
     GUIDANCE_REQUESTED = "guidance_requested"
     BEHAVIOR_EXPLORATION_REQUESTED = "behavior_exploration_requested"
+    BUG_ASSESSMENT_REQUESTED = "bug_assessment_requested"
     FEATURE_FEEDBACK_REQUESTED = "feature_feedback_requested"
-    INCIDENT_REQUEST_UNVERIFIED = "incident_request_unverified"
-    REPORTED_OBSERVATION_UNVERIFIED = "reported_observation_unverified"
+    REPORTED_OBSERVATION_REQUIRES_ASSESSMENT = "reported_observation_requires_assessment"
 
 
 _AUTHORIZATION_SEAL = object()
@@ -122,19 +124,14 @@ class SupportRoutingDecision:
 
 def route_support_assessment(
     outcome: SupportAssessmentOutcome,
-    *,
-    trusted_runtime_failure: bool = False,
-    incident_request_binding: object | None = None,
 ) -> SupportRoutingDecision:
     """把语义需求和可信初检结果映射为单一动作。
 
-    路由不读取用户文字，也不自行读取证据或执行副作用。只有用户明确请求故障受理、报告实际现象，
-    且模型外可信运行回执明确失败时，才会签发建单能力。
+    路由不读取用户文字，也不自行读取证据或执行副作用。Bug 是否成立以及是否写入问题记录，
+    由后续 Bug assessment 与模型外生命周期服务决定，不能由语义模型直接授权。
     """
     if type(outcome) is not SupportAssessmentOutcome:
         raise TypeError("outcome must be SupportAssessmentOutcome")
-    if type(trusted_runtime_failure) is not bool:
-        raise TypeError("trusted_runtime_failure must be a boolean")
     if outcome.execution_status is SupportAssessmentExecutionStatus.POLICY_BLOCKED:
         return _failed_decision(
             outcome.execution_status,
@@ -166,17 +163,12 @@ def route_support_assessment(
             SupportRoutingAction.CLARIFY,
             SupportRoutingReason.ASSESSMENT_UNRESOLVED,
         )
-    if (
-        SupportGoal.INCIDENT_INTAKE in canonical.goals
-        and canonical.reported_observation
-        and trusted_runtime_failure
-    ):
-        if incident_request_binding is None:
-            raise SupportRoutingError("incident request binding is required")
-        return _authorized_incident_decision(
+    if SupportGoal.BUG_ASSESSMENT in canonical.goals:
+        return _decision(
             outcome.execution_status,
             canonical,
-            incident_request_binding,
+            SupportRoutingAction.BUG_ASSESSMENT_CANDIDATE,
+            SupportRoutingReason.BUG_ASSESSMENT_REQUESTED,
         )
     if SupportGoal.BEHAVIOR_EXPLORATION in canonical.goals:
         return _decision(
@@ -199,19 +191,12 @@ def route_support_assessment(
             SupportRoutingAction.FEATURE_FEEDBACK_CANDIDATE,
             SupportRoutingReason.FEATURE_FEEDBACK_REQUESTED,
         )
-    if SupportGoal.INCIDENT_INTAKE in canonical.goals:
-        return _decision(
-            outcome.execution_status,
-            canonical,
-            SupportRoutingAction.CLARIFY,
-            SupportRoutingReason.INCIDENT_REQUEST_UNVERIFIED,
-        )
     if canonical.reported_observation:
         return _decision(
             outcome.execution_status,
             canonical,
-            SupportRoutingAction.CLARIFY,
-            SupportRoutingReason.REPORTED_OBSERVATION_UNVERIFIED,
+            SupportRoutingAction.BUG_ASSESSMENT_CANDIDATE,
+            SupportRoutingReason.REPORTED_OBSERVATION_REQUIRES_ASSESSMENT,
         )
     raise SupportRoutingError("assessed support semantics contain no routable signal")
 

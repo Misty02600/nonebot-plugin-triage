@@ -46,6 +46,8 @@ class PublicGuidanceService:
             canonical = parse_public_guidance_request(request.model_dump(mode="json"))
         except (AttributeError, PublicGuidanceContractError):
             return _failed(PublicGuidanceExecutionStatus.INVALID_OUTPUT)
+        # 显式 Reply 是用户主动选中的聊天上下文，不执行凭据或 PII 扫描；
+        # 当前 triage 文字与能力事实继续沿用原有网络前政策。
         if contains_credential(canonical.question) or any(
             contains_credential(fact.text) for fact in canonical.facts
         ):

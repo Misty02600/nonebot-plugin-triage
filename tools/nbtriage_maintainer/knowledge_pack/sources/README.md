@@ -5,9 +5,9 @@
 
 - NapCat：固定 commit 的当前用户文档、通过版本一致性校验的 OpenAPI、当前推荐 tag 的 TypeScript
   源码和同一支持窗口的 Release Notes。NapCatQQ 源码按当前许可仅可用于本地索引，不能进入分发包。
-- NoneBot2：插件支持范围内的官方用户/API 文档和迁移说明；实际运行源码由部署本地
-  `installed_sources` 读取，不在知识包重复维护完整副本。
-- OneBot Adapter、Alconna（含 UniSeg 文档）、Uninfo、OneBot v11：各自固定 revision 的官方文档。
+- NoneBot2：插件支持范围内的官方用户/API 文档、迁移说明以及官网 Alconna/UniSeg 教学；实际运行源码由
+  部署本地、绑定安装 revision 的只读 FileSystem / Jedi 证据工具按需读取，不在知识包重复维护完整副本。
+- OneBot Adapter、Uninfo、OneBot v11：各自固定 revision 的官方文档。
   Uninfo 是独立知识组件；UniSeg 属于 Alconna 文档范围。
 
 source policy 里的 `distribution` 只有 `redistributable` 和 `local_only`。它是来源级发布约束，不进入每条
@@ -28,6 +28,7 @@ NapCat TypeScript 使用官方 Tree-sitter Python binding 与 TypeScript grammar
 维护入口：
 
 ```powershell
+uv run --group maintainer python -m tools.nbtriage_maintainer.knowledge_pack.acquire.nonebot --version 2.5.0 --output ... --metadata-out ...
 uv run --group maintainer python -m tools.nbtriage_maintainer.knowledge_pack prepare-policy ...
 uv run --group maintainer python -m tools.nbtriage_maintainer.knowledge_pack build ...
 uv run --group maintainer python -m tools.nbtriage_maintainer.knowledge_pack search ...
@@ -46,6 +47,8 @@ uv run --group maintainer python -m tools.nbtriage_maintainer.knowledge_pack ver
 摘要、来源再分发状态、归档/索引摘要和 SQLite 完整性，成功后发布 Draft，并保持插件 Release 的 Latest
 标记不变。
 
-NoneBot2 优先复用已批准的 Grounded Docs `nonebot2-git-docs` adapter。NapCat 使用本目录的专用采集器；
+NoneBot2 使用仓库内采集器下载固定 commit 的官方 GitHub ZIP，只保留对应版本的 `versioned_docs` 与用于
+完整性核对的 sidebar；文件数、关键 API 页面和版本不匹配时直接拒绝。NapCat 使用本目录的专用采集器；
 如果已经有位于目标 tag、`packages` 干净的官方本地 checkout，传 `--source-checkout` 可避免重新下载大仓库。
-Alconna、Uninfo 和 OneBot Adapter 在采集方法完成双次可复现验证前，不用通用 clone 规则猜测文档完整性。
+Alconna/UniSeg 教学随 NoneBot2 的版本化文档采集，不再维护独立文档源；精确实现以部署环境安装源码为准。
+Uninfo 和 OneBot Adapter 在采集方法完成双次可复现验证前，不用通用 clone 规则猜测文档完整性。

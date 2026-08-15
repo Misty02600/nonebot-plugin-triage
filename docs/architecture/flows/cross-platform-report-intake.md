@@ -10,34 +10,28 @@
 [可选 @Bot] triage <自然语言> [可选 Reply]
     │
     └─ on_alconna + MultiVar(str, "*")
-         ├─ MsgTarget → 入口 HMAC 限流 → 统一意图分流
-         ├─ OriginalUniMsg → 只取第一个 Reply.id
-         └─ 非空文字 → required assessment service → pure router
-
-未配置与已配置的合格 transport 共用控制流，但可达动作不同：
+         ├─ MsgTarget → 入口 HMAC 限流 → scope Thread Claim
+         ├─ OriginalUniMsg → 第一个 Reply 的可见正文 + 独立 correlation lookup
+         └─ 当前非空文字 → required assessment service → pure router
 
 非空自由文本 → 版本化语义 assessment（默认路径，无产品启用开关）
-              ├─ 未配置 / 请求期失败 → abstain → 单次澄清
-              ├─ 功能 / 用法 signal → router → 公开证据域 → UniMessage
-              └─ incident goal + observation signal + 模型外可信失败 → router 签发精确请求授权
-                   ├─ Reply 命中且再次确认失败 → LiveIncident + 窄回执
-                   │                              ├─ 活动 cluster
-                   │                              └─ observe trial → 本地轮转 JSONL
-                   └─ 无 Reply / 未命中 / 无失败 → 澄清，不建单且不猜测消息
+              ├─ task 未资格 / 请求期失败 → abstain → 唯一一次澄清
+              ├─ Guidance → public facts + 路由后 Reply / Thread context → UniMessage
+              ├─ Bug / observation → reviewed catalog / bounded Agent → 三值结论
+              └─ Behavior → 模型外 SUPERUSER 鉴权；受限取证尚未接通
 ```
 
-续问仍通过同一个 Alconna `triage` 入口：用户发送 `triage <续问>` 并精确 Reply 到 Triage 已登记且未过期的
-最近回答时，独立 HMAC Thread 协调器原子消费该 Reply，并为同一 Thread 取得单个 active turn lease；不读取
-被回复正文。Alconna / UniSeg 负责提供统一 Reply / Target，Thread 协调器负责 Triage 特有的归属、作用域、
-TTL、latest-only 和并发判断。新回答通过当前 Matcher 返回的单条 UniSeg Receipt 严格校验 Bot、adapter、
-Target 与平台结果后才登记新的续接点，处理、取消或发送失败不会恢复旧 Reply。
+续问仍通过同一个 Alconna `triage` 入口。只有首轮未解决时，独立 HMAC Thread 协调器才在
+`adapter + Bot + conversation + actor` 作用域等待下一条显式 `triage`；不要求 Reply，且最多消费一次补充。
+新回答成功发送即可提交等待状态，不再依赖 Receipt message ID。并发 Claim 返回 `BUSY`，处理、取消、发送
+失败、TTL 或第二轮结束都会关闭 Thread。
 
 `@Bot` 由 NoneBot / 适配器预处理，入口本身不要求 `to_me()`。`triage` 在每轮都必选，所以插件不会把普通
-群聊或任何只有 Reply 的消息交给意图层。Reply 未命中 Thread 时，显式请求仍按新的 `triage` 处理。
+群聊或任何只有 Reply 的消息交给意图层。Reply 不选择 Thread，只在 router 选出 action 后提供可见上下文。
 
 被回复消息如果是入站事件，通用引用桥已经登记其运行证据引用。Bot 主动输出的运行证据 correlation 仍需
-适配器出站 Provider 回填，当前只实现 OneBot V11 群发送；支持 Thread 则直接结算当前 Triage Matcher 的
-UniSeg Receipt，不再依赖该全局 Provider。引用失败时仍处理求助，只是不续接旧 Thread 或运行证据。
+适配器出站 Provider 回填，当前只实现 OneBot V11 群发送。引用失败时仍处理求助，只是不能取得该条消息的
+运行证据；它不影响 scope Thread 的归属。
 
 ## 已采纳目标与当前差距
 
@@ -62,19 +56,24 @@ restricted 取证与解释编排尚未实现。分类本身不消费身份。
 | Reply / Target | 已用真实事件模型测试 | Discord 频道 / 私聊事件模型已做合同测试；其他平台待验证 |
 | 回复入站消息并关联 | 支持 | exporter 可提供 target 与 message ID 时支持 |
 | 回复 Bot 输出并关联运行证据 | 当前支持群发送 | 尚未实现运行证据出站 Provider |
-| `triage` + 精确回复 Triage 回答续问 | 群聊 / 私聊 Receipt 合同测试通过；每轮重新限流 | Discord 频道 / 私聊合同测试通过；真实网关待 smoke；其他平台待验证 |
+| 同 scope 下一条 `triage` 补充 | 群聊 / 私聊合同测试通过；Reply 可选；每轮重新限流 | 领域合同与 Adapter 无关；真实网关待 smoke |
+| 路由后直接 Reply 正文 | OneBot V11 事件模型已覆盖 | 取决于 UniSeg Builder 是否提供 Reply 正文；不可用时明确降级 |
+| Bug 最新聊天窗口 | NapCat 群历史 Provider 已实现；省略 `message_seq` 一次读取最新最多 30 条；精确 Reply 独立预装 | 尚无跨 Adapter 历史 Provider；不暴露历史工具，只使用当前请求、可用的精确 Reply 和其他证据 |
 | 公开结果发送 | `UniMessage` 支持 | 由对应 exporter 转换 |
 
 ## 数据边界
 
-- 当前请求文字只用于本次意图判断和回答，不写入 `LiveIncident`、trial 或运行证据；v5 远端请求合同闭合为
+- 当前请求文字只用于本次意图判断和回答，不写入 `LiveIncident`、trial 或运行证据；v7 远端请求合同闭合为
   `schema_version + request_text`，其中 `request_text` 必须是当前单条规范化文字。OpenCode Go Agent adapter
   已按这个闭合投影序列化，并由 Pydantic AI `output_type` 生成唯一不可执行 output tool；Matcher / runtime
   已接 required
   service，未配置 transport 时 unavailable service 不会发送该对象；
-- Reply 默认只读结构化 `id`；为排除 Discord Forward 只瞬时读取结构化引用类型和消息 ID，并与统一 ID
-  交叉校验；不读取或保存正文、作者或其他 origin 字段；
-- adapter、Bot、Target、actor 和 message 标识只瞬时参与 HMAC；
+- 直接 Reply 的可见正文可以在路由后进入 Guidance / Bug；正文不做凭据或个人信息遮蔽。Bug 最新窗口还可
+  投影判断群聊关系所需的会话 / 消息 / 发言人 ID、角色、Reply 关系与段元数据；这些字段不授予权限。
+  平台 transport envelope、scope 和 correlation 不进入模型；
+- 运行引用索引中的 adapter、Bot、Target、actor 和 message 标识只瞬时参与 HMAC；OneBot Bug conversation
+  Provider 可在单次 assessment 生命周期内持有当前 Bot 与群的原始调用 scope，但 Agent 只能调用无参数工具，
+  不能提交或切换会话；窗口字段不持久化；
 - 失败聚类只使用白名单化的 lifecycle / subject / exception / stack module 标识；
 - trial 默认关闭；能力问答和澄清不进入 trial；
 - 所有求助只在统一 `triage` 入口经过一次轻量 HMAC 限流；建单服务复核授权和失败证据，但不再执行独立
@@ -87,11 +86,12 @@ restricted 取证与解释编排尚未实现。分类本身不消费身份。
 |---|---|
 | `triage` Matcher、每轮 assessment / routing 与公开能力组件 | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support_intake.py`、`src/nonebot_plugin_triage/runtime.py` |
 | 版本化 assessment 请求投影、需求信号与失败状态合同 | `src/nbtriage/support_semantics.py` |
-| OpenCode Go `Agent(output_type=SupportSemanticAssessment)` 单 output-tool client、一次性失败关闭与确定性授权路由；授权绑定精确 `LiveReportRequest` 且只可消费一次 | `src/nbtriage/opencode_go_semantic_adapter.py`、`src/nbtriage/support_semantic_model_adapter.py`、`src/nonebot_plugin_triage/semantic_runtime.py`、`src/nonebot_plugin_triage/semantic_assessment.py`、`src/nbtriage/support_routing.py` |
+| OpenCode Go `Agent(output_type=SupportSemanticAssessment)` 单 output-tool client、一次性失败关闭与确定性 action 路由；旧 `LiveReportRequest` 授权仅为当前 live semantic 不可达的兼容领域能力 | `src/nbtriage/opencode_go_semantic_adapter.py`、`src/nbtriage/support_semantic_model_adapter.py`、`src/nonebot_plugin_triage/semantic_runtime.py`、`src/nonebot_plugin_triage/semantic_assessment.py`、`src/nbtriage/support_routing.py` |
 | SUPERUSER 鉴权后的行为探索候选（取证待接） | `src/nonebot_plugin_triage/handlers.py` |
 | 通用入站引用与 Target scope | `src/nonebot_plugin_triage/universal_references.py` |
 | OneBot V11 运行证据出站引用 Provider | `src/nonebot_plugin_triage/onebot_v11_references.py` |
-| Thread 状态、精确回复与 Receipt 结算 | `src/nbtriage/support_threads.py`、`src/nonebot_plugin_triage/thread_references.py`、`src/nonebot_plugin_triage/support_responses.py` |
+| scope Thread、一次补充与发送成功结算 | `src/nbtriage/support_threads.py`、`src/nonebot_plugin_triage/thread_references.py`、`src/nonebot_plugin_triage/support_responses.py` |
+| Bug Reply / OneBot 群历史上下文 | `src/nbtriage/bug_conversation.py`、`src/nonebot_plugin_triage/onebot_bug_conversation.py` |
 | HMAC 引用索引 | `src/nbtriage/message_references.py` |
 | 类型化授权校验、故障组合与窄回显 | `src/nonebot_plugin_triage/live_reports.py` |
 | incident、cluster 与 trial | `src/nbtriage/live_incidents.py`、`src/nbtriage/live_trials.py` |
@@ -112,3 +112,7 @@ restricted 取证与解释编排尚未实现。分类本身不消费身份。
 - [ADR-0040：只有可信初检仍失败才进入 incident](../../adr/0040-require-trusted-preflight-failure-before-incident.md)
 - [ADR-0044：语义 assessment 直接使用 Pydantic AI Agent output_type](../../adr/0044-use-pydantic-ai-agent-output-type-for-support-semantics.md)
 - [ADR-0046：统一行为探索目标](../../adr/0046-merge-internal-reasoning-into-behavior-exploration.md)
+- [ADR-0060：用作用域 Thread 承接一次补充并在路由后投影会话上下文](../../adr/0060-use-scope-thread-and-post-route-conversation-context.md)
+- [ADR-0061：为 Bug 判断读取当前会话最新有界聊天窗口](../../adr/0061-read-latest-bounded-conversation-window-for-bug-assessment.md)
+- [ADR-0064：收窄 Bug 会话证据与结论合同](../../adr/0064-refine-bug-conversation-evidence-and-verdict-contract.md)
+- [ADR-0065：只为明确支持的平台提供 Bug 会话历史工具](../../adr/0065-only-expose-conversation-history-for-supported-platforms.md)

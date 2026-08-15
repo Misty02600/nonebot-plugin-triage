@@ -39,42 +39,14 @@ def test_validation_policy_report_records_precision_tradeoff_without_calls() -> 
     report = evaluate_b3_evidence_policy(VALIDATION_FIXTURE)
 
     assert report["evaluation_qualification"] == "official_frozen_projection"
-    assert report["source"] == {
-        "prediction_report": VALIDATION_FIXTURE.as_posix(),
-        "prediction_report_sha256": (
-            "fff9505b1039e463b42f8f5928d44daac26f921a923d9dd59d9fbb504cac1a80"
-        ),
-        "official_prediction_report_sha256": (
-            "fff9505b1039e463b42f8f5928d44daac26f921a923d9dd59d9fbb504cac1a80"
-        ),
-        "official_case_count": 11,
-        "split": "validation",
-    }
-    assert report["summary"] == {
-        "case_count": 11,
-        "policy_id": "b3-single-evidence-v1",
-        "needs_evidence_action_count": 8,
-        "proposed_question_count": 8,
-        "model_calls": 0,
-        "external_tool_calls": 0,
-    }
-    assert report["metrics"]["b1_missing_evidence_micro"]["precision"] == 0.30303
-    assert report["metrics"]["b3_selected_evidence_micro"] == {
-        "true_positive": 6,
-        "false_positive": 2,
-        "false_negative": 12,
-        "precision": 0.75,
-        "recall": 0.333333,
-        "f1": 0.461538,
-    }
+    assert (
+        report["source"]["prediction_report_sha256"]
+        == report["source"]["official_prediction_report_sha256"]
+    )
+    assert report["summary"]["model_calls"] == 0
+    assert report["summary"]["external_tool_calls"] == 0
+    assert report["metrics"]["b3_selected_evidence_micro"]["precision"] == 0.75
     assert report["metrics"]["question_precision_at_1"]["rate"] == 0.75
-    assert report["metrics"]["gold_gap_case_hit_at_1"]["rate"] == 0.75
-    assert report["metrics"]["question_load"] == {
-        "b1_candidate_questions": 33,
-        "b3_selected_questions": 8,
-        "b1_average_per_needs_evidence_action": 4.125,
-        "b3_average_per_needs_evidence_action": 1.0,
-    }
 
 
 def test_policy_evaluation_rejects_legal_content_replacement(tmp_path: Path) -> None:

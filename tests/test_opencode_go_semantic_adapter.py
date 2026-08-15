@@ -65,7 +65,7 @@ def test_opencode_go_semantic_client_uses_one_output_tool_and_parses_result(
                                         "name": "final_result",
                                         "arguments": json.dumps(
                                             {
-                                                "schema_version": 5,
+                                                "schema_version": 7,
                                                 "status": "assessed",
                                                 "goals": ["guidance"],
                                                 "reported_observation": False,
@@ -138,7 +138,7 @@ def test_opencode_go_semantic_client_uses_one_output_tool_and_parses_result(
     assert "reason" not in output_tool["parameters"]["properties"]
     payload = json.loads(body["messages"][-1]["content"])
     assert "maintenance_detail_requested" not in output_tool["parameters"]["properties"]
-    assert payload == {"schema_version": 5, "request_text": "提醒怎么用？"}
+    assert payload == {"schema_version": 7, "request_text": "提醒怎么用？"}
 
 
 def test_opencode_go_semantic_client_does_not_retry_transport_failure(monkeypatch) -> None:
@@ -211,7 +211,7 @@ def test_opencode_go_public_guidance_uses_one_output_tool_and_public_facts(
                                         "name": "final_result",
                                         "arguments": json.dumps(
                                             {
-                                                "schema_version": 1,
+                                                "schema_version": PUBLIC_GUIDANCE_SCHEMA_VERSION,
                                                 "answer": "发送“搜图 <图片>”即可使用。",
                                                 "cited_fact_ids": ["f1", "f2"],
                                             },
@@ -303,7 +303,7 @@ def test_opencode_go_public_guidance_uses_one_output_tool_and_public_facts(
     }
     payload = json.loads(body["messages"][-1]["content"])
     assert payload == {
-        "schema_version": 1,
+        "schema_version": PUBLIC_GUIDANCE_SCHEMA_VERSION,
         "question": "搜图功能怎么使用？",
         "facts": [
             {
