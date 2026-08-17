@@ -19,6 +19,7 @@ from nbtriage.capabilities import (
 )
 from nbtriage.capability_analysis import (
     CapabilityAnalysisEntryOutput,
+    CapabilityAnalysisError,
     CapabilityAnalysisOutput,
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
@@ -551,7 +552,18 @@ def test_runtime_uses_independent_annotation_output_budget() -> None:
         environ={"OPENCODE_API_KEY": "test-only"},
     )()
 
-    assert vars(client)["_max_output_tokens"] == CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS == 8_192
+    assert vars(client)["_max_output_tokens"] == CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS == 16_384
+
+
+def test_domain_analysis_error_is_classified_as_output_validation() -> None:
+    import nonebot_plugin_triage.capability_annotations as capability_annotations_module
+
+    assert (
+        capability_annotations_module._annotation_failure_reason(
+            CapabilityAnalysisError("private validation detail")
+        )
+        == CapabilityModelAdapterReason.OUTPUT_VALIDATION.value
+    )
 
 
 @pytest.mark.asyncio

@@ -55,6 +55,7 @@ from nbtriage.capability_analysis import (
     SemanticConstraint,
     SemanticConstraintKind,
     TeachingRole,
+    validate_capability_analysis_output,
 )
 from nbtriage.capability_annotations import (
     CAPABILITY_ANNOTATION_PROMPT_ID,
@@ -473,6 +474,7 @@ class PydanticAICapabilityAnalysisClient:
         self._last_validation_failure: str | None = None
         self._alias_retry_used = False
         self._called = False
+        self._active_tool_runtime: CapabilityAnalysisToolRuntime | None = None
         self._last_response: ModelResponse | None = None
         self._last_usage: RunUsage | None = None
         self._agent: Agent[CapabilityAnalysisRequest, _AnalysisOutput] = Agent(
@@ -503,6 +505,15 @@ class PydanticAICapabilityAnalysisClient:
             try:
                 _validate_gate_resolution_output(output, ctx.deps)
                 if not output.knowledge_enabled:
+                    captured_evidence = (
+                        self._active_tool_runtime.evidence_units()
+                        if self._active_tool_runtime is not None
+                        else ()
+                    )
+                    validate_capability_analysis_output(
+                        ctx.deps,
+                        _to_domain_output(output, captured_evidence),
+                    )
                     return output
                 targets = {item.entry_id: item for item in ctx.deps.invocations}
                 if {item.entry_id for item in output.entries} != set(targets):
@@ -592,7 +603,19 @@ class PydanticAICapabilityAnalysisClient:
                                 "mention-required usage must place @bot before command_body"
                             )
                     _validate_rate_limit_config_values(entry, ctx.deps)
+                captured_evidence = (
+                    self._active_tool_runtime.evidence_units()
+                    if self._active_tool_runtime is not None
+                    else ()
+                )
+                validate_capability_analysis_output(
+                    ctx.deps,
+                    _to_domain_output(output, captured_evidence),
+                )
             except CapabilityAnnotationError as error:
+                self._last_validation_failure = str(error)
+                raise ModelRetry(str(error)) from error
+            except CapabilityAnalysisError as error:
                 self._last_validation_failure = str(error)
                 raise ModelRetry(str(error)) from error
             return output
@@ -618,6 +641,7 @@ class PydanticAICapabilityAnalysisClient:
         tool_runtime = (
             self._tool_runtime_factory(request) if self._tool_runtime_factory is not None else None
         )
+        self._active_tool_runtime = tool_runtime
         with capture_run_messages() as captured_messages:
             try:
                 async with asyncio.timeout(self._timeout_seconds):

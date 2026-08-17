@@ -26,6 +26,7 @@ from nbtriage.capability_analysis import (
     CapabilityAnalysisBaseline,
     CapabilityAnalysisClient,
     CapabilityAnalysisEntryBaseline,
+    CapabilityAnalysisError,
     CapabilityAnalysisRequest,
     CapabilityAnalysisService,
 )
@@ -493,7 +494,7 @@ def _is_parameterized_unit(item: _PreparedAnalysis) -> bool:
 def _annotation_failure_reason(error: Exception) -> str:
     if isinstance(error, CapabilityModelAdapterError):
         return error.reason_code.value
-    if isinstance(error, CapabilityAnnotationError):
+    if isinstance(error, (CapabilityAnalysisError, CapabilityAnnotationError)):
         return CapabilityModelAdapterReason.OUTPUT_VALIDATION.value
     return CapabilityModelAdapterReason.UNKNOWN.value
 

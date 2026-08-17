@@ -32,7 +32,7 @@ CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
 )
 CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
-    "background-sequential-8req-5read-navigation-tools-160line-120k-8192out-0.05usd-v11"
+    "background-sequential-8req-5read-navigation-tools-160line-120k-16384out-0.05usd-v12"
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _IMPLEMENTATION_MARKERS = (

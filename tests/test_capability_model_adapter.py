@@ -721,6 +721,27 @@ def test_output_entry_ids_must_match_invocation_targets() -> None:
         asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
 
 
+def test_agent_retries_evidence_reference_outside_current_request() -> None:
+    provider_calls = 0
+
+    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal provider_calls
+        provider_calls += 1
+        return _native_response(
+            evidence_id="evidence-missing" if provider_calls == 1 else "evidence-handler"
+        )
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert result.entries[0].answer_evidence_ids == ("evidence-handler",)
+    assert provider_calls == 2
+
+
 def test_length_finish_reason_is_classified_as_output_truncated() -> None:
     client = PydanticAICapabilityAnalysisClient(
         FunctionModel(

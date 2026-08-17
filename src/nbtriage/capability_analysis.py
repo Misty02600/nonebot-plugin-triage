@@ -515,66 +515,86 @@ class CapabilityAnalysisService:
         if not isinstance(request, CapabilityAnalysisRequest):
             raise TypeError("request must be CapabilityAnalysisRequest")
         output = await self._client.analyze(request)
-        if not isinstance(output, CapabilityAnalysisOutput):
-            raise CapabilityAnalysisError("client must return CapabilityAnalysisOutput")
-        request_evidence = {item.evidence_id for item in request.evidence_units}
-        dynamic_evidence = {item.evidence_id for item in output.evidence_units}
-        overlap = request_evidence.intersection(dynamic_evidence)
-        if overlap:
-            raise CapabilityAnalysisError(
-                f"analysis output duplicates request evidence IDs: {sorted(overlap)}"
-            )
-        allowed = request_evidence.union(dynamic_evidence)
-        requested_entries = {item.entry_id for item in request.invocations}
-        returned_entries = {item.entry_id for item in output.entries}
-        if output.knowledge_enabled and returned_entries != requested_entries:
-            raise CapabilityAnalysisError(
-                "analysis output entry IDs must exactly match requested invocations"
-            )
-        referenced = {
-            evidence_id
-            for entry in output.entries
-            for item in (*entry.claims, *entry.constraints)
-            for evidence_id in item.evidence_ids
-        }
-        referenced.update(
-            evidence_id for entry in output.entries for evidence_id in entry.answer_evidence_ids
-        )
-        referenced.update(
-            evidence_id
-            for resolution in output.gate_resolutions
-            for evidence_id in resolution.evidence_ids
-        )
-        unavailable = referenced.difference(allowed)
-        if unavailable:
-            raise CapabilityAnalysisError(
-                f"analysis output references unavailable evidence IDs: {sorted(unavailable)}"
-            )
-        allowed_config = {item.reference_id for item in request.config_projections}
-        referenced_config = {
-            reference_id
-            for entry in output.entries
-            for item in (*entry.claims, *entry.constraints)
-            for reference_id in item.config_reference_ids
-        }
-        referenced_config.update(
-            reference_id
-            for entry in output.entries
-            for reference_id in entry.answer_config_reference_ids
-        )
-        referenced_config.update(
-            reference_id
-            for resolution in output.gate_resolutions
-            for reference_id in resolution.config_reference_ids
-        )
-        unavailable_config = referenced_config.difference(allowed_config)
-        if unavailable_config:
-            raise CapabilityAnalysisError(
-                "analysis output references unavailable projected config reference IDs: "
-                f"{sorted(unavailable_config)}"
-            )
-        _validate_gate_resolutions(request, output)
+        validate_capability_analysis_output(request, output)
         return output
+
+
+def validate_capability_analysis_output(
+    request: CapabilityAnalysisRequest,
+    output: CapabilityAnalysisOutput,
+) -> None:
+    """校验模型输出与当前请求的入口、Evidence 和配置引用闭包。
+
+    Args:
+        request: 本轮冻结的能力分析请求。
+        output: 已转换为领域对象的模型输出。
+
+    Raises:
+        TypeError: 请求对象类型无效。
+        CapabilityAnalysisError: 输出类型、入口集合或引用闭包不符合合同。
+    """
+
+    if not isinstance(request, CapabilityAnalysisRequest):
+        raise TypeError("request must be CapabilityAnalysisRequest")
+    if not isinstance(output, CapabilityAnalysisOutput):
+        raise CapabilityAnalysisError("client must return CapabilityAnalysisOutput")
+    request_evidence = {item.evidence_id for item in request.evidence_units}
+    dynamic_evidence = {item.evidence_id for item in output.evidence_units}
+    overlap = request_evidence.intersection(dynamic_evidence)
+    if overlap:
+        raise CapabilityAnalysisError(
+            f"analysis output duplicates request evidence IDs: {sorted(overlap)}"
+        )
+    allowed = request_evidence.union(dynamic_evidence)
+    requested_entries = {item.entry_id for item in request.invocations}
+    returned_entries = {item.entry_id for item in output.entries}
+    if output.knowledge_enabled and returned_entries != requested_entries:
+        raise CapabilityAnalysisError(
+            "analysis output entry IDs must exactly match requested invocations"
+        )
+    referenced = {
+        evidence_id
+        for entry in output.entries
+        for item in (*entry.claims, *entry.constraints)
+        for evidence_id in item.evidence_ids
+    }
+    referenced.update(
+        evidence_id for entry in output.entries for evidence_id in entry.answer_evidence_ids
+    )
+    referenced.update(
+        evidence_id
+        for resolution in output.gate_resolutions
+        for evidence_id in resolution.evidence_ids
+    )
+    unavailable = referenced.difference(allowed)
+    if unavailable:
+        raise CapabilityAnalysisError(
+            f"analysis output references unavailable evidence IDs: {sorted(unavailable)}"
+        )
+    allowed_config = {item.reference_id for item in request.config_projections}
+    referenced_config = {
+        reference_id
+        for entry in output.entries
+        for item in (*entry.claims, *entry.constraints)
+        for reference_id in item.config_reference_ids
+    }
+    referenced_config.update(
+        reference_id
+        for entry in output.entries
+        for reference_id in entry.answer_config_reference_ids
+    )
+    referenced_config.update(
+        reference_id
+        for resolution in output.gate_resolutions
+        for reference_id in resolution.config_reference_ids
+    )
+    unavailable_config = referenced_config.difference(allowed_config)
+    if unavailable_config:
+        raise CapabilityAnalysisError(
+            "analysis output references unavailable projected config reference IDs: "
+            f"{sorted(unavailable_config)}"
+        )
+    _validate_gate_resolutions(request, output)
 
 
 def _validate_gate_resolutions(
@@ -774,4 +794,5 @@ __all__ = (
     "SemanticConstraintKind",
     "TeachingRole",
     "UnknownConfigReference",
+    "validate_capability_analysis_output",
 )
