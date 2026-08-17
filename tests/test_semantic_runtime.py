@@ -4,6 +4,7 @@ import pytest
 
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.semantic_runtime import (
+    ALIBABA_QWEN36_FLASH_SEMANTIC_QUALIFICATION,
     OPENCODE_GO_SEMANTIC_QUALIFICATION,
     QUALIFIED_SEMANTIC_TASKS,
     SemanticRuntimeConfigurationError,
@@ -27,7 +28,29 @@ def test_chinese_prompt_uses_its_exact_product_qualification_gate() -> None:
     assert qualification.schema_version == 7
     assert qualification.prompt_id == "support-semantic-v7-prompt-v5-zh"
     assert qualification.evaluation == "opencode-go-forward-heldout-40-20260815-v7-prompt-v5-zh-e"
-    assert frozenset({qualification}) == QUALIFIED_SEMANTIC_TASKS
+    assert (
+        frozenset(
+            {
+                ALIBABA_QWEN36_FLASH_SEMANTIC_QUALIFICATION,
+                qualification,
+            }
+        )
+        == QUALIFIED_SEMANTIC_TASKS
+    )
+
+
+def test_qwen36_semantic_qualification_binds_endpoint_settings_and_runtime_limits() -> None:
+    qualification = ALIBABA_QWEN36_FLASH_SEMANTIC_QUALIFICATION
+
+    assert qualification.provider == "alibaba"
+    assert qualification.api_family == "pydantic-ai"
+    assert qualification.model == "qwen3.6-flash"
+    assert qualification.connection_revision.startswith("custom-endpoint-sha256:")
+    assert qualification.settings_revision == "alibaba-qwen3.6-non-thinking-v2"
+    assert qualification.timeout_seconds == 300
+    assert qualification.max_output_tokens == 240
+    assert qualification.verified is True
+    assert qualification.evaluation is not None
 
 
 def test_unverified_semantic_combination_remains_runnable() -> None:

@@ -274,6 +274,31 @@ def test_official_fixture_binds_current_prompt_and_runtime_revisions() -> None:
     assert report["quality_gate"]["status"] == "passed"
 
 
+def test_official_cases_can_qualify_an_independent_provider_target() -> None:
+    payload = json.loads(_OFFICIAL_FIXTURE.read_text(encoding="utf-8"))
+    cases = payload["cases"]
+    assert isinstance(cases, list)
+
+    report = asyncio.run(
+        evaluate_bug_assessment(
+            _OFFICIAL_FIXTURE,
+            client_factory=_oracle_client_factory(cases),
+            provider="alibaba",
+            model="qwen3.6-flash",
+            declared_budget_usd=1,
+            api_family="pydantic-ai",
+            connection_revision="custom-endpoint-sha256:fixture",
+            evaluation_id="bug-assessment-alibaba-qwen3.6-flash-v1",
+            evaluation_revision="alibaba-qwen3.6-flash-bug-forward-heldout-v8-fixture",
+        )
+    )
+
+    assert report["provider"] == "alibaba"
+    assert report["model"] == "qwen3.6-flash"
+    assert report["quality_gate"]["qualification_eligible"] is True
+    assert report["quality_gate"]["status"] == "passed"
+
+
 def test_byte_modified_official_fixture_is_not_qualification_eligible(tmp_path: Path) -> None:
     payload = json.loads(_OFFICIAL_FIXTURE.read_text(encoding="utf-8"))
     payload["cases"] = payload["cases"][:1]

@@ -74,8 +74,9 @@ Reply 仍有两个与 Thread 独立的作用：可见正文供路由后的 Guida
 assessment，而不是直接建单。router 不读取原文，且每轮只选择一个 action；当前优先级为 Bug、行为探索、
 Guidance、功能建议。模型输出不含 action、authorization、confidence 或副作用字段。
 
-当前中文 v7 Prompt v5 已通过 40 条独立 forward-heldout；schema、status 与 exact 均为 1.000，
-`QUALIFIED_SEMANTIC_TASKS` 只登记该精确组合。旧英文 Prompt 或 capability annotation 的 provisional
+当前中文 v7 Prompt v5 已分别通过 OpenCode Go 与国内 Alibaba Qwen3.6 Flash 的 40 条独立
+forward-heldout；两者的 schema / status 均为 1.000，exact 分别为 1.000 / 0.975，
+`QUALIFIED_SEMANTIC_TASKS` 只登记这两个精确组合。旧英文 Prompt 或 capability annotation 的 provisional
 资格没有迁移。
 
 ## 路由后的 Guidance 上下文

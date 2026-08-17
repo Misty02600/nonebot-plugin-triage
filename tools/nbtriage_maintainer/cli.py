@@ -10,20 +10,27 @@ import os
 import sys
 from collections.abc import Sequence
 from contextlib import suppress
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from nbtriage.bug_agent import PydanticAIBugAssessmentAgent
 from nbtriage.capabilities import CapabilityIndexError, search_capability_index
+from nbtriage.capability_model_adapter import (
+    CapabilityAnalysisToolRuntimeFactory,
+    PydanticAICapabilityAnalysisClient,
+)
 from nbtriage.evidence_receipts import EvidenceReceiptError, load_evidence_receipt
 from nbtriage.live_trials import LiveTrialError, summarize_trial_logs
 from nbtriage.model_contracts import B1ProviderError
-from nbtriage.opencode_go_semantic_adapter import (
-    OPENCODE_GO_SEMANTIC_MAX_OUTPUT_TOKENS,
-    OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS,
-    create_opencode_go_capability_analysis_client,
-    create_opencode_go_support_semantic_client,
+from nbtriage.opencode_go_contracts import (
+    OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
+    OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
 )
 from nbtriage.rag import B1Error
+from nbtriage.support_semantic_model_adapter import (
+    PydanticAISupportSemanticClient,
+)
 from tools.nbtriage_maintainer.agent_evaluation import (
     AgentEvaluationError,
     RealGatePartialAudit,
@@ -50,11 +57,19 @@ from tools.nbtriage_maintainer.bot_docs_evaluation import (
     BotDocsEvaluationError,
     evaluate_bot_docs_retrieval,
 )
+from tools.nbtriage_maintainer.bug_assessment_evaluation import (
+    BUG_ASSESSMENT_CANDIDATE_EVALUATION_REVISION,
+    BUG_ASSESSMENT_EVALUATION_ID,
+    BugAssessmentEvaluationError,
+    evaluate_bug_assessment,
+)
 from tools.nbtriage_maintainer.capability_teaching import (
     CapabilityTeachingMaintenanceError,
     analyze_capability_teaching,
 )
 from tools.nbtriage_maintainer.capability_teaching_evaluation import (
+    CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID,
+    CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256,
     CapabilityTeachingEvaluationError,
     evaluate_capability_teaching,
 )
@@ -94,6 +109,11 @@ from tools.nbtriage_maintainer.mlflow_tracking import (
     MLflowTrackingError,
     publish_evaluation_to_mlflow,
 )
+from tools.nbtriage_maintainer.model_evaluation_target import (
+    ModelEvaluationTargetError,
+    TokenPriceProfile,
+    create_model_evaluation_binding,
+)
 from tools.nbtriage_maintainer.runtime_results import DEFAULT_PROBE_ROOT, evaluate_runtime_results
 from tools.nbtriage_maintainer.safety_evaluation import SafetyEvaluationError, evaluate_s3
 from tools.nbtriage_maintainer.sessions import (
@@ -107,6 +127,8 @@ from tools.nbtriage_maintainer.sessions import (
     validate_case_id,
 )
 from tools.nbtriage_maintainer.support_semantic_evaluation import (
+    SUPPORT_SEMANTIC_CANDIDATE_EVALUATION_REVISION,
+    SUPPORT_SEMANTIC_EVALUATION_ID,
     SupportSemanticEvaluationError,
     evaluate_support_semantics,
 )
@@ -284,7 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     support_semantic_parser = subparsers.add_parser(
         "evaluate-support-semantics",
-        help="Run the exact OpenCode Go support-semantic qualification contract.",
+        help="Run the frozen support-semantic cases against an explicit model target.",
     )
     support_semantic_parser.add_argument(
         "--fixtures",
@@ -297,15 +319,43 @@ def build_parser() -> argparse.ArgumentParser:
         "--declared-budget-usd", type=_positive_float, required=True
     )
     support_semantic_parser.add_argument("--confirm-paid-run", action="store_true")
+    support_semantic_parser.add_argument("--timeout-seconds", type=_positive_float, default=60.0)
+    support_semantic_parser.add_argument("--max-output-tokens", type=_positive_int, default=240)
+    _add_model_evaluation_target_arguments(support_semantic_parser)
+
+    bug_assessment_parser = subparsers.add_parser(
+        "evaluate-bug-assessment",
+        help="Run the frozen Bug Agent cases against an explicit model target.",
+    )
+    bug_assessment_parser.add_argument(
+        "--fixtures",
+        type=Path,
+        default=Path("evals/datasets/fixtures/bug-assessment-v1-forward-heldout-v8.json"),
+    )
+    bug_assessment_parser.add_argument("--report", type=Path, required=True)
+    bug_assessment_parser.add_argument("--trace-dir", type=Path)
+    bug_assessment_parser.add_argument("--declared-budget-usd", type=_positive_float, required=True)
+    bug_assessment_parser.add_argument("--confirm-paid-run", action="store_true")
+    bug_assessment_parser.add_argument(
+        "--timeout-seconds",
+        type=_positive_float,
+        default=OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
+    )
+    bug_assessment_parser.add_argument(
+        "--max-output-tokens",
+        type=_positive_int,
+        default=OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
+    )
+    _add_model_evaluation_target_arguments(bug_assessment_parser)
 
     capability_teaching_evaluation_parser = subparsers.add_parser(
         "evaluate-capability-teaching",
-        help="Run the exact OpenCode Go capability-teaching qualification contract.",
+        help="Run the frozen capability-teaching cases against an explicit model target.",
     )
     capability_teaching_evaluation_parser.add_argument(
         "--fixtures",
         type=Path,
-        default=Path("evals/datasets/fixtures/capability-teaching-v8-forward-heldout.json"),
+        default=Path("evals/datasets/fixtures/capability-teaching-v9-forward-heldout.json"),
     )
     capability_teaching_evaluation_parser.add_argument("--report", type=Path, required=True)
     capability_teaching_evaluation_parser.add_argument(
@@ -318,6 +368,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
     )
     capability_teaching_evaluation_parser.add_argument(
+        "--timeout-seconds",
+        type=_positive_float,
+        default=60.0,
+    )
+    capability_teaching_evaluation_parser.add_argument(
+        "--max-output-tokens",
+        type=_positive_int,
+        default=4_096,
+    )
+    capability_teaching_evaluation_parser.add_argument(
+        "--official-fixture-set-id",
+        default=CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID,
+    )
+    capability_teaching_evaluation_parser.add_argument(
+        "--official-fixture-sha256",
+        default=CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256,
+    )
+    capability_teaching_evaluation_parser.add_argument(
         "--case-id",
         action="append",
         default=[],
@@ -326,6 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Repeat for multiple cases."
         ),
     )
+    _add_model_evaluation_target_arguments(capability_teaching_evaluation_parser)
 
     evaluation_parser = subparsers.add_parser(
         "evaluate-b0",
@@ -691,6 +760,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_evaluate_bot_docs_retrieval(args)
     if args.command == "evaluate-support-semantics":
         return _run_evaluate_support_semantics(args)
+    if args.command == "evaluate-bug-assessment":
+        return _run_evaluate_bug_assessment(args)
     if args.command == "evaluate-capability-teaching":
         return _run_evaluate_capability_teaching(args)
     if args.command == "evaluate-b0":
@@ -1084,31 +1155,52 @@ def _run_evaluate_support_semantics(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    api_key = os.environ.get("OPENCODE_API_KEY", "")
-    if not api_key.strip():
-        print("support semantic evaluation requires OPENCODE_API_KEY", file=sys.stderr)
-        return 1
-
-    model = "deepseek-v4-flash"
     try:
         _require_new_report_target(args.report)
+        binding, price_profile, evaluation_id, evaluation_revision = _build_model_evaluation_target(
+            args,
+            timeout_seconds=args.timeout_seconds,
+            max_output_tokens=args.max_output_tokens,
+            default_evaluation_id=SUPPORT_SEMANTIC_EVALUATION_ID,
+            default_evaluation_revision=(SUPPORT_SEMANTIC_CANDIDATE_EVALUATION_REVISION),
+        )
+
+        def client_factory() -> PydanticAISupportSemanticClient:
+            return PydanticAISupportSemanticClient(
+                binding.model,
+                timeout_seconds=args.timeout_seconds,
+                max_output_tokens=args.max_output_tokens,
+                model_settings=binding.model_settings,
+                expected_provider=binding.provider,
+                expected_model=binding.model_name,
+            )
+
         report = asyncio.run(
             evaluate_support_semantics(
                 args.fixtures,
-                client_factory=lambda: create_opencode_go_support_semantic_client(
-                    api_key=api_key,
-                    model=model,
-                    timeout_seconds=OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS,
-                    max_output_tokens=OPENCODE_GO_SEMANTIC_MAX_OUTPUT_TOKENS,
-                ),
-                provider="opencode-go",
-                model=model,
+                client_factory=client_factory,
+                provider=binding.provider,
+                model=binding.model_name,
                 max_model_calls=args.max_model_calls,
                 declared_budget_usd=args.declared_budget_usd,
+                api_family=binding.api_family,
+                connection_revision=binding.connection_revision,
+                settings_revision=binding.settings_revision,
+                timeout_seconds=args.timeout_seconds,
+                max_output_tokens=args.max_output_tokens,
+                evaluation_id=evaluation_id,
+                evaluation_revision=evaluation_revision,
+                usage_cost_usd=(price_profile.cost_usd if price_profile else None),
+                pricing_profile=(price_profile.to_report() if price_profile else None),
             )
         )
         write_new_evaluation_report(args.report, report)
-    except (SupportSemanticEvaluationError, OSError, ValueError) as error:
+    except (
+        ModelEvaluationTargetError,
+        SupportSemanticEvaluationError,
+        OSError,
+        ValueError,
+    ) as error:
         print(f"support semantic evaluation failed: {error}", file=sys.stderr)
         return 1
 
@@ -1124,6 +1216,71 @@ def _run_evaluate_support_semantics(args: argparse.Namespace) -> int:
     return 0 if report["quality_gate"]["status"] == "passed" else 1
 
 
+def _run_evaluate_bug_assessment(args: argparse.Namespace) -> int:
+    if not args.confirm_paid_run:
+        print("bug assessment evaluation requires --confirm-paid-run", file=sys.stderr)
+        return 2
+    try:
+        _require_new_report_target(args.report)
+        binding, price_profile, evaluation_id, evaluation_revision = _build_model_evaluation_target(
+            args,
+            timeout_seconds=args.timeout_seconds,
+            max_output_tokens=args.max_output_tokens,
+            default_evaluation_id=BUG_ASSESSMENT_EVALUATION_ID,
+            default_evaluation_revision=BUG_ASSESSMENT_CANDIDATE_EVALUATION_REVISION,
+        )
+
+        def client_factory() -> PydanticAIBugAssessmentAgent:
+            return PydanticAIBugAssessmentAgent(
+                binding.model,
+                timeout_seconds=args.timeout_seconds,
+                max_output_tokens=args.max_output_tokens,
+                model_settings=binding.model_settings,
+                expected_provider=binding.provider,
+                expected_model=binding.model_name,
+            )
+
+        report = asyncio.run(
+            evaluate_bug_assessment(
+                args.fixtures,
+                client_factory=client_factory,
+                provider=binding.provider,
+                model=binding.model_name,
+                declared_budget_usd=args.declared_budget_usd,
+                trace_dir=args.trace_dir,
+                api_family=binding.api_family,
+                connection_revision=binding.connection_revision,
+                settings_revision=binding.settings_revision,
+                timeout_seconds=args.timeout_seconds,
+                max_output_tokens=args.max_output_tokens,
+                evaluation_id=evaluation_id,
+                evaluation_revision=evaluation_revision,
+                usage_cost_usd=(price_profile.cost_usd if price_profile else None),
+                pricing_profile=(price_profile.to_report() if price_profile else None),
+            )
+        )
+        write_new_evaluation_report(args.report, report)
+    except (
+        BugAssessmentEvaluationError,
+        ModelEvaluationTargetError,
+        OSError,
+        ValueError,
+    ) as error:
+        print(f"bug assessment evaluation failed: {error}", file=sys.stderr)
+        return 1
+
+    summary = report["summary"]
+    print(
+        "bug assessment evaluation: "
+        f"{summary['case_count']} case(s), "
+        f"verdict={summary['verdict_accuracy']:.3f}, "
+        f"occurrence={summary['occurrence_accuracy']:.3f}, "
+        f"gate={report['quality_gate']['status']}"
+    )
+    print(f"report: {args.report}")
+    return 0 if report["quality_gate"]["status"] == "passed" else 1
+
+
 def _run_evaluate_capability_teaching(args: argparse.Namespace) -> int:
     if not args.confirm_paid_run:
         print(
@@ -1131,37 +1288,62 @@ def _run_evaluate_capability_teaching(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    api_key = os.environ.get("OPENCODE_API_KEY", "")
-    if not api_key.strip():
-        print("capability teaching evaluation requires OPENCODE_API_KEY", file=sys.stderr)
-        return 1
-
-    model = "deepseek-v4-flash"
     partial_report = args.report.with_name(f"{args.report.stem}.partial.json")
     try:
         _require_new_report_target(args.report)
         _require_new_report_target(partial_report)
+        binding, price_profile, evaluation_id, evaluation_revision = _build_model_evaluation_target(
+            args,
+            timeout_seconds=args.timeout_seconds,
+            max_output_tokens=args.max_output_tokens,
+            default_evaluation_id="capability-teaching-opencode-go-v1",
+            default_evaluation_revision=(
+                "opencode-go-capability-teaching-forward-heldout-20-20260816-v8-v34-zh-a"
+            ),
+        )
+
+        def client_factory(
+            tool_runtime_factory: CapabilityAnalysisToolRuntimeFactory | None,
+        ) -> PydanticAICapabilityAnalysisClient:
+            return PydanticAICapabilityAnalysisClient(
+                binding.model,
+                timeout_seconds=args.timeout_seconds,
+                max_output_tokens=args.max_output_tokens,
+                model_settings=binding.model_settings,
+                expected_provider=binding.provider,
+                expected_model=binding.model_name,
+                tool_runtime_factory=tool_runtime_factory,
+            )
+
         report = asyncio.run(
             evaluate_capability_teaching(
                 args.fixtures,
-                client_factory=lambda tool_runtime_factory: (
-                    create_opencode_go_capability_analysis_client(
-                        api_key=api_key,
-                        model=model,
-                        timeout_seconds=60.0,
-                        max_output_tokens=4_096,
-                        tool_runtime_factory=tool_runtime_factory,
-                    )
-                ),
-                provider="opencode-go",
-                model=model,
+                client_factory=client_factory,
+                provider=binding.provider,
+                model=binding.model_name,
                 declared_budget_usd=args.declared_budget_usd,
+                api_family=binding.api_family,
+                connection_revision=binding.connection_revision,
+                settings_revision=binding.settings_revision,
+                timeout_seconds=args.timeout_seconds,
+                max_output_tokens=args.max_output_tokens,
+                evaluation_id=evaluation_id,
+                evaluation_revision=evaluation_revision,
+                official_fixture_set_id=args.official_fixture_set_id,
+                official_fixture_sha256=args.official_fixture_sha256,
+                usage_cost_usd=(price_profile.cost_usd if price_profile else None),
+                pricing_profile=(price_profile.to_report() if price_profile else None),
                 partial_report_path=partial_report,
                 selected_case_ids=(frozenset(args.case_id) if args.case_id else None),
             )
         )
         write_new_evaluation_report(args.report, report)
-    except (CapabilityTeachingEvaluationError, OSError, ValueError) as error:
+    except (
+        CapabilityTeachingEvaluationError,
+        ModelEvaluationTargetError,
+        OSError,
+        ValueError,
+    ) as error:
         print(f"capability teaching evaluation failed: {error}", file=sys.stderr)
         return 1
 
@@ -1809,6 +1991,73 @@ def _print_session_summary(session: SupportSession) -> None:
     )
 
 
+def _add_model_evaluation_target_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--backend", default="opencode-go-chat")
+    parser.add_argument("--model-name", default="deepseek-v4-flash")
+    parser.add_argument("--base-url")
+    parser.add_argument("--evaluation-id")
+    parser.add_argument("--evaluation-revision")
+    parser.add_argument("--pricing-profile")
+    parser.add_argument("--pricing-currency")
+    parser.add_argument("--input-price-per-million", type=_nonnegative_decimal)
+    parser.add_argument("--output-price-per-million", type=_nonnegative_decimal)
+    parser.add_argument("--usd-per-currency-unit", type=_positive_decimal)
+
+
+def _build_model_evaluation_target(
+    args: argparse.Namespace,
+    *,
+    timeout_seconds: float,
+    max_output_tokens: int,
+    default_evaluation_id: str,
+    default_evaluation_revision: str,
+):
+    binding = create_model_evaluation_binding(
+        backend=args.backend,
+        model_name=args.model_name,
+        base_url=args.base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    price_profile = _price_profile_from_args(args)
+    uses_legacy_target = (
+        args.backend == "opencode-go-chat" and args.model_name == "deepseek-v4-flash"
+    )
+    if price_profile is None and not uses_legacy_target:
+        raise ValueError("non-legacy evaluation targets require an explicit token price profile")
+    if (args.evaluation_id is None) != (args.evaluation_revision is None):
+        raise ValueError("evaluation ID and revision must be configured together")
+    if args.evaluation_id is None:
+        if not uses_legacy_target:
+            raise ValueError("non-legacy evaluation targets require an evaluation ID and revision")
+        evaluation_id = default_evaluation_id
+        evaluation_revision = default_evaluation_revision
+    else:
+        evaluation_id = args.evaluation_id
+        evaluation_revision = args.evaluation_revision
+    return binding, price_profile, evaluation_id, evaluation_revision
+
+
+def _price_profile_from_args(args: argparse.Namespace) -> TokenPriceProfile | None:
+    values = (
+        args.pricing_profile,
+        args.pricing_currency,
+        args.input_price_per_million,
+        args.output_price_per_million,
+        args.usd_per_currency_unit,
+    )
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise ValueError("token price profile fields must be configured together")
+    return TokenPriceProfile(
+        profile_id=args.pricing_profile,
+        currency=args.pricing_currency,
+        input_price_per_million=args.input_price_per_million,
+        output_price_per_million=args.output_price_per_million,
+        usd_per_currency_unit=args.usd_per_currency_unit,
+    )
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -1818,6 +2067,23 @@ def _positive_int(value: str) -> int:
 
 def _positive_float(value: str) -> float:
     parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be greater than zero")
+    return parsed
+
+
+def _nonnegative_decimal(value: str) -> Decimal:
+    try:
+        parsed = Decimal(value)
+    except InvalidOperation as error:
+        raise argparse.ArgumentTypeError("value must be a decimal") from error
+    if not parsed.is_finite() or parsed < 0:
+        raise argparse.ArgumentTypeError("value must be a non-negative decimal")
+    return parsed
+
+
+def _positive_decimal(value: str) -> Decimal:
+    parsed = _nonnegative_decimal(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be greater than zero")
     return parsed

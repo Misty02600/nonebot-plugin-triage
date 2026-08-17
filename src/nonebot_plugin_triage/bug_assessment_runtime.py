@@ -65,7 +65,6 @@ from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_BUG_ASSESSMENT_TASK,
     OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
     OPENCODE_GO_SEMANTIC_API_FAMILY,
-    OPENCODE_GO_SEMANTIC_MODELS,
 )
 from nbtriage.runtime_observations import RuntimeObservationBuffer
 from nonebot_plugin_triage.capability_shadow import CapabilityShadowService
@@ -99,6 +98,8 @@ class BugTaskQualification:
     privacy_policy: str
     budget_profile: str
     evaluation: str | None
+    connection_revision: str = "provider-default"
+    settings_revision: str = "provider-default"
     verified: bool = True
 
 
@@ -491,25 +492,20 @@ def _create_bug_agent_runtime_binding(
             type(error).__name__,
         )
         return None
-    qualified_candidate = _bug_task_qualification(
+    candidate = _bug_task_qualification(
         config,
         binding.provider,
         binding.model_name,
         binding.api_family,
-        verified=True,
+        binding.connection_revision,
+        binding.settings_revision,
+        verified=False,
     )
-    verified = qualified_candidate in qualified_tasks
-    qualification = (
-        qualified_candidate
-        if verified
-        else _bug_task_qualification(
-            config,
-            binding.provider,
-            binding.model_name,
-            binding.api_family,
-            verified=False,
-        )
+    qualification = next(
+        (qualified for qualified in qualified_tasks if _same_bug_target(qualified, candidate)),
+        candidate,
     )
+    verified = qualification is not candidate
     if not verified:
         logger.info(
             "NoneBot Triage Bug assessment is using an unverified model combination; "
@@ -562,12 +558,11 @@ def _bug_task_qualification(
     provider: str,
     model: str,
     api_family: str,
+    connection_revision: str,
+    settings_revision: str,
     *,
     verified: bool,
 ) -> BugTaskQualification:
-    verified_profile = verified and (
-        config.nbtriage_model_backend == "opencode-go-chat" and model in OPENCODE_GO_SEMANTIC_MODELS
-    )
     return BugTaskQualification(
         provider=provider,
         api_family=api_family,
@@ -579,13 +574,35 @@ def _bug_task_qualification(
         budget_profile=OPENCODE_GO_BUG_ASSESSMENT_BUDGET_PROFILE,
         evaluation=(
             OPENCODE_GO_BUG_ASSESSMENT_EVALUATION
-            if verified_profile
+            if verified
             else unverified_evaluation_id(
                 task=OPENCODE_GO_BUG_ASSESSMENT_TASK,
                 prompt_id=BUG_AGENT_PROMPT_ID,
             )
         ),
-        verified=verified_profile,
+        connection_revision=connection_revision,
+        settings_revision=settings_revision,
+        verified=verified,
+    )
+
+
+def _same_bug_target(
+    qualified: BugTaskQualification,
+    candidate: BugTaskQualification,
+) -> bool:
+    return (
+        qualified.provider == candidate.provider
+        and qualified.api_family == candidate.api_family
+        and qualified.model == candidate.model
+        and qualified.task == candidate.task
+        and qualified.schema_version == candidate.schema_version
+        and qualified.prompt_id == candidate.prompt_id
+        and qualified.privacy_policy == candidate.privacy_policy
+        and qualified.budget_profile == candidate.budget_profile
+        and qualified.connection_revision == candidate.connection_revision
+        and qualified.settings_revision == candidate.settings_revision
+        and qualified.verified
+        and qualified.evaluation is not None
     )
 
 

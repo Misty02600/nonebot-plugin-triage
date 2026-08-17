@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Callable, Iterable
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.usage import RequestUsage
 from tools.nbtriage_maintainer.cli import main
+from tools.nbtriage_maintainer.model_evaluation_target import TokenPriceProfile
 from tools.nbtriage_maintainer.support_semantic_evaluation import (
     SUPPORT_SEMANTIC_CANDIDATE_EVALUATION_REVISION,
     SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SHA256,
@@ -36,6 +38,9 @@ _OFFICIAL_FIXTURE = (
 
 def _client_factory(
     outputs: Iterable[dict[str, object]],
+    *,
+    provider: str = "opencode-go",
+    model: str = "deepseek-v4-flash",
 ) -> Callable[[], PydanticAISupportSemanticClient]:
     remaining = iter(outputs)
 
@@ -52,23 +57,23 @@ def _client_factory(
                     )
                 ],
                 finish_reason="tool_call",
-                provider_name="opencode-go",
-                model_name="deepseek-v4-flash",
+                provider_name=provider,
+                model_name=model,
                 usage=RequestUsage(input_tokens=100, output_tokens=20),
             )
 
         return PydanticAISupportSemanticClient(
             FunctionModel(
                 respond,
-                model_name="deepseek-v4-flash",
+                model_name=model,
                 profile=ModelProfile(
                     supports_tools=True,
                     default_structured_output_mode="tool",
                 ),
             ),
             max_output_tokens=240,
-            expected_provider="opencode-go",
-            expected_model="deepseek-v4-flash",
+            expected_provider=provider,
+            expected_model=model,
         )
 
     return create_client
@@ -113,6 +118,46 @@ def test_chinese_fixture_binds_prompt_and_runtime_revisions() -> None:
     assert report["summary"]["exact_match_rate"] == 1.0
     assert report["quality_gate"]["qualification_eligible"] is True
     assert all(report["quality_gate"]["qualification_checks"].values())
+    assert report["quality_gate"]["status"] == "passed"
+
+
+def test_official_cases_can_qualify_an_independent_provider_target() -> None:
+    payload = json.loads(_OFFICIAL_FIXTURE.read_text(encoding="utf-8"))
+    provider = "alibaba"
+    model = "qwen3.6-flash"
+    pricing = TokenPriceProfile(
+        profile_id="qwen3.6-flash-cn-20260817",
+        currency="CNY",
+        input_price_per_million=Decimal("1.2"),
+        output_price_per_million=Decimal("7.2"),
+        usd_per_currency_unit=Decimal("0.14"),
+    )
+
+    report = asyncio.run(
+        evaluate_support_semantics(
+            _OFFICIAL_FIXTURE,
+            client_factory=_client_factory(
+                _expected_outputs(payload),
+                provider=provider,
+                model=model,
+            ),
+            provider=provider,
+            model=model,
+            max_model_calls=len(_expected_outputs(payload)),
+            declared_budget_usd=1,
+            api_family="pydantic-ai",
+            connection_revision="custom-endpoint-sha256:fixture",
+            evaluation_id="support-semantic-alibaba-qwen3.6-flash-v7",
+            evaluation_revision="alibaba-qwen3.6-flash-forward-heldout-v7-fixture",
+            usage_cost_usd=pricing.cost_usd,
+            pricing_profile=pricing.to_report(),
+        )
+    )
+
+    assert report["provider"] == provider
+    assert report["model"] == model
+    assert report["pricing_profile"] == pricing.to_report()
+    assert report["quality_gate"]["qualification_eligible"] is True
     assert report["quality_gate"]["status"] == "passed"
 
 

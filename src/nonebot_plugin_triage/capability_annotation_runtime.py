@@ -18,6 +18,10 @@ from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_SEMANTIC_API_FAMILY,
     OPENCODE_GO_SEMANTIC_MODELS,
 )
+from nbtriage.task_model_settings import (
+    PROVIDER_DEFAULT_SETTINGS_REVISION,
+    task_model_settings_revision,
+)
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.task_model_runtime import (
     TaskModelRuntimeConfigurationError,
@@ -114,8 +118,7 @@ def create_capability_annotation_client_factory(
     verified = qualification in qualified_tasks
     if not verified:
         logger.info(
-            "NoneBot Triage capability annotations are using an unverified model "
-            "combination: {}/{}",
+            "NoneBot Triage 教学注释正在使用未经公开评测的模型组合：backend={}, model={}",
             config.nbtriage_model_backend,
             config.nbtriage_model_name,
         )
@@ -142,6 +145,10 @@ def capability_annotation_analysis_revision(config: NBTriageConfig) -> str:
     backend = config.nbtriage_model_backend or "none"
     model = config.nbtriage_model_name or "none"
     connection_revision = model_connection_revision(config)
+    settings_revision = PROVIDER_DEFAULT_SETTINGS_REVISION
+    if backend == "pydantic-ai" and ":" in model:
+        provider, provider_model = model.split(":", 1)
+        settings_revision = task_model_settings_revision(provider, provider_model)
     if (
         backend == "opencode-go-chat"
         and model in OPENCODE_GO_SEMANTIC_MODELS
@@ -151,7 +158,9 @@ def capability_annotation_analysis_revision(config: NBTriageConfig) -> str:
         return CAPABILITY_ANNOTATION_ANALYSIS_REVISION
     return (
         f"{CAPABILITY_ANNOTATION_ANALYSIS_REVISION}:unverified:{backend}:{model}:"
-        f"{connection_revision}"
+        f"{connection_revision}:{settings_revision}:"
+        f"timeout-{config.nbtriage_model_timeout_seconds:g}:"
+        f"output-{CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS}"
     )
 
 

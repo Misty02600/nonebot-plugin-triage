@@ -7,6 +7,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pytest import MonkeyPatch
 
 import nonebot_plugin_triage.task_model_runtime as task_model_runtime
+from nbtriage.task_model_settings import ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.semantic_runtime import create_semantic_client_factory
 from nonebot_plugin_triage.task_model_runtime import (
@@ -83,7 +84,28 @@ def test_alibaba_model_accepts_deployment_configured_mainland_endpoint(
     assert binding.model.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1/"
     assert binding.connection_revision == model_connection_revision(config)
     assert binding.connection_revision.startswith("custom-endpoint-sha256:")
+    assert config.nbtriage_model_base_url is not None
     assert config.nbtriage_model_base_url not in binding.connection_revision
+
+
+def test_qwen36_binding_disables_thinking_for_structured_output_tools(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-only-key")
+
+    binding = create_task_model_binding(
+        NBTriageConfig(
+            nbtriage_model_backend="pydantic-ai",
+            nbtriage_model_name="alibaba:qwen3.6-flash",
+            nbtriage_model_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+    )
+
+    assert binding.settings_revision == ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
+    assert binding.model_settings is not None
+    assert binding.model_settings.get("extra_body") == {"enable_thinking": False}
+    assert binding.model_settings.get("parallel_tool_calls") is False
+    assert binding.model_settings.get("temperature") == 0
 
 
 def test_alibaba_model_with_custom_endpoint_requires_standard_provider_key(

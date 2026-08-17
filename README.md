@@ -53,8 +53,9 @@ flowchart TD
 每次非空 `triage` 都经过版本化语义 assessment service。语义模型只接收当前这条规范化请求，输出
 `guidance`、`behavior_exploration`、`bug_assessment`、`feature_feedback` 四类目标和独立的现象陈述；
 确定性 router 才决定 action，模型不能回答、鉴权或直接建单。当前中文
-`support-semantic-v7-prompt-v5-zh` 已通过 40 条独立 forward-heldout：schema、status 与 exact 均为
-1.000；运行时只登记该 Prompt、Fixture、隐私、预算与评测 revision 精确组合。router 选择公开能力指导后，插件会从显式 Provider、能力影子与
+`support-semantic-v7-prompt-v5-zh` 已分别通过 OpenCode Go 与国内 Alibaba Qwen3.6 Flash 的 40 条独立
+forward-heldout：两者的 schema 与 status 均为 1.000，exact 分别为 1.000 与 0.975；运行时只登记各自的
+Provider、endpoint、settings、Prompt、Fixture、隐私、预算与评测 revision 精确组合。router 选择公开能力指导后，插件会从显式 Provider、能力影子与
 经校验的教学注释构造只含公开事实的闭合请求，再调用独立的 Answer
 Agent 组织自然语言回答。Answer Agent 没有工具，只能把当前问题、公开事实与路由后有界的首轮 / Reply
 上下文组织成教学回复；上下文不能覆盖公开事实、权限或披露边界。未明确命中功能时只保留一次补充机会；
@@ -282,6 +283,10 @@ revision。旧 cache 只有在能力仍于当前 runtime 成功注册、插件�
 `{command}`，也不再输出结构化 interaction。2026-08-16 的全新 v3 24 条真实 Provider held-out 中，schema、
 Evidence 闭合、投影、预算、工具与 12/12 源码提取均通过，但安全率 0.9167、语义率 0.3333，质量 Gate 仍失败，
 因此不能继承 semantic、Bug 或 Answer 任务的质量结论，也不宣称该精确组合具有同等已验证质量。
+当前 v35 Prompt 又复用了同一批 20 条案例和 12 组冻结源码，对国内 Alibaba Qwen3.6 Flash 独立运行 v9
+forward-heldout。源码提取率为 1.000，但 schema / Evidence / 投影 / 安全 / 预算均为 0.900，语义率为
+0.600，需要补读工具的案例未通过，正式 Gate 失败；因此 Qwen 能力标注仍只属于“可运行、未验证”，不会进入
+`QUALIFIED_CAPABILITY_ANNOTATION_TASKS`。
 
 完整刷新会从同一份有效教学注释生成两类一插件一文件的数据：面向外部公开帮助消费者的紧凑 YAML 和供 Answer
 补充公开细节的 Markdown。它们写入 Triage 自己的 LocalStore plugin data：
@@ -301,7 +306,8 @@ Evidence 闭合、投影、预算、工具与 12/12 源码提取均通过，但�
 普通用户入口可以在私聊、群聊或频道直接发送，也可以 `@Bot` 后发送；三种会话使用相同分流和调用者
 鉴权规则。私聊目前不能建立故障记录，维护命令仍需要 `@Bot`。配置的 Provider/model 可由 Pydantic AI
 解析、所需 SDK 和密钥可用且传输能力满足当前任务时，下表的 `triage` 场景会调用在线语义分类。当前
-semantic v7 中文 Prompt 的 OpenCode Go 精确组合已有公开 held-out 结果；其他组合可以运行，但标记为未验证。
+semantic v7 中文 Prompt 的 OpenCode Go 与国内 Alibaba Qwen3.6 Flash 精确组合已有 held-out 结果；其他组合
+可以运行，但标记为未验证。Qwen 的 Bug assessment 同 Fixture 评测未过门槛，不能继承 semantic 标签。
 
 | 指令                                              | 权限      | 说明                           |
 | ------------------------------------------------- | --------- | ------------------------------ |

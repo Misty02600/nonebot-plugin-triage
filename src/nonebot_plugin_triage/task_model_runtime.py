@@ -10,6 +10,7 @@ from pydantic_ai.models import Model, infer_model
 from pydantic_ai.providers import Provider, infer_provider_class
 from pydantic_ai.settings import ModelSettings
 
+from nbtriage.task_model_settings import task_model_settings
 from nonebot_plugin_triage.config import NBTriageConfig
 
 
@@ -25,6 +26,7 @@ class TaskModelBinding:
     api_family: str
     model_settings: ModelSettings | None = None
     connection_revision: str = "provider-default"
+    settings_revision: str = "provider-default"
 
 
 def create_task_model_binding(
@@ -139,11 +141,13 @@ def create_task_model_binding(
                     configured_model,
                     provider_factory=_base_url_provider_factory(config.nbtriage_model_base_url),
                 )
+            model_settings, settings_revision = task_model_settings(model)
             return _binding(
                 model,
                 api_family="pydantic-ai",
-                model_settings=_privacy_model_settings(model),
+                model_settings=model_settings,
                 connection_revision=model_connection_revision(config),
+                settings_revision=settings_revision,
             )
     except TaskModelRuntimeConfigurationError:
         raise
@@ -161,6 +165,7 @@ def _binding(
     api_family: str,
     model_settings: ModelSettings | None = None,
     connection_revision: str = "provider-default",
+    settings_revision: str = "provider-default",
 ) -> TaskModelBinding:
     return TaskModelBinding(
         model=model,
@@ -169,6 +174,7 @@ def _binding(
         api_family=api_family,
         model_settings=model_settings,
         connection_revision=connection_revision,
+        settings_revision=settings_revision,
     )
 
 
@@ -192,21 +198,6 @@ def model_connection_revision(config: NBTriageConfig) -> str:
         return "provider-default"
     digest = sha256(base_url.encode("utf-8")).hexdigest()
     return f"custom-endpoint-sha256:{digest}"
-
-
-def _privacy_model_settings(model: Model) -> ModelSettings | None:
-    if model.system != "openai":
-        return None
-    try:
-        from pydantic_ai.models.openai import (
-            OpenAIResponsesModel,
-            OpenAIResponsesModelSettings,
-        )
-    except ImportError:
-        return None
-    if isinstance(model, OpenAIResponsesModel):
-        return OpenAIResponsesModelSettings(openai_store=False)
-    return None
 
 
 def unverified_evaluation_id(*, task: str, prompt_id: str) -> str:

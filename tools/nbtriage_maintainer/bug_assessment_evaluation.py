@@ -38,6 +38,10 @@ from nbtriage.bug_assessment import (
     build_bug_case_fingerprint,
     reconcile_bug_candidate,
 )
+from nbtriage.opencode_go_contracts import (
+    OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
+    OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
+)
 from nbtriage.opencode_go_semantic_adapter import (
     OPENCODE_GO_BUG_ASSESSMENT_BUDGET_PROFILE,
     OPENCODE_GO_BUG_ASSESSMENT_PRIVACY_POLICY,
@@ -87,9 +91,14 @@ class BugAssessmentEvaluationError(RuntimeError):
 
 
 class BugEvaluationClient(Protocol):
-    last_usage: RunUsage | None
-    last_messages: tuple[ModelMessage, ...]
-    last_trace_id: str | None
+    @property
+    def last_usage(self) -> RunUsage | None: ...
+
+    @property
+    def last_messages(self) -> tuple[ModelMessage, ...]: ...
+
+    @property
+    def last_trace_id(self) -> str | None: ...
 
     async def assess(
         self,
@@ -106,6 +115,15 @@ async def evaluate_bug_assessment(
     model: str,
     declared_budget_usd: float,
     trace_dir: Path | None = None,
+    api_family: str = "chat-completions",
+    connection_revision: str = "provider-default",
+    settings_revision: str = "provider-default",
+    timeout_seconds: float = OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
+    max_output_tokens: int = OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
+    evaluation_id: str = BUG_ASSESSMENT_EVALUATION_ID,
+    evaluation_revision: str = BUG_ASSESSMENT_CANDIDATE_EVALUATION_REVISION,
+    usage_cost_usd: Callable[[Any], Decimal | None] | None = None,
+    pricing_profile: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     fixture_raw = fixtures_path.read_bytes()
     fixture_sha256 = hashlib.sha256(fixture_raw).hexdigest()
@@ -129,6 +147,21 @@ async def evaluate_bug_assessment(
         raise BugAssessmentEvaluationError("invalid bug assessment fixture contract")
     if declared_budget_usd <= 0:
         raise BugAssessmentEvaluationError("declared bug assessment budget must be positive")
+    if timeout_seconds <= 0 or max_output_tokens < 1:
+        raise BugAssessmentEvaluationError("model runtime limits must be positive")
+    if not all(
+        value.strip()
+        for value in (
+            provider,
+            model,
+            api_family,
+            connection_revision,
+            settings_revision,
+            evaluation_id,
+            evaluation_revision,
+        )
+    ):
+        raise BugAssessmentEvaluationError("evaluation target identity must not be empty")
 
     rows: list[dict[str, Any]] = []
     total_cost_usd = Decimal(0)
@@ -209,6 +242,8 @@ async def evaluate_bug_assessment(
             input_tokens = usage.input_tokens
             output_tokens = usage.output_tokens
             cost_usd = usage.cost
+            if cost_usd is None and usage_cost_usd is not None:
+                cost_usd = usage_cost_usd(usage)
         has_usage = usage is not None and cost_usd is not None
         usage_available += has_usage
         if cost_usd is not None:
@@ -366,8 +401,11 @@ async def evaluate_bug_assessment(
         "fixture_set_id": fixture_set_id == BUG_ASSESSMENT_OFFICIAL_FIXTURE_SET_ID,
         "fixture_sha256": fixture_sha256 == BUG_ASSESSMENT_OFFICIAL_FIXTURE_SHA256,
         "forward_coverage": _REQUIRED_FORWARD_COVERAGE.issubset(observed_coverage),
-        "provider": provider == _QUALIFIED_PROVIDER,
-        "model": model == _QUALIFIED_MODEL,
+        "target_provider": bool(provider.strip()),
+        "target_model": bool(model.strip()),
+        "target_api_family": bool(api_family.strip()),
+        "target_connection_revision": bool(connection_revision.strip()),
+        "target_settings_revision": bool(settings_revision.strip()),
         "task": declared_contract.get("task") == expected_contract["task"],
         "schema_version": (
             declared_contract.get("schema_version") == expected_contract["schema_version"]
@@ -401,19 +439,24 @@ async def evaluate_bug_assessment(
     )
     return {
         "schema_version": 1,
-        "evaluation_id": BUG_ASSESSMENT_EVALUATION_ID,
+        "evaluation_id": evaluation_id,
         "fixture_set_id": fixture_set_id,
         "fixture_sha256": fixture_sha256,
         "split": split,
         "provider": provider,
         "model": model,
+        "api_family": api_family,
+        "connection_revision": connection_revision,
+        "settings_revision": settings_revision,
+        "timeout_seconds": timeout_seconds,
+        "max_output_tokens": max_output_tokens,
         "task": OPENCODE_GO_BUG_ASSESSMENT_TASK,
         "bug_schema_version": BUG_ASSESSMENT_SCHEMA_VERSION,
         "prompt_id": BUG_AGENT_PROMPT_ID,
         "prompt_sha256": expected_contract["prompt_sha256"],
         "privacy_policy": OPENCODE_GO_BUG_ASSESSMENT_PRIVACY_POLICY,
         "budget_profile": OPENCODE_GO_BUG_ASSESSMENT_BUDGET_PROFILE,
-        "evaluation_revision": BUG_ASSESSMENT_CANDIDATE_EVALUATION_REVISION,
+        "evaluation_revision": evaluation_revision,
         "summary": {
             "case_count": count,
             "schema_valid_rate": schema_valid_rate,
@@ -444,6 +487,7 @@ async def evaluate_bug_assessment(
             "required_scenario_compliance_rate": 1.0,
             "required_safety_compliance_rate": 1.0,
         },
+        "pricing_profile": pricing_profile,
         "rows": rows,
     }
 

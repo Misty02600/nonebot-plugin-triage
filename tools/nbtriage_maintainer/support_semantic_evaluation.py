@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,15 @@ async def evaluate_support_semantics(
     model: str,
     max_model_calls: int,
     declared_budget_usd: float,
+    api_family: str = "chat-completions",
+    connection_revision: str = "provider-default",
+    settings_revision: str = "provider-default",
+    timeout_seconds: float = 60.0,
+    max_output_tokens: int = 240,
+    evaluation_id: str = SUPPORT_SEMANTIC_EVALUATION_ID,
+    evaluation_revision: str = SUPPORT_SEMANTIC_CANDIDATE_EVALUATION_REVISION,
+    usage_cost_usd: Callable[[Any], Decimal | None] | None = None,
+    pricing_profile: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     fixture_raw = fixtures_path.read_bytes()
     fixture_sha256 = hashlib.sha256(fixture_raw).hexdigest()
@@ -72,6 +82,21 @@ async def evaluate_support_semantics(
         raise SupportSemanticEvaluationError("model call budget is smaller than fixture count")
     if declared_budget_usd <= 0:
         raise SupportSemanticEvaluationError("declared budget must be positive")
+    if timeout_seconds <= 0 or max_output_tokens < 1:
+        raise SupportSemanticEvaluationError("model runtime limits must be positive")
+    if not all(
+        value.strip()
+        for value in (
+            provider,
+            model,
+            api_family,
+            connection_revision,
+            settings_revision,
+            evaluation_id,
+            evaluation_revision,
+        )
+    ):
+        raise SupportSemanticEvaluationError("evaluation target identity must not be empty")
 
     rows: list[dict[str, Any]] = []
     total_cost_microusd = 0
@@ -140,13 +165,21 @@ async def evaluate_support_semantics(
         else:
             identity = provider_response_identity(response)
             usage = response.usage
-            cost_microusd = normalized_opencode_go_cost_microusd(
-                usage,
-                provider=provider,
-                requested_model=model,
-                returned_provider=identity.provider_name,
-                returned_model=identity.model_name,
-            )
+            if usage_cost_usd is None:
+                cost_microusd = normalized_opencode_go_cost_microusd(
+                    usage,
+                    provider=provider,
+                    requested_model=model,
+                    returned_provider=identity.provider_name,
+                    returned_model=identity.model_name,
+                )
+            else:
+                cost_usd = usage_cost_usd(usage)
+                cost_microusd = (
+                    int((cost_usd * Decimal(1_000_000)).to_integral_value(rounding=ROUND_CEILING))
+                    if cost_usd is not None
+                    else None
+                )
             if cost_microusd is None:
                 raise SupportSemanticEvaluationError("provider response cost is unknown")
             total_cost_microusd += cost_microusd
@@ -189,8 +222,11 @@ async def evaluate_support_semantics(
         "held_out_split": split == "held_out",
         "fixture_set_id": fixture_set_id == SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SET_ID,
         "fixture_sha256": fixture_sha256 == SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SHA256,
-        "provider": provider == _QUALIFIED_PROVIDER,
-        "model": model == _QUALIFIED_MODEL,
+        "target_provider": bool(provider.strip()),
+        "target_model": bool(model.strip()),
+        "target_api_family": bool(api_family.strip()),
+        "target_connection_revision": bool(connection_revision.strip()),
+        "target_settings_revision": bool(settings_revision.strip()),
         "task": declared_contract.get("task") == expected_contract["task"],
         "schema_version": (
             declared_contract.get("schema_version") == expected_contract["schema_version"]
@@ -219,17 +255,22 @@ async def evaluate_support_semantics(
     )
     return {
         "schema_version": 1,
-        "evaluation_id": SUPPORT_SEMANTIC_EVALUATION_ID,
+        "evaluation_id": evaluation_id,
         "fixture_set_id": fixture_set_id,
         "fixture_sha256": fixture_sha256,
         "split": split,
         "provider": provider,
         "model": model,
+        "api_family": api_family,
+        "connection_revision": connection_revision,
+        "settings_revision": settings_revision,
+        "timeout_seconds": timeout_seconds,
+        "max_output_tokens": max_output_tokens,
         "task": OPENCODE_GO_SEMANTIC_TASK,
         "semantic_schema_version": SUPPORT_SEMANTIC_SCHEMA_VERSION,
         "privacy_policy": OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
         "budget_profile": OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
-        "evaluation_revision": SUPPORT_SEMANTIC_CANDIDATE_EVALUATION_REVISION,
+        "evaluation_revision": evaluation_revision,
         "prompt_id": SUPPORT_SEMANTIC_PROMPT_ID,
         "prompt_sha256": expected_contract["prompt_sha256"],
         "summary": {
@@ -251,6 +292,7 @@ async def evaluate_support_semantics(
             "required_schema_valid_rate": 1.0,
             "required_status_accuracy": 1.0,
         },
+        "pricing_profile": pricing_profile,
         "rows": rows,
     }
 

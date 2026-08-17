@@ -11,6 +11,8 @@ import pytest
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.usage import RunUsage
 from tools.nbtriage_maintainer.capability_teaching_evaluation import (
+    CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID,
+    CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256,
     CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SHA256,
     evaluate_capability_teaching,
 )
@@ -33,6 +35,13 @@ _OFFICIAL_FIXTURE = (
     / "datasets"
     / "fixtures"
     / "capability-teaching-v8-forward-heldout.json"
+)
+_CURRENT_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "evals"
+    / "datasets"
+    / "fixtures"
+    / "capability-teaching-v9-forward-heldout.json"
 )
 _FROZEN_V7_FIXTURE = (
     Path(__file__).resolve().parents[1]
@@ -174,6 +183,44 @@ def test_v8_source_bundle_remains_frozen_after_prompt_contract_changes() -> None
     assert report["quality_gate"]["qualification_checks"]["contract_exact"] is False
     assert report["quality_gate"]["qualification_eligible"] is False
     assert report["quality_gate"]["status"] == "failed"
+
+
+def test_current_fixture_reuses_the_frozen_v8_cases() -> None:
+    historical = json.loads(_OFFICIAL_FIXTURE.read_text(encoding="utf-8"))
+    current = json.loads(_CURRENT_FIXTURE.read_text(encoding="utf-8"))
+
+    assert current["cases"] == historical["cases"]
+
+
+def test_current_fixture_is_eligible_for_an_explicit_qwen_target() -> None:
+    report = asyncio.run(
+        evaluate_capability_teaching(
+            _CURRENT_FIXTURE,
+            client_factory=_disabled_client_factory,
+            provider="alibaba",
+            model="qwen3.6-flash",
+            declared_budget_usd=1,
+            api_family="pydantic-ai",
+            connection_revision="custom-endpoint-sha256:test",
+            settings_revision="alibaba-qwen3.6-non-thinking-v2",
+            timeout_seconds=300,
+            max_output_tokens=16_384,
+            evaluation_id="capability-teaching-alibaba-qwen36-v1",
+            evaluation_revision="qwen36-capability-heldout-v9-v35-a",
+            official_fixture_set_id=CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID,
+            official_fixture_sha256=CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256,
+            usage_cost_usd=lambda _usage: Decimal("0.0001"),
+            pricing_profile={"profile_id": "test-price"},
+        )
+    )
+
+    assert report["quality_gate"]["qualification_eligible"] is True
+    assert report["quality_gate"]["status"] == "failed"
+    assert report["provider"] == "alibaba"
+    assert report["model"] == "qwen3.6-flash"
+    assert report["settings_revision"] == "alibaba-qwen3.6-non-thinking-v2"
+    assert report["evaluation_revision"] == "qwen36-capability-heldout-v9-v35-a"
+    assert report["pricing_profile"] == {"profile_id": "test-price"}
 
 
 def test_v34_development_bundle_prepares_as_historical_regression_data() -> None:

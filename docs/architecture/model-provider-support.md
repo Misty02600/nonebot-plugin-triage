@@ -4,7 +4,8 @@
 
 这份矩阵记录 NoneBot Triage Agent 对精确模型组合已经取得的质量证据，不代表 Pydantic AI 或厂商 SDK 的
 全部能力，也不是运行白名单。Pydantic AI `ModelProfile` 负责模型传输能力和默认结构化输出方式；项目按
-`Provider + API 族 + 精确 model + task/schema/Prompt + 隐私策略 + 预算 + 评测 revision` 记录 held-out。
+`Provider + API 族 + 精确 model + endpoint revision + settings revision + task/schema/Prompt + 隐私策略 + 预算 + 评测 revision`
+记录 held-out。
 未登记组合可以运行，但只能标记为未验证；B1、B4、支持入口语义 assessment、教学注释、公开 Answer 和
 Bug Agent 的质量结论分别记账，不能相互继承。“OpenAI-compatible”本身不能决定 Provider 身份；部署端
 Base URL 只能覆盖已经显式选择、且构造器支持该参数的 Pydantic AI Provider。
@@ -20,9 +21,10 @@ Base URL 只能覆盖已经显式选择、且构造器支持该参数的 Pydanti
 传输无关的 v7 请求投影与输出 schema、一次性失败关闭 service、固定 Prompt 的结构化 Pydantic AI Agent client
 和确定性 router 已经实现；模型只产出 signals，不产出 action 或 authorization。插件 runtime 必须持有
 assessment service，首轮与续问每轮调用一次；通用 client 以 `output_mode=auto` 消费 ModelProfile，不维护
-第二份传输能力结构，也不会在失败后切换输出方式。OpenCode Go semantic factory 与公开评测记录已经实现；
-当前中文 Prompt v5 已通过精确绑定的 40 条 forward-heldout，schema、status 与 exact 均为 1.000，
-`QUALIFIED_SEMANTIC_TASKS` 只登记该精确组合。该集合只表示已验证质量；其他可解析组合仍会执行相同的
+第二份传输能力结构，也不会在失败后切换输出方式。OpenCode Go 与国内 Alibaba Qwen3.6 Flash 的 semantic
+factory 与评测记录已经实现；当前中文 Prompt v5 的两组 40 条 forward-heldout 中，OpenCode Go 的
+schema / status / exact 均为 1.000，Qwen 的 schema / status 为 1.000、exact 为 0.975。
+`QUALIFIED_SEMANTIC_TASKS` 只登记这两个精确组合。该集合只表示已验证质量；其他可解析组合仍会执行相同的
 schema、隐私、预算和模型外路由合同，失败时才变成 unavailable / abstain。这不是词表产品模式，也不能由
 capability annotation 的评测结果推导 semantic 质量。
 
@@ -45,8 +47,11 @@ capability annotation 的评测结果推导 semantic 质量。
 不重算，也不向新 Prompt 继承。Prompt v8 先用 5 条 development case 验证“没有会话历史 Provider 时不调用
 不存在的工具”等边界，再只运行一次全新的 16 条 forward-heldout。该正式 Gate 的 schema、verdict、occurrence、
 responsibility、citation、budget、usage、scenario 与 safety 均为 1.000，16 / 16 通过；共消耗 166,393 input /
-6,116 output tokens、5,724 microUSD。`QUALIFIED_BUG_TASKS` 只登记这一个精确组合，完整 trajectory 仅保存在
-本地 `reports/`。
+6,116 output tokens、5,724 microUSD。`QUALIFIED_BUG_TASKS` 只登记这一个 OpenCode Go 精确组合，完整
+trajectory 仅保存在本地 `reports/`。Alibaba Qwen3.6 Flash 复用同一 16 条冻结 Fixture 做了一次独立评测：
+schema、verdict、occurrence、responsibility、citation、scenario 分别为 0.875、0.875、0.8125、0.7273、
+0.875、0.875，只有 budget、usage 与 safety 为 1.000，因此正式 Gate 失败且不登记 Bug 资格。该失败报告
+冻结，不用于修改 Prompt 后重跑同一 held-out。
 2026-08-16 另以非冻结合成案件完成一次产品级开发验收：真实 NoneBot 插件装载、生产 OpenCode Go factory、
 本地 NoneBot 2.5.0 知识索引、Bug Agent、版本化技术签名与临时 SQLite ORM 在同一进程串联。完整证据案件
 得到 `bug / single_observed / target_plugin` 与 `contract_outcome` 签名；同一签名的两次 Report 归入同一个
@@ -86,7 +91,10 @@ service 只验证调用编排，不产生质量标签。
 | DeepSeek | Responses | `deepseek-v4-flash` 滚动别名；`reasoning=none`；`temperature=0`；Provider wire 不承诺 OpenAI strict 字段 | 仓库 `maintainer` group：`pydantic-ai-slim[openai]==2.28.0`；底层 OpenAI SDK 由该 Provider extra 声明；使用显式 `DeepSeekProvider` 和固定官方 endpoint；不提供插件 extra，适配器不进入 wheel | B1 Direct Request 原生 JSON Schema 与 B4 `function_call` 假 HTTP 合约通过；`store=false`、零 SDK retry、usage / request ID / cost 归一化已覆盖；B4 参数仍由 Pydantic 与领域层本地复核 | 有旧直接 SDK B1 工件；三次正式 B4 Gate 均失败关闭且无完整报告。run-3 partial 证明可恢复已知响应/费用与未知请求边界，但不提供 promotion decision | 未验证 | 此行 adapter 仅供维护者评测；产品可另通过 Pydantic AI 官方 Provider 标识运行，但不继承这三次 Gate 的质量结论 |
 | Anthropic | Messages | 部署者选择模型；profile 必须声明当前任务所需的结构化输出与 tools；离线合约使用 `claude-sonnet-4-5` | `anthropic` extra 补 Provider SDK | B1 native JSON Schema 与 B4 `tool_use` 假 HTTP 合约通过 | 未执行当前任务 held-out | 未验证 | 可通过 `anthropic-messages` 或 `pydantic-ai` backend 使用；离线模型名不构成质量承诺 |
 | Google | GenAI | 使用 Pydantic AI 官方 `google-gla:<model>` 等模型标识 | 部署者另行安装 Pydantic AI 所需 Google Provider 依赖 | 运行时由 ModelProfile 检查当前任务能力 | 未执行 | 未验证 | 无项目专用 adapter；通用 Pydantic AI transport 可运行，实际能力不足时任务失败关闭 |
-| Alibaba Cloud Model Studio | OpenAI-compatible Chat | 国际站与中国大陆都使用 Pydantic AI 官方 `alibaba:<model>`；国内部署另配置 `NBTRIAGE_MODEL_BASE_URL` | `openai` extra；Key 仅从 `ALIBABA_API_KEY` 或 `DASHSCOPE_API_KEY` 读取 | Pydantic AI `AlibabaProvider`、Qwen ModelProfile、Provider factory 与国内 endpoint 的本地构造合同通过 | 未执行当前任务 held-out | 未验证 | 地址覆盖不会改成通用 OpenAI Provider；连接 revision 隔离教学缓存与脱敏 trace。Coding Plan / Token Plan 专属 Key 不进入 Bot 后端 |
+| Alibaba Cloud Model Studio | OpenAI-compatible Chat | `qwen3.6-flash`；国内 endpoint；`alibaba-qwen3.6-non-thinking-v2`；禁止并行工具调用、`temperature=0`；300 秒 / 240 output token；中文 `support-semantic-v7-prompt-v5-zh` | `openai` extra；Key 仅从 `ALIBABA_API_KEY` 或 `DASHSCOPE_API_KEY` 读取 | Pydantic AI `AlibabaProvider`、Provider factory、国内 endpoint 指纹、Provider 设置 revision、ToolOutput、身份与按官方牌价计算的用量上界均通过 | 40 条独立 forward-heldout：schema / status 为 1.000，exact 为 0.975；81,626 input / 2,604 output tokens；成本上界 17,525 microUSD | 已验证 | `QUALIFIED_SEMANTIC_TASKS` 记录 `alibaba-qwen3.6-flash-cn-forward-heldout-40-20260817-v7-prompt-v5-zh-settings-v2`；只属于该 endpoint、设置、Prompt/schema 与 semantic task |
+| Alibaba Cloud Model Studio | OpenAI-compatible Chat | `qwen3.6-flash`；相同国内 endpoint 与 settings v2；120 秒 / 800 output token；中文 Bug Prompt v8 | 同上 | Agent 原生 Tools / ToolOutput、串行工具约束、身份和评测侧官方牌价成本上界可运行 | 16 条冻结 forward-heldout 的 verdict / occurrence 为 0.875 / 0.8125；schema / citation / scenario 为 0.875，responsibility 为 0.7273；成本上界 46,372 microUSD；Gate 失败 | 未验证 | 不进入 `QUALIFIED_BUG_TASKS`；Pydantic AI 价格表暂不能在请求中执行 Qwen 的美元 cost limit，评测器只在每案结束后按显式牌价审计 |
+| Alibaba Cloud Model Studio | OpenAI-compatible Chat | `qwen3.6-flash`；相同国内 endpoint 与 settings v2；300 秒 / 16384 output token；中文 capability Prompt `capability-teaching-annotation-v4-prompt-v35-zh` | 同上 | 复用 v8 的 20 条案例与 12 组冻结源码，只更新为当前 v35 Prompt / v12 预算合同；Provider 身份、endpoint、settings、结构化输出、源码提取和评测侧牌价审计可运行 | v9 正式 forward-heldout：schema / Evidence / 投影 / 安全 / 预算均为 0.900，语义 0.600，工具案例 0.000，源码提取 1.000；31 请求、173,838 input / 13,715 output token、成本上界 46,111 microUSD；Gate 失败 | 未验证 | 不进入 `QUALIFIED_CAPABILITY_ANNOTATION_TASKS`；主要失败为配置引用遗漏、参数化或 canonical usage 不符、旧注释成员未完整保持，以及 2 条在输出校正耗尽后失败。Handler 精确身份修复已进入本轮源码提取链，因此该失败不是旧的同名 Handler 串线结果 |
+| Alibaba Cloud Model Studio | OpenAI-compatible Chat | 其他 `alibaba:<model>`；国际站或自定义 endpoint | `openai` extra | 运行时由 Pydantic AI ModelProfile 与项目任务合同检查 | 未执行精确 held-out | 未验证 | 地址覆盖不会改成通用 OpenAI Provider；连接 revision 隔离教学缓存与脱敏 trace。Coding Plan / Token Plan 专属 Key 不进入 Bot 后端 |
 | 任意第三方 | Pydantic AI 已支持的 Provider | 使用官方 `provider:model` 标识；可选受限 Base URL | 部署者安装对应 Provider 依赖 | 运行时由 ModelProfile 与项目 schema / Evidence 校验；构造器不支持地址覆盖时失败 | 未执行 | 未验证 | 自定义连接默认未验证；项目不因协议兼容标签继承质量结论，也不自动路由或 fallback |
 | 任意第三方 | 只有 OpenAI-compatible URL、没有明确 Pydantic AI Provider | 任意 URL / 模型 | 不提供 | 未执行 | 未执行 | 不可用 | Base URL 不是 Provider 注册机制；必须显式选择已知 Provider，不能用协议兼容标签冒充能力与 ModelProfile |
 | OpenCode Go | Chat Completions | `deepseek-v4-flash`；non-thinking；required 单一 Pydantic AI Agent output tool；60 秒 / 240 token；中文 `support-semantic-v7-prompt-v5-zh` | 复用 `openai` extra：`pydantic-ai-slim[openai]==2.28.0`；不声明内容重复的 OpenCode Go extra | 假 HTTP 覆盖最小 payload、Agent `output_type` 生成的唯一 tool、零 retry、身份/usage/费用与本地双层校验 | 40 条独立 forward-heldout：schema / status / exact 均为 1.000；81,920 input / 3,736 output tokens；1,667 microUSD | 已验证 | `QUALIFIED_SEMANTIC_TASKS` 记录 `opencode-go-forward-heldout-40-20260815-v7-prompt-v5-zh-e` 精确组合 |
@@ -194,5 +202,7 @@ DeepSeek 的 `deepseek-v4-flash` 不是固定 snapshot。后续每份真实报�
 - [ADR-0012：让 Pydantic AI Deferred Tools 位于领域 Agent runtime 之后](../adr/0012-use-pydantic-ai-deferred-tools-behind-domain-runtime.md)
 - [有界 Agent 单步与恢复流程](flows/bounded-agent-step.md)
 - [OpenCode Go](https://opencode.ai/docs/go/)
+- [Alibaba Qwen3.6 Flash 模型能力与价格](https://help.aliyun.com/zh/model-studio/qwen3-6-flash)
+- [Alibaba OpenAI-compatible Chat 参数](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)
 - [DeepSeek Responses API](https://api-docs.deepseek.com/api/create-response)
 - [DeepSeek Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing)

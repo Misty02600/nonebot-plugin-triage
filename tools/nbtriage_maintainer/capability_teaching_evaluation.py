@@ -5,6 +5,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
+from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -60,6 +61,12 @@ CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SET_ID = (
 )
 CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SHA256 = (
     "9b4a6a21aed98efcf12a5094defe18aed4ec1f713c32b350464997a87d3aabf2"
+)
+CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID = (
+    "capability-teaching-v9-forward-heldout-20-20260817-a-v35-zh"
+)
+CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256 = (
+    "a1efdc82b9a4449df901ac35326b71f40966fe0f0fd3a07e2a27ede9cc38628c"
 )
 CAPABILITY_TEACHING_CONSUMED_V1_FIXTURE_SHA256 = (
     "783f8daabcaf5587f942a0463ce9237726d77c875344760354ce52d08c5df76f"
@@ -154,6 +161,17 @@ async def evaluate_capability_teaching(
     provider: str,
     model: str,
     declared_budget_usd: float,
+    api_family: str = "chat-completions",
+    connection_revision: str = "provider-default",
+    settings_revision: str = "provider-default",
+    timeout_seconds: float = 60.0,
+    max_output_tokens: int = 4_096,
+    evaluation_id: str = CAPABILITY_TEACHING_EVALUATION_ID,
+    evaluation_revision: str = CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION,
+    official_fixture_set_id: str = CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SET_ID,
+    official_fixture_sha256: str = CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SHA256,
+    usage_cost_usd: Callable[[Any], Decimal | None] | None = None,
+    pricing_profile: dict[str, str] | None = None,
     partial_report_path: Path | None = None,
     selected_case_ids: frozenset[str] | None = None,
 ) -> dict[str, Any]:
@@ -183,6 +201,23 @@ async def evaluate_capability_teaching(
             )
     if declared_budget_usd <= 0:
         raise CapabilityTeachingEvaluationError("declared budget must be positive")
+    if timeout_seconds <= 0 or max_output_tokens < 1:
+        raise CapabilityTeachingEvaluationError("model runtime limits must be positive")
+    if not all(
+        value.strip()
+        for value in (
+            provider,
+            model,
+            api_family,
+            connection_revision,
+            settings_revision,
+            evaluation_id,
+            evaluation_revision,
+            official_fixture_set_id,
+            official_fixture_sha256,
+        )
+    ):
+        raise CapabilityTeachingEvaluationError("evaluation target identity must not be empty")
 
     prepared_cases = tuple(_prepare_case(fixtures_path, raw_case) for raw_case in cases)
     rows: list[dict[str, Any]] = []
@@ -213,6 +248,8 @@ async def evaluate_capability_teaching(
             fixture_sha256=fixture_sha256,
             rows=rows,
             total_cost_microusd=0,
+            evaluation_id=evaluation_id,
+            evaluation_revision=evaluation_revision,
         )
 
     for prepared in prepared_cases:
@@ -246,7 +283,7 @@ async def evaluate_capability_teaching(
             annotation = project_capability_annotation(
                 request,
                 output,
-                analysis_revision=CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION,
+                analysis_revision=evaluation_revision,
             )
             projection_valid += 1
         except Exception as error:
@@ -301,13 +338,21 @@ async def evaluate_capability_teaching(
             provider_identity_valid = False
         else:
             identity = provider_response_identity(response)
-            cost_microusd = normalized_opencode_go_cost_microusd(
-                usage,
-                provider=provider,
-                requested_model=model,
-                returned_provider=identity.provider_name,
-                returned_model=identity.model_name,
-            )
+            if usage_cost_usd is None:
+                cost_microusd = normalized_opencode_go_cost_microusd(
+                    usage,
+                    provider=provider,
+                    requested_model=model,
+                    returned_provider=identity.provider_name,
+                    returned_model=identity.model_name,
+                )
+            else:
+                cost_usd = usage_cost_usd(usage)
+                cost_microusd = (
+                    int((cost_usd * Decimal(1_000_000)).to_integral_value(rounding=ROUND_CEILING))
+                    if cost_usd is not None
+                    else None
+                )
             requests = usage.requests
             input_tokens = usage.input_tokens
             output_tokens = usage.output_tokens
@@ -361,6 +406,8 @@ async def evaluate_capability_teaching(
                 fixture_sha256=fixture_sha256,
                 rows=rows,
                 total_cost_microusd=total_cost_microusd,
+                evaluation_id=evaluation_id,
+                evaluation_revision=evaluation_revision,
             )
         if total_cost_microusd > round(declared_budget_usd * 1_000_000):
             raise CapabilityTeachingEvaluationError("declared budget exceeded")
@@ -371,12 +418,13 @@ async def evaluate_capability_teaching(
     qualification_checks = {
         "full_fixture_run": not diagnostic_mode,
         "held_out_split": payload.get("split") == "held_out",
-        "fixture_set_id": (
-            payload.get("fixture_set_id") == CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SET_ID
-        ),
-        "fixture_sha256": fixture_sha256 == CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SHA256,
-        "provider": provider == _QUALIFIED_PROVIDER,
-        "model": model == _QUALIFIED_MODEL,
+        "fixture_set_id": (payload.get("fixture_set_id") == official_fixture_set_id),
+        "fixture_sha256": fixture_sha256 == official_fixture_sha256,
+        "target_provider": bool(provider.strip()),
+        "target_model": bool(model.strip()),
+        "target_api_family": bool(api_family.strip()),
+        "target_connection_revision": bool(connection_revision.strip()),
+        "target_settings_revision": bool(settings_revision.strip()),
         "contract_exact": declared_contract == expected_contract,
         "required_coverage": _required_coverage().issubset(observed_coverage),
     }
@@ -409,13 +457,18 @@ async def evaluate_capability_teaching(
     report = {
         "schema_version": 1,
         "mode": "diagnostic" if diagnostic_mode else "qualification",
-        "evaluation_id": CAPABILITY_TEACHING_EVALUATION_ID,
-        "evaluation_revision": CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION,
+        "evaluation_id": evaluation_id,
+        "evaluation_revision": evaluation_revision,
         "fixture_set_id": payload["fixture_set_id"],
         "fixture_sha256": fixture_sha256,
         "split": payload["split"],
         "provider": provider,
         "model": model,
+        "api_family": api_family,
+        "connection_revision": connection_revision,
+        "settings_revision": settings_revision,
+        "timeout_seconds": timeout_seconds,
+        "max_output_tokens": max_output_tokens,
         "task": CAPABILITY_ANNOTATION_TASK,
         "capability_schema_version": CAPABILITY_ANNOTATION_SCHEMA_VERSION,
         "prompt_id": CAPABILITY_ANNOTATION_PROMPT_ID,
@@ -455,6 +508,7 @@ async def evaluate_capability_teaching(
             "required_tool_case_compliance_rate": 1.0,
             "required_source_extraction_valid_rate": 1.0,
         },
+        "pricing_profile": pricing_profile,
         "rows": rows,
     }
     if partial_report_path is not None:
@@ -464,6 +518,8 @@ async def evaluate_capability_teaching(
             fixture_sha256=fixture_sha256,
             rows=rows,
             total_cost_microusd=total_cost_microusd,
+            evaluation_id=evaluation_id,
+            evaluation_revision=evaluation_revision,
         )
     return report
 
@@ -1227,11 +1283,13 @@ def _write_partial_report(
     fixture_sha256: str,
     rows: list[dict[str, Any]],
     total_cost_microusd: int,
+    evaluation_id: str = CAPABILITY_TEACHING_EVALUATION_ID,
+    evaluation_revision: str = CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION,
 ) -> None:
     payload = {
         "schema_version": 1,
-        "evaluation_id": CAPABILITY_TEACHING_EVALUATION_ID,
-        "evaluation_revision": CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION,
+        "evaluation_id": evaluation_id,
+        "evaluation_revision": evaluation_revision,
         "fixture_sha256": fixture_sha256,
         "status": status,
         "completed_case_count": len(rows),
@@ -1255,6 +1313,8 @@ def _write_partial_report(
 __all__ = (
     "CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION",
     "CAPABILITY_TEACHING_CONSUMED_V1_FIXTURE_SHA256",
+    "CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID",
+    "CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256",
     "CAPABILITY_TEACHING_EVALUATION_ID",
     "CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SET_ID",
     "CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SHA256",
