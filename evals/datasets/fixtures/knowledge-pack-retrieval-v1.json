@@ -28,6 +28,20 @@
       "component": "nonebot2",
       "version": "2.5.0",
       "expected_locators": ["api/matcher.md#nonebot.matcher"]
+    },
+    {
+      "case_id": "nonebot-alconna-match-query-body",
+      "query": "参数是否存在 all_matched_args 特定选项子命令",
+      "component": "nonebot2",
+      "version": "2.5.0",
+      "expected_locators": ["best-practice/alconna/matcher.mdx#`on_alconna` 响应器 > 依赖注入 > 注入模型"]
+    },
+    {
+      "case_id": "nonebot-alconna-got-path-body",
+      "query": "获取最后一个消息段 转为 path 对应类型 只有 text 或 at 进入处理函数",
+      "component": "nonebot2",
+      "version": "2.5.0",
+      "expected_locators": ["best-practice/alconna/matcher.mdx#`on_alconna` 响应器 > 条件控制 > `got_path` 方法"]
     }
   ]
 }

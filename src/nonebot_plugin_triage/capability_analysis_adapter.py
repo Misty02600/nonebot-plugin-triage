@@ -5,6 +5,7 @@ import hashlib
 import json
 import keyword
 import sys
+import textwrap
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -15,7 +16,11 @@ from nbtriage.capabilities import CapabilityRecord, ClaimBasis, Disclosure
 from nbtriage.capability_analysis import (
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
+    CapabilityGateCandidate,
+    CapabilityGateKind,
     CapabilityIdentity,
+    CapabilityInvocationMode,
+    CapabilityInvocationTarget,
     CapabilitySourceContext,
     ConfigProjection,
     UnknownConfigReference,
@@ -23,6 +28,8 @@ from nbtriage.capability_analysis import (
 from nbtriage.capability_source_evidence import (
     CapabilitySourceEvidenceError,
     CapabilitySourceEvidencePack,
+    RegistrationAnchor,
+    StructuralSymbolKind,
     build_capability_source_evidence,
 )
 from nbtriage.framework_semantics import (
@@ -62,7 +69,9 @@ class AnalysisSourcePolicy(StrEnum):
 class _FunctionReference:
     module: str
     function: str
+    qualname: str | None
     line: int | None
+    code_firstlineno: int | None
     source_revision: str
     closure_freevars: tuple[str, ...]
 
@@ -93,7 +102,34 @@ class _ParsedModule:
     module: ModuleType
     source: str
     revision: str
+    tree: ast.Module
     functions: Mapping[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]]
+
+
+@dataclass(frozen=True)
+class ParameterizedHandlerCodeIdentity:
+    """标识一组 Runtime Matcher 共同执行的同一段闭包 Handler 代码。"""
+
+    module_root: str
+    module: str
+    function: str
+    qualname: str
+    firstlineno: int
+    source_revision: str
+
+    @property
+    def analysis_unit_id(self) -> str:
+        payload = "\0".join(
+            (
+                self.module_root,
+                self.module,
+                self.qualname,
+                str(self.firstlineno),
+                self.source_revision,
+            )
+        )
+        digest = hashlib.sha256(payload.encode("utf-8", errors="surrogatepass")).hexdigest()
+        return f"family:{digest}"
 
 
 def build_capability_analysis_request(
@@ -151,9 +187,15 @@ def build_capability_analysis_request(
         raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
     targets = _analysis_targets(handler_references, config_references)
     parsed_modules: dict[str, _ParsedModule] = {}
+    invocations = _invocation_targets(record, source_pack, handler_references)
+    structure_evidence = _source_structure_evidence(
+        record,
+        source_pack,
+        handler_references,
+    )
     evidence_units: list[CapabilityEvidenceUnit] = [
         _runtime_fact_evidence(record),
-        _source_structure_evidence(record, source_pack, handler_references),
+        structure_evidence,
     ]
     accepted_targets: set[tuple[str, str]] = set()
     total_chars = sum(len(item.content) for item in evidence_units)
@@ -216,7 +258,471 @@ def build_capability_analysis_request(
         evidence_units=tuple(evidence_units),
         config_projections=projections,
         unknown_config=unknown,
+        invocations=invocations,
+        gate_candidates=_gate_candidates(
+            record,
+            source_pack,
+            handler_references,
+            invocations,
+            structure_evidence,
+        ),
     )
+
+
+def parameterized_handler_code_identity(
+    record: CapabilityRecord,
+) -> ParameterizedHandlerCodeIdentity | None:
+    """返回闭包 Matcher 唯一的 Runtime Handler 代码身份。"""
+    if not isinstance(record, CapabilityRecord):
+        raise CapabilityAnalysisAdapterError("record must be a CapabilityRecord")
+    references = _handler_references(record)
+    parameterized = tuple(item for item in references if item.closure_freevars)
+    if not parameterized:
+        return None
+    if len(references) != 1 or len(parameterized) != 1:
+        raise CapabilityAnalysisAdapterError(
+            "parameterized matcher must have exactly one runtime handler"
+        )
+    module_root = _plugin_module_root(record)
+    reference = parameterized[0]
+    if reference.qualname is None or reference.code_firstlineno is None:
+        raise CapabilityAnalysisAdapterError("parameterized handler code identity is unavailable")
+    return ParameterizedHandlerCodeIdentity(
+        module_root=module_root,
+        module=reference.module,
+        function=reference.function,
+        qualname=reference.qualname,
+        firstlineno=reference.code_firstlineno,
+        source_revision=reference.source_revision,
+    )
+
+
+def build_parameterized_family_analysis_request(
+    records: tuple[CapabilityRecord, ...],
+    policy: ConfigValuePolicy,
+    *,
+    source_pack_cache: dict[str, CapabilitySourceEvidencePack] | None = None,
+    permission_semantic_profiles: tuple[PermissionSemanticProfile, ...] | None = None,
+) -> CapabilityAnalysisRequest:
+    """把执行同一段闭包 Handler 代码的公开 Runtime Matcher 合并分析。"""
+    if not records:
+        raise CapabilityAnalysisAdapterError("family records must not be empty")
+    if not isinstance(policy, ConfigValuePolicy):
+        raise CapabilityAnalysisAdapterError("policy must be a ConfigValuePolicy")
+    identities = {parameterized_handler_code_identity(record) for record in records}
+    if None in identities or len(identities) != 1:
+        raise CapabilityAnalysisAdapterError(
+            "family records do not share one handler code identity"
+        )
+    identity = next(iter(identities))
+    assert identity is not None
+    representative = min(records, key=lambda item: item.capability_id)
+    if any(record.owner != representative.owner for record in records):
+        raise CapabilityAnalysisAdapterError("family records have different owners")
+
+    source_root = _plugin_source_root(identity.module_root)
+    source_pack = _source_evidence_pack(
+        identity.module_root,
+        source_root,
+        cache=source_pack_cache,
+        permission_semantic_profiles=(
+            _permission_semantic_profiles()
+            if permission_semantic_profiles is None
+            else permission_semantic_profiles
+        ),
+    )
+    if not _source_inventory_complete(source_pack.partial_errors):
+        raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
+    parsed = _load_parsed_module(identity.module, identity.module_root, source_root)
+    if parsed is None or parsed.revision != identity.source_revision:
+        raise CapabilityAnalysisAdapterError("parameterized handler source is unavailable")
+    handler = _exact_runtime_function(
+        parsed.tree,
+        function_name=identity.function,
+        qualname=identity.qualname,
+        firstlineno=identity.firstlineno,
+    )
+    if handler is None:
+        raise CapabilityAnalysisAdapterError("parameterized handler source is ambiguous")
+    content = _function_source(parsed.source, handler)
+    if content is None or len(content) > _MAX_FUNCTION_CHARS:
+        raise CapabilityAnalysisAdapterError("parameterized handler source is unavailable")
+
+    evidence_units = [
+        CapabilityEvidenceUnit(
+            evidence_id=_evidence_id(
+                identity.analysis_unit_id,
+                identity.module,
+                identity.qualname,
+            ),
+            source_kind="python_function",
+            content=content,
+            revision=identity.source_revision,
+            locator=_module_locator(
+                identity.module,
+                identity.qualname,
+                identity.firstlineno,
+            ),
+        )
+    ]
+    declared = _declared_teaching_evidence(representative, identity.analysis_unit_id)
+    if declared is not None:
+        evidence_units.insert(0, declared)
+
+    config_references = tuple(
+        {
+            (item.module, item.binding, item.field, item.key): item
+            for record in records
+            for item in _config_references(record)
+        }.values()
+    )
+    parsed_modules: dict[str, _ParsedModule] = {identity.module: parsed}
+    accepted_targets: set[tuple[str, str]] = set()
+    for reference in config_references:
+        target_module = parsed_modules.get(reference.module)
+        if target_module is None:
+            target_module = _load_parsed_module(
+                reference.module,
+                identity.module_root,
+                source_root,
+            )
+            if target_module is None:
+                continue
+            parsed_modules[reference.module] = target_module
+        if target_module.revision == reference.source_revision:
+            accepted_targets.add((reference.module, reference.function))
+    projections, unknown = _project_referenced_config(
+        config_references,
+        accepted_targets=accepted_targets,
+        parsed_modules=parsed_modules,
+        module_root=identity.module_root,
+        policy=policy,
+    )
+    return CapabilityAnalysisRequest(
+        capability=CapabilityIdentity(
+            capability_id=identity.analysis_unit_id,
+            owner=representative.owner,
+            kind="command_family",
+        ),
+        source_context=CapabilitySourceContext(
+            module_name=identity.module_root,
+            plugin_source_revision=source_pack.source_revision,
+        ),
+        evidence_units=tuple(evidence_units),
+        config_projections=projections,
+        unknown_config=unknown,
+        invocations=(
+            CapabilityInvocationTarget(
+                entry_id="family",
+                mode=CapabilityInvocationMode.COMPLETE,
+            ),
+        ),
+    )
+
+
+def _invocation_targets(
+    record: CapabilityRecord,
+    source_pack: CapabilitySourceEvidencePack,
+    handlers: tuple[_FunctionReference, ...],
+) -> tuple[CapabilityInvocationTarget, ...]:
+    headers = tuple(
+        value
+        for field in ("invocation.header", "command.header")
+        for value in _claim_values(record, field, evidence_kind="matcher_source")
+        if isinstance(value, str) and value.strip()
+    )
+    if len(set(headers)) != 1:
+        raise CapabilityAnalysisAdapterError(
+            "capability has no unique deterministic public invocation"
+        )
+    header = headers[0]
+    aliases = tuple(
+        sorted(
+            {
+                value
+                for raw in _claim_values(
+                    record,
+                    "command.aliases",
+                    evidence_kind="matcher_source",
+                )
+                for value in (raw if isinstance(raw, list) else ())
+                if isinstance(value, str) and value.strip() and value != header
+            },
+            key=lambda item: (item.casefold(), item),
+        )
+    )
+    selected_registrations = _selected_registrations(record, source_pack, handlers)
+    requires_mention = _requires_mention(source_pack, selected_registrations)
+    arguments = tuple(
+        value
+        for value in _claim_values(record, "command.arguments", evidence_kind="matcher_source")
+        if isinstance(value, list)
+    )
+    if len(arguments) > 1:
+        raise CapabilityAnalysisAdapterError("capability has conflicting command arguments")
+    components = tuple(
+        value
+        for value in _claim_values(record, "command.components", evidence_kind="matcher_source")
+        if isinstance(value, list)
+    )
+    if len(components) > 1:
+        raise CapabilityAnalysisAdapterError("capability has conflicting command components")
+    command_arguments = arguments[0] if arguments else []
+    command_components = components[0] if components else []
+    subcommands = _subcommand_leaves(command_components)
+    if not subcommands:
+        canonical = _structured_usage(
+            header,
+            command_arguments,
+            _option_components(command_components),
+        )
+        if canonical is not None and requires_mention:
+            canonical = f"@bot {canonical}"
+        return (
+            CapabilityInvocationTarget(
+                entry_id="root",
+                mode=CapabilityInvocationMode.ANCHORED,
+                command_body=header,
+                canonical_usages=(canonical,) if canonical is not None else (),
+                aliases=aliases,
+                requires_mention=requires_mention,
+            ),
+        )
+    return tuple(
+        CapabilityInvocationTarget(
+            entry_id=f"subcommand:{hashlib.sha256(' '.join(path).encode('utf-8')).hexdigest()[:16]}",
+            mode=CapabilityInvocationMode.ANCHORED,
+            command_body=" ".join((header, *path)),
+            canonical_usages=((f"@bot {canonical}",) if requires_mention else (canonical,))
+            if canonical is not None
+            else (),
+            aliases=tuple(" ".join((alias, *path)) for alias in aliases),
+            requires_mention=requires_mention,
+        )
+        for path, component in subcommands
+        for canonical in (
+            _structured_usage(
+                " ".join((header, *path)),
+                component.get("arguments", []),
+                _option_components(component.get("components", [])),
+            ),
+        )
+    )
+
+
+def _requires_mention(
+    pack: CapabilitySourceEvidencePack,
+    registrations: tuple[RegistrationAnchor, ...],
+) -> bool:
+    owners = {item.matcher_name or f"{item.factory}@{item.source.line}" for item in registrations}
+    return any(
+        item.kind is StructuralSymbolKind.RULE
+        and item.owner in owners
+        and item.symbol.rpartition(".")[2] == "to_me"
+        for item in pack.symbols
+    )
+
+
+def _gate_candidates(
+    record: CapabilityRecord,
+    pack: CapabilitySourceEvidencePack,
+    handlers: tuple[_FunctionReference, ...],
+    invocations: tuple[CapabilityInvocationTarget, ...],
+    structure_evidence: CapabilityEvidenceUnit,
+) -> tuple[CapabilityGateCandidate, ...]:
+    registrations = _selected_registrations(record, pack, handlers)
+    owners = {item.matcher_name or f"{item.factory}@{item.source.line}" for item in registrations}
+    known_permissions = {
+        (item.owner, item.symbol) for item in pack.permission_constraints if item.owner in owners
+    }
+    selected_symbols = tuple(item for item in pack.symbols if item.owner in owners)
+    maximal_symbols = {
+        (item.owner, item.kind, item.symbol)
+        for item in selected_symbols
+        if not any(
+            other.owner == item.owner
+            and other.kind is item.kind
+            and other.symbol.startswith(f"{item.symbol}.")
+            for other in selected_symbols
+        )
+    }
+    entry_ids = tuple(item.entry_id for item in invocations)
+    candidates: list[CapabilityGateCandidate] = []
+    for owner, kind, symbol in sorted(
+        maximal_symbols,
+        key=lambda item: (item[0], item[1].value, item[2]),
+    ):
+        if kind is StructuralSymbolKind.PERMISSION and (owner, symbol) in known_permissions:
+            continue
+        if (
+            kind is StructuralSymbolKind.RULE
+            and symbol.rpartition(".")[2] == "to_me"
+            and all(item.requires_mention for item in invocations)
+        ):
+            continue
+        gate_kind = (
+            CapabilityGateKind.PERMISSION
+            if kind is StructuralSymbolKind.PERMISSION
+            else CapabilityGateKind.RULE
+        )
+        candidates.append(
+            _gate_candidate(
+                gate_kind,
+                owner,
+                symbol,
+                entry_ids,
+                structure_evidence.evidence_id,
+            )
+        )
+    for registration in registrations:
+        owner = registration.matcher_name or f"{registration.factory}@{registration.source.line}"
+        for field_name, gate_kind in (
+            ("permission", CapabilityGateKind.PERMISSION),
+            ("rule", CapabilityGateKind.RULE),
+        ):
+            if field_name not in registration.opaque_fields:
+                continue
+            candidates.append(
+                _gate_candidate(
+                    gate_kind,
+                    owner,
+                    f"opaque:{field_name}",
+                    entry_ids,
+                    structure_evidence.evidence_id,
+                )
+            )
+    unique = {item.candidate_id: item for item in candidates}
+    return tuple(unique[key] for key in sorted(unique))
+
+
+def _gate_candidate(
+    kind: CapabilityGateKind,
+    owner: str,
+    symbol: str,
+    entry_ids: tuple[str, ...],
+    evidence_id: str,
+) -> CapabilityGateCandidate:
+    digest = hashlib.sha256(
+        json.dumps(
+            [kind.value, owner, symbol],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    return CapabilityGateCandidate(
+        candidate_id=f"gate:{digest}",
+        kind=kind,
+        entry_ids=entry_ids,
+        evidence_ids=(evidence_id,),
+    )
+
+
+def _subcommand_leaves(
+    components: list[object] | tuple[object, ...],
+    prefix: tuple[str, ...] = (),
+) -> tuple[tuple[tuple[str, ...], Mapping[str, object]], ...]:
+    leaves: list[tuple[tuple[str, ...], Mapping[str, object]]] = []
+    for component in components:
+        if not isinstance(component, Mapping) or component.get("kind") != "subcommand":
+            continue
+        name = component.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        path = (*prefix, name)
+        nested = component.get("components")
+        nested_paths = _subcommand_leaves(nested, path) if isinstance(nested, (list, tuple)) else ()
+        if nested_paths:
+            leaves.extend(nested_paths)
+        else:
+            leaves.append((path, component))
+    return tuple(leaves)
+
+
+def _option_components(value: object) -> list[object]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [item for item in value if isinstance(item, Mapping) and item.get("kind") == "option"]
+
+
+def _structured_usage(
+    command_body: str,
+    arguments: object,
+    options: list[object],
+) -> str | None:
+    """把 Runtime parser 已确认的结构压成一条稳定帮助用法。"""
+    if not isinstance(arguments, (list, tuple)):
+        return None
+    rendered_arguments = _render_arguments(arguments)
+    if rendered_arguments is None:
+        return None
+    rendered_options = _render_options(options)
+    if rendered_options is None:
+        return None
+    if not rendered_arguments and not rendered_options:
+        return None
+    return " ".join((command_body, *rendered_arguments, *rendered_options))
+
+
+def _render_arguments(
+    arguments: list[object] | tuple[object, ...],
+) -> tuple[str, ...] | None:
+    result: list[str] = []
+    for argument in arguments:
+        if not isinstance(argument, Mapping):
+            return None
+        if argument.get("hidden") is True:
+            continue
+        name = _public_slot_name(argument.get("name"))
+        required = argument.get("required")
+        variadic = argument.get("variadic")
+        if name is None or not isinstance(required, bool) or not isinstance(variadic, bool):
+            return None
+        suffix = "..." if variadic else ""
+        result.append(f"<{name}{suffix}>" if required else f"[{name}{suffix}]")
+    return tuple(result)
+
+
+def _render_options(options: list[object]) -> tuple[str, ...] | None:
+    if len(options) > 4:
+        return ("[可选参数]",)
+    result: list[str] = []
+    for option in options:
+        if not isinstance(option, Mapping):
+            return None
+        name = option.get("name")
+        aliases = option.get("aliases", [])
+        if not isinstance(name, str) or not name.strip() or not isinstance(aliases, (list, tuple)):
+            return None
+        names = tuple(
+            dict.fromkeys(
+                item.strip() for item in (name, *aliases) if isinstance(item, str) and item.strip()
+            )
+        )
+        option_arguments = option.get("arguments", [])
+        if not isinstance(option_arguments, (list, tuple)):
+            return None
+        rendered_arguments = _render_arguments(option_arguments)
+        if rendered_arguments is None:
+            return None
+        if len(names) > 4:
+            option_head = "选项"
+        elif len(names) == 1:
+            option_head = names[0]
+        elif rendered_arguments:
+            option_head = f"({'|'.join(names)})"
+        else:
+            option_head = "|".join(names)
+        result.append(f"[{' '.join((option_head, *rendered_arguments))}]")
+    return tuple(result)
+
+
+def _public_slot_name(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.split()).strip("<>{}[]()")
+    if not normalized or len(normalized) > 40 or any(char in normalized for char in "<>[]{}"):
+        return None
+    return normalized
 
 
 def _source_evidence_pack(
@@ -247,11 +753,13 @@ def _permission_semantic_profiles() -> tuple[PermissionSemanticProfile, ...]:
 
 def _runtime_fact_evidence(record: CapabilityRecord) -> CapabilityEvidenceUnit:
     allowed_fields = {
+        "invocation.header",
         "command.path",
         "command.header",
         "command.literals",
         "command.aliases",
         "command.prefixes",
+        "command.separators",
         "command.force_whitespace",
         "command.enabled",
         "command.arguments",
@@ -314,24 +822,8 @@ def _source_structure_evidence(
     handlers: tuple[_FunctionReference, ...],
 ) -> CapabilityEvidenceUnit:
     handler_names = {item.function for item in handlers}
-    observed_entries = {
-        value
-        for field in ("command.header", "command.path", "command.literals")
-        for raw in _claim_values(record, field, evidence_kind="matcher_source")
-        for value in ((raw,) if isinstance(raw, str) else raw if isinstance(raw, list) else ())
-        if isinstance(value, str)
-    }
+    selected_registrations = _selected_registrations(record, pack, handlers)
     selected_handlers = tuple(item for item in pack.handlers if item.name in handler_names)
-    matcher_names = {name for item in selected_handlers for name in item.matcher_names}
-    selected_registrations = tuple(
-        item
-        for item in pack.registrations
-        if (
-            set(item.handlers).intersection(handler_names)
-            or (item.matcher_name is not None and item.matcher_name in matcher_names)
-        )
-        and (not item.entries or bool(set(item.entries).intersection(observed_entries)))
-    )
     related_functions = handler_names.union(
         helper for item in selected_handlers for helper in item.direct_helpers
     )
@@ -363,6 +855,49 @@ def _source_structure_evidence(
         source_kind="matcher_source_structure",
         content=content,
         revision=f"sha256:{pack.generation}",
+    )
+
+
+def _selected_registrations(
+    record: CapabilityRecord,
+    pack: CapabilitySourceEvidencePack,
+    handlers: tuple[_FunctionReference, ...],
+) -> tuple[RegistrationAnchor, ...]:
+    handler_names = {item.function for item in handlers}
+    observed_entries = {
+        value
+        for field in (
+            "invocation.header",
+            "command.header",
+            "command.path",
+            "command.literals",
+            "trigger.entries",
+        )
+        for raw in _claim_values(record, field, evidence_kind="matcher_source")
+        for value in ((raw,) if isinstance(raw, str) else raw if isinstance(raw, list) else ())
+        if isinstance(value, str)
+    }
+    separators = {
+        value
+        for raw in _claim_values(record, "command.separators", evidence_kind="matcher_source")
+        for value in (raw if isinstance(raw, list) else ())
+        if isinstance(value, str) and value
+    }
+    observed_entries.update(
+        value.replace(separator, " ")
+        for value in tuple(observed_entries)
+        for separator in separators
+    )
+    selected_handlers = tuple(item for item in pack.handlers if item.name in handler_names)
+    matcher_names = {name for item in selected_handlers for name in item.matcher_names}
+    return tuple(
+        item
+        for item in pack.registrations
+        if (
+            set(item.handlers).intersection(handler_names)
+            or (item.matcher_name is not None and item.matcher_name in matcher_names)
+        )
+        and (not item.entries or bool(set(item.entries).intersection(observed_entries)))
     )
 
 
@@ -450,6 +985,12 @@ def _valid_module_name(value: str) -> bool:
     )
 
 
+def _valid_qualname(value: object) -> bool:
+    if not isinstance(value, str) or not value or len(value) > 512:
+        return False
+    return all(part == "<locals>" or part.isidentifier() for part in value.split("."))
+
+
 def _handler_references(record: CapabilityRecord) -> tuple[_FunctionReference, ...]:
     references: set[_FunctionReference] = set()
     for value in _claim_values(record, "handler.references", evidence_kind="matcher_source"):
@@ -460,7 +1001,9 @@ def _handler_references(record: CapabilityRecord) -> tuple[_FunctionReference, .
                 continue
             module = item.get("module")
             function = item.get("function")
+            qualname = item.get("qualname")
             line = item.get("line")
+            code_firstlineno = item.get("code_firstlineno")
             source_revision = item.get("source_revision")
             closure_freevars = item.get("closure_freevars", [])
             if (
@@ -482,7 +1025,13 @@ def _handler_references(record: CapabilityRecord) -> tuple[_FunctionReference, .
                 _FunctionReference(
                     module=module,
                     function=function,
+                    qualname=qualname if _valid_qualname(qualname) else None,
                     line=line if isinstance(line, int) and line > 0 else None,
+                    code_firstlineno=(
+                        code_firstlineno
+                        if isinstance(code_firstlineno, int) and code_firstlineno > 0
+                        else None
+                    ),
                     source_revision=source_revision,
                     closure_freevars=tuple(sorted(set(closure_freevars))),
                 )
@@ -576,7 +1125,9 @@ def _analysis_targets(
             _FunctionReference(
                 item.module,
                 item.function,
+                None,
                 item.line,
+                None,
                 item.source_revision,
                 (),
             ),
@@ -633,6 +1184,7 @@ def _load_parsed_module(
         module=module,
         source=source,
         revision=f"sha256:{digest}",
+        tree=tree,
         functions={name: tuple(nodes) for name, nodes in functions.items()},
     )
 
@@ -680,6 +1232,36 @@ def _select_function(
     return matches[0] if len(matches) == 1 else None
 
 
+def _exact_runtime_function(
+    tree: ast.Module,
+    *,
+    function_name: str,
+    qualname: str,
+    firstlineno: int,
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    matches: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
+        next_scope = scope
+        if isinstance(node, ast.ClassDef):
+            next_scope = (*scope, node.name)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            node_qualname = ".".join((*scope, node.name))
+            source_firstlineno = min((node.lineno, *(item.lineno for item in node.decorator_list)))
+            if (
+                node.name == function_name
+                and node_qualname == qualname
+                and source_firstlineno == firstlineno
+            ):
+                matches.append(node)
+            next_scope = (*scope, node.name, "<locals>")
+        for child in ast.iter_child_nodes(node):
+            visit(child, next_scope)
+
+    visit(tree, ())
+    return matches[0] if len(matches) == 1 else None
+
+
 def _function_source(
     source: str,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
@@ -690,8 +1272,34 @@ def _function_source(
     lines = source.splitlines(keepends=True)
     if end_line > len(lines):
         return None
-    content = "".join(lines[function.lineno - 1 : end_line]).rstrip()
+    content = textwrap.dedent("".join(lines[function.lineno - 1 : end_line])).rstrip()
     return content or None
+
+
+def _declared_teaching_evidence(
+    record: CapabilityRecord,
+    analysis_unit_id: str,
+) -> CapabilityEvidenceUnit | None:
+    payload: dict[str, object] = {}
+    for claim in record.claims:
+        if claim.field not in {"description", "usage", "example", "plugin.metadata"}:
+            continue
+        if claim.basis not in {ClaimBasis.OBSERVED, ClaimBasis.DECLARED}:
+            continue
+        payload[claim.field] = claim.value
+    if not payload:
+        return None
+    content = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(content) > 7_600:
+        content = content[:7_600]
+    digest = hashlib.sha256(content.encode("utf-8", errors="surrogatepass")).hexdigest()
+    return CapabilityEvidenceUnit(
+        evidence_id=_evidence_id(analysis_unit_id, "declared", "plugin_metadata"),
+        source_kind="declared_teaching",
+        content=content,
+        revision=f"sha256:{digest}",
+        locator=None,
+    )
 
 
 def _project_referenced_config(
@@ -780,5 +1388,8 @@ def _evidence_id(capability_id: str, module: str, function: str) -> str:
 __all__ = (
     "AnalysisSourcePolicy",
     "CapabilityAnalysisAdapterError",
+    "ParameterizedHandlerCodeIdentity",
     "build_capability_analysis_request",
+    "build_parameterized_family_analysis_request",
+    "parameterized_handler_code_identity",
 )

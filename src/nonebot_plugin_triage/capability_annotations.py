@@ -22,6 +22,7 @@ from nbtriage.capabilities import (
 from nbtriage.capability_analysis import (
     CapabilityAnalysisBaseline,
     CapabilityAnalysisClient,
+    CapabilityAnalysisEntryBaseline,
     CapabilityAnalysisRequest,
     CapabilityAnalysisService,
 )
@@ -36,7 +37,10 @@ from nbtriage.capability_annotations import (
 from nbtriage.capability_source_evidence import CapabilitySourceEvidencePack
 from nonebot_plugin_triage.capability_analysis_adapter import (
     CapabilityAnalysisAdapterError,
+    ParameterizedHandlerCodeIdentity,
     build_capability_analysis_request,
+    build_parameterized_family_analysis_request,
+    parameterized_handler_code_identity,
 )
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
 
@@ -51,6 +55,10 @@ class CapabilityAnnotationRefreshStatus:
     eligible_count: int = 0
     cached_count: int = 0
     generated_count: int = 0
+    disabled_count: int = 0
+    family_eligible_count: int = 0
+    family_disabled_count: int = 0
+    family_failed_count: int = 0
     skipped_count: int = 0
     failed_count: int = 0
 
@@ -59,6 +67,8 @@ class CapabilityAnnotationRefreshStatus:
 class _PreparedAnalysis:
     request: CapabilityAnalysisRequest
     fingerprint: str
+    plugin_module: str
+    member_capability_ids: tuple[str, ...]
 
 
 class CapabilityAnnotationService:
@@ -91,6 +101,7 @@ class CapabilityAnnotationService:
         self._evidence_validator = evidence_validator
         self._current_fingerprints: dict[str, str] = {}
         self._annotations: dict[str, CapabilityTeachingAnnotation] = {}
+        self._capability_to_unit: dict[str, str] = {}
         self._refresh_lock = asyncio.Lock()
         self._status = CapabilityAnnotationRefreshStatus()
 
@@ -99,27 +110,56 @@ class CapabilityAnnotationService:
         return self._status
 
     def get(self, capability_id: str) -> CapabilityTeachingAnnotation | None:
-        fingerprint = self._current_fingerprints.get(capability_id)
-        annotation = self._annotations.get(capability_id)
-        if annotation is None or annotation.request_fingerprint != fingerprint:
+        unit_id = self._capability_to_unit.get(capability_id, capability_id)
+        fingerprint = self._current_fingerprints.get(unit_id)
+        annotation = self._annotations.get(unit_id)
+        if (
+            annotation is None
+            or not annotation.knowledge_enabled
+            or annotation.request_fingerprint != fingerprint
+        ):
             return None
         return annotation
 
-    async def refresh(self, snapshot: CapabilitySnapshot) -> CapabilityAnnotationRefreshStatus:
+    def deactivate(self) -> None:
+        """关闭当前内存注释视图，同时保留持久化缓存供下次完整刷新复用。"""
+        self._annotations = {}
+
+    async def refresh(
+        self,
+        snapshot: CapabilitySnapshot,
+        *,
+        plugin_module: str | None = None,
+        force: bool = False,
+    ) -> CapabilityAnnotationRefreshStatus:
         """刷新当前 runtime snapshot 的自动注释；单项失败不影响其他能力或基础索引。"""
         if not isinstance(snapshot, CapabilitySnapshot):
             raise TypeError("snapshot must be CapabilitySnapshot")
         async with self._refresh_lock:
             cache = await asyncio.to_thread(_read_cache, self._resolved_path())
             cached = {item.capability_id: item for item in cache.annotations}
-            prepared, skipped = await asyncio.to_thread(self._prepare, snapshot, cached)
+            prepared, skipped = await asyncio.to_thread(
+                self._prepare,
+                snapshot,
+                cached,
+                frozenset({plugin_module}) if force and plugin_module is not None else frozenset(),
+                force_all=force and plugin_module is None,
+            )
+            known_plugins = {item.plugin_module for item in prepared}
+            if plugin_module is not None and plugin_module not in known_plugins:
+                raise CapabilityAnalysisAdapterError("requested plugin has no teaching unit")
             prepared_requests = {
                 item.request.capability.capability_id: item.request for item in prepared
             }
             self._current_fingerprints = {
                 item.request.capability.capability_id: item.fingerprint for item in prepared
             }
-            self._annotations = {
+            self._capability_to_unit = {
+                capability_id: item.request.capability.capability_id
+                for item in prepared
+                for capability_id in item.member_capability_ids
+            }
+            reusable_annotations = {
                 capability_id: annotation
                 for capability_id, annotation in cached.items()
                 if self._current_fingerprints.get(capability_id) == annotation.request_fingerprint
@@ -128,12 +168,15 @@ class CapabilityAnnotationService:
                     annotation,
                 )
             }
+            candidate_annotations = dict(reusable_annotations)
             generated = 0
             failed = 0
+            failed_units: list[_PreparedAnalysis] = []
             missing = [
                 item
                 for item in prepared
-                if item.request.capability.capability_id not in self._annotations
+                if (plugin_module is None or item.plugin_module == plugin_module)
+                and (force or item.request.capability.capability_id not in reusable_annotations)
             ]
             for item in missing:
                 try:
@@ -146,13 +189,14 @@ class CapabilityAnnotationService:
                     )
                 except Exception as error:
                     failed += 1
+                    failed_units.append(item)
                     logger.warning(
                         "NoneBot Triage capability annotation failed for one registered "
                         "capability ({})",
                         type(error).__name__,
                     )
                     continue
-                self._annotations[annotation.capability_id] = annotation
+                candidate_annotations[annotation.capability_id] = annotation
                 cached[annotation.capability_id] = annotation
                 generated += 1
                 try:
@@ -166,19 +210,55 @@ class CapabilityAnnotationService:
                         "NoneBot Triage capability annotation cache write failed ({})",
                         type(error).__name__,
                     )
+            # 一轮中任一分析单元失败时，成功生成的候选只进入持久化缓存，
+            # 不进入当前 Answer 视图；下一次完整成功后再一起激活。
+            self._annotations = candidate_annotations if failed == 0 else reusable_annotations
+            active_candidates = candidate_annotations if failed == 0 else reusable_annotations
+            disabled_units = tuple(
+                item
+                for item in prepared
+                if (annotation := active_candidates.get(item.request.capability.capability_id))
+                is not None
+                and not annotation.knowledge_enabled
+            )
             self._status = CapabilityAnnotationRefreshStatus(
                 eligible_count=len(prepared),
-                cached_count=len(prepared) - len(missing),
+                cached_count=sum(
+                    item.request.capability.capability_id in reusable_annotations
+                    for item in prepared
+                ),
                 generated_count=generated,
+                disabled_count=len(disabled_units),
+                family_eligible_count=sum(_is_parameterized_unit(item) for item in prepared),
+                family_disabled_count=sum(_is_parameterized_unit(item) for item in disabled_units),
+                family_failed_count=sum(_is_parameterized_unit(item) for item in failed_units),
                 skipped_count=skipped,
                 failed_count=failed,
             )
+            if disabled_units:
+                labels = [
+                    f"{item.plugin_module}:{item.request.capability.capability_id}"
+                    for item in disabled_units[:8]
+                ]
+                if len(disabled_units) > len(labels):
+                    labels.append(f"...+{len(disabled_units) - len(labels)}")
+                logger.warning(
+                    "NoneBot Triage disabled {} public teaching units because the model "
+                    "could not establish a complete safe contract: {}",
+                    len(disabled_units),
+                    ", ".join(labels),
+                )
             logger.info(
                 "NoneBot Triage capability annotations refreshed: eligible={}, cached={}, "
-                "generated={}, skipped={}, failed={}",
+                "generated={}, disabled={}, family_eligible={}, family_disabled={}, "
+                "family_failed={}, skipped={}, failed={}",
                 self._status.eligible_count,
                 self._status.cached_count,
                 self._status.generated_count,
+                self._status.disabled_count,
+                self._status.family_eligible_count,
+                self._status.family_disabled_count,
+                self._status.family_failed_count,
                 self._status.skipped_count,
                 self._status.failed_count,
             )
@@ -196,16 +276,65 @@ class CapabilityAnnotationService:
         self,
         snapshot: CapabilitySnapshot,
         cached: dict[str, CapabilityTeachingAnnotation],
+        force_plugins: frozenset[str] = frozenset(),
+        *,
+        force_all: bool = False,
     ) -> tuple[tuple[_PreparedAnalysis, ...], int]:
         prepared: list[_PreparedAnalysis] = []
         skipped = 0
         source_pack_cache: dict[str, CapabilitySourceEvidencePack] = {}
-        for record in _ordered_eligible_records(snapshot.records):
+        eligible = _ordered_eligible_records(snapshot.records)
+        family_records: dict[ParameterizedHandlerCodeIdentity, list[CapabilityRecord]] = {}
+        regular_records: list[CapabilityRecord] = []
+        identity_by_capability: dict[str, ParameterizedHandlerCodeIdentity | None] = {}
+        invalid_identity_ids: set[str] = set()
+        all_identity_member_ids: dict[ParameterizedHandlerCodeIdentity, set[str]] = {}
+        for record in snapshot.records:
             try:
-                request = build_capability_analysis_request(
-                    record,
-                    self._config_policy,
-                    source_pack_cache=source_pack_cache,
+                identity = parameterized_handler_code_identity(record)
+            except CapabilityAnalysisAdapterError:
+                invalid_identity_ids.add(record.capability_id)
+                continue
+            identity_by_capability[record.capability_id] = identity
+            if identity is not None:
+                all_identity_member_ids.setdefault(identity, set()).add(record.capability_id)
+
+        for record in eligible:
+            if record.capability_id in invalid_identity_ids:
+                skipped += 1
+                continue
+            identity = identity_by_capability.get(record.capability_id)
+            if identity is None:
+                regular_records.append(record)
+            else:
+                family_records.setdefault(identity, []).append(record)
+
+        for identity, records in tuple(family_records.items()):
+            eligible_ids = {record.capability_id for record in records}
+            if eligible_ids != all_identity_member_ids.get(identity, set()):
+                # 同一 Handler 代码身份若还绑定未准入成员，首版不拆分或越过披露边界。
+                family_records.pop(identity)
+                skipped += 1
+
+        analysis_groups: list[tuple[CapabilityRecord, ...]] = [
+            (record,) for record in regular_records
+        ]
+        analysis_groups.extend(tuple(records) for records in family_records.values())
+        for records in analysis_groups:
+            members = tuple(sorted(record.capability_id for record in records))
+            try:
+                request = (
+                    build_capability_analysis_request(
+                        records[0],
+                        self._config_policy,
+                        source_pack_cache=source_pack_cache,
+                    )
+                    if len(records) == 1 and records[0] in regular_records
+                    else build_parameterized_family_analysis_request(
+                        tuple(records),
+                        self._config_policy,
+                        source_pack_cache=source_pack_cache,
+                    )
                 )
                 fingerprint = capability_analysis_fingerprint(
                     request,
@@ -214,13 +343,22 @@ class CapabilityAnnotationService:
             except (CapabilityAnalysisAdapterError, CapabilityAnnotationError):
                 skipped += 1
                 continue
-            previous = cached.get(record.capability_id)
-            if previous is not None and previous.request_fingerprint != fingerprint:
-                request = replace(
+            module_name = request.source_context.module_name if request.source_context else ""
+            previous = cached.get(request.capability.capability_id)
+            if previous is not None and (
+                previous.request_fingerprint != fingerprint
+                or force_all
+                or module_name in force_plugins
+            ):
+                request = replace(request, previous_annotation=_analysis_baseline(previous))
+            prepared.append(
+                _PreparedAnalysis(
                     request,
-                    previous_annotation=_analysis_baseline(previous),
+                    fingerprint,
+                    module_name,
+                    members,
                 )
-            prepared.append(_PreparedAnalysis(request, fingerprint))
+            )
         return tuple(prepared), skipped
 
     def _cached_evidence_is_current(
@@ -242,20 +380,26 @@ def _analysis_baseline(
     annotation: CapabilityTeachingAnnotation,
 ) -> CapabilityAnalysisBaseline:
     return CapabilityAnalysisBaseline(
-        summary=annotation.summary,
-        usages=annotation.usages,
-        synonyms=annotation.synonyms,
-        supported_subjects=annotation.supported_subjects,
-        input_requirements=annotation.input_requirements,
-        behavior_boundaries=annotation.behavior_boundaries,
-        requirements=tuple(item.text for item in annotation.requirements),
-        interaction_mode=(
-            annotation.interaction.mode if annotation.interaction is not None else None
-        ),
-        interaction_steps=(
-            annotation.interaction.steps if annotation.interaction is not None else ()
+        entries=tuple(
+            CapabilityAnalysisEntryBaseline(
+                entry_id=entry.entry_id,
+                name=entry.name,
+                summary=entry.summary,
+                usages=entry.usages,
+                synonyms=entry.synonyms,
+                supported_subjects=entry.supported_subjects,
+                input_requirements=entry.input_requirements,
+                behavior_boundaries=entry.behavior_boundaries,
+                requirements=tuple(item.text for item in entry.requirements),
+                answer_markdown=entry.answer_markdown,
+            )
+            for entry in annotation.entries
         ),
     )
+
+
+def _is_parameterized_unit(item: _PreparedAnalysis) -> bool:
+    return item.request.capability.kind == "command_family"
 
 
 def _ordered_eligible_records(
@@ -281,9 +425,10 @@ def _eligible_record(record: CapabilityRecord) -> bool:
         and not record.analysis_issues
         and record.state in {RecordState.VERIFIED, RecordState.CANDIDATE}
         and any(
-            claim.field == "command.header"
+            claim.field in {"invocation.header", "command.header"}
             and claim.basis is ClaimBasis.OBSERVED
             and isinstance(claim.value, str)
+            and bool(claim.value)
             for claim in record.claims
         )
         and not any(issue is AnalysisIssue.SENSITIVE_AMBIGUITY for issue in record.analysis_issues)

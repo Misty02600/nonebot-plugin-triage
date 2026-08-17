@@ -14,6 +14,7 @@ from nonebot.plugin import PluginMetadata
 from pydantic import BaseModel
 
 from nbtriage.capability_analysis import (
+    CapabilityAnalysisEntryOutput,
     CapabilityAnalysisOutput,
     CapabilityAnalysisService,
     FakeCapabilityAnalysisClient,
@@ -110,19 +111,24 @@ async def handle_search():
     evidence_id = request.evidence_units[0].evidence_id
     config_reference_id = request.config_projections[0].reference_id
     output = CapabilityAnalysisOutput(
-        claims=(
-            SemanticClaim(
-                kind=SemanticClaimKind.SUMMARY,
-                statement="可按指令查找图片来源。",
-                evidence_ids=(evidence_id,),
-            ),
-        ),
-        constraints=(
-            SemanticConstraint(
-                kind=SemanticConstraintKind.OTHER,
-                statement="每次最多返回四个候选。",
-                evidence_ids=(evidence_id,),
-                config_reference_ids=(config_reference_id,),
+        entries=(
+            CapabilityAnalysisEntryOutput(
+                entry_id="root",
+                claims=(
+                    SemanticClaim(
+                        kind=SemanticClaimKind.SUMMARY,
+                        statement="可按指令查找图片来源。",
+                        evidence_ids=(evidence_id,),
+                    ),
+                ),
+                constraints=(
+                    SemanticConstraint(
+                        kind=SemanticConstraintKind.OTHER,
+                        statement="每次最多返回四个候选。",
+                        evidence_ids=(evidence_id,),
+                        config_reference_ids=(config_reference_id,),
+                    ),
+                ),
             ),
         ),
     )

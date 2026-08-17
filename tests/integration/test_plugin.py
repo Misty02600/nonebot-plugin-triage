@@ -5,7 +5,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
@@ -238,15 +238,18 @@ assert command.parse("triage ?").query("request_text") == ("?",)
 assert not command.parse("报错").matched
 assert not command.parse("triage-other hello").matched
 query_command = handlers.query_matcher._rule.command()
-assert query_command.parse("报错查询 incident-example").matched
-assert not query_command.parse("报错查询").matched
-assert not query_command.parse("报错查询 incident-example extra").matched
-feedback_command = handlers.feedback_matcher._rule.command()
-assert feedback_command.parse("报错反馈 incident-example 有用").matched
-assert not feedback_command.parse("报错反馈 incident-example").matched
-stats_command = handlers.trial_stats_matcher._rule.command()
-assert stats_command.parse("报错统计").matched
-assert not stats_command.parse("报错统计 extra").matched
+assert query_command.parse("triage 报错查询").matched
+assert query_command.parse("triage 报错查询 P-23456789").matched
+assert query_command.parse("triage 报错查询 P-23456789 确认Bug").matched
+assert not query_command.parse("报错查询 P-23456789").matched
+refresh_help_command = handlers.refresh_help_matcher._rule.command()
+assert handlers.refresh_help_matcher.priority == 9
+assert handlers.refresh_help_matcher.block
+assert refresh_help_command.parse("triage 刷新帮助").matched
+assert refresh_help_command.parse("triage 刷新帮助 nonebot_plugin_memes").matched
+assert not refresh_help_command.parse("triage 刷新帮助 plugin extra").matched
+assert not hasattr(handlers, "feedback_matcher")
+assert not hasattr(handlers, "trial_stats_matcher")
 assert handlers.plugin_runtime.observer.registered
 assert handlers.plugin_runtime.reference_bridge.registered
 assert handlers.plugin_runtime.trials.mode.value == "off"
@@ -256,9 +259,9 @@ assert module.__plugin_meta__.config is module.NBTriageConfig
 assert module.__plugin_meta__.name == "NoneBot Triage Agent"
 assert module.__plugin_meta__.homepage.endswith("/nonebot-plugin-triage")
 assert "triage <求助内容>" in module.__plugin_meta__.usage
-assert "报错查询 <受理编号>" in module.__plugin_meta__.usage
-assert "报错反馈" in module.__plugin_meta__.usage
-assert "报错统计" in module.__plugin_meta__.usage
+assert "triage 报错查询" in module.__plugin_meta__.usage
+assert "报错反馈" not in module.__plugin_meta__.usage
+assert "报错统计" not in module.__plugin_meta__.usage
 assert handlers._empty_support_prompt() == "请在 triage 后描述想了解的功能或遇到的问题。"
 assert len(handlers.plugin_runtime.outgoing_reference_providers) == 1
 runtime.find_spec = lambda _: None
@@ -282,9 +285,9 @@ def event_for(user_id: int) -> GroupMessageEvent:
         user_id=user_id,
         message_type="group",
         message_id=1,
-        message=Message("报错查询 incident-example"),
-        original_message=Message("报错查询 incident-example"),
-        raw_message="报错查询 incident-example",
+        message=Message("triage 报错查询 P-23456789"),
+        original_message=Message("triage 报错查询 P-23456789"),
+        raw_message="triage 报错查询 P-23456789",
         font=0,
         sender=sender,
         group_id=100,
@@ -292,11 +295,9 @@ def event_for(user_id: int) -> GroupMessageEvent:
     )
 
 assert asyncio.run(handlers.query_matcher.check_perm(bot, event_for(200)))
-assert not asyncio.run(handlers.query_matcher.check_perm(bot, event_for(201)))
-assert asyncio.run(handlers.feedback_matcher.check_perm(bot, event_for(200)))
-assert not asyncio.run(handlers.feedback_matcher.check_perm(bot, event_for(201)))
-assert asyncio.run(handlers.trial_stats_matcher.check_perm(bot, event_for(200)))
-assert not asyncio.run(handlers.trial_stats_matcher.check_perm(bot, event_for(201)))
+assert asyncio.run(handlers.query_matcher.check_perm(bot, event_for(201)))
+assert asyncio.run(handlers.refresh_help_matcher.check_perm(bot, event_for(200)))
+assert not asyncio.run(handlers.refresh_help_matcher.check_perm(bot, event_for(201)))
 """
 
     result = subprocess.run(
@@ -339,26 +340,195 @@ assert plugin is None
     assert result.returncode == 0, result.stderr
 
 
-async def test_query_matcher_sends_narrow_not_found_reply(app: App) -> None:
-    from nonebot_plugin_triage.handlers import query_matcher
+async def test_query_subcommand_sends_narrow_not_found_reply(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    class EmptyRepository:
+        async def get_problem(self, _problem_id: str) -> None:
+            return None
+
+    monkeypatch.setattr(
+        handlers,
+        "plugin_runtime",
+        replace(
+            handlers.plugin_runtime,
+            bug_workflow_repository=cast(Any, EmptyRepository()),
+        ),
+    )
+    monkeypatch.setattr(handlers, "_support_request_allowed", lambda *_: True)
+    query_matcher = handlers.query_matcher
 
     async with app.test_matcher(query_matcher) as ctx:
         bot = ctx.create_bot()
         event = fake_group_message_event_v11(
             message_id=101,
             user_id=200,
-            message=Message("报错查询 incident-example"),
-            original_message=Message("报错查询 incident-example"),
-            raw_message="报错查询 incident-example",
+            message=Message("triage 报错查询 P-23456789"),
+            original_message=Message("triage 报错查询 P-23456789"),
+            raw_message="triage 报错查询 P-23456789",
             to_me=True,
         )
         ctx.receive_event(bot, event)
         ctx.should_call_send(
             event,
-            FallbackMessage("未找到该受理编号；记录可能已过期或被容量策略淘汰。"),
+            FallbackMessage("没有找到这个问题编号。"),
             result=None,
         )
         ctx.should_finished(query_matcher)
+
+
+async def test_query_subcommand_lists_pending_problems_without_semantic(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nbtriage.bug_assessment import BugVerdict
+    from nbtriage.bug_workflow import (
+        ProblemDecisionSource,
+        ProblemLifecycle,
+        ProblemReviewStatus,
+        ProblemSummary,
+    )
+    from nonebot_plugin_triage import handlers
+
+    class Repository:
+        async def list_pending(self) -> tuple[ProblemSummary, ...]:
+            return (
+                ProblemSummary(
+                    problem_id="P-23456789",
+                    title="搜图没有返回结果",
+                    subject_id="YetAnotherPicSearch.search",
+                    verdict=BugVerdict.BUG,
+                    decision_source=ProblemDecisionSource.AGENT,
+                    review_status=ProblemReviewStatus.UNREVIEWED,
+                    lifecycle=ProblemLifecycle.OPEN,
+                    report_count=2,
+                    occurrence_count=1,
+                    last_observed_at="2026-08-16T00:00:00+00:00",
+                    latest_decision_at="2026-08-16T00:00:00+00:00",
+                ),
+            )
+
+    class ForbiddenSemantic:
+        async def assess(self, _request: object) -> None:
+            raise AssertionError("problem maintenance must not call Semantic")
+
+    monkeypatch.setattr(
+        handlers,
+        "plugin_runtime",
+        replace(
+            handlers.plugin_runtime,
+            bug_workflow_repository=cast(Any, Repository()),
+            semantic_assessment_service=cast(Any, ForbiddenSemantic()),
+        ),
+    )
+    monkeypatch.setattr(handlers, "_support_request_allowed", lambda *_: True)
+    query_matcher = handlers.query_matcher
+
+    async with app.test_matcher(query_matcher) as ctx:
+        bot = ctx.create_bot()
+        event = fake_group_message_event_v11(
+            group_id=76_543_210,
+            message_id=102,
+            user_id=200,
+            message=Message("triage 报错查询"),
+            original_message=Message("triage 报错查询"),
+            raw_message="triage 报错查询",
+            to_me=True,
+        )
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            FallbackMessage(
+                "当前待处理的 Bug 问题：\n"
+                "- P-23456789｜搜图没有返回结果｜报告 2 次｜发生 1 次｜未复核｜待处理"
+            ),
+            result=None,
+        )
+        ctx.should_finished(query_matcher)
+
+
+async def test_query_subcommand_denies_non_superuser_before_repository_access(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    class ForbiddenRepository:
+        async def list_pending(self) -> None:
+            raise AssertionError("non-superuser must not read problem data")
+
+    monkeypatch.setattr(
+        handlers,
+        "plugin_runtime",
+        replace(
+            handlers.plugin_runtime,
+            bug_workflow_repository=cast(Any, ForbiddenRepository()),
+        ),
+    )
+    monkeypatch.setattr(handlers, "_support_request_allowed", lambda *_: True)
+    query_matcher = handlers.query_matcher
+
+    async with app.test_matcher(query_matcher) as ctx:
+        bot = ctx.create_bot()
+        event = fake_group_message_event_v11(
+            group_id=76_543_211,
+            message_id=103,
+            user_id=201,
+            message=Message("triage 报错查询"),
+            original_message=Message("triage 报错查询"),
+            raw_message="triage 报错查询",
+            to_me=True,
+        )
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            FallbackMessage("该命令仅供主人使用。"),
+            result=None,
+        )
+        ctx.should_finished(query_matcher)
+
+
+async def test_query_subcommand_rejects_invalid_problem_id_before_repository_access(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    class ForbiddenRepository:
+        async def get_problem(self, _problem_id: str) -> None:
+            raise AssertionError("invalid public ID must not query the repository")
+
+    monkeypatch.setattr(
+        handlers,
+        "plugin_runtime",
+        replace(
+            handlers.plugin_runtime,
+            bug_workflow_repository=cast(Any, ForbiddenRepository()),
+        ),
+    )
+    monkeypatch.setattr(handlers, "_support_request_allowed", lambda *_: True)
+
+    async with app.test_matcher(handlers.query_matcher) as ctx:
+        bot = ctx.create_bot()
+        event = fake_group_message_event_v11(
+            group_id=76_543_212,
+            message_id=104,
+            user_id=200,
+            message=Message("triage 报错查询 123"),
+            original_message=Message("triage 报错查询 123"),
+            raw_message="triage 报错查询 123",
+            to_me=True,
+        )
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            FallbackMessage("问题编号格式不正确；请使用以 P- 开头的完整编号。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.query_matcher)
 
 
 @pytest.mark.parametrize(
@@ -877,15 +1047,14 @@ async def test_first_bug_unknown_waits_once_and_second_unknown_closes(
         ctx.receive_event(bot, second)
         ctx.should_call_send(
             second,
-            Message(
-                "判断结果：暂时无法判断。 本次补充机会已用完；"
-                "如有新的上下文，请重新发送完整 triage。"
-            ),
+            Message("暂时无法判断是不是 Bug。"),
             result=None,
         )
         ctx.should_finished(handlers.support_matcher)
 
     assert len(observed) == 2
+    assert observed[0].reported_observation is True
+    assert observed[1].reported_observation is True
     assert observed[0].conversation_context is None
     assert observed[1].conversation_context == "首轮 triage：\n刚才没反应，判断是不是 Bug"
     records = tuple(runtime.support_threads._entries.values())
@@ -894,6 +1063,80 @@ async def test_first_bug_unknown_waits_once_and_second_unknown_closes(
 
 
 async def test_conclusive_bug_assessment_closes_scope(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nbtriage.bug_assessment import (
+        BugAssessmentDecision,
+        BugDecisionSource,
+        BugOccurrence,
+        BugReason,
+        BugResponsibility,
+        BugVerdict,
+    )
+    from nbtriage.bug_workflow import BugRecordReceipt, RecordBugCommand
+    from nbtriage.support_threads import ThreadStatus
+    from nonebot_plugin_triage import handlers
+    from nonebot_plugin_triage.bug_assessment_runtime import BugAssessmentRuntimeOutcome
+
+    runtime = _install_isolated_support_threads(monkeypatch)
+    _inject_semantic_assessment(
+        monkeypatch,
+        goals=("bug_assessment",),
+        reported_observation=True,
+    )
+
+    decision = BugAssessmentDecision(
+        verdict=BugVerdict.BUG,
+        occurrence=BugOccurrence.SINGLE_OBSERVED,
+        responsibility_candidates=(BugResponsibility.TARGET_PLUGIN,),
+        reason=BugReason.RUNTIME_CONTRADICTS_CONTRACT,
+        evidence_ids=("runtime-evidence",),
+        missing_evidence=(),
+        source=BugDecisionSource.AGENT,
+    )
+
+    async def assessed(*_: Any, **__: Any) -> BugAssessmentRuntimeOutcome:
+        return BugAssessmentRuntimeOutcome(decision, cast(RecordBugCommand, object()))
+
+    class WorkflowRepository:
+        async def record_bug(self, command: RecordBugCommand) -> BugRecordReceipt:
+            assert command is not None
+            return BugRecordReceipt("P-23456789", False, 1, 1)
+
+    monkeypatch.setattr(
+        handlers,
+        "plugin_runtime",
+        replace(
+            handlers.plugin_runtime,
+            bug_workflow_repository=cast(Any, WorkflowRepository()),
+        ),
+    )
+    monkeypatch.setattr(handlers, "_bug_assessment_decision", assessed)
+    event = fake_group_message_event_v11(
+        message_id=1_251,
+        user_id=641,
+        message=Message("triage 判断刚才的问题是不是 Bug"),
+        original_message=Message("triage 判断刚才的问题是不是 Bug"),
+        raw_message="triage 判断刚才的问题是不是 Bug",
+        to_me=False,
+    )
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message("确认这是一个 Bug，已记录（编号 P-23456789），请等待主人解决。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
+
+    records = tuple(runtime.support_threads._entries.values())
+    assert len(records) == 1
+    assert records[0].status is ThreadStatus.CLOSED
+
+
+async def test_public_precheck_misuse_reuses_guidance_and_closes_scope(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -915,37 +1158,45 @@ async def test_conclusive_bug_assessment_closes_scope(
         reported_observation=True,
     )
 
-    class ConclusiveBugService:
+    class PublicPrecheckService:
         async def assess(self, _request: Any) -> BugAssessmentDecision:
             return BugAssessmentDecision(
-                verdict=BugVerdict.BUG,
+                verdict=BugVerdict.NOT_BUG,
                 occurrence=BugOccurrence.SINGLE_OBSERVED,
-                responsibility_candidates=(BugResponsibility.TARGET_PLUGIN,),
-                reason=BugReason.RUNTIME_CONTRADICTS_CONTRACT,
-                evidence_ids=("runtime-evidence",),
+                responsibility_candidates=(BugResponsibility.USER_INPUT,),
+                reason=BugReason.PUBLIC_PRECONDITION_NOT_MET,
+                evidence_ids=("public-contract:test",),
                 missing_evidence=(),
-                source=BugDecisionSource.AGENT,
+                source=BugDecisionSource.PUBLIC_PRECHECK,
             )
+
+    async def correction_guidance(*_: Any, **__: Any) -> Any:
+        return handlers._GuidanceResult("正确用法：回复图片后发送“搜图”。", ("搜图",))
 
     monkeypatch.setattr(
         handlers,
         "plugin_runtime",
-        replace(handlers.plugin_runtime, bug_assessment_service=ConclusiveBugService()),
+        replace(handlers.plugin_runtime, bug_assessment_service=PublicPrecheckService()),
     )
+    monkeypatch.setattr(handlers, "_capability_guidance_result", correction_guidance)
     event = fake_group_message_event_v11(
-        message_id=1_251,
-        user_id=641,
-        message=Message("triage 判断刚才的问题是不是 Bug"),
-        original_message=Message("triage 判断刚才的问题是不是 Bug"),
-        raw_message="triage 判断刚才的问题是不是 Bug",
+        message_id=1_261,
+        user_id=651,
+        message=Message("triage 搜图没有响应，请判断是不是 Bug"),
+        original_message=Message("triage 搜图没有响应，请判断是不是 Bug"),
+        raw_message="triage 搜图没有响应，请判断是不是 Bug",
         to_me=False,
     )
+
     async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = _onebot_test_bot(ctx)
         ctx.receive_event(bot, event)
         ctx.should_call_send(
             event,
-            Message("判断结果：是 Bug。这个结论只用于本次判断，当前不会自动上报。"),
+            Message(
+                "这次操作不符合当前公开用法，因此不作为 Bot 软件 Bug。\n"
+                "正确用法：回复图片后发送“搜图”。"
+            ),
             result=None,
         )
         ctx.should_finished(handlers.support_matcher)

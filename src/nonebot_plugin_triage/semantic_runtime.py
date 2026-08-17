@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from nbtriage.opencode_go_semantic_adapter import (
+from nonebot import logger
+
+from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_SEMANTIC_API_FAMILY,
     OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
     OPENCODE_GO_SEMANTIC_EVALUATION,
@@ -13,12 +14,16 @@ from nbtriage.opencode_go_semantic_adapter import (
     OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
     OPENCODE_GO_SEMANTIC_TASK,
     OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS,
-    create_opencode_go_support_semantic_client,
 )
 from nbtriage.support_semantic_model_adapter import SUPPORT_SEMANTIC_PROMPT_ID
 from nbtriage.support_semantics import SUPPORT_SEMANTIC_SCHEMA_VERSION
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.semantic_assessment import SupportSemanticAssessmentClient
+from nonebot_plugin_triage.task_model_runtime import (
+    TaskModelRuntimeConfigurationError,
+    create_task_model_binding,
+    unverified_evaluation_id,
+)
 
 
 @dataclass(frozen=True)
@@ -31,7 +36,8 @@ class SemanticTaskQualification:
     prompt_id: str
     privacy_policy: str
     budget_profile: str
-    evaluation: str
+    evaluation: str | None
+    verified: bool = True
 
 
 OPENCODE_GO_SEMANTIC_QUALIFICATION = SemanticTaskQualification(
@@ -58,46 +64,85 @@ def create_opencode_go_semantic_client_factory(
     environ: Mapping[str, str] | None = None,
     qualified_tasks: frozenset[SemanticTaskQualification] = QUALIFIED_SEMANTIC_TASKS,
 ) -> Callable[[], SupportSemanticAssessmentClient]:
-    model = config.nbtriage_model_name
-    if model is None or model not in OPENCODE_GO_SEMANTIC_MODELS:
-        raise SemanticRuntimeConfigurationError("OpenCode Go semantic model is not qualified")
-    qualification = SemanticTaskQualification(
-        provider="opencode-go",
-        api_family=OPENCODE_GO_SEMANTIC_API_FAMILY,
+    if config.nbtriage_model_backend != "opencode-go-chat":
+        raise SemanticRuntimeConfigurationError("backend is not opencode-go-chat")
+    return create_semantic_client_factory(
+        config,
+        environ=environ,
+        qualified_tasks=qualified_tasks,
+    )
+
+
+def create_semantic_client_factory(
+    config: NBTriageConfig,
+    *,
+    environ: Mapping[str, str] | None = None,
+    qualified_tasks: frozenset[SemanticTaskQualification] = QUALIFIED_SEMANTIC_TASKS,
+) -> Callable[[], SupportSemanticAssessmentClient]:
+    try:
+        binding = create_task_model_binding(config, environ=environ)
+    except TaskModelRuntimeConfigurationError as error:
+        raise SemanticRuntimeConfigurationError(str(error)) from error
+    qualification = _semantic_qualification(config, binding.provider, binding.model_name)
+    verified = qualification in qualified_tasks
+    if not verified:
+        logger.info(
+            "NoneBot Triage semantic assessment is using an unverified model combination: {}/{}",
+            config.nbtriage_model_backend,
+            config.nbtriage_model_name,
+        )
+
+    def create_client() -> SupportSemanticAssessmentClient:
+        from nbtriage.support_semantic_model_adapter import (
+            PydanticAISupportSemanticClient,
+        )
+
+        return PydanticAISupportSemanticClient(
+            binding.model,
+            timeout_seconds=config.nbtriage_model_timeout_seconds,
+            max_output_tokens=config.nbtriage_model_max_output_tokens,
+            model_settings=binding.model_settings,
+            expected_provider=binding.provider,
+            expected_model=binding.model_name,
+        )
+
+    return create_client
+
+
+def _semantic_qualification(
+    config: NBTriageConfig,
+    provider: str,
+    model: str,
+) -> SemanticTaskQualification:
+    verified_profile = (
+        config.nbtriage_model_backend == "opencode-go-chat"
+        and model in OPENCODE_GO_SEMANTIC_MODELS
+        and config.nbtriage_model_timeout_seconds == OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS
+        and config.nbtriage_model_max_output_tokens == OPENCODE_GO_SEMANTIC_MAX_OUTPUT_TOKENS
+    )
+    return SemanticTaskQualification(
+        provider=provider,
+        api_family=(
+            OPENCODE_GO_SEMANTIC_API_FAMILY
+            if config.nbtriage_model_backend == "opencode-go-chat"
+            else str(config.nbtriage_model_backend)
+        ),
         model=model,
         task=OPENCODE_GO_SEMANTIC_TASK,
         schema_version=SUPPORT_SEMANTIC_SCHEMA_VERSION,
         prompt_id=SUPPORT_SEMANTIC_PROMPT_ID,
         privacy_policy=OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
         budget_profile=OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
-        evaluation=OPENCODE_GO_SEMANTIC_EVALUATION,
+        evaluation=(
+            OPENCODE_GO_SEMANTIC_EVALUATION
+            if verified_profile
+            else unverified_evaluation_id(
+                task=OPENCODE_GO_SEMANTIC_TASK,
+                prompt_id=SUPPORT_SEMANTIC_PROMPT_ID,
+            )
+        ),
+        verified=verified_profile,
     )
-    if qualification not in qualified_tasks:
-        raise SemanticRuntimeConfigurationError(
-            "semantic model is not qualified for support-semantic-v7"
-        )
-    if config.nbtriage_model_timeout_seconds != OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS:
-        raise SemanticRuntimeConfigurationError(
-            "OpenCode Go semantic timeout must match the qualified 60-second profile"
-        )
-    if config.nbtriage_model_max_output_tokens != OPENCODE_GO_SEMANTIC_MAX_OUTPUT_TOKENS:
-        raise SemanticRuntimeConfigurationError(
-            "OpenCode Go semantic output limit must match the qualified 240-token profile"
-        )
-    environment = os.environ if environ is None else environ
-    api_key = environment.get("OPENCODE_API_KEY", "")
-    if not api_key.strip():
-        raise SemanticRuntimeConfigurationError("OPENCODE_API_KEY is required for opencode-go-chat")
-
-    def create_client() -> SupportSemanticAssessmentClient:
-        return create_opencode_go_support_semantic_client(
-            api_key=api_key,
-            model=model,
-            timeout_seconds=config.nbtriage_model_timeout_seconds,
-            max_output_tokens=config.nbtriage_model_max_output_tokens,
-        )
-
-    return create_client
 
 
 __all__ = (
@@ -106,4 +151,5 @@ __all__ = (
     "SemanticRuntimeConfigurationError",
     "SemanticTaskQualification",
     "create_opencode_go_semantic_client_factory",
+    "create_semantic_client_factory",
 )

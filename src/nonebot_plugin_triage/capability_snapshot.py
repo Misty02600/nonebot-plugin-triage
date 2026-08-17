@@ -139,6 +139,7 @@ class CapabilityCandidate:
     literal_commands: tuple[str, ...]
     aliases: tuple[str, ...]
     prefixes: tuple[str, ...]
+    separators: tuple[str, ...]
     description: str | None
     usage: str | None
     example: str | None
@@ -479,23 +480,57 @@ def _candidate_from_matcher(
         superuser_only=superuser_only,
     )
     factory, entries = _runtime_trigger(matcher)
+    if factory in {"on_endswith", "on_fullmatch", "on_keyword", "on_startswith"} and entries:
+        candidate = replace(
+            candidate,
+            confidence=CapabilityConfidence.MEDIUM,
+            analysis_issues=tuple(
+                issue
+                for issue in candidate.analysis_issues
+                if issue is not AnalysisIssue.DYNAMIC_ENTRY
+            ),
+        )
     return replace(candidate, trigger_factory=factory, trigger_entries=entries)
 
 
 def _runtime_trigger(matcher: object) -> tuple[str | None, tuple[str, ...]]:
     for dependent in _safe_collection(getattr(getattr(matcher, "rule", None), "checkers", ())):
         call = getattr(dependent, "call", None)
+        for class_name, factory in (
+            ("StartswithRule", "on_startswith"),
+            ("EndswithRule", "on_endswith"),
+            ("FullmatchRule", "on_fullmatch"),
+        ):
+            if _object_has_base(call, "nonebot.rule", class_name):
+                entries = _safe_trigger_entries(getattr(call, "msg", ()))
+                if entries:
+                    return factory, entries
         if _object_has_base(call, "nonebot.rule", "RegexRule"):
             value = getattr(call, "regex", None)
             if isinstance(value, str):
                 return "on_regex", (value,)
         if _object_has_base(call, "nonebot.rule", "KeywordsRule"):
-            values = getattr(call, "keywords", ())
-            if isinstance(values, Collection) and not isinstance(values, str | bytes):
-                entries = tuple(sorted(item for item in values if isinstance(item, str)))
-                if entries:
-                    return "on_keyword", entries
+            entries = _safe_trigger_entries(getattr(call, "keywords", ()))
+            if entries:
+                return "on_keyword", entries
+        if _object_has_base(call, "nonebot.rule", "IsTypeRule"):
+            entries = tuple(
+                sorted(
+                    {
+                        f"{item.__module__}.{item.__qualname__}"
+                        for item in _safe_collection(getattr(call, "types", ()))
+                        if isinstance(item, type)
+                    }
+                )
+            )
+            return "on_type", entries
     return None, ()
+
+
+def _safe_trigger_entries(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Collection) or isinstance(value, str | bytes):
+        return ()
+    return tuple(sorted({item for item in value if isinstance(item, str) and item}))
 
 
 def _alconna_command(matcher: object) -> object | None:
@@ -597,6 +632,7 @@ def _alconna_candidate(
         literal_commands=(name,) if name else (),
         aliases=aliases,
         prefixes=prefixes,
+        separators=(),
         description=description,
         usage=usage,
         example=example,
@@ -622,17 +658,24 @@ def _command_candidate(
     *,
     superuser_only: bool,
 ) -> CapabilityCandidate:
-    literals: set[str] = set()
+    command_parts: set[tuple[str, ...]] = set()
     force_values: list[str | bool | None] = []
     for command_rule in command_rules:
         for raw_command in _safe_collection(getattr(command_rule, "cmds", ())):
             if isinstance(raw_command, Sequence) and not isinstance(raw_command, str | bytes):
                 parts = tuple(part for part in raw_command if isinstance(part, str))
-                if parts:
-                    literals.add(" ".join(parts))
+                if parts and all(parts):
+                    command_parts.add(parts)
         force_whitespace = getattr(command_rule, "force_whitespace", None)
         if isinstance(force_whitespace, str | bool) or force_whitespace is None:
             force_values.append(force_whitespace)
+    prefixes, separators = _command_syntax()
+    effective_separators = separators or (" ",)
+    literals = {
+        separator.join(parts)
+        for parts in command_parts
+        for separator in (effective_separators if len(parts) > 1 else ("",))
+    }
     literal_commands = tuple(sorted(literals, key=lambda item: (item.casefold(), item)))
     # NoneBot 2.5 stores the primary command and aliases in a set before CommandRule is built,
     # so a loaded Matcher no longer retains a reliable primary/alias distinction.
@@ -664,7 +707,8 @@ def _command_candidate(
         header=header,
         literal_commands=literal_commands,
         aliases=literal_commands,
-        prefixes=(),
+        prefixes=prefixes,
+        separators=separators,
         description=None,
         usage=None,
         example=None,
@@ -716,6 +760,7 @@ def _generic_candidate(
         literal_commands=(),
         aliases=(),
         prefixes=(),
+        separators=(),
         description=description,
         usage=None,
         example=None,
@@ -754,6 +799,17 @@ def _matcher_constraints(matcher: object) -> tuple[tuple[str, ...], bool]:
         if _object_has_base(call, "nonebot.rule", "CommandRule"):
             continue
         if _object_has_base(call, "nonebot_plugin_alconna.rule", "AlconnaRule"):
+            continue
+        if any(
+            _object_has_base(call, "nonebot.rule", class_name)
+            for class_name in (
+                "EndswithRule",
+                "FullmatchRule",
+                "KeywordsRule",
+                "RegexRule",
+                "StartswithRule",
+            )
+        ):
             continue
         constraints.add(f"rule:opaque:{_safe_type_name(call)}")
 
@@ -892,7 +948,9 @@ def _matcher_handler_references(
             {
                 "module": module_name,
                 "function": function_name,
+                "qualname": call.__qualname__,
                 "line": line,
+                "code_firstlineno": call.__code__.co_firstlineno,
                 "source_revision": source_revision,
                 "closure_freevars": sorted(call.__code__.co_freevars),
             }
@@ -1308,11 +1366,13 @@ def _core_record(
             )
         )
     observed_values: tuple[tuple[str, object | None], ...] = (
+        ("invocation.header", _candidate_invocation_header(candidate)),
         ("command.path", candidate.command_path),
         ("command.header", candidate.header),
         ("command.literals", list(candidate.literal_commands)),
         ("command.aliases", list(candidate.aliases)),
         ("command.prefixes", list(candidate.prefixes)),
+        ("command.separators", list(candidate.separators)),
         ("command.force_whitespace", candidate.force_whitespace),
         ("command.enabled", candidate.enabled),
         ("command.arguments", [asdict(item) for item in candidate.arguments]),
@@ -1399,6 +1459,17 @@ def _core_record(
     )
 
 
+def _candidate_invocation_header(candidate: CapabilityCandidate) -> str | None:
+    if candidate.header:
+        return candidate.header
+    if (
+        candidate.trigger_factory in {"on_endswith", "on_fullmatch", "on_keyword", "on_startswith"}
+        and candidate.trigger_entries
+    ):
+        return candidate.trigger_entries[0]
+    return None
+
+
 def _core_constraint(
     candidate_id: str,
     label: str,
@@ -1466,6 +1537,19 @@ def _safe_string_sequence(value: object) -> tuple[str, ...]:
     if not isinstance(value, Collection) or isinstance(value, str | bytes):
         return ()
     return tuple(sorted({item for item in value if isinstance(item, str)}))
+
+
+def _command_syntax() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    try:
+        from nonebot import get_driver
+
+        config = get_driver().config
+    except (AttributeError, RuntimeError, ValueError):
+        return (), ()
+    return (
+        _safe_string_sequence(getattr(config, "command_start", ())),
+        _safe_string_sequence(getattr(config, "command_sep", ())),
+    )
 
 
 def _safe_text(value: object, *, limit: int = _MAX_TEXT_CHARS) -> str | None:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal
-from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -19,9 +18,13 @@ ModelName = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=128),
 ]
-ModelBackend = Literal["anthropic-messages", "openai-responses", "opencode-go-chat"]
+ModelBackend = Literal[
+    "anthropic-messages",
+    "openai-responses",
+    "opencode-go-chat",
+    "pydantic-ai",
+]
 TrialModeName = Literal["off", "observe"]
-BugSourceBackendName = Literal["bounded-text", "serena"]
 
 
 class NBTriageConfig(BaseModel):
@@ -30,24 +33,9 @@ class NBTriageConfig(BaseModel):
     nbtriage_cooldown_seconds: int = Field(default=2, ge=1, le=86_400)
     nbtriage_rate_limit_max_scopes: int = Field(default=4_096, ge=1, le=1_000_000)
     nbtriage_capability_visibility_timeout_seconds: float = Field(default=0.25, gt=0, le=5)
-    nbtriage_knowledge_pack_url: (
-        Annotated[
-            str,
-            StringConstraints(strip_whitespace=True, min_length=1, max_length=2_048),
-        ]
-        | None
-    ) = None
-    nbtriage_knowledge_pack_sha256: (
-        Annotated[
-            str,
-            StringConstraints(
-                strip_whitespace=True,
-                to_lower=True,
-                pattern=r"^[0-9A-Fa-f]{64}$",
-            ),
-        ]
-        | None
-    ) = None
+    nbtriage_knowledge_pack_url: str | None = None
+    nbtriage_knowledge_pack_sha256: str | None = None
+    nbtriage_knowledge_pack_auto_update: bool = True
     nbtriage_observation_max_entries: int = Field(default=10_000, ge=1, le=1_000_000)
     nbtriage_observation_retention_seconds: int = Field(
         default=900,
@@ -76,7 +64,6 @@ class NBTriageConfig(BaseModel):
         le=1_073_741_824,
     )
     nbtriage_trial_log_backup_count: int = Field(default=5, ge=1, le=100)
-    nbtriage_bug_source_backend: BugSourceBackendName = "bounded-text"
     nbtriage_model_backend: ModelBackend | None = None
     nbtriage_model_name: ModelName | None = None
     nbtriage_model_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
@@ -119,6 +106,16 @@ class NBTriageConfig(BaseModel):
             accepted.setdefault(pattern.casefold(), pattern)
         return tuple(accepted[key] for key in sorted(accepted))
 
+    @field_validator("nbtriage_knowledge_pack_url", mode="before")
+    @classmethod
+    def normalize_knowledge_pack_url(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("nbtriage_knowledge_pack_sha256", mode="before")
+    @classmethod
+    def normalize_knowledge_pack_sha256(cls, value: object) -> object:
+        return value.strip().lower() if isinstance(value, str) else value
+
     @model_validator(mode="before")
     @classmethod
     def reject_removed_or_forbidden_settings(cls, data: Any) -> Any:
@@ -144,6 +141,9 @@ class NBTriageConfig(BaseModel):
                 "nbtriage_capability_annotation_mode": (
                     "capability annotations follow the qualified model transport "
                     "and have no separate mode"
+                ),
+                "nbtriage_bug_source_backend": (
+                    "Bug source reading now always uses the bounded built-in reader"
                 ),
             }
             removed = next((key for key in removed_settings if key in data), None)
@@ -173,20 +173,6 @@ class NBTriageConfig(BaseModel):
     def validate_compatible_settings(self) -> NBTriageConfig:
         if self.nbtriage_thread_absolute_seconds < self.nbtriage_thread_idle_seconds:
             raise ValueError("thread absolute lifetime must not be shorter than idle lifetime")
-        if (self.nbtriage_knowledge_pack_url is None) is not (
-            self.nbtriage_knowledge_pack_sha256 is None
-        ):
-            raise ValueError("knowledge pack URL and SHA-256 must be configured together")
-        if self.nbtriage_knowledge_pack_url is not None:
-            parsed_url = urlsplit(self.nbtriage_knowledge_pack_url)
-            if (
-                parsed_url.scheme != "https"
-                or parsed_url.hostname is None
-                or parsed_url.username is not None
-                or parsed_url.password is not None
-                or parsed_url.fragment
-            ):
-                raise ValueError("knowledge pack URL must be an HTTPS asset URL")
         if (self.nbtriage_model_backend is None) is not (self.nbtriage_model_name is None):
             raise ValueError("model backend and model name must be configured together")
         return self

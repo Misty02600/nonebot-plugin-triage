@@ -9,8 +9,8 @@
 领域接口并移除项目自有 Griffe reader，产品 Agent 接线仍需独立资格。
 
 本决定不改变运行中 Bot 对 Matcher 与 handler 注册事实的权威地位，也不改变 ast-grep 的 Matcher 源码
-形状提取职责。ADR-0056 已有的 Serena opt-in Bug 源码纵切可按其原范围保留，但 Serena 不进入依赖定义
-导航链，也不继续扩张跨依赖 source view。
+形状提取职责。后续 ADR-0085 已撤销 ADR-0056 的 Serena opt-in Bug 源码纵切；当前语义导航只保留
+Direct Jedi，Bug 仍使用有界文本读取。
 
 [ADR-0058](0058-use-deterministic-evidence-and-bounded-navigation-for-teaching-annotations.md) 已经先行
 定案教学注释的上游编排：确定性 Evidence Pack 之后允许经 Triage 只读领域工具按需补证，并采用插件级
@@ -40,7 +40,7 @@
 | Griffe | 已从项目自有实现与直接依赖移除 | 历史来源绑定与 revision 安全合同由共享 inventory 保留，不再提供符号 reader |
 | `ast-grep-py==0.45.1` | 已采纳并替换 Matcher 手写 AST 形状提取 | `capability_source_evidence` 用固定只读规则识别 handler 装饰器、直接调用、Rule、Permission、limiter 和配置读取等 CST 候选形状 |
 | Direct Jedi | 领域 `go_to_definition` 已实现；产品接线待资格 | 从已批准使用位置执行 cursor-aware `goto`，定位实际安装依赖定义；结果仍须经过项目来源门禁 |
-| Serena 1.7.0 | 保留既有 opt-in Bug 纵切；不进入本职责 | 不作为依赖定义导航后端，不建设第二套依赖 source view |
+| Serena 1.7.0 | 已由 ADR-0085 移除 | 不再作为 Bug 或依赖定义导航后端 |
 | MultiLSPy | 不采用 | 它是多语言 LSP 生命周期封装，Python 仍依赖外部 language server；没有为本项目增加比 Direct Jedi 更有价值的定义语义，却增加进程、协议和版本层 |
 
 静态源码关系只能证明“当前 revision 的代码可能如何工作”，不能证明某个插件本轮成功加载、某条 Rule / Permission
@@ -190,8 +190,7 @@
    为导航而 import。
 7. MultiLSPy 不采用。项目只需要 Python 定义导航，Direct Jedi 已提供所需 API；再套
    `jedi-language-server`、JSON-RPC、server 生命周期和多语言适配层只会增加依赖与故障面。
-8. Serena 不参与本职责。ADR-0056 的既有 opt-in Bug 纵切若继续存在，必须与本依赖定义路径隔离，不能让
-   Agent 同时随意选择两个语义后端。
+8. Serena 不参与本职责；后续 ADR-0085 已删除其 Bug-only 纵切，Agent 不再拥有第二个语义后端。
 9. runtime Bot 继续提供 Matcher / handler 注册事实，ast-grep 继续提取 NoneBot 专用源码形状。Jedi 只回答
    “这个使用位置指向哪个定义”，不负责解释动态 Matcher、Rule、Permission 或某次运行是否发生。
 
@@ -236,8 +235,8 @@ Jedi 在所有指标上显著优于 Griffe。选择 Jedi 的原因更窄也更�
   distribution inventory、版本/revision、批准路径和 Evidence 合同继续有效；
 - [ADR-0055](0055-use-ast-grep-for-matcher-source-shape-extraction.md)：继续有效；ast-grep 保持 Matcher 形状
   提取职责，不承担通用符号导航；
-- [ADR-0056](0056-use-serena-for-optional-bug-source-navigation.md)：不撤销其既有 opt-in Bug 纵切，但收窄与本
-  ADR 的关系；Serena 不进入依赖定义导航，也不建立第二套依赖 source view；
+- [ADR-0056](0056-use-serena-for-optional-bug-source-navigation.md)：其既有 opt-in Bug 纵切已由
+  [ADR-0085](0085-remove-serena-bug-source-backend.md) 撤销；
 - [ADR-0050](0050-use-a-bounded-agent-for-user-bug-assessment.md) 与
   [ADR-0053](0053-allow-relevant-source-and-log-bodies-for-bug-assessment.md)：继续约束 Bug Agent 的工具预算、
   Evidence 门禁、源码投影与普通用户披露边界。

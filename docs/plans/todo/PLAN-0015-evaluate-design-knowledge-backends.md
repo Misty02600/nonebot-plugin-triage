@@ -94,7 +94,7 @@ NBTRIAGE_DESIGN_KNOWLEDGE_MODE=local_pack | context7 | local_then_context7 | off
 ### 非目标
 
 - 不把 Context7 MCP 原始工具面直接交给在线 Bug Agent。
-- 不用 Context7 替代源码阅读、Jedi/Serena 导航、关联日志或 RuntimeObservation。
+- 不用 Context7 替代源码阅读、Jedi 导航、关联日志或 RuntimeObservation。
 - 不索引或发送私有源码、原始日志、配置值和用户会话数据给 Context7。
 - 不在本计划阶段授权 Context7 私有源、企业版、外部模型费用或真实生产流量。
 - 不把 `Latest`、master 文档或最近版本自动冒充当前安装版本。

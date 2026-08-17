@@ -113,6 +113,70 @@ async def triage_handler():
     ]
 
 
+def test_extracts_official_literal_and_event_registration_forms(tmp_path: Path) -> None:
+    source = _write(
+        tmp_path / "plugin.py",
+        """\
+first = on_startswith(("hello", "你好"))
+second = on_endswith("done")
+third = on_fullmatch(("yes", "no"))
+fourth = on_type(MessageEvent)
+fifth = on(type="message")
+""",
+    )
+
+    pack = build_capability_source_evidence("example_plugin", source)
+
+    assert [(item.factory, item.entries) for item in pack.registrations] == [
+        ("on_startswith", ("hello", "你好")),
+        ("on_endswith", ("done",)),
+        ("on_fullmatch", ("no", "yes")),
+        ("on_type", ()),
+        ("on", ()),
+    ]
+
+
+def test_extracts_only_proven_nonebot_group_methods(tmp_path: Path) -> None:
+    source = _write(
+        tmp_path / "plugin.py",
+        """\
+from nonebot import CommandGroup, MatcherGroup
+
+commands = CommandGroup("root")
+group_command = commands.command("child")
+matchers = MatcherGroup(priority=10)
+literal = matchers.on_fullmatch("hello")
+
+class BusinessService:
+    def on_command(self, name):
+        return name
+
+service = BusinessService()
+not_a_matcher = service.on_command("private")
+""",
+    )
+
+    pack = build_capability_source_evidence("example_plugin", source)
+
+    assert [(item.matcher_name, item.factory, item.entries) for item in pack.registrations] == [
+        ("group_command", "on_command", ("root child",)),
+        ("literal", "on_fullmatch", ("hello",)),
+    ]
+
+
+def test_ignores_empty_command_registration(tmp_path: Path) -> None:
+    source = _write(
+        tmp_path / "plugin.py",
+        'empty = on_command("")\nnormal = on_command("normal")\n',
+    )
+
+    pack = build_capability_source_evidence("example_plugin", source)
+
+    assert [(item.matcher_name, item.entries) for item in pack.registrations] == [
+        ("normal", ("normal",))
+    ]
+
+
 def test_resolves_supported_uninfo_permissions_without_confusing_local_names(
     tmp_path: Path,
 ) -> None:

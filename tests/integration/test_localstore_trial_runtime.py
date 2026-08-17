@@ -35,7 +35,7 @@ nonebot.init(
 )
 plugin = nonebot.load_plugin("nonebot_plugin_triage")
 assert plugin is not None
-assert nonebot.get_plugin_by_module_name("nonebot_plugin_localstore") is None
+assert nonebot.get_plugin_by_module_name("nonebot_plugin_localstore") is not None
 
 from nonebot_plugin_triage import handlers
 

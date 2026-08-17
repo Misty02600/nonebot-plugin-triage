@@ -7,8 +7,20 @@ from types import ModuleType, SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from arclet.alconna import Alconna, Args, CommandMeta, Option, Subcommand, command_manager
-from nonebot import on_command, on_message, on_notice
+from arclet.alconna import Alconna, Args, CommandMeta, MultiVar, Option, Subcommand, command_manager
+from nonebot import (
+    get_driver,
+    on_command,
+    on_endswith,
+    on_fullmatch,
+    on_keyword,
+    on_message,
+    on_notice,
+    on_regex,
+    on_startswith,
+    on_type,
+)
+from nonebot.adapters.onebot.v11 import MessageEvent
 from nonebot.matcher import matchers
 from nonebot.permission import SUPERUSER, Permission
 from nonebot.plugin import PluginMetadata
@@ -158,6 +170,57 @@ def test_collects_loaded_on_command_literals_with_automatic_public_disclosure(
     assert all(evidence.source_id for evidence in record.evidence_refs)
 
 
+def test_command_uses_current_nonebot_prefixes_and_separators(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    matcher = on_command(("root", "child"))
+    matcher_cleanup.append(matcher)
+    plugin = _plugin(tmp_path, monkeypatch, {matcher})
+
+    (record,) = build_capability_snapshot(plugins=[plugin]).records
+
+    command_start = tuple(sorted(get_driver().config.command_start))
+    command_sep = tuple(sorted(get_driver().config.command_sep))
+    assert _record_values(record, "command.prefixes") == (list(command_start),)
+    assert _record_values(record, "command.separators") == (list(command_sep),)
+    assert set(_record_values(record, "command.literals")[0]) == {
+        separator.join(("root", "child")) for separator in command_sep
+    }
+    assert _record_values(record, "invocation.header")
+
+
+def test_collects_literal_trigger_forms_but_keeps_regex_and_type_conservative(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    matchers_by_factory = {
+        "on_startswith": on_startswith(("hello", "你好")),
+        "on_endswith": on_endswith("done"),
+        "on_fullmatch": on_fullmatch(("yes", "no")),
+        "on_keyword": on_keyword({"alpha", "beta"}),
+        "on_regex": on_regex(r"^item-(\d+)$"),
+        "on_type": on_type(MessageEvent),
+    }
+    matcher_cleanup.extend(matchers_by_factory.values())
+    plugin = _plugin(tmp_path, monkeypatch, set(matchers_by_factory.values()))
+
+    snapshot = build_capability_snapshot(plugins=[plugin])
+    records = {_record_values(record, "trigger.factory")[0]: record for record in snapshot.records}
+
+    for factory in ("on_startswith", "on_endswith", "on_fullmatch", "on_keyword"):
+        record = records[factory]
+        assert AnalysisIssue.DYNAMIC_ENTRY not in record.analysis_issues
+        assert _record_values(record, "invocation.header")
+    assert AnalysisIssue.DYNAMIC_ENTRY in records["on_regex"].analysis_issues
+    assert AnalysisIssue.DYNAMIC_ENTRY in records["on_type"].analysis_issues
+    assert _record_values(records["on_type"], "trigger.entries") == (
+        ["nonebot.adapters.onebot.v11.event.MessageEvent"],
+    )
+
+
 def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -166,7 +229,7 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     called = False
     command = Alconna(
         "image",
-        Args["query", str],
+        Args["query", str]["tags", MultiVar(str)],
         Option("--limit", Args["count", int]),
         Subcommand("detail", Args["id", str]),
         meta=CommandMeta(
@@ -210,6 +273,7 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     assert _record_values(public_record, "command.header") == ("image",)
     assert _record_values(public_record, "usage") == ("image <query> [--limit <count>]",)
     assert _record_values(public_record, "command.arguments")[0][0]["name"] == "query"
+    assert _record_values(public_record, "command.arguments")[0][1]["variadic"] is True
     components = _record_values(public_record, "command.components")[0]
     assert {item["name"] for item in components} >= {"--limit", "detail"}
     assert called is False
@@ -678,6 +742,57 @@ async def handle_search():
     assert all(item["source_revision"].startswith("sha256:") for item in references)
     assert all(item["config_type"] == f"{module_name}:Config" for item in references)
     assert all(item["binding"] == "plugin_config" for item in references)
+
+
+def test_handler_reference_records_exact_closure_code_identity(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    plugin = _source_plugin(
+        tmp_path,
+        monkeypatch,
+        """\
+from nonebot import on_command
+
+def create_matcher(command):
+    matcher = on_command(command)
+
+    @matcher.handle()
+    async def handler():
+        return command
+
+    return matcher
+
+first = create_matcher("一")
+second = create_matcher("二")
+""",
+    )
+    matcher_cleanup.extend(plugin.matcher)
+
+    snapshot = build_capability_snapshot(plugins=[plugin])
+
+    assert len(snapshot.records) == 2
+    identities = {
+        (
+            reference["module"],
+            reference["function"],
+            reference["qualname"],
+            reference["code_firstlineno"],
+            tuple(reference["closure_freevars"]),
+        )
+        for record in snapshot.records
+        for reference in _record_values(record, "handler.references")[0]
+    }
+    assert identities == {
+        (
+            plugin.module_name,
+            "handler",
+            "create_matcher.<locals>.handler",
+            6,
+            ("command",),
+        )
+    }
 
 
 def test_does_not_treat_unrelated_runtime_models_as_plugin_config(

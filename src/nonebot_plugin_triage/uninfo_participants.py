@@ -20,9 +20,39 @@ async def enrich_conversation_with_uninfo(
     event: Event,
     reader: BoundBugConversationReader | None,
 ) -> BoundBugConversationReader | None:
-    """使用上游 Uninfo 公共 API 尽力补充当前成员与缺失角色。"""
+    """返回惰性 Uninfo 投影，只有 Agent 真正读取聊天时才查询成员。"""
     if reader is None:
         return None
+    return _LazyUninfoConversationReader(bot, event, reader)
+
+
+class _LazyUninfoConversationReader:
+    def __init__(
+        self,
+        bot: Bot,
+        event: Event,
+        delegate: BoundBugConversationReader,
+    ) -> None:
+        self._bot = bot
+        self._event = event
+        self._delegate = delegate
+        self._resolved: BoundBugConversationReader | None = None
+
+    async def read_next(self) -> BugConversationPage:
+        if self._resolved is None:
+            self._resolved = await _resolve_uninfo_reader(
+                self._bot,
+                self._event,
+                self._delegate,
+            )
+        return await self._resolved.read_next()
+
+
+async def _resolve_uninfo_reader(
+    bot: Bot,
+    event: Event,
+    reader: BoundBugConversationReader,
+) -> BoundBugConversationReader:
     try:
         uninfo = import_module("nonebot_plugin_uninfo")
         get_interface = uninfo.get_interface

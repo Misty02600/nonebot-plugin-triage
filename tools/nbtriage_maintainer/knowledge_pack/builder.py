@@ -9,12 +9,15 @@ from collections import Counter
 from pathlib import Path
 from uuid import uuid4
 
+from nbtriage.knowledge_index import (
+    KNOWLEDGE_INDEX_SCHEMA_VERSION,
+    KNOWLEDGE_RETRIEVER_ID,
+)
+
 from .chunking import load_source_chunks
 from .models import KnowledgeBuildSummary, KnowledgeChunk, KnowledgePackError
 from .source_policy import load_sources
 
-KNOWLEDGE_INDEX_SCHEMA_VERSION = 1
-KNOWLEDGE_RETRIEVER_ID = "knowledge-sqlite-fts5-trigram-v1"
 DEFAULT_KNOWLEDGE_INDEX_PATH = Path("data/knowledge-pack/index.sqlite3")
 
 

@@ -1,13 +1,14 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from arclet.alconna import Namespace, namespace
 from nonebot import logger
 from nonebot.adapters import Bot, Event
+from nonebot.exception import FinishedException
 from nonebot.matcher import Matcher
 from nonebot.permission import SUPERUSER
-from nonebot.rule import to_me
 from nonebot.typing import T_State
 from nonebot_plugin_alconna import (
     Alconna,
@@ -19,15 +20,24 @@ from nonebot_plugin_alconna import (
     MultiVar,
     OriginalUniMsg,
     Reply,
+    Subcommand,
     UniMessage,
     on_alconna,
 )
 
 from nbtriage.bug_assessment import (
-    BugAssessmentDecision,
+    BugDecisionSource,
+    BugReason,
     BugVerdict,
     format_bug_assessment_reply,
     format_bug_supplement_request,
+)
+from nbtriage.bug_workflow import (
+    BUG_PROBLEM_ID_PATTERN,
+    ProblemMaintenanceAction,
+    format_new_bug_receipt,
+    format_problem_details,
+    format_problem_list,
 )
 from nbtriage.capabilities import CapabilitySearchHit
 from nbtriage.public_guidance import PublicGuidanceExecutionStatus
@@ -47,21 +57,27 @@ from nbtriage.support_threads import (
     TurnClaimStatus,
 )
 from nonebot_plugin_triage import plugin_config
-from nonebot_plugin_triage.bug_assessment_runtime import BugAssessmentRuntimeRequest
+from nonebot_plugin_triage.bug_assessment_runtime import (
+    BugAssessmentRuntimeOutcome,
+    BugAssessmentRuntimeRequest,
+    BugAssessmentRuntimeService,
+)
+from nonebot_plugin_triage.bug_workflow_orm import (
+    BugWorkflowStoreError,
+    ProblemActionError,
+)
 from nonebot_plugin_triage.capability_shadow import (
     build_public_guidance_request,
     format_public_capability_guidance,
 )
-from nonebot_plugin_triage.incident_queries import format_incident_lookup
 from nonebot_plugin_triage.live_reports import LiveReportRequest
 from nonebot_plugin_triage.product_contract import (
-    FEEDBACK_COMMAND,
     MAINTAINER_MATCHER_PRIORITY,
     QUERY_COMMAND,
+    TEACHING_REFRESH_MATCHER_PRIORITY,
     TRIAGE_COMMAND,
     TRIAGE_MATCHER_PRIORITY,
     TRIAGE_REQUEST_MAX_CHARS,
-    TRIAL_STATS_COMMAND,
 )
 from nonebot_plugin_triage.runtime import create_plugin_runtime
 from nonebot_plugin_triage.support_intake import (
@@ -77,11 +93,6 @@ from nonebot_plugin_triage.thread_references import (
     NBTRIAGE_THREAD_BINDING_STATE_KEY,
     PendingContinuationBinding,
     PreparedScopeSupplementBinding,
-)
-from nonebot_plugin_triage.trials import (
-    format_trial_feedback_result,
-    format_trial_summary,
-    parse_trial_feedback,
 )
 from nonebot_plugin_triage.uninfo_participants import enrich_conversation_with_uninfo
 from nonebot_plugin_triage.universal_references import adapter_name, conversation_scope
@@ -126,6 +137,42 @@ def _has_explicit_support_command(event: Event) -> bool:
     except (NotImplementedError, ValueError):
         return False
     command = TRIAGE_COMMAND
+    if _is_refresh_help_command(content) or _is_problem_query_command(content):
+        return False
+    return content == command or (
+        content.startswith(command)
+        and len(content) > len(command)
+        and content[len(command)].isspace()
+    )
+
+
+def _has_explicit_refresh_help_command(event: Event) -> bool:
+    try:
+        content = event.get_plaintext().lstrip()
+    except (NotImplementedError, ValueError):
+        return False
+    return _is_refresh_help_command(content)
+
+
+def _is_refresh_help_command(content: str) -> bool:
+    command = f"{TRIAGE_COMMAND} 刷新帮助"
+    return content == command or (
+        content.startswith(command)
+        and len(content) > len(command)
+        and content[len(command)].isspace()
+    )
+
+
+def _has_explicit_problem_query_command(event: Event) -> bool:
+    try:
+        content = event.get_plaintext().lstrip()
+    except (NotImplementedError, ValueError):
+        return False
+    return _is_problem_query_command(content)
+
+
+def _is_problem_query_command(content: str) -> bool:
+    command = f"{TRIAGE_COMMAND} {QUERY_COMMAND}"
     return content == command or (
         content.startswith(command)
         and len(content) > len(command)
@@ -174,40 +221,49 @@ support_matcher = on_alconna(
 )
 register_public_alconna_capability(support_command)
 
+with namespace(
+    Namespace(
+        "nonebot-plugin-triage-teaching-maintenance",
+        disable_builtin_options={"help", "shortcut", "completion"},
+    )
+):
+    refresh_help_command = Alconna(
+        TRIAGE_COMMAND,
+        Subcommand(
+            "刷新帮助",
+            Args["plugin_module?", str],
+            help_text="重新生成全部或指定插件模块的教学注释",
+        ),
+    )
+
+refresh_help_matcher = on_alconna(
+    refresh_help_command,
+    rule=_has_explicit_refresh_help_command,
+    permission=SUPERUSER,
+    use_cmd_start=False,
+    priority=TEACHING_REFRESH_MATCHER_PRIORITY,
+    block=True,
+)
+
+with namespace(
+    Namespace(
+        "nonebot-plugin-triage-problem-maintenance",
+        disable_builtin_options={"help", "shortcut", "completion"},
+    )
+):
+    problem_query_command = Alconna(
+        TRIAGE_COMMAND,
+        Subcommand(
+            QUERY_COMMAND,
+            Args["problem_id?", str]["action?", str],
+            help_text="列出、查询或维护已记录的 Bug 问题",
+        ),
+    )
+
 _REPLY_CONTEXT_MAX_CHARS = 16_000
 query_matcher = on_alconna(
-    Alconna(
-        QUERY_COMMAND,
-        Args["incident_id", str],
-        meta=CommandMeta(description="按受理编号查看短期运行摘要"),
-    ),
-    rule=to_me(),
-    permission=SUPERUSER,
-    use_cmd_start=False,
-    priority=MAINTAINER_MATCHER_PRIORITY,
-    block=True,
-)
-
-feedback_matcher = on_alconna(
-    Alconna(
-        FEEDBACK_COMMAND,
-        Args["incident_id", str]["feedback", str],
-        meta=CommandMeta(description="记录一次观察型试运行反馈"),
-    ),
-    rule=to_me(),
-    permission=SUPERUSER,
-    use_cmd_start=False,
-    priority=MAINTAINER_MATCHER_PRIORITY,
-    block=True,
-)
-
-trial_stats_matcher = on_alconna(
-    Alconna(
-        TRIAL_STATS_COMMAND,
-        meta=CommandMeta(description="查看当前观察型试运行统计"),
-    ),
-    rule=to_me(),
-    permission=SUPERUSER,
+    problem_query_command,
+    rule=_has_explicit_problem_query_command,
     use_cmd_start=False,
     priority=MAINTAINER_MATCHER_PRIORITY,
     block=True,
@@ -350,7 +406,8 @@ async def _bug_assessment_decision(
     conversation_context: str | None = None,
     reply_visible_text: str | None = None,
     inherited_correlation_id: str | None = None,
-) -> BugAssessmentDecision:
+    reported_observation: bool = True,
+) -> BugAssessmentRuntimeOutcome:
     reply_message = None
     conversation_reader = None
     try:
@@ -382,17 +439,68 @@ async def _bug_assessment_decision(
         report_request.target,
         report_request,
     )
-    return await plugin_runtime.bug_assessment_service.assess(
-        BugAssessmentRuntimeRequest(
-            request_text=request_text,
-            adapter_name=adapter_name(bot),
-            adapter_type=type(bot.adapter),
-            correlation_id=current_correlation_id or inherited_correlation_id,
-            conversation_context=conversation_context,
-            reply_message=reply_message,
-            conversation_reader=conversation_reader,
+    correlation_id = current_correlation_id or inherited_correlation_id
+    report_key: str | None = None
+    actor_scope_hmac: str | None = None
+    occurrence_key: str | None = None
+    correlation_digest: str | None = None
+    try:
+        identity = plugin_runtime.bug_workflow_identity
+        report_key = identity.digest(
+            "bug-report",
+            adapter_name(bot),
+            str(bot.self_id),
+            _event_identity(event),
         )
+        actor_scope_hmac = identity.digest(
+            "actor-scope",
+            adapter_name(bot),
+            str(bot.self_id),
+            event.get_user_id(),
+        )
+        if correlation_id is not None:
+            correlation_digest = identity.digest(
+                "runtime-correlation",
+                adapter_name(bot),
+                str(bot.self_id),
+                correlation_id,
+            )
+            occurrence_key = identity.digest(
+                "bug-occurrence-correlation",
+                adapter_name(bot),
+                str(bot.self_id),
+                correlation_id,
+            )
+        elif report_request.reply_reference is not None:
+            occurrence_key = identity.digest(
+                "bug-occurrence-reply",
+                adapter_name(bot),
+                str(bot.self_id),
+                conversation_scope(report_request.target),
+                report_request.reply_reference,
+            )
+        else:
+            occurrence_key = report_key
+    except Exception:
+        logger.warning("NoneBot Triage bug workflow identity is unavailable")
+    runtime_request = BugAssessmentRuntimeRequest(
+        request_text=request_text,
+        adapter_name=adapter_name(bot),
+        adapter_type=type(bot.adapter),
+        correlation_id=correlation_id,
+        reported_observation=reported_observation,
+        conversation_context=conversation_context,
+        reply_message=reply_message,
+        conversation_reader=conversation_reader,
+        report_key=report_key,
+        actor_scope_hmac=actor_scope_hmac,
+        occurrence_key=occurrence_key,
+        correlation_digest=correlation_digest,
     )
+    service = plugin_runtime.bug_assessment_service
+    if isinstance(service, BugAssessmentRuntimeService):
+        return await service.assess_outcome(runtime_request)
+    return BugAssessmentRuntimeOutcome(await service.assess(runtime_request))
 
 
 async def _route_support_text(
@@ -645,7 +753,7 @@ async def handle_support(
             UniMessage.text(await _behavior_exploration_response(bot, event))
         )
     if routing.action is SupportRoutingAction.BUG_ASSESSMENT_CANDIDATE:
-        decision = await _bug_assessment_decision(
+        assessment = await _bug_assessment_decision(
             bot,
             event,
             request.content,
@@ -657,7 +765,9 @@ async def handle_support(
                 if lease.is_supplement and lease.initial_context is not None
                 else None
             ),
+            reported_observation=routing.reported_observation,
         )
+        decision = assessment.decision
         supplement_prompt = format_bug_supplement_request(decision)
         if supplement_prompt is not None and not lease.is_supplement:
             _prepare_scope_supplement(matcher, lease)
@@ -668,12 +778,44 @@ async def handle_support(
                 supplement_prompt,
             )
         _close_scope_turn(matcher, lease)
-        message = format_bug_assessment_reply(decision)
+        if (
+            decision.source is BugDecisionSource.PUBLIC_PRECHECK
+            and decision.verdict is BugVerdict.NOT_BUG
+            and decision.reason is BugReason.PUBLIC_PRECONDITION_NOT_MET
+        ):
+            guidance = await _capability_guidance_result(
+                bot,
+                event,
+                "请根据公开说明纠正这次操作，并给出正确用法。",
+                conversation_context=_join_conversation_context(
+                    _supplement_context(lease),
+                    f"本轮 triage：\n{request.content}",
+                    f"本轮 Reply：\n{reply_visible_text}" if reply_visible_text else None,
+                ),
+            )
+            await support_matcher.finish(
+                UniMessage.text(
+                    f"这次操作不符合当前公开用法，因此不作为 Bot 软件 Bug。\n{guidance.message}"
+                )
+            )
+        if decision.verdict is BugVerdict.BUG:
+            if assessment.record_command is None:
+                await support_matcher.finish(
+                    UniMessage.text("已经完成判断，但问题记录暂时失败，请等待主人处理。")
+                )
+            try:
+                receipt = await plugin_runtime.bug_workflow_repository.record_bug(
+                    assessment.record_command
+                )
+            except Exception:
+                logger.exception("NoneBot Triage failed to persist a confirmed bug")
+                await support_matcher.finish(
+                    UniMessage.text("已经完成判断，但问题记录暂时失败，请等待主人处理。")
+                )
+            await support_matcher.finish(UniMessage.text(format_new_bug_receipt(receipt)))
         if decision.verdict is BugVerdict.UNKNOWN:
-            message += " 本次补充机会已用完；如有新的上下文，请重新发送完整 triage。"
-        else:
-            message += "这个结论只用于本次判断，当前不会自动上报。"
-        await support_matcher.finish(UniMessage.text(message))
+            await support_matcher.finish(UniMessage.text("暂时无法判断是不是 Bug。"))
+        await support_matcher.finish(UniMessage.text(format_bug_assessment_reply(decision)))
     if routing.action is SupportRoutingAction.FEATURE_FEEDBACK_CANDIDATE:
         _close_scope_turn(matcher, lease)
         await support_matcher.finish(
@@ -702,40 +844,154 @@ async def handle_support(
 
 
 @query_matcher.handle()
-async def handle_query(incident_id: Match[str]) -> None:
-    result = plugin_runtime.query_service.query(incident_id.result)
-    if result.summary is not None:
-        try:
-            plugin_runtime.trials.record_summary_view(incident_id.result)
-        except Exception:
-            logger.warning("NoneBot Triage trial summary-view event was dropped")
-    await query_matcher.finish(UniMessage.text(format_incident_lookup(result)))
-
-
-@feedback_matcher.handle()
-async def handle_feedback(
-    incident_id: Match[str],
-    feedback: Match[str],
+async def handle_query(
+    bot: Bot,
+    event: Event,
+    target: MsgTarget,
+    problem_id: Match[str],
+    action: Match[str],
 ) -> None:
-    parsed = parse_trial_feedback(feedback.result)
-    if parsed is None:
-        await feedback_matcher.finish(UniMessage.text("反馈值只支持：有用、不完整、不正确。"))
-        return
-    result = plugin_runtime.trials.record_feedback(incident_id.result, parsed)
-    await feedback_matcher.finish(UniMessage.text(format_trial_feedback_result(result, parsed)))
+    try:
+        allowed = _support_request_allowed(bot, event, target)
+    except Exception:
+        logger.warning("NoneBot Triage maintenance rate limiter is unavailable")
+        await query_matcher.finish(UniMessage.text("问题维护入口暂时不可用，请稍后再试。"))
+    if not allowed:
+        await query_matcher.finish(UniMessage.text("请求过于频繁，请稍后再试。"))
+    try:
+        is_maintainer = bool(await SUPERUSER(bot, event))
+    except Exception:
+        logger.warning("NoneBot Triage problem-maintenance permission check failed")
+        is_maintainer = False
+    if not is_maintainer:
+        await query_matcher.finish(UniMessage.text("该命令仅供主人使用。"))
+
+    repository = plugin_runtime.bug_workflow_repository
+    try:
+        if not problem_id.available:
+            if action.available:
+                await query_matcher.finish(
+                    UniMessage.text(f"用法：{TRIAGE_COMMAND} {QUERY_COMMAND} [问题编号] [动作]")
+                )
+            problems = await repository.list_pending()
+            await _finish_bounded_query_messages(format_problem_list(problems))
+
+        selected_id = problem_id.result.strip().upper()
+        if BUG_PROBLEM_ID_PATTERN.fullmatch(selected_id) is None:
+            await query_matcher.finish(
+                UniMessage.text("问题编号格式不正确；请使用以 P- 开头的完整编号。")
+            )
+        if not action.available:
+            problem = await repository.get_problem(selected_id)
+            if problem is None:
+                await query_matcher.finish(UniMessage.text("没有找到这个问题编号。"))
+            await query_matcher.finish(UniMessage.text(format_problem_details(problem)))
+
+        try:
+            selected_action = ProblemMaintenanceAction(action.result.strip())
+        except ValueError:
+            await query_matcher.finish(
+                UniMessage.text("不支持这个动作；可用动作：确认Bug、确认非Bug、解决。")
+            )
+        actor_scope_hmac = plugin_runtime.bug_workflow_identity.digest(
+            "maintainer-actor",
+            adapter_name(bot),
+            str(bot.self_id),
+            event.get_user_id(),
+        )
+        idempotency_key = plugin_runtime.bug_workflow_identity.digest(
+            "maintainer-action",
+            adapter_name(bot),
+            str(bot.self_id),
+            _event_identity(event),
+            selected_id,
+            selected_action.value,
+        )
+        problem = await repository.apply_action(
+            selected_id,
+            selected_action,
+            actor_scope_hmac=actor_scope_hmac,
+            idempotency_key=idempotency_key,
+            occurred_at=datetime.now(UTC).isoformat(),
+        )
+        if problem is None:
+            await query_matcher.finish(UniMessage.text("没有找到这个问题编号。"))
+        action_message = {
+            ProblemMaintenanceAction.CONFIRM_BUG: "已确认这是 Bug。",
+            ProblemMaintenanceAction.CONFIRM_NOT_BUG: "已确认这不是 Bug。",
+            ProblemMaintenanceAction.RESOLVE: "已将问题标记为已解决。",
+        }[selected_action]
+        await query_matcher.finish(
+            UniMessage.text(f"{action_message}\n{format_problem_details(problem)}")
+        )
+    except FinishedException:
+        raise
+    except ProblemActionError:
+        await query_matcher.finish(UniMessage.text("当前问题状态不允许执行这个动作。"))
+    except BugWorkflowStoreError:
+        logger.exception("NoneBot Triage problem workflow transaction failed")
+        await query_matcher.finish(UniMessage.text("问题记录暂时不可用，请稍后再试。"))
+    except Exception:
+        logger.exception("NoneBot Triage problem maintenance failed")
+        await query_matcher.finish(UniMessage.text("问题记录暂时不可用，请稍后再试。"))
 
 
-@trial_stats_matcher.handle()
-async def handle_trial_stats() -> None:
-    await trial_stats_matcher.finish(
-        UniMessage.text(format_trial_summary(plugin_runtime.trials.summary()))
+async def _finish_bounded_query_messages(message: str, *, max_chars: int = 3_500) -> None:
+    chunks: list[str] = []
+    current = ""
+    for line in message.splitlines():
+        candidate = f"{current}\n{line}" if current else line
+        if current and len(candidate) > max_chars:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    for chunk in chunks[:-1]:
+        await query_matcher.send(UniMessage.text(chunk))
+    await query_matcher.finish(UniMessage.text(chunks[-1] if chunks else message))
+
+
+def _event_identity(event: Event) -> str:
+    for name in ("message_id", "id"):
+        value = getattr(event, name, None)
+        bounded = _bounded_message_reference(value)
+        if bounded is not None:
+            return f"{event.get_event_name()}:{bounded}"
+    timestamp = getattr(event, "time", None)
+    return f"{event.get_event_name()}:{event.get_user_id()}:{timestamp}:{id(event)}"
+
+
+@refresh_help_matcher.handle()
+async def handle_refresh_help(plugin_module: Match[str]) -> None:
+    selected = plugin_module.result.strip() if plugin_module.available else None
+    shadow = plugin_runtime.capability_shadow
+    if shadow is None:
+        await refresh_help_matcher.finish(UniMessage.text("帮助刷新不可用；现有帮助内容未被覆盖。"))
+    try:
+        result = await shadow.refresh_teaching(selected)
+    except Exception as error:
+        logger.warning(
+            "NoneBot Triage manual capability teaching refresh failed: plugin={} ({})",
+            selected or "all",
+            type(error).__name__,
+        )
+        await refresh_help_matcher.finish(UniMessage.text("帮助刷新失败；现有帮助内容未被覆盖。"))
+    scope = selected or "全部插件"
+    await refresh_help_matcher.finish(
+        UniMessage.text(
+            f"帮助刷新完成：{scope}；新生成 {result.generated_count}，"
+            f"复用 {result.cached_count}，关闭 {result.disabled_count}，"
+            f"跳过 {result.skipped_count}；参数化能力族 {result.family_eligible_count}，"
+            f"其中关闭 {result.family_disabled_count}，失败 {result.family_failed_count}。"
+        )
     )
 
 
 __all__ = (
-    "feedback_matcher",
     "plugin_runtime",
     "query_matcher",
+    "refresh_help_matcher",
     "support_matcher",
-    "trial_stats_matcher",
 )

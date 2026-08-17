@@ -225,7 +225,7 @@ class PydanticAIBugAssessmentAgent:
             raise BugAssessmentAgentError("bug assessment requires model tool support")
         output_mode = model.profile.get("default_structured_output_mode", "tool")
         if output_mode not in _ALLOWED_OUTPUT_MODES:
-            raise BugAssessmentAgentError("bug assessment output mode is not qualified")
+            raise BugAssessmentAgentError("bug assessment output mode is not supported")
         self._timeout_seconds = timeout_seconds
         self._max_output_tokens = max_output_tokens
         self._max_requests = max_requests

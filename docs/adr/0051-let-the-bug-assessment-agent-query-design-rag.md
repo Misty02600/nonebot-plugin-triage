@@ -90,8 +90,9 @@
 
 - **已确认**：Bug Agent 可以在有界只读工具集中查询设计 RAG 文档，用于取得预期行为证据。
 - **已实现**：Bug Agent 的 `query_design_evidence` 使用已安装且 ready 的版本化知识包 SQLite FTS，只返回
-  受控 `BugEvidence`，没有任意文件读取、在线下载或仓库遍历能力；工具每轮最多调用两次，并与源码、运行、
-  日志证据保持不同 kind。知识包缺失或检索失败按无证据处理，不阻止 Bot 启动。
+  受控 `BugEvidence`，没有任意文件读取、在线下载或仓库遍历能力；底层共享只读 reader 先按模型外固定的
+  组件、安装版本和文档来源类型返回普通知识命中，Bug 链再转换成内部调查证据。工具每轮最多调用两次，
+  并与源码、运行、日志证据保持不同 kind。知识包缺失或检索失败按无证据处理，不阻止 Bot 启动。
 - **已验证**：Bug task 的全新 16 条真实 held-out 包含设计合同、源码与运行证据组合，citation closure 为
   1.000；合成测试覆盖缺失知识包与只读检索。当前 reader 消费发布知识包中的受控正文与 revision，NoneBot
   文档由部署侧已安装 distribution 绑定 `component + exact version`，错误版本不会命中；尚未实现针对

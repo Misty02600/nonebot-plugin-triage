@@ -1131,6 +1131,9 @@ def test_public_guidance_rejects_conflicting_observed_command_headers() -> None:
 @pytest.mark.parametrize(
     ("factory", "entries", "expected"),
     [
+        ("on_startswith", ["提醒"], "开头触发：提醒"),
+        ("on_endswith", ["完成"], "结尾触发：完成"),
+        ("on_fullmatch", ["你好"], "完整匹配：你好"),
         ("on_keyword", ["提醒", "备忘"], "关键词：提醒、备忘"),
         ("on_regex", [r"^谁艾特我$"], r"正则触发：^谁艾特我$"),
     ],

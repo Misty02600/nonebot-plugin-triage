@@ -30,13 +30,14 @@ def test_chinese_prompt_uses_its_exact_product_qualification_gate() -> None:
     assert frozenset({qualification}) == QUALIFIED_SEMANTIC_TASKS
 
 
-def test_semantic_factory_requires_exact_task_qualification_before_secret() -> None:
-    with pytest.raises(SemanticRuntimeConfigurationError, match="not qualified"):
-        create_opencode_go_semantic_client_factory(
-            _config(),
-            environ={"OPENCODE_API_KEY": "SECRET_MUST_NOT_LEAK"},
-            qualified_tasks=frozenset(),
-        )
+def test_unverified_semantic_combination_remains_runnable() -> None:
+    factory = create_opencode_go_semantic_client_factory(
+        _config(),
+        environ={"OPENCODE_API_KEY": "test-only"},
+        qualified_tasks=frozenset(),
+    )
+
+    assert callable(factory)
 
 
 def test_semantic_factory_requires_opencode_key_without_exposing_it() -> None:
@@ -55,7 +56,7 @@ def test_semantic_factory_requires_opencode_key_without_exposing_it() -> None:
         ("nbtriage_model_max_output_tokens", 241, "240-token"),
     ],
 )
-def test_semantic_factory_requires_the_qualified_runtime_profile(
+def test_nonstandard_semantic_runtime_profile_is_unverified_but_runnable(
     field: str,
     value: int,
     message: str,
@@ -63,9 +64,11 @@ def test_semantic_factory_requires_the_qualified_runtime_profile(
     payload = _config().model_dump()
     payload[field] = value
 
-    with pytest.raises(SemanticRuntimeConfigurationError, match=message):
-        create_opencode_go_semantic_client_factory(
-            NBTriageConfig.model_validate(payload),
-            environ={"OPENCODE_API_KEY": "fixture-key"},
-            qualified_tasks=frozenset({OPENCODE_GO_SEMANTIC_QUALIFICATION}),
-        )
+    del message
+    factory = create_opencode_go_semantic_client_factory(
+        NBTriageConfig.model_validate(payload),
+        environ={"OPENCODE_API_KEY": "fixture-key"},
+        qualified_tasks=frozenset({OPENCODE_GO_SEMANTIC_QUALIFICATION}),
+    )
+
+    assert callable(factory)

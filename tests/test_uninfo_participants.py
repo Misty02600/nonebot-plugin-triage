@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
+from nonebot.adapters import Bot, Event
 
 from nbtriage.bug_conversation import BugConversationMessage, BugConversationPage
 from nonebot_plugin_triage.uninfo_participants import (
     _UninfoConversationReader,
+    enrich_conversation_with_uninfo,
 )
 
 
@@ -83,3 +87,32 @@ async def test_uninfo_enrichment_queries_only_missing_historical_members() -> No
     assert page.messages[1].sender_current_roles == ("ADMINISTRATOR",)
     assert page.messages[2].sender_current_roles == ()
     assert queried == ["other"]
+
+
+@pytest.mark.anyio
+async def test_uninfo_resolution_is_deferred_until_conversation_is_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def get_session(_bot: object, _event: object) -> None:
+        calls.append("get_session")
+        return None
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.uninfo_participants.import_module",
+        lambda _name: SimpleNamespace(
+            get_session=get_session,
+            get_interface=lambda _bot: None,
+        ),
+    )
+    reader = await enrich_conversation_with_uninfo(
+        cast(Bot, SimpleNamespace()),
+        cast(Event, SimpleNamespace()),
+        _Reader(),
+    )
+
+    assert reader is not None
+    assert calls == []
+    await reader.read_next()
+    assert calls == ["get_session"]

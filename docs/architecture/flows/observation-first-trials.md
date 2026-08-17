@@ -22,9 +22,6 @@ flowchart TD
     H --> I["仍返回相同公开受理回执"]
     J["SUPERUSER 报错查询"] --> K["白名单 IncidentSummary"]
     K --> L["trial summary_viewed 事件"]
-    M["SUPERUSER 报错反馈"] --> N{"有用 / 不完整 / 不正确"}
-    N --> O["revisioned feedback 事件"]
-    P["SUPERUSER 报错统计"] --> Q["活动 trial、失败、查询、聚类、反馈与 drop 计数"]
     T["离线 summarize-trials"] --> S["轮转窗口计数、覆盖率、入口延迟、时间范围、策略版本"]
 ```
 
@@ -80,11 +77,10 @@ LOCALSTORE_PLUGIN_DATA_DIR={"nonebot_plugin_triage":"/var/lib/nonebot/triage-wor
 ```
 
 - 普通用户当前不能通过 `triage` 创建 trial；未来若重新接入，仍必须使用显式授权入口；
-- 维护者查询：`@Bot 报错查询 <incident_id>`；
-- 维护者反馈：`@Bot 报错反馈 <incident_id> <有用|不完整|不正确>`；
-- 维护者统计：`@Bot 报错统计`。
+- 兼容维护者查询：`@Bot 报错查询 <incident_id>`；
+- 旧 `报错反馈` 与 `报错统计` 聊天入口已删除；离线窗口统计继续使用 `summarize-trials`。
 
-后三个入口在读取或修改 trial 状态前都要求 `SUPERUSER`。`trial_mode=off` 是默认值，不创建日志文件；启用
+兼容查询入口在读取 trial 状态前要求 `SUPERUSER`。`trial_mode=off` 是默认值，不创建日志文件；启用
 `observe` 也不会启用模型、Provider 密钥、工具或外部写操作。
 
 ## 上线前提与 smoke
@@ -98,8 +94,8 @@ LOCALSTORE_PLUGIN_DATA_DIR={"nonebot_plugin_triage":"/var/lib/nonebot/triage-wor
 
 当前中文 `support-semantic-v7-prompt-v5-zh` 已通过自己的 40 条独立 forward-heldout，可以按该精确组合进入
 受控模型 observation trial。Guidance Answer Agent、教学注释和 Bug Agent
-的中文 Prompt 同样仍是实验性，不能写成稳定能力。v7 也不再产生 incident action；旧 incident 查询、
-反馈与统计仍是兼容维护面。日志只出现当前 JSONL 与有界编号备份，且不含消息正文、平台身份、correlation
+的中文 Prompt 同样仍是实验性，不能写成稳定能力。v7 也不再产生 incident action；旧 incident 查询暂时保留
+为兼容维护面，反馈与统计聊天入口已删除。日志只出现当前 JSONL 与有界编号备份，且不含消息正文、平台身份、correlation
 ID、异常消息或 Provider 凭据。
 
 ## 离线汇总与故障处理

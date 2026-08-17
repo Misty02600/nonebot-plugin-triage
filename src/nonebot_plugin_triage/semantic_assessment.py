@@ -96,18 +96,13 @@ def create_semantic_assessment_service(
         return create_unavailable_semantic_assessment_service(
             timeout_seconds=config.nbtriage_model_timeout_seconds
         )
-    if config.nbtriage_model_backend != "opencode-go-chat":
-        return create_unavailable_semantic_assessment_service(
-            timeout_seconds=config.nbtriage_model_timeout_seconds
-        )
-
     from nonebot_plugin_triage.semantic_runtime import (
         SemanticRuntimeConfigurationError,
-        create_opencode_go_semantic_client_factory,
+        create_semantic_client_factory,
     )
 
     try:
-        client_factory = create_opencode_go_semantic_client_factory(config)
+        client_factory = create_semantic_client_factory(config)
     except SemanticRuntimeConfigurationError:
         return create_unavailable_semantic_assessment_service(
             timeout_seconds=config.nbtriage_model_timeout_seconds

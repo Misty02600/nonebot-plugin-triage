@@ -45,11 +45,11 @@ from nonebot_plugin_triage.capability_annotations import (
     CapabilityAnnotationEvidenceValidator,
     CapabilityAnnotationService,
 )
-from nonebot_plugin_triage.capability_help_display import (
-    CapabilityHelpDisplayWriter,
-    resolve_capability_help_display_data_dir,
-)
 from nonebot_plugin_triage.capability_snapshot import build_capability_snapshot
+from nonebot_plugin_triage.capability_teaching_outputs import (
+    CapabilityTeachingOutputWriter,
+    resolve_capability_teaching_data_dir,
+)
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
 from nonebot_plugin_triage.support_intake import (
     registered_public_alconna_capability_paths,
@@ -135,6 +135,19 @@ class PublicCapabilitySearch:
     annotations: tuple[CapabilityTeachingAnnotation, ...] = ()
 
 
+@dataclass(frozen=True)
+class CapabilityTeachingRefreshResult:
+    plugin_module: str | None
+    generated_count: int
+    cached_count: int
+    disabled_count: int
+    family_eligible_count: int
+    family_disabled_count: int
+    family_failed_count: int
+    skipped_count: int
+    files: tuple[Path, ...]
+
+
 class CapabilityShadowService:
     """构建部署本地能力影子索引，并在失败时保留最近一次完整版本。
 
@@ -152,7 +165,7 @@ class CapabilityShadowService:
         deployment_builder: DeploymentBuilder = build_capability_deployment,
         runtime_modules: Callable[[], Collection[str]] = _loaded_plugin_module_names,
         annotation_service: CapabilityAnnotationService | None = None,
-        help_display_writer: CapabilityHelpDisplayWriter | None = None,
+        teaching_output_writer: CapabilityTeachingOutputWriter | None = None,
     ) -> None:
         if isinstance(path, Path):
             self._path: Path | None = path
@@ -168,13 +181,14 @@ class CapabilityShadowService:
         self._deployment_builder = deployment_builder
         self._runtime_modules = runtime_modules
         self._annotation_service = annotation_service
-        self._help_display_writer = help_display_writer
+        self._teaching_output_writer = teaching_output_writer
         self._deployment: CapabilityDeployment | None = None
         self._latest_snapshot: CapabilitySnapshot | None = None
         self._status = CapabilityShadowStatus(
             served_generation=served.generation,
             partial=served.partial,
         )
+        self._teaching_refresh_lock = asyncio.Lock()
 
     def _resolved_path(self) -> Path:
         if self._path is None:
@@ -401,33 +415,97 @@ class CapabilityShadowService:
         await asyncio.to_thread(self.refresh_safely)
         snapshot = self._latest_snapshot
         if self._annotation_service is not None and snapshot is not None:
+            async with self._teaching_refresh_lock:
+                await self._refresh_teaching_outputs(snapshot)
+
+    async def refresh_teaching(
+        self,
+        plugin_module: str | None = None,
+    ) -> CapabilityTeachingRefreshResult:
+        """由已鉴权维护命令强制重分析教学内容，并保留失败前活动 generation。"""
+        if self._annotation_service is None or self._teaching_output_writer is None:
+            raise RuntimeError("capability teaching model is unavailable")
+        async with self._teaching_refresh_lock:
+            await asyncio.to_thread(self.refresh_safely)
+            snapshot = self._latest_snapshot
+            if snapshot is None or snapshot.manifest.partial:
+                raise RuntimeError("capability snapshot is unavailable or partial")
+            status = await self._annotation_service.refresh(
+                snapshot,
+                plugin_module=plugin_module,
+                force=True,
+            )
+            if status.failed_count:
+                raise RuntimeError("one or more capability teaching analyses failed")
             try:
-                await self._annotation_service.refresh(snapshot)
+                paths = await asyncio.to_thread(
+                    self._teaching_output_writer.refresh,
+                    snapshot,
+                    self._annotation_service.get,
+                )
+            except Exception:
+                self._annotation_service.deactivate()
+                raise
+            logger.info(
+                "NoneBot Triage capability teaching was manually refreshed: plugin={}, "
+                "generated={}, cached={}, skipped={}, files={}",
+                plugin_module or "all",
+                status.generated_count,
+                status.cached_count,
+                status.skipped_count,
+                len(paths),
+            )
+            return CapabilityTeachingRefreshResult(
+                plugin_module=plugin_module,
+                generated_count=status.generated_count,
+                cached_count=status.cached_count,
+                disabled_count=status.disabled_count,
+                family_eligible_count=status.family_eligible_count,
+                family_disabled_count=status.family_disabled_count,
+                family_failed_count=status.family_failed_count,
+                skipped_count=status.skipped_count,
+                files=paths,
+            )
+
+    async def _refresh_teaching_outputs(self, snapshot: CapabilitySnapshot) -> None:
+        if self._annotation_service is None:
+            return
+        try:
+            status = await self._annotation_service.refresh(snapshot)
+        except Exception as error:
+            logger.warning(
+                "NoneBot Triage capability annotation refresh failed; "
+                "the deterministic capability index remains active ({})",
+                type(error).__name__,
+            )
+            return
+        if status.failed_count:
+            logger.warning(
+                "NoneBot Triage capability teaching output was not switched because "
+                "one or more analyses failed: failed={}",
+                status.failed_count,
+            )
+            return
+        if self._teaching_output_writer is not None:
+            try:
+                paths = await asyncio.to_thread(
+                    self._teaching_output_writer.refresh,
+                    snapshot,
+                    self._annotation_service.get,
+                )
             except Exception as error:
+                self._annotation_service.deactivate()
                 logger.warning(
-                    "NoneBot Triage capability annotation refresh failed; "
-                    "the deterministic capability index remains active ({})",
+                    "NoneBot Triage capability teaching output refresh failed; "
+                    "the model-generated Answer view was deactivated and the previous "
+                    "file generation remains active ({})",
                     type(error).__name__,
                 )
-                return
-            if self._help_display_writer is not None:
-                try:
-                    paths = await asyncio.to_thread(
-                        self._help_display_writer.refresh,
-                        snapshot,
-                        self._annotation_service.get,
-                    )
-                except Exception as error:
-                    logger.warning(
-                        "NoneBot Triage capability help display refresh failed; "
-                        "annotations remain active ({})",
-                        type(error).__name__,
-                    )
-                else:
-                    logger.info(
-                        "NoneBot Triage capability help displays refreshed: files={}",
-                        len(paths),
-                    )
+            else:
+                logger.info(
+                    "NoneBot Triage capability teaching outputs refreshed: files={}",
+                    len(paths),
+                )
 
     def _resolve_path_safely(self) -> bool:
         try:
@@ -461,7 +539,7 @@ def register_capability_shadow(
     *,
     startup_registrar: Callable[[Callable[[], object]], object] | None = None,
     cache_file_resolver: Callable[[str], Path] = _resolve_capability_shadow_cache_file,
-    help_display_directory_resolver: Callable[[], Path] = resolve_capability_help_display_data_dir,
+    teaching_output_directory_resolver: Callable[[], Path] = resolve_capability_teaching_data_dir,
     annotation_client_factory: Callable[[], CapabilityAnalysisClient] | None = None,
     config_policy: ConfigValuePolicy | None = None,
     annotation_analysis_revision: str | None = None,
@@ -473,7 +551,7 @@ def register_capability_shadow(
 
         startup_registrar = get_driver().on_startup
     annotation_service = None
-    help_display_writer = None
+    teaching_output_writer = None
     if annotation_client_factory is not None:
         if config_policy is None or annotation_analysis_revision is None:
             raise ValueError("capability annotations require config policy and analysis revision")
@@ -484,11 +562,11 @@ def register_capability_shadow(
             analysis_revision=annotation_analysis_revision,
             evidence_validator=annotation_evidence_validator,
         )
-        help_display_writer = CapabilityHelpDisplayWriter(help_display_directory_resolver)
+        teaching_output_writer = CapabilityTeachingOutputWriter(teaching_output_directory_resolver)
     service = CapabilityShadowService(
         lambda: cache_file_resolver(_CAPABILITY_SHADOW_FILENAME),
         annotation_service=annotation_service,
-        help_display_writer=help_display_writer,
+        teaching_output_writer=teaching_output_writer,
     )
     background_tasks: set[asyncio.Task[None]] = set()
 
@@ -630,15 +708,17 @@ def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
         return ""
     lines = [header]
     description = _public_claim_text(primary.claims, "description", limit=240)
-    if description is None and annotation is not None:
-        description = annotation.summary
+    if description is None and annotation is not None and annotation.entries:
+        description = annotation.entries[0].summary
     if description:
         lines.append(description)
     usage = _public_claim_text(primary.claims, "usage", limit=240)
+    rendered_usages: tuple[str, ...] = ()
     if usage:
         lines.append(f"用法：{usage}")
-    elif annotation is not None and annotation.usages:
-        rendered_usages = tuple(item.replace("{command}", header) for item in annotation.usages)
+    elif annotation is not None:
+        rendered_usages = tuple(usage for entry in annotation.entries for usage in entry.usages)
+    if not usage and annotation is not None and rendered_usages:
         lines.append(f"用法：{' / '.join(rendered_usages)}")
         usage = rendered_usages[0]
     annotation_guidance = _annotation_guidance(annotation)
@@ -719,6 +799,7 @@ def build_public_guidance_request(
         _append_annotation_guidance_facts(
             facts,
             capability=label,
+            invocation=_observed_invocation_header(record.claims) or label,
             annotation=annotations.get(record.capability_id),
         )
     normalized_question = _safe_text(question, limit=2_000)
@@ -736,42 +817,72 @@ def _append_annotation_guidance_facts(
     facts: list[PublicGuidanceFact],
     *,
     capability: str,
+    invocation: str,
     annotation: CapabilityTeachingAnnotation | None,
 ) -> None:
     """把公开教学注释收窄为当前 Answer Agent 已支持的事实字段。"""
     if annotation is None:
         return
-    if annotation.summary:
-        _append_public_guidance_fact(
-            facts,
-            capability=capability,
-            field=PublicGuidanceFactField.DESCRIPTION,
-            text=annotation.summary,
-            basis=PublicGuidanceFactBasis.DECLARED,
-        )
-    for usage in annotation.usages:
-        _append_public_guidance_fact(
-            facts,
-            capability=capability,
-            field=PublicGuidanceFactField.USAGE,
-            text=usage.replace("{command}", capability),
-            basis=PublicGuidanceFactBasis.DECLARED,
-        )
-    for text in (
-        *annotation.synonyms,
-        *annotation.supported_subjects,
-        *annotation.input_requirements,
-        *annotation.behavior_boundaries,
-        *(item.text for item in annotation.requirements),
-        *((annotation.interaction.steps) if annotation.interaction is not None else ()),
-    ):
-        _append_public_guidance_fact(
-            facts,
-            capability=capability,
-            field=PublicGuidanceFactField.DESCRIPTION,
-            text=text,
-            basis=PublicGuidanceFactBasis.DECLARED,
-        )
+    for entry in annotation.entries:
+        entry_capability = entry.name or capability
+        if entry.summary:
+            _append_public_guidance_fact(
+                facts,
+                capability=entry_capability,
+                field=PublicGuidanceFactField.DESCRIPTION,
+                text=entry.summary,
+                basis=PublicGuidanceFactBasis.DECLARED,
+            )
+        for usage in entry.usages:
+            _append_public_guidance_fact(
+                facts,
+                capability=entry_capability,
+                field=PublicGuidanceFactField.USAGE,
+                text=usage,
+                basis=PublicGuidanceFactBasis.DECLARED,
+            )
+        for text in (
+            *entry.synonyms,
+            *entry.supported_subjects,
+            *entry.input_requirements,
+            *entry.behavior_boundaries,
+            *(item.text for item in entry.requirements),
+        ):
+            _append_public_guidance_fact(
+                facts,
+                capability=entry_capability,
+                field=PublicGuidanceFactField.DESCRIPTION,
+                text=text,
+                basis=PublicGuidanceFactBasis.DECLARED,
+            )
+        if entry.answer_markdown:
+            for text in _answer_markdown_facts(entry.answer_markdown):
+                _append_public_guidance_fact(
+                    facts,
+                    capability=entry_capability,
+                    field=PublicGuidanceFactField.DESCRIPTION,
+                    text=text,
+                    basis=PublicGuidanceFactBasis.DECLARED,
+                )
+
+
+def _answer_markdown_facts(document: str) -> tuple[str, ...]:
+    result: list[str] = []
+    for raw_line in document.splitlines():
+        line = raw_line.strip()
+        while line.startswith("#"):
+            line = line[1:].lstrip()
+        if line.startswith(("- ", "* ")):
+            line = line[2:].strip()
+        line = " ".join(line.split())
+        if not line:
+            continue
+        while line:
+            result.append(line[:400])
+            line = line[400:]
+        if len(result) >= 16:
+            break
+    return tuple(dict.fromkeys(result))
 
 
 def _append_public_guidance_fact(
@@ -807,10 +918,12 @@ def _annotation_guidance(
         return ()
     return tuple(
         dict.fromkeys(
-            (
-                *annotation.input_requirements,
-                *annotation.behavior_boundaries,
-                *(item.text for item in annotation.requirements),
+            text
+            for entry in annotation.entries
+            for text in (
+                *entry.input_requirements,
+                *entry.behavior_boundaries,
+                *(item.text for item in entry.requirements),
             )
         )
     )
@@ -836,7 +949,11 @@ def _augment_hits_with_annotation_terms(
         annotation = annotation_lookup(record.capability_id)
         if annotation is None:
             continue
-        terms = (*annotation.synonyms, *annotation.supported_subjects)
+        terms = tuple(
+            term
+            for entry in annotation.entries
+            for term in (*entry.synonyms, *entry.supported_subjects)
+        )
         if not any(
             (term_normalized := " ".join(term.casefold().split()))
             and (term_normalized in normalized_query or normalized_query in term_normalized)
@@ -910,6 +1027,21 @@ def _observed_command_header(claims: tuple[Claim, ...]) -> str | None:
     return next(iter(candidates)) if len(candidates) == 1 else None
 
 
+def _observed_invocation_header(claims: tuple[Claim, ...]) -> str | None:
+    candidates: set[str] = set()
+    for claim in claims:
+        if (
+            claim.field != "invocation.header"
+            or claim.basis is not ClaimBasis.OBSERVED
+            or not isinstance(claim.value, str)
+        ):
+            continue
+        cleaned = _safe_trigger_text(claim.value)
+        if cleaned is not None and len(cleaned) <= 64:
+            candidates.add(cleaned)
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
 def _public_capability_label(record: CapabilityRecord) -> str | None:
     header = _observed_command_header(record.claims)
     if header is not None:
@@ -921,6 +1053,15 @@ def _public_capability_label(record: CapabilityRecord) -> str | None:
     if factory == "on_keyword" and all(len(entry) <= 32 for entry in entries):
         suffix = " 等" if len(entries) > 4 else ""
         return f"关键词：{'、'.join(entries[:4])}{suffix}"
+    if factory == "on_startswith" and all(len(entry) <= 32 for entry in entries):
+        suffix = " 等" if len(entries) > 4 else ""
+        return f"开头触发：{'、'.join(entries[:4])}{suffix}"
+    if factory == "on_endswith" and all(len(entry) <= 32 for entry in entries):
+        suffix = " 等" if len(entries) > 4 else ""
+        return f"结尾触发：{'、'.join(entries[:4])}{suffix}"
+    if factory == "on_fullmatch" and all(len(entry) <= 32 for entry in entries):
+        suffix = " 等" if len(entries) > 4 else ""
+        return f"完整匹配：{'、'.join(entries[:4])}{suffix}"
     if factory == "on_regex" and len(entries) == 1:
         return f"正则触发：{entries[0]}"
     return None
@@ -955,7 +1096,8 @@ def _observed_trigger_factory(claims: tuple[Claim, ...]) -> str | None:
     if (
         len(factories) != 1
         or not isinstance(factories[0], str)
-        or factories[0] not in {"on_keyword", "on_regex"}
+        or factories[0]
+        not in {"on_endswith", "on_fullmatch", "on_keyword", "on_regex", "on_startswith"}
     ):
         return None
     return factories[0]

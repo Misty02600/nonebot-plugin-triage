@@ -23,6 +23,7 @@ from nbtriage.capability_analysis import (
 )
 from nbtriage.capability_annotations import (
     CapabilityTeachingAnnotation,
+    CapabilityTeachingEntry,
     CapabilityTeachingRequirement,
 )
 from nonebot_plugin_triage.capability_help_display import (
@@ -60,14 +61,20 @@ def _record(
 def _annotation(
     capability_id: str,
     *,
-    usages: tuple[str, ...] = ("{command} [图片]", "[回复图片] {command}"),
+    usages: tuple[str, ...] = ("搜图 [图片]", "[回复图片] 搜图"),
 ) -> CapabilityTeachingAnnotation:
     return CapabilityTeachingAnnotation(
         capability_id=capability_id,
         request_fingerprint="1" * 64,
-        summary="搜索图片出处。",
-        usages=usages,
-        behavior_boundaries=("没有图片时不会开始搜索。",),
+        entries=(
+            CapabilityTeachingEntry(
+                entry_id="root",
+                name="搜图",
+                summary="搜索图片出处。",
+                usages=usages,
+                behavior_boundaries=("没有图片时不会开始搜索。",),
+            ),
+        ),
     )
 
 
@@ -125,6 +132,86 @@ def test_writer_generates_current_runtime_plugins_in_separate_yaml_files(
     assert not (directory / "nonebot_plugin_secret.yml").exists()
 
 
+def test_writer_renders_subcommands_as_separate_help_entries(tmp_path: Path) -> None:
+    record = _record(
+        "plugin.repo:matcher.root",
+        module_name="plugin_repo",
+        command="仓库",
+    )
+    annotation = CapabilityTeachingAnnotation(
+        capability_id=record.capability_id,
+        request_fingerprint="4" * 64,
+        entries=(
+            CapabilityTeachingEntry(
+                entry_id="search",
+                name="搜索仓库",
+                usages=("仓库 搜索 <关键词>", "仓库 搜索 <关键词> [--limit <数量>]"),
+                summary="按关键词搜索仓库。",
+            ),
+            CapabilityTeachingEntry(
+                entry_id="detail",
+                name="仓库详情",
+                usages=("仓库 详情 <编号>",),
+                summary="按编号查看仓库详情。",
+            ),
+        ),
+    )
+
+    path = CapabilityHelpDisplayWriter(tmp_path).refresh(
+        CapabilitySnapshot.create((record,)),
+        lambda _capability_id: annotation,
+    )[0]
+    commands = yaml.safe_load(path.read_text(encoding="utf-8"))["commands"]
+
+    assert [item["name"] for item in commands] == ["仓库详情", "搜索仓库"]
+    assert {item["display"] for item in commands} == {
+        "仓库 详情 <编号>",
+        "仓库 搜索 <关键词>",
+    }
+
+
+def test_writer_projects_a_safe_literal_trigger_as_the_invocation(tmp_path: Path) -> None:
+    record = CapabilityRecord(
+        capability_id="plugin.greeting:matcher.hello",
+        owner="plugin.greeting",
+        kind="message",
+        disclosure=Disclosure.PUBLIC,
+        platform_scope=PlatformScope.all(),
+        state=RecordState.VERIFIED,
+        claims=(
+            Claim("plugin.module_name", "plugin_greeting", ClaimBasis.OBSERVED),
+            Claim("invocation.header", "你好", ClaimBasis.OBSERVED),
+            Claim("trigger.factory", "on_fullmatch", ClaimBasis.OBSERVED),
+            Claim("trigger.entries", ["你好"], ClaimBasis.OBSERVED),
+        ),
+    )
+    annotation = CapabilityTeachingAnnotation(
+        capability_id=record.capability_id,
+        request_fingerprint="3" * 64,
+        entries=(
+            CapabilityTeachingEntry(
+                entry_id="root",
+                name="你好",
+                summary="向 Bot 打招呼。",
+                usages=("你好",),
+            ),
+        ),
+    )
+
+    path = CapabilityHelpDisplayWriter(tmp_path).refresh(
+        CapabilitySnapshot.create((record,)),
+        lambda _capability_id: annotation,
+    )[0]
+    command = yaml.safe_load(path.read_text(encoding="utf-8"))["commands"][0]
+
+    assert command == {
+        "name": "你好",
+        "display": "你好",
+        "usages": ["你好"],
+        "description": "向 Bot 打招呼",
+    }
+
+
 def test_writer_keeps_last_files_when_snapshot_is_partial(tmp_path: Path) -> None:
     directory = tmp_path / "help-display"
     directory.mkdir()
@@ -172,24 +259,30 @@ def test_writer_projects_any_rate_limit_to_migut_help_cooldown_marker(
     annotation = CapabilityTeachingAnnotation(
         capability_id=record.capability_id,
         request_fingerprint="2" * 64,
-        usages=("{command} [图片]",),
-        requirements=(
-            CapabilityTeachingRequirement(
-                kind=SemanticConstraintKind.ROLE,
-                text="仅普通成员可用。",
-                role=TeachingRole.CUSTOM,
-            ),
-            CapabilityTeachingRequirement(
-                kind=SemanticConstraintKind.RATE_LIMIT,
-                text="每名用户连续使用需要等待冷却。",
-                rate_limit_policy=RateLimitPolicy.COOLDOWN,
-                rate_limit_scope=RateLimitScope.USER,
-            ),
-            CapabilityTeachingRequirement(
-                kind=SemanticConstraintKind.RATE_LIMIT,
-                text="全局并发达到上限时需要稍后再试。",
-                rate_limit_policy=RateLimitPolicy.CONCURRENCY,
-                rate_limit_scope=RateLimitScope.GLOBAL,
+        entries=(
+            CapabilityTeachingEntry(
+                entry_id="root",
+                name="搜图",
+                usages=("搜图 [图片]",),
+                requirements=(
+                    CapabilityTeachingRequirement(
+                        kind=SemanticConstraintKind.ROLE,
+                        text="仅普通成员可用。",
+                        role=TeachingRole.CUSTOM,
+                    ),
+                    CapabilityTeachingRequirement(
+                        kind=SemanticConstraintKind.RATE_LIMIT,
+                        text="每名用户连续使用需要等待冷却。",
+                        rate_limit_policy=RateLimitPolicy.COOLDOWN,
+                        rate_limit_scope=RateLimitScope.USER,
+                    ),
+                    CapabilityTeachingRequirement(
+                        kind=SemanticConstraintKind.RATE_LIMIT,
+                        text="全局并发达到上限时需要稍后再试。",
+                        rate_limit_policy=RateLimitPolicy.CONCURRENCY,
+                        rate_limit_scope=RateLimitScope.GLOBAL,
+                    ),
+                ),
             ),
         ),
     )

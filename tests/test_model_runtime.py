@@ -80,23 +80,17 @@ def test_opencode_go_transport_is_owned_only_by_semantic_runtime() -> None:
     assert create_model_service(config, environ={}) is None
 
 
-def test_unqualified_model_fails_before_dependency_or_secret_lookup(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    secret = "UNQUALIFIED_SECRET_MUST_NOT_LEAK"
+def test_unverified_model_uses_the_same_provider_factory() -> None:
+    client = object()
+    service = create_model_service(
+        _configured_transport(),
+        environ={"ANTHROPIC_API_KEY": "test-only"},
+        qualified_models=frozenset(),
+        factories={"anthropic-messages": lambda **_: client},  # type: ignore[dict-item]
+    )
 
-    def reject_import(_: str) -> None:
-        raise AssertionError("unqualified model imported a provider")
-
-    monkeypatch.setattr(model_runtime, "import_module", reject_import)
-
-    with pytest.raises(ModelRuntimeConfigurationError, match="not qualified") as captured:
-        create_model_service(
-            _configured_transport(),
-            environ={"ANTHROPIC_API_KEY": secret},
-        )
-
-    assert secret not in str(captured.value)
+    assert service is not None
+    assert service.create_step_client() is client
 
 
 def test_qualified_model_reports_missing_provider_extra_without_secret(
@@ -206,3 +200,22 @@ def test_plugin_runtime_owns_optional_model_service(monkeypatch: pytest.MonkeyPa
     assert runtime.model_service is service
     assert isinstance(runtime.semantic_assessment_service, SemanticAssessmentService)
     assert runtime.config_value_policy.is_restricted("discord_bots__token") is True
+
+
+def test_plugin_runtime_degrades_when_legacy_model_service_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENCODE_API_KEY", "fixture-opencode-key")
+
+    def unavailable(_: NBTriageConfig) -> None:
+        raise ModelRuntimeConfigurationError("PRIVATE_DETAIL_MUST_NOT_LEAK")
+
+    runtime = create_plugin_runtime(
+        NBTriageConfig(
+            nbtriage_model_backend="opencode-go-chat",
+            nbtriage_model_name="deepseek-v4-flash",
+        ),
+        model_service_factory=unavailable,
+    )
+
+    assert runtime.model_service is None

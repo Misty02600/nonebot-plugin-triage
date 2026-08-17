@@ -76,6 +76,9 @@
   `admin` / `owner`；源码提取保留 import provenance，避免本地同名函数被误认。
 - `nbtriage.capability_source_evidence` 已删除通用 limiter 名称候选。
 - Answer facts、注释同义词 / 主题补召回和独立帮助 YAML projector 已消费新结构。
+- Runtime 记录现以独立 `invocation.header` 统一命令头与可直接发送的字面触发锚点；NoneBot 命令同时记录
+  当前进程的 `command_start` / `command_sep`，`on_startswith / on_endswith / on_fullmatch / on_keyword`
+  可以进入教学，正则、事件类型和无确定触发形式的被动 Matcher 仍失败关闭。
 - 用法输出现会拒绝把“后发送页码”等多轮说明写入 `usages`，并要求 `[回复图片]` 等回复上下文位于命令
   之前；省略媒体后 Bot 仍会引导补充时，紧凑用法使用 `[图片]` 而不是 `<图片>`。
 - 独立帮助 YAML 的 description 只直出一句 summary，并补充无法由现有展示字段表达的 custom 角色与详细
@@ -83,8 +86,8 @@
 
 ## 相关决定
 
-- [ADR-0027](0027-separate-public-guidance-from-maintainer-explanation.md)
-- [ADR-0032](0032-reconcile-declared-artifact-and-runtime-capability-evidence.md)
+- [ADR-0027](0027-constrain-guidance-with-facts-not-fixed-wording.md)
+- [ADR-0032](0032-separate-capability-audience-analysis-and-platform-status.md)
 - [ADR-0036](0036-keep-capability-shadow-deterministic-and-record-oriented.md)
 - [ADR-0055](0055-use-ast-grep-for-matcher-source-shape-extraction.md)
 - [ADR-0058](0058-use-deterministic-evidence-and-bounded-navigation-for-teaching-annotations.md)

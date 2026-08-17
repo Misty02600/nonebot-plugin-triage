@@ -1,5 +1,8 @@
 # ADR-0059：跨 Agent 链路共享只读证据访问工具
 
+> 2026-08-17：[ADR-0084](0084-install-pydantic-ai-control-plane-by-default-and-keep-providers-and-adapters-optional.md)
+> 将本 ADR 的 Harness 与 Jedi 从模型 extra 移入基础依赖；工具职责与安全边界不变。
+
 | 状态 | 决策日期 |
 |---|---|
 | 已采纳；教学 Agent 已接线，Bug 复用与真实模型重新资格仍待完成 | 2026-08-14 |

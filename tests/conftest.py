@@ -10,6 +10,8 @@ from nonebot.adapters.onebot.v11 import Adapter
 os.environ["ENVIRONMENT"] = "test"
 # 隔离维护者本地 `.env` 中可能残留的已删除 trial 路径；迁移错误由配置单测直接覆盖。
 os.environ["NBTRIAGE_TRIAL_LOG_PATH"] = ""
+# 普通测试不访问公开知识包 catalog；默认自动更新由专用运行时测试覆盖。
+os.environ["NBTRIAGE_KNOWLEDGE_PACK_AUTO_UPDATE"] = "false"
 # 测试使用假的合格配置覆盖模型增强路径，但不启动真实 Provider 请求。
 # 商城式无模型配置导入由独立子进程用例覆盖。
 os.environ["NBTRIAGE_MODEL_BACKEND"] = "opencode-go-chat"
@@ -17,6 +19,9 @@ os.environ["NBTRIAGE_MODEL_NAME"] = "deepseek-v4-flash"
 os.environ["NBTRIAGE_MODEL_TIMEOUT_SECONDS"] = "60"
 os.environ["NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS"] = "240"
 os.environ["OPENCODE_API_KEY"] = "test-only-not-a-secret"
+# 普通测试使用独立内存数据库；迁移 upgrade/check 由专用子进程用例验证。
+os.environ["SQLALCHEMY_DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+os.environ["ALEMBIC_STARTUP_CHECK"] = "false"
 
 
 def pytest_configure() -> None:

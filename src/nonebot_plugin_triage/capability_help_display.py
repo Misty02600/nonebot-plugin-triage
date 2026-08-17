@@ -21,8 +21,14 @@ from nbtriage.capabilities import (
     PlatformScopeKind,
     RecordState,
 )
-from nbtriage.capability_analysis import SemanticConstraintKind, TeachingRole
-from nbtriage.capability_annotations import CapabilityTeachingAnnotation
+from nbtriage.capability_analysis import (
+    SemanticConstraintKind,
+    TeachingRole,
+)
+from nbtriage.capability_annotations import (
+    CapabilityTeachingAnnotation,
+    CapabilityTeachingEntry,
+)
 
 _DISPLAY_DIRECTORY_NAME = "help-display"
 _GENERATED_HEADER = "# generated-by: nonebot-plugin-triage/capability-help-display-v1"
@@ -191,60 +197,68 @@ def build_capability_help_displays(
     annotation_lookup: CapabilityAnnotationLookup,
 ) -> tuple[CapabilityHelpDisplayPlugin, ...]:
     grouped: dict[str, list[tuple[CapabilityRecord, CapabilityTeachingAnnotation]]] = {}
+    seen_units: set[tuple[str, str]] = set()
     for record in sorted(snapshot.records, key=lambda item: item.capability_id):
         if not _record_is_displayable(record):
             continue
         annotation = annotation_lookup(record.capability_id)
-        if annotation is None or annotation.capability_id != record.capability_id:
+        if annotation is None:
             continue
         module_name = _observed_text(record, "plugin.module_name")
-        command = _observed_text(record, "command.header")
-        if module_name is None or command is None:
+        if module_name is None or not annotation.knowledge_enabled or not annotation.entries:
             continue
         try:
             _module_filename(module_name)
-            _display_text(command, "command name", max_length=96)
         except CapabilityHelpDisplayError:
             continue
+        unit_key = (module_name, annotation.capability_id)
+        if unit_key in seen_units:
+            continue
+        seen_units.add(unit_key)
         grouped.setdefault(module_name, []).append((record, annotation))
 
     plugins: list[CapabilityHelpDisplayPlugin] = []
     for module_name, entries in sorted(grouped.items(), key=lambda item: item[0].casefold()):
         commands: dict[tuple[str, str], CapabilityHelpDisplayCommand] = {}
-        for record, annotation in entries:
-            command = _observed_text(record, "command.header")
-            if command is None:
-                continue
-            usages = _render_usages(command, annotation.usages)
-            display = usages[0]
-            description = _annotation_description(annotation)
-            has_cd = any(
-                item.kind is SemanticConstraintKind.RATE_LIMIT for item in annotation.requirements
-            )
-            required_role = _required_role(annotation)
-            permission = _migut_permission(required_role)
-            key = (command, "\x1f".join(usages))
-            existing = commands.get(key)
-            if existing is None:
-                commands[key] = CapabilityHelpDisplayCommand(
-                    command,
-                    display,
-                    usages,
-                    description,
-                    required_role,
-                    permission,
-                    True if has_cd else None,
+        for _record, annotation in entries:
+            for entry in annotation.entries:
+                command = entry.name
+                if command is None:
+                    continue
+                try:
+                    _display_text(command, "command name", max_length=96)
+                    usages = _render_usages(entry.usages)
+                except CapabilityHelpDisplayError:
+                    continue
+                display = usages[0]
+                description = _annotation_description(entry)
+                has_cd = any(
+                    item.kind is SemanticConstraintKind.RATE_LIMIT for item in entry.requirements
                 )
-            elif description and description != existing.description:
-                commands[key] = CapabilityHelpDisplayCommand(
-                    command,
-                    display,
-                    usages,
-                    _join_clauses((existing.description, description), max_length=400),
-                    existing.required_role or required_role,
-                    existing.permission or permission,
-                    True if existing.has_cd or has_cd else None,
-                )
+                required_role = _required_role(entry)
+                permission = _migut_permission(required_role)
+                key = (command, "\x1f".join(usages))
+                existing = commands.get(key)
+                if existing is None:
+                    commands[key] = CapabilityHelpDisplayCommand(
+                        command,
+                        display,
+                        usages,
+                        description,
+                        required_role,
+                        permission,
+                        True if has_cd else None,
+                    )
+                elif description and description != existing.description:
+                    commands[key] = CapabilityHelpDisplayCommand(
+                        command,
+                        display,
+                        usages,
+                        _join_clauses((existing.description, description), max_length=400),
+                        existing.required_role or required_role,
+                        existing.permission or permission,
+                        True if existing.has_cd or has_cd else None,
+                    )
         if not commands:
             continue
         plugins.append(
@@ -304,19 +318,15 @@ def _plugin_name(module_name: str, records: tuple[CapabilityRecord, ...]) -> str
     return next(iter(names)) if len(names) == 1 else module_name
 
 
-def _render_usages(command: str, patterns: tuple[str, ...]) -> tuple[str, ...]:
-    source = patterns or ("{command}",)
-    return tuple(
-        _display_text(
-            pattern.replace("{command}", command),
-            "command usage",
-            max_length=256,
-        )
-        for pattern in source
-    )
+def _render_usages(
+    patterns: tuple[str, ...],
+) -> tuple[str, ...]:
+    if not patterns:
+        raise CapabilityHelpDisplayError("teaching entry has no usages")
+    return tuple(_display_text(pattern, "command usage", max_length=256) for pattern in patterns)
 
 
-def _annotation_description(annotation: CapabilityTeachingAnnotation) -> str:
+def _annotation_description(annotation: CapabilityTeachingEntry) -> str:
     clauses: list[str] = []
     if annotation.summary:
         clauses.append(annotation.summary)
@@ -329,7 +339,7 @@ def _annotation_description(annotation: CapabilityTeachingAnnotation) -> str:
     return _join_clauses(tuple(clauses), max_length=400)
 
 
-def _required_role(annotation: CapabilityTeachingAnnotation) -> TeachingRole | None:
+def _required_role(annotation: CapabilityTeachingEntry) -> TeachingRole | None:
     roles = tuple(
         item.role
         for item in annotation.requirements

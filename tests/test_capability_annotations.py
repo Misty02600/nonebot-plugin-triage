@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from nbtriage.capabilities import (
+    AnalysisIssue,
     CapabilityRecord,
     CapabilitySnapshot,
     Claim,
@@ -14,19 +15,20 @@ from nbtriage.capabilities import (
     RecordState,
 )
 from nbtriage.capability_analysis import (
+    CapabilityAnalysisEntryOutput,
     CapabilityAnalysisOutput,
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
     CapabilityIdentity,
+    CapabilityInvocationMode,
+    CapabilityInvocationTarget,
     FakeCapabilityAnalysisClient,
-    InteractionMode,
     RateLimitPolicy,
     RateLimitScope,
     SemanticClaim,
     SemanticClaimKind,
     SemanticConstraint,
     SemanticConstraintKind,
-    SemanticInteraction,
     TeachingRole,
 )
 from nbtriage.capability_annotations import (
@@ -36,8 +38,14 @@ from nbtriage.capability_annotations import (
     CapabilityTeachingAnnotation,
     project_capability_annotation,
 )
+from nonebot_plugin_triage.capability_analysis_adapter import (
+    ParameterizedHandlerCodeIdentity,
+)
 from nonebot_plugin_triage.capability_annotation_runtime import (
+    CAPABILITY_ANNOTATION_EVALUATION,
     CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS,
+    OPENCODE_GO_CAPABILITY_ANNOTATION_QUALIFICATION,
+    QUALIFIED_CAPABILITY_ANNOTATION_TASKS,
     CapabilityAnnotationRuntimeConfigurationError,
     create_capability_annotation_client_factory,
 )
@@ -58,29 +66,41 @@ def _request(capability_id: str = "command:image") -> CapabilityAnalysisRequest:
                 "plugin.image:search:12",
             ),
         ),
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "搜图",
+            ),
+        ),
     )
 
 
-def _output(statement: str = "根据图片查找相似内容。") -> CapabilityAnalysisOutput:
-    return CapabilityAnalysisOutput(
+def _entry(
+    *extra_claims: SemanticClaim,
+    constraints: tuple[SemanticConstraint, ...] = (),
+    entry_id: str = "root",
+) -> CapabilityAnalysisEntryOutput:
+    return CapabilityAnalysisEntryOutput(
+        entry_id=entry_id,
         claims=(
+            SemanticClaim(SemanticClaimKind.NAME, "图片搜索", ("evidence-handler",)),
             SemanticClaim(
                 SemanticClaimKind.SUMMARY,
-                statement,
+                "搜索图片的出处和相似内容。",
                 ("evidence-handler",),
             ),
-            SemanticClaim(
-                SemanticClaimKind.INPUT_REQUIREMENT,
-                "回复一张图片后发送搜图。",
-                ("evidence-handler",),
-            ),
-            SemanticClaim(
-                SemanticClaimKind.USAGE,
-                "{command} [图片]",
-                ("evidence-handler",),
-            ),
-        )
+            SemanticClaim(SemanticClaimKind.USAGE, "搜图 [图片]", ("evidence-handler",)),
+            *extra_claims,
+        ),
+        constraints=constraints,
+        answer_markdown="发送图片或回复图片后使用搜图。",
+        answer_evidence_ids=("evidence-handler",),
     )
+
+
+def _output(*extra_claims: SemanticClaim) -> CapabilityAnalysisOutput:
+    return CapabilityAnalysisOutput(entries=(_entry(*extra_claims),))
 
 
 def _record(capability_id: str, disclosure: Disclosure) -> CapabilityRecord:
@@ -91,330 +111,335 @@ def _record(capability_id: str, disclosure: Disclosure) -> CapabilityRecord:
         disclosure=disclosure,
         state=RecordState.VERIFIED,
         platform_scope=PlatformScope.all(),
-        claims=(Claim("command.header", "搜图", ClaimBasis.OBSERVED),),
+        claims=(Claim("invocation.header", "搜图", ClaimBasis.OBSERVED),),
     )
 
 
-def test_public_annotation_cache_contains_no_source_or_locator() -> None:
+def test_public_annotation_cache_contains_entries_without_source_or_locator() -> None:
     annotation = project_capability_annotation(
         _request(),
-        _output(),
+        _output(
+            SemanticClaim(
+                SemanticClaimKind.INPUT_REQUIREMENT,
+                "可以发送图片或回复图片。",
+                ("evidence-handler",),
+            )
+        ),
         analysis_revision="analysis-v1",
     )
 
     document = CapabilityAnnotationCache((annotation,)).to_json()
 
     assert CapabilityAnnotationCache.from_json(document).annotations == (annotation,)
-    assert annotation.usages == ("{command} [图片]",)
+    assert annotation.entries[0].usages == ("搜图 [图片]",)
     assert "SENTINEL_SOURCE" not in document
     assert "plugin.image:search" not in document
 
 
-def test_annotation_preserves_ordered_usages_and_typed_requirements() -> None:
+def test_annotation_preserves_usage_order_and_typed_requirements() -> None:
     output = CapabilityAnalysisOutput(
-        claims=(
-            SemanticClaim(
-                SemanticClaimKind.USAGE,
-                "@bot {command} [图片]",
-                ("evidence-handler",),
+        entries=(
+            _entry(
+                SemanticClaim(
+                    SemanticClaimKind.USAGE,
+                    "[回复图片] 搜图",
+                    ("evidence-handler",),
+                ),
+                constraints=(
+                    SemanticConstraint(
+                        SemanticConstraintKind.ROLE,
+                        "仅普通成员可用。",
+                        ("evidence-handler",),
+                        role=TeachingRole.CUSTOM,
+                    ),
+                    SemanticConstraint(
+                        SemanticConstraintKind.RATE_LIMIT,
+                        "每名用户连续使用需要等待冷却。",
+                        ("evidence-handler",),
+                        rate_limit_policy=RateLimitPolicy.COOLDOWN,
+                        rate_limit_scope=RateLimitScope.USER,
+                    ),
+                ),
             ),
-            SemanticClaim(
-                SemanticClaimKind.USAGE,
-                "[回复图片] {command}",
-                ("evidence-handler",),
-            ),
-        ),
-        constraints=(
-            SemanticConstraint(
-                SemanticConstraintKind.ROLE,
-                "仅普通成员可用。",
-                ("evidence-handler",),
-                role=TeachingRole.CUSTOM,
-            ),
-            SemanticConstraint(
-                SemanticConstraintKind.RATE_LIMIT,
-                "每名用户连续使用需要等待冷却。",
-                ("evidence-handler",),
-                rate_limit_policy=RateLimitPolicy.COOLDOWN,
-                rate_limit_scope=RateLimitScope.USER,
-            ),
-            SemanticConstraint(
-                SemanticConstraintKind.RATE_LIMIT,
-                "全局并发达到上限时需要稍后再试。",
-                ("evidence-handler",),
-                rate_limit_policy=RateLimitPolicy.CONCURRENCY,
-                rate_limit_scope=RateLimitScope.GLOBAL,
-            ),
-        ),
-        interaction=SemanticInteraction(
-            InteractionMode.BOT_GUIDED,
-            (),
-            ("evidence-handler",),
-        ),
+        )
     )
 
-    annotation = project_capability_annotation(
-        _request(),
-        output,
-        analysis_revision="analysis-v2",
-    )
+    annotation = project_capability_annotation(_request(), output, analysis_revision="analysis-v2")
+    entry = annotation.entries[0]
 
-    assert annotation.usages == ("@bot {command} [图片]", "[回复图片] {command}")
-    role_requirement = next(
-        item for item in annotation.requirements if item.kind is SemanticConstraintKind.ROLE
+    assert entry.usages == ("搜图 [图片]", "[回复图片] 搜图")
+    assert (
+        next(item for item in entry.requirements if item.kind is SemanticConstraintKind.ROLE).role
+        is TeachingRole.CUSTOM
     )
-    assert role_requirement.role is TeachingRole.CUSTOM
-    assert [
-        item.rate_limit_policy
-        for item in annotation.requirements
-        if item.kind is SemanticConstraintKind.RATE_LIMIT
-    ] == [
-        RateLimitPolicy.CONCURRENCY,
-        RateLimitPolicy.COOLDOWN,
-    ]
-    assert annotation.interaction is not None
-    assert annotation.interaction.mode is InteractionMode.BOT_GUIDED
     assert CapabilityAnnotationCache.from_json(
         CapabilityAnnotationCache((annotation,)).to_json()
     ).annotations == (annotation,)
 
 
-def test_dynamic_file_evidence_persists_only_a_revision_bound_manifest() -> None:
+def test_anchored_usage_must_contain_command_body_exactly_once() -> None:
+    for invalid in ("[图片]", "搜图查看 [图片]", "搜图 搜图 [图片]", "{command} [图片]"):
+        output = CapabilityAnalysisOutput(
+            entries=(
+                CapabilityAnalysisEntryOutput(
+                    "root",
+                    claims=(
+                        SemanticClaim(
+                            SemanticClaimKind.NAME,
+                            "图片搜索",
+                            ("evidence-handler",),
+                        ),
+                        SemanticClaim(
+                            SemanticClaimKind.USAGE,
+                            invalid,
+                            ("evidence-handler",),
+                        ),
+                    ),
+                    answer_markdown="搜索图片。",
+                    answer_evidence_ids=("evidence-handler",),
+                ),
+            )
+        )
+        with pytest.raises(CapabilityAnnotationError):
+            project_capability_annotation(_request(), output, analysis_revision="analysis-v1")
+
+
+def test_parser_owned_canonical_usage_cannot_be_rewritten() -> None:
+    request = CapabilityAnalysisRequest(
+        capability=_request().capability,
+        evidence_units=_request().evidence_units,
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "订阅 添加",
+                ("订阅 添加 <主题> [-q|--quiet]",),
+            ),
+        ),
+    )
+    output = CapabilityAnalysisOutput(
+        entries=(
+            CapabilityAnalysisEntryOutput(
+                "root",
+                claims=(
+                    SemanticClaim(
+                        SemanticClaimKind.USAGE,
+                        "订阅 添加 <主题> [-q]",
+                        ("evidence-handler",),
+                    ),
+                ),
+                answer_markdown="添加一个订阅主题。",
+                answer_evidence_ids=("evidence-handler",),
+            ),
+        )
+    )
+
+    with pytest.raises(CapabilityAnnotationError, match="canonical usage"):
+        project_capability_annotation(request, output, analysis_revision="analysis-v1")
+
+
+def test_public_annotation_rejects_framework_permission_terms() -> None:
+    for statement in ("仅 MEMBER 可用。", "-q 与 --quiet 是同一个 Option。"):
+        output = CapabilityAnalysisOutput(
+            entries=(
+                _entry(
+                    constraints=(
+                        SemanticConstraint(
+                            SemanticConstraintKind.ROLE,
+                            statement,
+                            ("evidence-handler",),
+                            role=TeachingRole.CUSTOM,
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        with pytest.raises(CapabilityAnnotationError, match="framework terms"):
+            project_capability_annotation(_request(), output, analysis_revision="analysis-v1")
+
+
+def test_complete_usage_requires_bounded_member_selector() -> None:
+    request = CapabilityAnalysisRequest(
+        capability=_request().capability,
+        evidence_units=_request().evidence_units,
+        invocations=(CapabilityInvocationTarget("family", CapabilityInvocationMode.COMPLETE),),
+    )
+
+    for usage in (
+        "#(摸摸|亲亲|贴贴|白底|波纹) [图片]",
+        "#表情 [图片]",
+    ):
+        output = CapabilityAnalysisOutput(
+            entries=(
+                CapabilityAnalysisEntryOutput(
+                    "family",
+                    claims=(
+                        SemanticClaim(
+                            SemanticClaimKind.USAGE,
+                            usage,
+                            ("evidence-handler",),
+                        ),
+                    ),
+                    answer_markdown="选择一种表情模板制作图片。",
+                    answer_evidence_ids=("evidence-handler",),
+                ),
+            )
+        )
+
+        with pytest.raises(CapabilityAnnotationError):
+            project_capability_annotation(request, output, analysis_revision="analysis-v1")
+
+    valid = CapabilityAnalysisOutput(
+        entries=(
+            CapabilityAnalysisEntryOutput(
+                "family",
+                claims=(
+                    SemanticClaim(
+                        SemanticClaimKind.NAME,
+                        "图片滤镜",
+                        ("evidence-handler",),
+                    ),
+                    SemanticClaim(
+                        SemanticClaimKind.USAGE,
+                        "(复古|锐化|黑白|素描) [图片]",
+                        ("evidence-handler",),
+                    ),
+                ),
+                answer_markdown="选择一种滤镜处理图片。",
+                answer_evidence_ids=("evidence-handler",),
+            ),
+        )
+    )
+    assert project_capability_annotation(
+        request,
+        valid,
+        analysis_revision="analysis-v1",
+    ).entries[0].usages == ("(复古|锐化|黑白|素描) [图片]",)
+
+
+def test_multiple_invocation_entries_are_projected_separately() -> None:
+    request = CapabilityAnalysisRequest(
+        capability=_request().capability,
+        evidence_units=_request().evidence_units,
+        invocations=(
+            CapabilityInvocationTarget("search", CapabilityInvocationMode.ANCHORED, "仓库 搜索"),
+            CapabilityInvocationTarget("detail", CapabilityInvocationMode.ANCHORED, "仓库 详情"),
+        ),
+    )
+    output = CapabilityAnalysisOutput(
+        entries=(
+            CapabilityAnalysisEntryOutput(
+                "search",
+                claims=(
+                    SemanticClaim(SemanticClaimKind.NAME, "搜索仓库", ("evidence-handler",)),
+                    SemanticClaim(
+                        SemanticClaimKind.USAGE,
+                        "仓库 搜索 <关键词> [--limit <数量>]",
+                        ("evidence-handler",),
+                    ),
+                ),
+                answer_markdown="按关键词搜索仓库。",
+                answer_evidence_ids=("evidence-handler",),
+            ),
+            CapabilityAnalysisEntryOutput(
+                "detail",
+                claims=(
+                    SemanticClaim(SemanticClaimKind.NAME, "仓库详情", ("evidence-handler",)),
+                    SemanticClaim(
+                        SemanticClaimKind.USAGE,
+                        "仓库 详情 <编号>",
+                        ("evidence-handler",),
+                    ),
+                ),
+                answer_markdown="按编号查看仓库。",
+                answer_evidence_ids=("evidence-handler",),
+            ),
+        )
+    )
+
+    annotation = project_capability_annotation(request, output, analysis_revision="analysis-v1")
+
+    assert [item.name for item in annotation.entries] == ["搜索仓库", "仓库详情"]
+    assert [item.usages for item in annotation.entries] == [
+        ("仓库 搜索 <关键词> [--limit <数量>]",),
+        ("仓库 详情 <编号>",),
+    ]
+
+
+def test_dynamic_file_evidence_persists_only_revision_bound_manifest() -> None:
     dynamic = CapabilityEvidenceUnit(
         "evidence:file:dependency",
         "approved_file_excerpt",
-        "def acquire():\n    return limiter.allow()\n",
+        "def acquire():\n    return check()\n",
         f"sha256:{'1' * 64}",
-        "python_purelib/limiter/core.py",
+        "python_purelib/package/core.py",
     )
     output = CapabilityAnalysisOutput(
-        claims=(
-            SemanticClaim(
-                SemanticClaimKind.BEHAVIOR_BOUNDARY,
-                "连续使用时可能受到调用频率限制。",
-                (dynamic.evidence_id,),
-            ),
-        ),
+        entries=(_entry(),),
         evidence_units=(dynamic,),
     )
 
-    annotation = project_capability_annotation(
-        _request(),
-        output,
-        analysis_revision="analysis-v1",
-    )
+    annotation = project_capability_annotation(_request(), output, analysis_revision="analysis-v1")
     document = CapabilityAnnotationCache((annotation,)).to_json()
 
     assert annotation.evidence_manifest == (
         CapabilityAnnotationEvidenceRef(
-            evidence_id=dynamic.evidence_id,
-            source_kind=dynamic.source_kind,
-            locator=dynamic.locator or "",
-            revision=dynamic.revision,
+            dynamic.evidence_id,
+            dynamic.source_kind,
+            dynamic.locator or "",
+            dynamic.revision,
         ),
     )
     assert "def acquire" not in document
-    assert "limiter.allow" not in document
-    assert CapabilityAnnotationCache.from_json(document).annotations == (annotation,)
-
-
-def test_public_annotation_drops_an_implementation_detail_claim() -> None:
-    annotation = project_capability_annotation(
-        _request(),
-        _output("源码中的 Matcher 会处理图片。"),
-        analysis_revision="analysis-v1",
-    )
-
-    assert annotation.summary is None
-    assert annotation.usages == ("{command} [图片]",)
-    assert annotation.input_requirements == ("回复一张图片后发送搜图。",)
-
-
-def test_public_annotation_rejects_an_unbound_usage() -> None:
-    output = CapabilityAnalysisOutput(
-        claims=(
-            SemanticClaim(
-                SemanticClaimKind.USAGE,
-                "搜图 [图片]",
-                ("evidence-handler",),
-            ),
-        )
-    )
-
-    with pytest.raises(CapabilityAnnotationError, match="must not be empty"):
-        project_capability_annotation(
-            _request(),
-            output,
-            analysis_revision="analysis-v1",
-        )
-
-
-def test_projection_drops_only_invalid_low_risk_teaching_copy() -> None:
-    output = CapabilityAnalysisOutput(
-        claims=(
-            SemanticClaim(
-                SemanticClaimKind.SUMMARY,
-                "搜索图片的出处和相似内容。",
-                ("evidence-handler",),
-            ),
-            SemanticClaim(
-                SemanticClaimKind.USAGE,
-                "搜图 [图片]",
-                ("evidence-handler",),
-            ),
-            SemanticClaim(
-                SemanticClaimKind.SUPPORTED_SUBJECT,
-                "这是一段不适合作为检索对象的过长完整说明文字",
-                ("evidence-handler",),
-            ),
-        ),
-        interaction=SemanticInteraction(
-            InteractionMode.MULTI_TURN,
-            ("源码会继续处理输入。", "按提示继续发送图片。"),
-            ("evidence-handler",),
-        ),
-    )
-
-    annotation = project_capability_annotation(
-        _request(),
-        output,
-        analysis_revision="analysis-v1",
-    )
-
-    assert annotation.summary == "搜索图片的出处和相似内容。"
-    assert annotation.usages == ()
-    assert annotation.supported_subjects == ()
-    assert annotation.interaction is not None
-    assert annotation.interaction.steps == ("按提示继续发送图片。",)
-
-
-def test_projection_bounds_and_deduplicates_low_risk_model_copy() -> None:
-    output = CapabilityAnalysisOutput(
-        claims=(
-            SemanticClaim(
-                SemanticClaimKind.SUMMARY,
-                "用于处理图片。",
-                ("evidence-handler",),
-            ),
-            SemanticClaim(
-                SemanticClaimKind.SUMMARY,
-                "处理图片。",
-                ("evidence-handler",),
-            ),
-            *(
-                SemanticClaim(
-                    SemanticClaimKind.USAGE,
-                    f"{{command}} [参数{index}]",
-                    ("evidence-handler",),
-                )
-                for index in range(6)
-            ),
-            *(
-                SemanticClaim(
-                    SemanticClaimKind.SYNONYM,
-                    f"图片处理别称{index}",
-                    ("evidence-handler",),
-                )
-                for index in range(20)
-            ),
-        )
-    )
-
-    annotation = project_capability_annotation(
-        _request(),
-        output,
-        analysis_revision="analysis-v1",
-    )
-
-    assert annotation.summary == "处理图片。"
-    assert annotation.usages == tuple(f"{{command}} [参数{index}]" for index in range(4))
-    assert len(annotation.synonyms) == 16
-
-
-def test_projection_keeps_safety_requirements_strict() -> None:
-    output = CapabilityAnalysisOutput(
-        claims=(
-            SemanticClaim(
-                SemanticClaimKind.SUMMARY,
-                "搜索图片的出处和相似内容。",
-                ("evidence-handler",),
-            ),
-        ),
-        constraints=(
-            SemanticConstraint(
-                SemanticConstraintKind.ROLE,
-                "Permission 要求管理员权限。",
-                ("evidence-handler",),
-                role=TeachingRole.ADMIN,
-            ),
-        ),
-    )
-
-    with pytest.raises(CapabilityAnnotationError, match="implementation details"):
-        project_capability_annotation(
-            _request(),
-            output,
-            analysis_revision="analysis-v1",
-        )
 
 
 def test_runtime_rejects_missing_mandatory_annotation_transport() -> None:
     with pytest.raises(
         CapabilityAnnotationRuntimeConfigurationError,
-        match="require opencode-go-chat",
+        match="backend and name",
     ):
         create_capability_annotation_client_factory(NBTriageConfig(), environ={})
 
 
-def test_runtime_uses_an_independent_annotation_output_budget(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    observed: dict[str, object] = {}
+def test_runtime_uses_exact_qualified_annotation_contract() -> None:
+    qualification = OPENCODE_GO_CAPABILITY_ANNOTATION_QUALIFICATION
 
-    def create_client(**kwargs: object) -> FakeCapabilityAnalysisClient:
-        observed.update(kwargs)
-        return FakeCapabilityAnalysisClient(_output())
-
-    monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotation_runtime."
-        "create_opencode_go_capability_analysis_client",
-        create_client,
+    assert qualification.evaluation == CAPABILITY_ANNOTATION_EVALUATION
+    assert qualification.prompt_id == "capability-teaching-annotation-v4-prompt-v34-zh"
+    assert qualification.evaluation == (
+        "opencode-go-capability-teaching-forward-heldout-20-20260816-v8-v34-zh-a"
     )
+    assert frozenset({qualification}) == QUALIFIED_CAPABILITY_ANNOTATION_TASKS
+
+
+def test_runtime_uses_independent_annotation_output_budget() -> None:
     config = NBTriageConfig(
         nbtriage_model_backend="opencode-go-chat",
         nbtriage_model_name="deepseek-v4-flash",
         nbtriage_model_max_output_tokens=240,
     )
 
-    factory = create_capability_annotation_client_factory(
+    client = create_capability_annotation_client_factory(
         config,
         environ={"OPENCODE_API_KEY": "test-only"},
-    )
-    factory()
+    )()
 
-    assert observed["max_output_tokens"] == CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS
-    assert observed["max_output_tokens"] == 4_096
+    assert client._max_output_tokens == CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS == 4_096
 
 
 @pytest.mark.asyncio
-async def test_runtime_snapshot_is_the_public_availability_gate(
+async def test_runtime_snapshot_is_public_availability_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = tmp_path / "annotations.json"
-    stale = CapabilityTeachingAnnotation(
-        capability_id="command:load-failed",
-        request_fingerprint="0" * 64,
-        summary="不应公开的旧说明。",
-    )
-    path.write_text(CapabilityAnnotationCache((stale,)).to_json(), encoding="utf-8")
     analyzed: list[str] = []
 
     def build_request(
         record: CapabilityRecord,
         _policy: ConfigValuePolicy,
         **_kwargs: object,
-    ):
+    ) -> CapabilityAnalysisRequest:
         analyzed.append(record.capability_id)
         return _request(record.capability_id)
 
@@ -423,7 +448,7 @@ async def test_runtime_snapshot_is_the_public_availability_gate(
         build_request,
     )
     service = CapabilityAnnotationService(
-        path,
+        tmp_path / "annotations.json",
         client_factory=lambda: FakeCapabilityAnalysisClient(_output()),
         config_policy=ConfigValuePolicy.from_keys(()),
         analysis_revision="analysis-v1",
@@ -432,6 +457,16 @@ async def test_runtime_snapshot_is_the_public_availability_gate(
         (
             _record("command:image", Disclosure.PUBLIC),
             _record("command:restricted", Disclosure.RESTRICTED),
+            CapabilityRecord(
+                capability_id="trigger:event",
+                owner="plugin.image",
+                kind="passive",
+                disclosure=Disclosure.PUBLIC,
+                state=RecordState.VERIFIED,
+                platform_scope=PlatformScope.all(),
+                claims=(Claim("trigger.factory", "on_type", ClaimBasis.OBSERVED),),
+                analysis_issues=(AnalysisIssue.DYNAMIC_ENTRY,),
+            ),
         )
     )
 
@@ -441,46 +476,149 @@ async def test_runtime_snapshot_is_the_public_availability_gate(
     assert analyzed == ["command:image"]
     assert service.get("command:image") is not None
     assert service.get("command:restricted") is None
-    assert service.get("command:load-failed") is None
+    assert service.get("trigger:event") is None
 
 
 @pytest.mark.asyncio
-async def test_unchanged_analysis_input_reuses_annotation_without_calling_model(
+async def test_parameterized_group_closes_before_model_when_one_member_is_restricted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls = 0
-
-    def build_request(
-        record: CapabilityRecord,
-        _policy: ConfigValuePolicy,
-        **_kwargs: object,
-    ) -> CapabilityAnalysisRequest:
-        return _request(record.capability_id)
+    identity = ParameterizedHandlerCodeIdentity(
+        module_root="plugin.image",
+        module="plugin.image",
+        function="handler",
+        qualname="create_handler.<locals>.handler",
+        firstlineno=10,
+        source_revision=f"sha256:{'1' * 64}",
+    )
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.parameterized_handler_code_identity",
+        lambda _record: identity,
+    )
+    analyzed = False
 
     def client_factory() -> FakeCapabilityAnalysisClient:
-        nonlocal calls
-        calls += 1
+        nonlocal analyzed
+        analyzed = True
         return FakeCapabilityAnalysisClient(_output())
 
-    monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
-        build_request,
-    )
     service = CapabilityAnnotationService(
         tmp_path / "annotations.json",
         client_factory=client_factory,
         config_policy=ConfigValuePolicy.from_keys(()),
         analysis_revision="analysis-v1",
     )
-    snapshot = CapabilitySnapshot.create((_record("command:image", Disclosure.PUBLIC),))
 
-    first = await service.refresh(snapshot)
-    first_annotation = service.get("command:image")
-    second = await service.refresh(snapshot)
+    status = await service.refresh(
+        CapabilitySnapshot.create(
+            (
+                _record("command:public", Disclosure.PUBLIC),
+                _record("command:restricted", Disclosure.RESTRICTED),
+            )
+        )
+    )
 
-    assert first.generated_count == 1
-    assert second.cached_count == 1
-    assert second.generated_count == 0
-    assert calls == 1
-    assert service.get("command:image") == first_annotation
+    assert analyzed is False
+    assert status.eligible_count == 0
+    assert status.skipped_count == 1
+    assert service.get("command:public") is None
+
+
+@pytest.mark.asyncio
+async def test_disabled_teaching_unit_is_counted_and_not_served(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        lambda record, _policy, **_kwargs: _request(record.capability_id),
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=lambda: FakeCapabilityAnalysisClient(
+            CapabilityAnalysisOutput(knowledge_enabled=False)
+        ),
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+
+    status = await service.refresh(
+        CapabilitySnapshot.create((_record("command:image", Disclosure.PUBLIC),))
+    )
+
+    assert status.generated_count == 1
+    assert status.disabled_count == 1
+    assert status.family_eligible_count == 0
+    assert status.family_disabled_count == 0
+    assert status.family_failed_count == 0
+    assert service.get("command:image") is None
+
+
+@pytest.mark.asyncio
+async def test_disabled_parameterized_family_is_counted_separately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = ParameterizedHandlerCodeIdentity(
+        module_root="plugin.image",
+        module="plugin.image",
+        function="handler",
+        qualname="create_handler.<locals>.handler",
+        firstlineno=10,
+        source_revision=f"sha256:{'1' * 64}",
+    )
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.parameterized_handler_code_identity",
+        lambda _record: identity,
+    )
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_parameterized_family_analysis_request",
+        lambda _records, _policy, **_kwargs: CapabilityAnalysisRequest(
+            capability=CapabilityIdentity("family:image", "plugin.image", "command_family"),
+            evidence_units=_request().evidence_units,
+            invocations=(
+                CapabilityInvocationTarget(
+                    "family",
+                    CapabilityInvocationMode.COMPLETE,
+                ),
+            ),
+        ),
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=lambda: FakeCapabilityAnalysisClient(
+            CapabilityAnalysisOutput(knowledge_enabled=False)
+        ),
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+
+    status = await service.refresh(
+        CapabilitySnapshot.create(
+            (
+                _record("command:image-a", Disclosure.PUBLIC),
+                _record("command:image-b", Disclosure.PUBLIC),
+            )
+        )
+    )
+
+    assert status.eligible_count == 1
+    assert status.disabled_count == 1
+    assert status.family_eligible_count == 1
+    assert status.family_disabled_count == 1
+    assert status.family_failed_count == 0
+
+
+def test_disabled_annotation_has_no_entries() -> None:
+    annotation = project_capability_annotation(
+        _request(),
+        CapabilityAnalysisOutput(knowledge_enabled=False),
+        analysis_revision="analysis-v1",
+    )
+
+    assert annotation == CapabilityTeachingAnnotation(
+        capability_id="command:image",
+        request_fingerprint=annotation.request_fingerprint,
+        knowledge_enabled=False,
+    )

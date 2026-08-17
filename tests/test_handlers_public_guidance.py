@@ -14,7 +14,10 @@ from nbtriage.capabilities import (
     PlatformScope,
     RecordState,
 )
-from nbtriage.capability_annotations import CapabilityTeachingAnnotation
+from nbtriage.capability_annotations import (
+    CapabilityTeachingAnnotation,
+    CapabilityTeachingEntry,
+)
 from nbtriage.public_guidance import (
     PUBLIC_GUIDANCE_SCHEMA_VERSION,
     PublicGuidanceAnswer,
@@ -50,10 +53,16 @@ async def test_shadow_guidance_uses_answer_agent_output(monkeypatch: pytest.Monk
             CapabilityTeachingAnnotation(
                 capability_id="command:image",
                 request_fingerprint="a" * 64,
-                summary="根据图片查找相似内容。",
-                usages=("[回复图片] {command}",),
-                input_requirements=("回复一张图片后发送搜图。",),
-                behavior_boundaries=("没有图片时不会开始搜索。",),
+                entries=(
+                    CapabilityTeachingEntry(
+                        entry_id="root",
+                        name="搜图",
+                        summary="根据图片查找相似内容。",
+                        usages=("[回复图片] 搜图",),
+                        input_requirements=("回复一张图片后发送搜图。",),
+                        behavior_boundaries=("没有图片时不会开始搜索。",),
+                    ),
+                ),
             ),
         ),
     )

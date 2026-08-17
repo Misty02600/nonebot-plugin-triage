@@ -57,7 +57,7 @@ def test_unavailable_service_is_the_default_fail_closed_path() -> None:
     assert outcome.assessment is None
 
 
-def test_unqualified_semantic_task_assembles_as_unavailable_without_calling_model(
+def test_unavailable_semantic_transport_assembles_without_calling_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     called = 0
@@ -68,7 +68,7 @@ def test_unqualified_semantic_task_assembles_as_unavailable_without_calling_mode
         raise SemanticRuntimeConfigurationError("not qualified")
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.semantic_runtime.create_opencode_go_semantic_client_factory",
+        "nonebot_plugin_triage.semantic_runtime.create_semantic_client_factory",
         reject,
     )
     service = create_semantic_assessment_service(

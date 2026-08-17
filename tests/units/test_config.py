@@ -18,30 +18,38 @@ def test_removed_product_contract_settings_fail_fast(key: str, replacement: str)
         NBTriageConfig.model_validate({key: "legacy-value"})
 
 
-def test_knowledge_pack_download_requires_exact_https_url_and_sha256() -> None:
+def test_knowledge_pack_pin_is_normalized_without_becoming_a_load_gate() -> None:
     digest = "a" * 64
+    assert NBTriageConfig().nbtriage_knowledge_pack_auto_update is True
     config = NBTriageConfig(
-        nbtriage_knowledge_pack_url="https://example.com/pack.zip",
-        nbtriage_knowledge_pack_sha256=digest.upper(),
+        nbtriage_knowledge_pack_url=" https://example.com/pack.zip ",
+        nbtriage_knowledge_pack_sha256=f" {digest.upper()} ",
     )
 
+    assert config.nbtriage_knowledge_pack_url == "https://example.com/pack.zip"
     assert config.nbtriage_knowledge_pack_sha256 == digest
-    with pytest.raises(ValidationError, match="configured together"):
-        NBTriageConfig(nbtriage_knowledge_pack_url="https://example.com/pack.zip")
-    with pytest.raises(ValidationError, match="HTTPS asset URL"):
-        NBTriageConfig(
-            nbtriage_knowledge_pack_url="http://example.com/pack.zip",
-            nbtriage_knowledge_pack_sha256=digest,
-        )
-
-
-def test_bug_source_backend_requires_explicit_serena_selection() -> None:
-    assert NBTriageConfig().nbtriage_bug_source_backend == "bounded-text"
-    assert (
-        NBTriageConfig(nbtriage_bug_source_backend="serena").nbtriage_bug_source_backend == "serena"
+    partial = NBTriageConfig(nbtriage_knowledge_pack_url="https://example.com/pack.zip")
+    insecure = NBTriageConfig(
+        nbtriage_knowledge_pack_url="http://example.com/pack.zip",
+        nbtriage_knowledge_pack_sha256=digest,
     )
-    with pytest.raises(ValidationError):
-        NBTriageConfig(nbtriage_bug_source_backend="auto")  # type: ignore[arg-type]
+    assert partial.nbtriage_knowledge_pack_sha256 is None
+    assert insecure.nbtriage_knowledge_pack_url == "http://example.com/pack.zip"
+
+
+def test_removed_bug_source_backend_setting_fails_fast() -> None:
+    with pytest.raises(ValidationError, match="bounded built-in reader"):
+        NBTriageConfig.model_validate({"nbtriage_bug_source_backend": "serena"})
+
+
+def test_generic_pydantic_ai_model_backend_is_publicly_configurable() -> None:
+    config = NBTriageConfig(
+        nbtriage_model_backend="pydantic-ai",
+        nbtriage_model_name="google-gla:gemini-2.5-flash",
+    )
+
+    assert config.nbtriage_model_backend == "pydantic-ai"
+    assert config.nbtriage_model_name == "google-gla:gemini-2.5-flash"
 
 
 def test_restricted_config_normalizes_nonebot_roots() -> None:
@@ -93,7 +101,7 @@ def test_nonebot_environment_decodes_restricted_config_json(
 
 def test_evidence_denied_patterns_are_relative_deduplicated_globs() -> None:
     config = NBTriageConfig(
-        nbtriage_evidence_denied_patterns=[" private/** ", "PRIVATE/**", "*.session"]
+        nbtriage_evidence_denied_patterns=(" private/** ", "PRIVATE/**", "*.session")
     )
 
     assert config.nbtriage_evidence_denied_patterns == ("*.session", "private/**")

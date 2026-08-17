@@ -20,6 +20,7 @@ from nbtriage.model_contracts import B1ProviderError
 from nbtriage.opencode_go_semantic_adapter import (
     OPENCODE_GO_SEMANTIC_MAX_OUTPUT_TOKENS,
     OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS,
+    create_opencode_go_capability_analysis_client,
     create_opencode_go_support_semantic_client,
 )
 from nbtriage.rag import B1Error
@@ -52,6 +53,10 @@ from tools.nbtriage_maintainer.bot_docs_evaluation import (
 from tools.nbtriage_maintainer.capability_teaching import (
     CapabilityTeachingMaintenanceError,
     analyze_capability_teaching,
+)
+from tools.nbtriage_maintainer.capability_teaching_evaluation import (
+    CapabilityTeachingEvaluationError,
+    evaluate_capability_teaching,
 )
 from tools.nbtriage_maintainer.collector import ManifestError, collect_manifest
 from tools.nbtriage_maintainer.curation import (
@@ -292,6 +297,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--declared-budget-usd", type=_positive_float, required=True
     )
     support_semantic_parser.add_argument("--confirm-paid-run", action="store_true")
+
+    capability_teaching_evaluation_parser = subparsers.add_parser(
+        "evaluate-capability-teaching",
+        help="Run the exact OpenCode Go capability-teaching qualification contract.",
+    )
+    capability_teaching_evaluation_parser.add_argument(
+        "--fixtures",
+        type=Path,
+        default=Path("evals/datasets/fixtures/capability-teaching-v8-forward-heldout.json"),
+    )
+    capability_teaching_evaluation_parser.add_argument("--report", type=Path, required=True)
+    capability_teaching_evaluation_parser.add_argument(
+        "--declared-budget-usd",
+        type=_positive_float,
+        required=True,
+    )
+    capability_teaching_evaluation_parser.add_argument(
+        "--confirm-paid-run",
+        action="store_true",
+    )
+    capability_teaching_evaluation_parser.add_argument(
+        "--case-id",
+        action="append",
+        default=[],
+        help=(
+            "Run only the named fixture case as a non-qualifying diagnostic. "
+            "Repeat for multiple cases."
+        ),
+    )
 
     evaluation_parser = subparsers.add_parser(
         "evaluate-b0",
@@ -657,6 +691,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_evaluate_bot_docs_retrieval(args)
     if args.command == "evaluate-support-semantics":
         return _run_evaluate_support_semantics(args)
+    if args.command == "evaluate-capability-teaching":
+        return _run_evaluate_capability_teaching(args)
     if args.command == "evaluate-b0":
         return _run_evaluate_b0(args)
     if args.command == "evaluate-s3":
@@ -1085,6 +1121,61 @@ def _run_evaluate_support_semantics(args: argparse.Namespace) -> int:
         f"gate={report['quality_gate']['status']}"
     )
     print(f"report: {args.report}")
+    return 0 if report["quality_gate"]["status"] == "passed" else 1
+
+
+def _run_evaluate_capability_teaching(args: argparse.Namespace) -> int:
+    if not args.confirm_paid_run:
+        print(
+            "capability teaching evaluation requires --confirm-paid-run",
+            file=sys.stderr,
+        )
+        return 2
+    api_key = os.environ.get("OPENCODE_API_KEY", "")
+    if not api_key.strip():
+        print("capability teaching evaluation requires OPENCODE_API_KEY", file=sys.stderr)
+        return 1
+
+    model = "deepseek-v4-flash"
+    partial_report = args.report.with_name(f"{args.report.stem}.partial.json")
+    try:
+        _require_new_report_target(args.report)
+        _require_new_report_target(partial_report)
+        report = asyncio.run(
+            evaluate_capability_teaching(
+                args.fixtures,
+                client_factory=lambda tool_runtime_factory: (
+                    create_opencode_go_capability_analysis_client(
+                        api_key=api_key,
+                        model=model,
+                        timeout_seconds=60.0,
+                        max_output_tokens=4_096,
+                        tool_runtime_factory=tool_runtime_factory,
+                    )
+                ),
+                provider="opencode-go",
+                model=model,
+                declared_budget_usd=args.declared_budget_usd,
+                partial_report_path=partial_report,
+                selected_case_ids=(frozenset(args.case_id) if args.case_id else None),
+            )
+        )
+        write_new_evaluation_report(args.report, report)
+    except (CapabilityTeachingEvaluationError, OSError, ValueError) as error:
+        print(f"capability teaching evaluation failed: {error}", file=sys.stderr)
+        return 1
+
+    summary = report["summary"]
+    print(
+        "capability teaching evaluation: "
+        f"{summary['case_count']} case(s), "
+        f"safety={summary['safety_compliance_rate']:.3f}, "
+        f"semantics={summary['semantic_compliance_rate']:.3f}, "
+        f"tools={summary['tool_case_compliance_rate']:.3f}, "
+        f"gate={report['quality_gate']['status']}"
+    )
+    print(f"report: {args.report}")
+    print(f"partial audit: {partial_report}")
     return 0 if report["quality_gate"]["status"] == "passed" else 1
 
 

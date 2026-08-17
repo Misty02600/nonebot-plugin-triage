@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-12 |
+| 部分被 ADR-0073 接续；其他状态分层仍有效 | 2026-08-12 |
 
 ## 当时遇到了什么
 
@@ -55,6 +55,7 @@ Session 和迁移基础设施。
 
 ## 相关文档
 
+- [使用 NoneBot ORM 保存权威 Bug 工作流状态](0073-use-nonebot-orm-for-authoritative-bug-workflow-state.md)
 - [分级自治和长期业务实体](0002-tiered-autonomy-and-ownership-aware-remediation.md)
 - [单发行包与双命名空间边界](0007-single-distribution-dual-namespace.md)
 - [只用 LocalStore 保存 trial 审计日志](0018-use-localstore-only-for-enabled-trial-audit-log.md)

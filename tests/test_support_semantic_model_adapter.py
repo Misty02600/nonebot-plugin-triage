@@ -203,7 +203,7 @@ def test_prompted_output_mode_is_rejected_by_task_qualification_before_call() ->
         calls += 1
         return _native_response()
 
-    with pytest.raises(SupportSemanticModelAdapterError, match="has not qualified"):
+    with pytest.raises(SupportSemanticModelAdapterError, match="does not support"):
         PydanticAISupportSemanticClient(
             FunctionModel(
                 respond,

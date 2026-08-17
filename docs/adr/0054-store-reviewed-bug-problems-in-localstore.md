@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；首个 LocalStore data catalog 已实现 | 2026-08-14 |
+| 已被 ADR-0068、ADR-0073 替代；旧 JSON catalog 已删除 | 2026-08-14 |
 
 ## 当时遇到了什么
 
@@ -83,6 +83,11 @@ repository 和业务 schema，等真实写入生命周期出现后再决定 ORM�
 
 ## 关系
 
+- 第 1、3、6、7 项的文件型权威存储已由
+  [ADR-0073](0073-use-nonebot-orm-for-authoritative-bug-workflow-state.md) 替代：在线 Report / Occurrence / Problem、人工复核与
+  Decision 改由 ORM 事务保存，旧 `reviewed-bug-problems.json` 与读写 Repository 已删除；
+- 第 3、8 项已由 [ADR-0068](0068-treat-qualified-agent-bug-verdicts-as-operational-decisions.md)
+  替代：合格 Agent 的 `bug` 直接成为运行判断，人工通过追加式 Decision 事后确认或改判；
 - 补充 [ADR-0050](0050-use-a-bounded-agent-for-user-bug-assessment.md) 的 verified verdict repository 所有权；
 - 落实 [ADR-0023](0023-defer-orm-until-durable-business-state.md) 要求的首次权威业务状态评审，并把首版限定为
   单写者、在线只读的 LocalStore snapshot；

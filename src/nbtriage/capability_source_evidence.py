@@ -18,8 +18,11 @@ _MODULE_PATTERN = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$", re.ASCII)
 _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _REGISTRATION_FACTORIES = frozenset(
     {
+        "on",
         "on_alconna",
         "on_command",
+        "on_endswith",
+        "on_fullmatch",
         "on_keyword",
         "on_message",
         "on_metaevent",
@@ -27,17 +30,35 @@ _REGISTRATION_FACTORIES = frozenset(
         "on_regex",
         "on_request",
         "on_shell_command",
+        "on_startswith",
+        "on_type",
     }
 )
 _FACTORIES_WITH_ENTRY = frozenset(
     {
         "on_alconna",
         "on_command",
+        "on_endswith",
+        "on_fullmatch",
         "on_keyword",
         "on_regex",
         "on_shell_command",
+        "on_startswith",
     }
 )
+_COMMAND_GROUP_METHODS = {
+    "command": "on_command",
+    "shell_command": "on_shell_command",
+}
+_NONEBOT_FACTORY_MODULES = frozenset({"nonebot", "nonebot.plugin", "nonebot.plugin.on"})
+_NONEBOT_GROUP_TYPES = {
+    "nonebot.CommandGroup": "command",
+    "nonebot.MatcherGroup": "matcher",
+    "nonebot.plugin.CommandGroup": "command",
+    "nonebot.plugin.MatcherGroup": "matcher",
+    "nonebot.plugin.on.CommandGroup": "command",
+    "nonebot.plugin.on.MatcherGroup": "matcher",
+}
 _HANDLER_DECORATORS = frozenset({"handle", "receive", "got"})
 _PERMISSION_MARKERS = ("permission", "superuser")
 _RULE_MARKERS = ("rule", "to_me")
@@ -46,7 +67,7 @@ _HANDLER_DECORATOR_PATTERNS = (
     "@$MATCHER.$DECORATOR",
     "@$MATCHER.$DECORATOR($$$ARGS)",
 )
-_EXTRACTOR_VERSION = "nbtriage-capability-source-evidence-v2-ast-grep"
+_EXTRACTOR_VERSION = "nbtriage-capability-source-evidence-v3-gate-candidates"
 
 
 class CapabilitySourceEvidenceError(ValueError):
@@ -157,6 +178,7 @@ class PermissionConstraintFact:
     kind: PublicConstraintKind
     operation: str
     teaching_role: TeachingRole | None
+    symbol: str
     owner: str
     source: SourceSpan
 
@@ -201,6 +223,12 @@ class _AnchorBuilder:
     opaque_fields: set[str]
     source: SourceSpan
     source_index: int
+
+
+@dataclass(frozen=True)
+class _MatcherGroupBinding:
+    kind: str
+    command_prefix: str | None = None
 
 
 @dataclass(frozen=True)
@@ -507,11 +535,19 @@ def _registration_anchors(
         call, matcher_name, binding_opaque = _registration_call(statement)
         if call is None:
             continue
-        function = call.field("function")
-        factory = _terminal_name(function)
-        if factory not in _REGISTRATION_FACTORIES:
+        resolved = _registration_factory(tree, call)
+        if resolved is None:
             continue
+        factory, group_binding = resolved
         entries, entry_opaque = _registration_entries(factory, call)
+        if group_binding is not None and group_binding.kind == "command":
+            if group_binding.command_prefix is None:
+                entries = ()
+                entry_opaque = True
+            elif entries:
+                entries = tuple(f"{group_binding.command_prefix} {entry}" for entry in entries)
+        if factory in {"on_command", "on_shell_command"} and not entries and not entry_opaque:
+            continue
         aliases, aliases_opaque = _literal_strings(_keyword_value(call, "aliases"))
         handler_names, handlers_opaque = _handler_names(_keyword_value(call, "handlers"))
         opaque = set()
@@ -587,10 +623,98 @@ def _registration_call(
             binding_opaque = True
     value = _unwrap_parenthesized(value)
     if value is not None and value.kind() == "call":
-        function = value.field("function")
-        if _terminal_name(function) in _REGISTRATION_FACTORIES:
-            return value, matcher_name, binding_opaque
+        return value, matcher_name, binding_opaque
     return None, None, False
+
+
+def _registration_factory(
+    tree: SgNode,
+    call: SgNode,
+) -> tuple[str, _MatcherGroupBinding | None] | None:
+    function = call.field("function")
+    terminal = _terminal_name(function)
+    if terminal is None:
+        return None
+    qualified = _qualified_name(function) if function is not None else None
+    if qualified is None:
+        return None
+    bindings = _import_bindings_before(tree, call.range().start.index)
+    imported = _resolve_imported_name(qualified, bindings)
+    if imported is not None:
+        module_name, _, imported_terminal = imported.rpartition(".")
+        if module_name in _NONEBOT_FACTORY_MODULES and imported_terminal in _REGISTRATION_FACTORIES:
+            return imported_terminal, None
+    if function is not None and function.kind() == "identifier":
+        return (terminal, None) if terminal in _REGISTRATION_FACTORIES else None
+
+    receiver, separator, _ = qualified.rpartition(".")
+    if not separator or not receiver.isidentifier():
+        return None
+    group_binding = _matcher_group_binding_before(tree, receiver, call.range().start.index)
+    if group_binding is None:
+        return None
+    if group_binding.kind == "command":
+        factory = _COMMAND_GROUP_METHODS.get(terminal)
+        return (factory, group_binding) if factory is not None else None
+    if group_binding.kind == "matcher" and terminal in _REGISTRATION_FACTORIES:
+        return terminal, group_binding
+    return None
+
+
+def _matcher_group_binding_before(
+    tree: SgNode,
+    name: str,
+    before_index: int,
+) -> _MatcherGroupBinding | None:
+    binding: _MatcherGroupBinding | None = None
+    for statement in _top_level_nodes(tree):
+        if statement.range().start.index >= before_index:
+            break
+        imported = _import_bindings(statement)
+        if imported is not None:
+            if name in imported:
+                binding = None
+            continue
+        if name not in _bound_names(statement):
+            continue
+        binding = _group_binding_from_assignment(tree, statement)
+    return binding
+
+
+def _group_binding_from_assignment(
+    tree: SgNode,
+    statement: SgNode,
+) -> _MatcherGroupBinding | None:
+    if statement.kind() != "assignment":
+        return None
+    value = _unwrap_parenthesized(statement.field("right"))
+    if value is None or value.kind() != "call":
+        return None
+    function = value.field("function")
+    qualified = _qualified_name(function) if function is not None else None
+    if qualified is None:
+        return None
+    bindings = _import_bindings_before(tree, statement.range().start.index)
+    resolved = _resolve_imported_name(qualified, bindings)
+    group_kind = _NONEBOT_GROUP_TYPES.get(resolved or "")
+    if group_kind is None:
+        return None
+    if group_kind == "matcher":
+        return _MatcherGroupBinding("matcher")
+    positional, keywords = _call_arguments(value)
+    command = positional[0] if positional else keywords.get("cmd")
+    return _MatcherGroupBinding("command", _literal_command(command))
+
+
+def _literal_command(expression: SgNode | None) -> str | None:
+    if expression is None:
+        return None
+    value = _literal_value(expression)
+    if isinstance(value, str):
+        return value or None
+    if isinstance(value, tuple) and value and all(isinstance(item, str) and item for item in value):
+        return " ".join(value)
+    return None
 
 
 def _registration_entries(factory: str, call: SgNode) -> tuple[tuple[str, ...], bool]:
@@ -600,16 +724,20 @@ def _registration_entries(factory: str, call: SgNode) -> tuple[tuple[str, ...], 
     expression = positional[0] if positional else _keyword_value(call, "cmd")
     if expression is None:
         return (), True
-    if factory == "on_keyword":
+    if factory in {"on_endswith", "on_fullmatch", "on_keyword", "on_startswith"}:
         return _literal_strings(expression)
     value = _literal_value(expression)
     if isinstance(value, str):
-        return (value,), False
+        return ((value,), False) if value else ((), False)
     if isinstance(value, tuple):
         if not all(isinstance(item, str) for item in value):
             return (), True
         parts = tuple(value)
-        return ((" ".join(parts),) if parts else ()), not bool(parts)
+        if not parts:
+            return (), False
+        if any(not item for item in parts):
+            return (), True
+        return (" ".join(parts),), False
     if factory == "on_alconna" and expression.kind() == "call":
         function = expression.field("function")
         alconna_args, _ = _call_arguments(expression)
@@ -625,8 +753,12 @@ def _literal_strings(expression: SgNode | None) -> tuple[tuple[str, ...], bool]:
         return (), False
     value = _literal_value(expression)
     if isinstance(value, str):
-        return (value,), False
-    if isinstance(value, (list, tuple, set)) and all(isinstance(item, str) for item in value):
+        return ((value,), False) if value else ((), True)
+    if (
+        isinstance(value, (list, tuple, set))
+        and value
+        and all(isinstance(item, str) and item for item in value)
+    ):
         return tuple(sorted(set(value))), False
     return (), True
 
@@ -991,6 +1123,7 @@ def _resolved_permission_constraints(
                 kind=semantic.kind,
                 operation=semantic.operation,
                 teaching_role=semantic.teaching_role,
+                symbol=symbol,
                 owner=owner,
                 source=_span(source_file, expression),
             )
@@ -1309,6 +1442,7 @@ def _deduplicate_permission_constraints(
         key = (
             item.kind,
             item.operation,
+            item.symbol,
             item.owner,
             item.source.locator,
             item.source.line,
@@ -1322,6 +1456,7 @@ def _deduplicate_permission_constraints(
             item.source.line,
             item.kind.value,
             item.operation,
+            item.symbol,
             item.owner,
         ),
     )

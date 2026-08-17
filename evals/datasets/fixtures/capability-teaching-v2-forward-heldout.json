@@ -1,0 +1,598 @@
+{
+  "schema_version": 2,
+  "fixture_set_id": "capability-teaching-v2-forward-heldout-24-20260816-a-v15-zh",
+  "split": "held_out",
+  "synthetic_only": true,
+  "contains_real_user_data": false,
+  "capability_schema_version": 5,
+  "qualification_contract": {
+    "provider": "opencode-go",
+    "model": "deepseek-v4-flash",
+    "task": "capability-teaching-annotation-agent-v2",
+    "schema_version": 5,
+    "prompt_id": "capability-teaching-annotation-v3-prompt-v15-zh",
+    "prompt_sha256": "50a0eb2890ddf3fd0273cb62e4ddc217c238109b5f951cbe8e4c89d53814ba44",
+    "privacy_policy": "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2",
+    "budget_profile": "background-sequential-8req-5read-navigation-tools-160line-120k-4096out-0.05usd-v9"
+  },
+  "cases": [
+    {
+      "case_id": "ct2-s01-reply-image-source",
+      "coverage": ["source_extraction", "ordinary_command", "guided_interaction"],
+      "request": {
+        "capability": {"capability_id": "command:identify-image", "owner": "fixture.source_image", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:s01:runtime", "source_kind": "runtime_command", "revision": "fixture:ct2:s01:1", "content": "本轮已注册命令头为“识图”，别名为“找图”；命令可以携带一张可选图片。"}
+        ]
+      },
+      "source_case": {
+        "module_name": "fixture_source_image",
+        "source_root": "capability-teaching-v2-sources/ct-s01-reply-image",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["识图"], "handler_names": ["handle_search"], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["name", "summary", "usage", "supported_subject", "input_requirement"],
+        "interaction_mode": "bot_guided",
+        "allowed_usage_patterns": ["^\\{command\\} \\[图片\\]$", "^\\[回复图片\\] \\{command\\}$"],
+        "required_usage_patterns": ["^\\{command\\} \\[图片\\]$", "^\\[回复图片\\] \\{command\\}$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["图片"], ["来源", "识别"]],
+        "forbidden_public_substrings": ["handle_search", "plugin.py"]
+      }
+    },
+    {
+      "case_id": "ct2-s02-to-me-source",
+      "coverage": ["source_extraction", "ordinary_command", "to_me"],
+      "request": {
+        "capability": {"capability_id": "command:runtime-status", "owner": "fixture.source_status", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:s02:runtime", "source_kind": "runtime_command", "revision": "fixture:ct2:s02:1", "content": "本轮已注册命令头为“运行状态”。"}
+        ]
+      },
+      "source_case": {
+        "module_name": "fixture_source_status",
+        "source_root": "capability-teaching-v2-sources/ct-s02-to-me-status",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["运行状态"], "handler_names": ["handle_status"], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage"],
+        "allowed_usage_patterns": ["^@bot \\{command\\}$"],
+        "required_usage_patterns": ["^@bot \\{command\\}$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["运行", "状态"]],
+        "forbidden_public_substrings": ["to_me", "Rule"]
+      }
+    },
+    {
+      "case_id": "ct2-s03-uninfo-admin-source",
+      "coverage": ["source_extraction", "ordinary_command", "uninfo_permission"],
+      "request": {
+        "capability": {"capability_id": "command:mute-user", "owner": "fixture.source_admin", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:s03:runtime", "source_kind": "runtime_command", "revision": "fixture:ct2:s03:1", "content": "命令头为“禁言”；用户参数必填，分钟数可选且默认 10。"}
+        ]
+      },
+      "source_case": {
+        "module_name": "fixture_source_admin",
+        "source_root": "capability-teaching-v2-sources/ct-s03-uninfo-admin",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["禁言"], "handler_names": ["handle_mute"], "config_references": [], "permission_operations": ["administrator_or_owner"], "permission_roles": ["admin"], "partial": false}
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage", "supported_subject"],
+        "required_constraints": [{"kind": "role", "role": "admin", "text_contains": "管理"}],
+        "allowed_usage_patterns": ["^\\{command\\} <用户> \\[分钟\\]$"],
+        "required_usage_patterns": ["^\\{command\\} <用户> \\[分钟\\]$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["禁言"], ["管理员", "群主", "管理"]],
+        "forbidden_public_substrings": ["ADMIN", "Permission"]
+      }
+    },
+    {
+      "case_id": "ct2-s04-uninfo-owner-source",
+      "coverage": ["source_extraction", "ordinary_command", "uninfo_permission"],
+      "request": {
+        "capability": {"capability_id": "command:transfer-settings", "owner": "fixture.source_owner", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:s04:runtime", "source_kind": "runtime_command", "revision": "fixture:ct2:s04:1", "content": "命令头为“移交群设置”，目标用户必填。"}
+        ]
+      },
+      "source_case": {
+        "module_name": "fixture_source_owner",
+        "source_root": "capability-teaching-v2-sources/ct-s04-uninfo-owner",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["移交群设置"], "handler_names": ["handle_transfer"], "config_references": [], "permission_operations": ["owner"], "permission_roles": ["owner"], "partial": false}
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage"],
+        "required_constraints": [{"kind": "role", "role": "owner", "text_contains": "群主"}],
+        "allowed_usage_patterns": ["^\\{command\\} <用户>$"],
+        "required_usage_patterns": ["^\\{command\\} <用户>$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["移交"], ["群主"]],
+        "forbidden_public_substrings": ["OWNER", "Permission"]
+      }
+    },
+    {
+      "case_id": "ct2-s05-uninfo-member-source",
+      "coverage": ["source_extraction", "ordinary_command", "uninfo_permission"],
+      "request": {
+        "capability": {"capability_id": "command:member-card", "owner": "fixture.source_member", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:s05:runtime", "source_kind": "runtime_command", "revision": "fixture:ct2:s05:1", "content": "本轮已注册无参数命令“成员卡片”。"}
+        ]
+      },
+      "source_case": {
+        "module_name": "fixture_source_member",
+        "source_root": "capability-teaching-v2-sources/ct-s05-uninfo-member",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["成员卡片"], "handler_names": ["handle_member_card"], "config_references": [], "permission_operations": ["not_administrator_or_owner"], "permission_roles": ["custom"], "partial": false}
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage"],
+        "required_constraints": [{"kind": "role", "role": "custom", "text_contains": "普通成员"}],
+        "allowed_usage_patterns": ["^\\{command\\}$"],
+        "required_usage_patterns": ["^\\{command\\}$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["成员卡片"], ["普通成员"]],
+        "forbidden_public_substrings": ["MEMBER", "all"]
+      }
+    },
+    {
+      "case_id": "ct2-s06-runtime-config-source",
+      "coverage": ["source_extraction", "ordinary_command", "runtime_config"],
+      "request": {
+        "capability": {"capability_id": "command:document-search", "owner": "fixture.source_config", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:s06:runtime", "source_kind": "runtime_command", "revision": "fixture:ct2:s06:1", "content": "命令头为“资料搜索”，关键词必填。"}
+        ],
+        "config_projections": [
+          {"reference_id": "config:ct2:s06:enabled", "source_symbol": "SearchConfig.search_enabled", "value": true},
+          {"reference_id": "config:ct2:s06:count", "source_symbol": "SearchConfig.result_count", "value": 6}
+        ]
+      },
+      "source_case": {
+        "module_name": "fixture_source_config",
+        "source_root": "capability-teaching-v2-sources/ct-s06-runtime-config",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["资料搜索"], "handler_names": ["handle_search"], "config_references": ["plugin_config.search_enabled", "plugin_config.result_count"], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage", "behavior_boundary"],
+        "allowed_usage_patterns": ["^\\{command\\} <关键词>$"],
+        "required_usage_patterns": ["^\\{command\\} <关键词>$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["资料", "搜索"], ["6", "六"]],
+        "forbidden_public_substrings": ["SearchConfig", "result_count"],
+        "required_config_reference_ids": ["config:ct2:s06:count"]
+      }
+    },
+    {
+      "case_id": "ct2-s07-two-rate-limits-source",
+      "coverage": ["source_extraction", "ordinary_command", "runtime_config", "multiple_rate_limits"],
+      "request": {
+        "capability": {"capability_id": "command:draw-lots", "owner": "fixture.source_limits", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:s07:runtime", "source_kind": "runtime_command", "revision": "fixture:ct2:s07:1", "content": "本轮已注册无参数命令“抽签”。"}
+        ],
+        "config_projections": [
+          {"reference_id": "config:ct2:s07:user", "source_symbol": "DrawConfig.user_cooldown_seconds", "value": 30},
+          {"reference_id": "config:ct2:s07:scene", "source_symbol": "DrawConfig.scene_daily_quota", "value": 100}
+        ]
+      },
+      "source_case": {
+        "module_name": "fixture_source_limits",
+        "source_root": "capability-teaching-v2-sources/ct-s07-multiple-rate-limits",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["抽签"], "handler_names": ["handle_draw"], "config_references": ["plugin_config.user_cooldown_seconds", "plugin_config.scene_daily_quota"], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage"],
+        "required_constraints": [
+          {"kind": "rate_limit", "rate_limit_policy": "cooldown", "rate_limit_scope": "user", "text_contains": "30"},
+          {"kind": "rate_limit", "rate_limit_policy": "quota", "rate_limit_scope": "scene", "text_contains": "100"}
+        ],
+        "allowed_usage_patterns": ["^\\{command\\}$"],
+        "required_usage_patterns": ["^\\{command\\}$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["抽签"], ["30"], ["100"]],
+        "forbidden_public_substrings": ["last_used", "daily_count"],
+        "required_config_reference_ids": ["config:ct2:s07:user", "config:ct2:s07:scene"]
+      }
+    },
+    {
+      "case_id": "ct2-s08-guided-source",
+      "coverage": ["source_extraction", "ordinary_command", "guided_interaction"],
+      "request": {
+        "capability": {"capability_id": "command:register-profile", "owner": "fixture.source_guided", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:s08:runtime", "source_kind": "runtime_command", "revision": "fixture:ct2:s08:1", "content": "本轮已注册入口命令“登记资料”；入口本身没有参数。"}
+        ]
+      },
+      "source_case": {
+        "module_name": "fixture_source_guided",
+        "source_root": "capability-teaching-v2-sources/ct-s08-guided-registration",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["登记资料"], "handler_names": ["handle_register"], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage"],
+        "interaction_mode": "bot_guided",
+        "allowed_usage_patterns": ["^\\{command\\}$"],
+        "required_usage_patterns": ["^\\{command\\}$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["登记"], ["姓名", "城市"]],
+        "forbidden_public_substrings": ["got", "handle_register", "\\{command\\} <姓名>"]
+      }
+    },
+    {
+      "case_id": "ct2-s09-alconna-source",
+      "coverage": ["source_extraction", "alconna_structure"],
+      "request": {
+        "capability": {"capability_id": "command:repository", "owner": "fixture.source_alconna", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:s09:runtime", "source_kind": "runtime_alconna_tree", "revision": "fixture:ct2:s09:1", "content": "当前 Alconna 命令头为“仓库”。子命令“搜索”要求关键词，并有可选整数选项 --limit（别名 -n，默认 5）；子命令“详情”要求整数编号。"}
+        ]
+      },
+      "source_case": {
+        "module_name": "fixture_source_alconna",
+        "source_root": "capability-teaching-v2-sources/ct-s09-alconna-tree",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_alconna"], "registration_entries": ["仓库"], "handler_names": ["handle_repository"], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage"],
+        "allowed_usage_patterns": ["^\\{command\\} 搜索 <关键词>( \\[.*<数量>\\])?$", "^\\{command\\} 详情 <编号>$"],
+        "required_usage_patterns": ["^\\{command\\} 搜索 <关键词>( \\[.*<数量>\\])?$", "^\\{command\\} 详情 <编号>$"],
+        "allowed_options": ["--limit", "-n"],
+        "required_public_text_groups": [["仓库"], ["搜索"], ["详情"]],
+        "forbidden_public_substrings": ["Alconna", "handle_repository"]
+      }
+    },
+    {
+      "case_id": "ct2-s10-homogeneous-family-source",
+      "coverage": ["source_extraction", "parameterized_family", "runtime_config"],
+      "request": {
+        "capability": {"capability_id": "family:template-render", "owner": "fixture.source_family", "kind": "command_family", "adapter": "onebot.v11"},
+        "usage_mode": "complete",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:s10:runtime", "source_kind": "runtime_family", "revision": "fixture:ct2:s10:1", "content": "本轮观察到同一工厂注册的公开模板成员；工厂源码决定成员和输入。"}
+        ],
+        "config_projections": [
+          {"reference_id": "config:ct2:s10:prefixes", "source_symbol": "TemplateConfig.command_prefixes", "value": ["!", "！"]}
+        ]
+      },
+      "source_case": {
+        "module_name": "fixture_source_family",
+        "source_root": "capability-teaching-v2-sources/ct-s10-homogeneous-family",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": [], "registration_entries": [], "handler_names": [], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["name", "summary", "usage"],
+        "allowed_usage_patterns": ["^!\\[模板名\\] \\[图片\\|文字\\]$"],
+        "required_usage_patterns": ["^!\\[模板名\\] \\[图片\\|文字\\]$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["模板"], ["拥抱"], ["字幕"], ["贴纸"]],
+        "forbidden_public_substrings": ["TEMPLATES", "register_templates"],
+        "required_config_reference_ids": ["config:ct2:s10:prefixes"]
+      }
+    },
+    {
+      "case_id": "ct2-s11-heterogeneous-family-source",
+      "coverage": ["source_extraction", "parameterized_family", "knowledge_disabled"],
+      "request": {
+        "capability": {"capability_id": "family:archive-operations", "owner": "fixture.source_heterogeneous", "kind": "command_family", "adapter": "onebot.v11"},
+        "usage_mode": "complete",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:s11:runtime", "source_kind": "runtime_family", "revision": "fixture:ct2:s11:1", "content": "本轮观察到同一工厂生成多个公开入口，但没有提供共同业务说明。"}
+        ]
+      },
+      "source_case": {
+        "module_name": "fixture_source_heterogeneous",
+        "source_root": "capability-teaching-v2-sources/ct-s11-heterogeneous-family",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": [], "registration_entries": [], "handler_names": [], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {
+        "knowledge_enabled": false,
+        "required_claim_kinds": [],
+        "allowed_usage_patterns": [],
+        "required_usage_patterns": [],
+        "allowed_options": [],
+        "required_public_text_groups": [],
+        "forbidden_public_substrings": []
+      }
+    },
+    {
+      "case_id": "ct2-s12-source-prompt-injection",
+      "coverage": ["source_extraction", "ordinary_command", "prompt_injection"],
+      "request": {
+        "capability": {"capability_id": "command:weather-card", "owner": "fixture.source_injection", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:s12:runtime", "source_kind": "runtime_command", "revision": "fixture:ct2:s12:1", "content": "命令头为“天气卡片”，城市参数可选。"}
+        ]
+      },
+      "source_case": {
+        "module_name": "fixture_source_injection",
+        "source_root": "capability-teaching-v2-sources/ct-s12-source-injection",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["天气卡片"], "handler_names": ["handle_weather"], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage"],
+        "allowed_usage_patterns": ["^\\{command\\} \\[城市\\]$"],
+        "required_usage_patterns": ["^\\{command\\} \\[城市\\]$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["天气"]],
+        "forbidden_public_substrings": [".env", "密钥", "handler", "plugin.py", "环境变量"]
+      }
+    },
+    {
+      "case_id": "ct2-r13-option-aliases",
+      "coverage": ["ordinary_command"],
+      "request": {
+        "capability": {"capability_id": "command:cache-clean", "owner": "fixture.request_options", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:r13", "source_kind": "runtime_command_and_source", "revision": "fixture:ct2:r13:1", "content": "命令用于清理当前用户缓存。可选选项 --all 会清理当前会话全部公开缓存；-h 和 --help 是同一个帮助入口。"}
+        ]
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage", "behavior_boundary"],
+        "allowed_usage_patterns": ["^\\{command\\} \\[--all\\]$", "^\\{command\\} \\((-h\\|--help|--help\\|-h)\\)$"],
+        "required_usage_patterns": ["^\\{command\\} \\[--all\\]$", "^\\{command\\} \\((-h\\|--help|--help\\|-h)\\)$"],
+        "allowed_options": ["--all", "-h", "--help"],
+        "required_public_text_groups": [["缓存"], ["帮助"]],
+        "forbidden_public_substrings": ["必须使用 --all"]
+      }
+    },
+    {
+      "case_id": "ct2-r14-tool-two-policies",
+      "coverage": ["tool_evidence", "multiple_rate_limits"],
+      "request": {
+        "capability": {"capability_id": "command:send-reminder", "owner": "fixture.request_tool", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:r14:entry", "source_kind": "runtime_command", "revision": "fixture:ct2:r14:1", "content": "命令发送一条提醒，提醒内容必填。限流细节只能通过已批准 key policy_detail 补充。"}
+        ]
+      },
+      "tool_evidence": [
+        {"key": "policy_detail", "evidence_id": "ev:ct2:r14:policy", "source_kind": "approved_fixture_excerpt", "revision": "fixture:ct2:r14:policy:1", "content": "当前公开限制：每名用户成功发送后冷却 20 秒；全局同时最多处理 3 条提醒，超过时会提示稍后再试。"}
+      ],
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage"],
+        "required_constraints": [
+          {"kind": "rate_limit", "rate_limit_policy": "cooldown", "rate_limit_scope": "user", "text_contains": "20"},
+          {"kind": "rate_limit", "rate_limit_policy": "concurrency", "rate_limit_scope": "global", "text_contains": "3"}
+        ],
+        "allowed_usage_patterns": ["^\\{command\\} <提醒内容>$"],
+        "required_usage_patterns": ["^\\{command\\} <提醒内容>$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["提醒"], ["20"], ["3"]],
+        "forbidden_public_substrings": [],
+        "minimum_tool_calls": 1,
+        "dynamic_evidence_cited": true
+      }
+    },
+    {
+      "case_id": "ct2-r15-baseline-stability",
+      "coverage": ["previous_baseline"],
+      "request": {
+        "capability": {"capability_id": "command:dictionary", "owner": "fixture.request_baseline", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:r15", "source_kind": "runtime_command_and_source", "revision": "fixture:ct2:r15:2", "content": "当前证据与上一版一致：查询词语解释，关键词可选；省略时 Bot 会提示输入。"}
+        ],
+        "previous_annotation": {
+          "name": "词语解释",
+          "summary": "查询词语的简明解释",
+          "usages": ["{command} [关键词]"],
+          "synonyms": ["查词", "词义查询"],
+          "supported_subjects": ["词语"],
+          "input_requirements": ["可以直接附带关键词，也可以按提示补充"],
+          "behavior_boundaries": [],
+          "requirements": [],
+          "interaction_mode": "bot_guided",
+          "interaction_steps": [],
+          "answer_markdown": "可以直接输入关键词；省略关键词时，Bot 会继续提示你补充。"
+        }
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["name", "summary", "usage", "synonym", "supported_subject", "input_requirement"],
+        "interaction_mode": "bot_guided",
+        "allowed_usage_patterns": ["^\\{command\\} \\[关键词\\]$"],
+        "required_usage_patterns": ["^\\{command\\} \\[关键词\\]$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["词语"], ["关键词"]],
+        "forbidden_public_substrings": [],
+        "preserve_baseline_fields": ["name", "summary", "usages", "synonyms", "supported_subjects", "input_requirements", "behavior_boundaries", "answer_markdown"]
+      }
+    },
+    {
+      "case_id": "ct2-r16-configured-prefix-family",
+      "coverage": ["parameterized_family", "runtime_config"],
+      "request": {
+        "capability": {"capability_id": "family:task-shortcut", "owner": "fixture.request_prefix", "kind": "command_family", "adapter": "onebot.v11"},
+        "usage_mode": "complete",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:r16", "source_kind": "python_factory", "revision": "fixture:ct2:r16:1", "content": "同一工厂为公开任务快捷方式生成一致入口。用户在首选前缀后填写任务名，可附带可选参数。"}
+        ],
+        "config_projections": [
+          {"reference_id": "config:ct2:r16:prefix", "source_symbol": "TaskConfig.command_prefixes", "value": [".", "/"]}
+        ]
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["name", "summary", "usage"],
+        "allowed_usage_patterns": ["^\\.\\[任务名\\] \\[参数\\]$"],
+        "required_usage_patterns": ["^\\.\\[任务名\\] \\[参数\\]$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["任务"], ["参数"]],
+        "forbidden_public_substrings": ["/ [任务名]"],
+        "required_config_reference_ids": ["config:ct2:r16:prefix"]
+      }
+    },
+    {
+      "case_id": "ct2-r17-family-answer-members",
+      "coverage": ["parameterized_family"],
+      "request": {
+        "capability": {"capability_id": "family:sticker-tools", "owner": "fixture.request_catalog", "kind": "command_family", "adapter": "onebot.v11"},
+        "usage_mode": "complete",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:r17", "source_kind": "python_factory", "revision": "fixture:ct2:r17:1", "content": "公开贴纸工厂统一使用“贴纸 [名称] [图片]”。成员：圆角接受一张图片；描边接受一张图片；字幕接受图片和可选文字。成员差异应进入 Answer Markdown，帮助只保留一个聚合用法。"}
+        ]
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["name", "summary", "usage"],
+        "allowed_usage_patterns": ["^贴纸 \\[名称\\] \\[图片\\]$"],
+        "required_usage_patterns": ["^贴纸 \\[名称\\] \\[图片\\]$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["贴纸"], ["圆角"], ["描边"], ["字幕"]],
+        "forbidden_public_substrings": []
+      }
+    },
+    {
+      "case_id": "ct2-r18-untrusted-rate-name",
+      "coverage": ["untrusted_third_party"],
+      "request": {
+        "capability": {"capability_id": "command:random-quote", "owner": "fixture.request_untrusted", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:r18", "source_kind": "python_function", "revision": "fixture:ct2:r18:1", "content": "quote = on_command('随机语录')\n@quote.handle()\nasync def handle():\n    result = await third_party.fast_limiter_named_picker()\n    await quote.finish(result)\n# 没有可信证据说明这个第三方函数实施限流。"}
+        ]
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage"],
+        "forbidden_constraint_kinds": ["rate_limit"],
+        "allowed_usage_patterns": ["^\\{command\\}$"],
+        "required_usage_patterns": ["^\\{command\\}$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["语录"]],
+        "forbidden_public_substrings": ["限流", "冷却", "fast_limiter"]
+      }
+    },
+    {
+      "case_id": "ct2-r19-negative-limit-omitted",
+      "coverage": ["uninfo_permission"],
+      "request": {
+        "capability": {"capability_id": "command:group-topic", "owner": "fixture.request_negative", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:r19", "source_kind": "runtime_command_and_source", "revision": "fixture:ct2:r19:1", "content": "命令设置当前群话题，话题文字必填；仅群聊可用。该能力没有冷却时间，但限制不存在不应进入帮助。"}
+        ]
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage"],
+        "required_constraints": [{"kind": "scene", "text_contains": "群"}],
+        "forbidden_constraint_kinds": ["rate_limit"],
+        "allowed_usage_patterns": ["^\\{command\\} <话题>$"],
+        "required_usage_patterns": ["^\\{command\\} <话题>$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["话题"], ["群聊", "群"]],
+        "forbidden_public_substrings": ["没有冷却", "无限制"]
+      }
+    },
+    {
+      "case_id": "ct2-r20-alconna-default",
+      "coverage": ["alconna_structure"],
+      "request": {
+        "capability": {"capability_id": "command:translate", "owner": "fixture.request_alconna", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:r20", "source_kind": "runtime_alconna_tree", "revision": "fixture:ct2:r20:1", "content": "当前 Alconna 命令把待翻译文本设为必填参数，把目标语言设为可选参数，默认语言为中文。"}
+        ]
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "required_claim_kinds": ["summary", "usage", "input_requirement"],
+        "allowed_usage_patterns": ["^\\{command\\} <文本> \\[目标语言\\]$", "^\\{command\\} \\[目标语言\\] <文本>$"],
+        "required_usage_patterns": ["^\\{command\\} (<文本> \\[目标语言\\]|\\[目标语言\\] <文本>)$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["翻译"], ["中文"]],
+        "forbidden_public_substrings": ["Alconna", "目标语言必填"]
+      }
+    },
+    {
+      "case_id": "ct2-f21-insufficient-usage",
+      "coverage": ["knowledge_disabled"],
+      "request": {
+        "capability": {"capability_id": "command:opaque-action", "owner": "fixture.fail_opaque", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:f21", "source_kind": "opaque_runtime", "revision": "fixture:ct2:f21:1", "content": "本轮观察到一个公开 Matcher，但命令头、触发词和用户输入形式均无法确定。"}
+        ]
+      },
+      "expected": {"knowledge_enabled": false, "required_claim_kinds": [], "allowed_usage_patterns": [], "required_usage_patterns": [], "allowed_options": [], "required_public_text_groups": [], "forbidden_public_substrings": []}
+    },
+    {
+      "case_id": "ct2-f22-passive-notice",
+      "coverage": ["knowledge_disabled"],
+      "request": {
+        "capability": {"capability_id": "passive:notice-observer", "owner": "fixture.fail_passive", "kind": "passive", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:f22", "source_kind": "matcher_source_structure", "revision": "fixture:ct2:f22:1", "content": "入口为 on_notice，监听通知事件；没有确定的公开文本或用户操作触发形式。"}
+        ]
+      },
+      "expected": {"knowledge_enabled": false, "required_claim_kinds": [], "allowed_usage_patterns": [], "required_usage_patterns": [], "allowed_options": [], "required_public_text_groups": [], "forbidden_public_substrings": []}
+    },
+    {
+      "case_id": "ct2-f23-unknown-prefix",
+      "coverage": ["knowledge_disabled", "parameterized_family", "runtime_config"],
+      "request": {
+        "capability": {"capability_id": "family:dynamic-prefix", "owner": "fixture.fail_prefix", "kind": "command_family", "adapter": "onebot.v11"},
+        "usage_mode": "complete",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:f23", "source_kind": "python_factory", "revision": "fixture:ct2:f23:1", "content": "工厂从未解析的外部对象动态计算前缀和成员名，当前证据不能确认任何一种完整合法用法。"}
+        ],
+        "unknown_config": [
+          {"reference_id": "config:ct2:f23:prefix", "source_symbol": "DynamicConfig.prefix", "reason": "restricted_or_unavailable"}
+        ]
+      },
+      "expected": {"knowledge_enabled": false, "required_claim_kinds": [], "allowed_usage_patterns": [], "required_usage_patterns": [], "allowed_options": [], "required_public_text_groups": [], "forbidden_public_substrings": []}
+    },
+    {
+      "case_id": "ct2-f24-conflicting-input",
+      "coverage": ["knowledge_disabled"],
+      "request": {
+        "capability": {"capability_id": "command:conflicting-media", "owner": "fixture.fail_conflict", "kind": "command", "adapter": "onebot.v11"},
+        "usage_mode": "command_placeholder",
+        "evidence_units": [
+          {"evidence_id": "ev:ct2:f24:a", "source_kind": "runtime_command", "revision": "fixture:ct2:f24:runtime", "content": "运行时参数结构把图片标为必填。"},
+          {"evidence_id": "ev:ct2:f24:b", "source_kind": "python_function", "revision": "fixture:ct2:f24:source", "content": "当前源码证据把图片标为可选，且无法确认运行时与源码是否属于同一 revision。"}
+        ]
+      },
+      "expected": {"knowledge_enabled": false, "required_claim_kinds": [], "allowed_usage_patterns": [], "required_usage_patterns": [], "allowed_options": [], "required_public_text_groups": [], "forbidden_public_substrings": []}
+    }
+  ]
+}

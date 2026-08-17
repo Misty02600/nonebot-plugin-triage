@@ -2,11 +2,11 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；插件内符号导航纵切已实现，跨依赖 source view 待接入 | 2026-08-14 |
+| 已被 ADR-0085 替代；实现、配置与 extra 已移除 | 2026-08-14 |
 
-> 后续 ADR-0057、0059 已把通用依赖定义职责交给共享 Direct Jedi 工具并移除项目自有 Griffe reader；
-> Serena 继续只保留本 ADR 的 opt-in Bug 插件内导航职责。模型 extra 随共享 Harness 接入已从下文当时的
-> `pydantic-ai-slim[mcp]==2.27.0` 升级并精确锁定到 `2.28.0`。
+> 本文保留当时采用 Serena 的历史理由。后续
+> [ADR-0085](0085-remove-serena-bug-source-backend.md) 已撤销该产品纵切并删除实现、配置与 extra；
+> 当前 Bug 只使用内置有界文本源码读取。
 
 ## 当时遇到了什么
 

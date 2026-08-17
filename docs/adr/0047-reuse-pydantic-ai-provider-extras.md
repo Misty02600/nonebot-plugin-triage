@@ -6,6 +6,10 @@
 
 > 2026-08-14：为接入共享只读 Harness，Provider extras 已整体从 `pydantic-ai-slim==2.27.0`
 > 精确升级到 `2.28.0`；本 ADR 的“直接复用上游 Provider extra、不重复声明 SDK”边界不变。
+>
+> 2026-08-17：[ADR-0084](0084-install-pydantic-ai-control-plane-by-default-and-keep-providers-and-adapters-optional.md)
+> 将 Pydantic AI 公共控制层、Harness 与 Jedi 移入基础依赖；本 ADR 仅继续拥有 Provider SDK extra 的上游
+> 复用边界。
 
 ## 当时遇到了什么
 

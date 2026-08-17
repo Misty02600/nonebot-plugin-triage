@@ -8,10 +8,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nbtriage.capability_analysis import (
+    CapabilityAnalysisEntryOutput,
     CapabilityAnalysisOutput,
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
-    InteractionMode,
+    CapabilityInvocationMode,
+    CapabilityInvocationTarget,
     RateLimitPolicy,
     RateLimitScope,
     SemanticClaimKind,
@@ -19,8 +21,15 @@ from nbtriage.capability_analysis import (
     TeachingRole,
 )
 
-CAPABILITY_ANNOTATION_SCHEMA_VERSION = 4
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v2-prompt-v10-zh"
+CAPABILITY_ANNOTATION_SCHEMA_VERSION = 6
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v4-prompt-v34-zh"
+CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v3"
+CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
+    "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
+)
+CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
+    "background-sequential-8req-5read-navigation-tools-160line-120k-4096out-0.05usd-v10"
+)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _IMPLEMENTATION_MARKERS = (
     ".py",
@@ -36,8 +45,13 @@ _IMPLEMENTATION_MARKERS = (
     "matcher",
     "permission",
     "source code",
+    "工厂",
+    "证据",
     "环境变量",
     "配置项名",
+)
+_MARKDOWN_IMPLEMENTATION_MARKERS = tuple(
+    marker for marker in _IMPLEMENTATION_MARKERS if marker != "`"
 )
 _REQUIREMENT_KIND_ORDER = {
     SemanticConstraintKind.INPUT: 0,
@@ -162,37 +176,9 @@ class CapabilityTeachingRequirement:
 
 
 @dataclass(frozen=True)
-class CapabilityTeachingInteraction:
-    mode: InteractionMode
-    steps: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.mode, InteractionMode):
-            raise CapabilityAnnotationError("interaction mode is invalid")
-        _public_text_tuple(self.steps, "interaction steps", limit=8, ordered=True)
-
-    def to_dict(self) -> dict[str, object]:
-        return {"mode": self.mode.value, "steps": list(self.steps)}
-
-    @classmethod
-    def from_dict(cls, payload: object) -> CapabilityTeachingInteraction:
-        if not isinstance(payload, dict) or set(payload) != {"mode", "steps"}:
-            raise CapabilityAnnotationError("interaction fields do not match schema")
-        try:
-            return cls(
-                mode=InteractionMode(payload["mode"]),
-                steps=_string_tuple(payload["steps"], "interaction steps"),
-            )
-        except (TypeError, ValueError) as error:
-            raise CapabilityAnnotationError("interaction fields are invalid") from error
-
-
-@dataclass(frozen=True)
-class CapabilityTeachingAnnotation:
-    """从一次已校验证据分析投影出的公开教学注释。"""
-
-    capability_id: str
-    request_fingerprint: str
+class CapabilityTeachingEntry:
+    entry_id: str
+    name: str | None = None
     summary: str | None = None
     usages: tuple[str, ...] = ()
     synonyms: tuple[str, ...] = ()
@@ -200,16 +186,12 @@ class CapabilityTeachingAnnotation:
     input_requirements: tuple[str, ...] = ()
     behavior_boundaries: tuple[str, ...] = ()
     requirements: tuple[CapabilityTeachingRequirement, ...] = ()
-    interaction: CapabilityTeachingInteraction | None = None
-    evidence_manifest: tuple[CapabilityAnnotationEvidenceRef, ...] = field(default=(), repr=False)
-    schema_version: int = CAPABILITY_ANNOTATION_SCHEMA_VERSION
+    answer_markdown: str | None = None
 
     def __post_init__(self) -> None:
-        if self.schema_version != CAPABILITY_ANNOTATION_SCHEMA_VERSION:
-            raise CapabilityAnnotationError("unsupported capability annotation schema")
-        _bounded_identifier(self.capability_id, "capability_id", max_length=128)
-        if not _SHA256_PATTERN.fullmatch(self.request_fingerprint):
-            raise CapabilityAnnotationError("request_fingerprint must be a SHA-256 digest")
+        _bounded_identifier(self.entry_id, "entry_id", max_length=128)
+        if self.name is not None:
+            _public_text(self.name, "name")
         if self.summary is not None:
             _public_text(self.summary, "summary")
         _usage_tuple(self.usages)
@@ -232,10 +214,123 @@ class CapabilityTeachingAnnotation:
             raise CapabilityAnnotationError("requirements are invalid")
         if len(set(self.requirements)) != len(self.requirements):
             raise CapabilityAnnotationError("requirements contain duplicates")
-        if self.interaction is not None and not isinstance(
-            self.interaction, CapabilityTeachingInteraction
+        if self.answer_markdown is not None:
+            _public_markdown(self.answer_markdown, "answer_markdown")
+        has_output = any(
+            (
+                self.name,
+                self.summary,
+                self.usages,
+                self.synonyms,
+                self.supported_subjects,
+                self.input_requirements,
+                self.behavior_boundaries,
+                self.requirements,
+                self.answer_markdown,
+            )
+        )
+        if not has_output or self.name is None or not self.usages:
+            raise CapabilityAnnotationError(
+                "teaching entry requires a name, at least one usage, and public output"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "entry_id": self.entry_id,
+            "name": self.name,
+            "summary": self.summary,
+            "usages": list(self.usages),
+            "synonyms": list(self.synonyms),
+            "supported_subjects": list(self.supported_subjects),
+            "input_requirements": list(self.input_requirements),
+            "behavior_boundaries": list(self.behavior_boundaries),
+            "requirements": [item.to_dict() for item in self.requirements],
+            "answer_markdown": self.answer_markdown,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> CapabilityTeachingEntry:
+        if not isinstance(payload, dict):
+            raise CapabilityAnnotationError("teaching entry must be an object")
+        expected = {
+            "entry_id",
+            "name",
+            "summary",
+            "usages",
+            "synonyms",
+            "supported_subjects",
+            "input_requirements",
+            "behavior_boundaries",
+            "requirements",
+            "answer_markdown",
+        }
+        if set(payload) != expected:
+            raise CapabilityAnnotationError("teaching entry fields do not match schema")
+        name = payload["name"]
+        summary = payload["summary"]
+        answer_markdown = payload["answer_markdown"]
+        for label, value in (
+            ("name", name),
+            ("summary", summary),
+            ("answer_markdown", answer_markdown),
         ):
-            raise CapabilityAnnotationError("interaction is invalid")
+            if value is not None and not isinstance(value, str):
+                raise CapabilityAnnotationError(f"{label} must be a string or null")
+        try:
+            return cls(
+                entry_id=payload["entry_id"],
+                name=name,
+                summary=summary,
+                usages=_string_tuple(payload["usages"], "usages"),
+                synonyms=_string_tuple(payload["synonyms"], "synonyms"),
+                supported_subjects=_string_tuple(
+                    payload["supported_subjects"], "supported_subjects"
+                ),
+                input_requirements=_string_tuple(
+                    payload["input_requirements"], "input_requirements"
+                ),
+                behavior_boundaries=_string_tuple(
+                    payload["behavior_boundaries"], "behavior_boundaries"
+                ),
+                requirements=_requirements(payload["requirements"]),
+                answer_markdown=answer_markdown,
+            )
+        except (TypeError, ValueError) as error:
+            raise CapabilityAnnotationError("teaching entry fields are invalid") from error
+
+
+@dataclass(frozen=True)
+class CapabilityTeachingAnnotation:
+    """从一次已校验证据分析投影出的公开教学注释。"""
+
+    capability_id: str
+    request_fingerprint: str
+    knowledge_enabled: bool = True
+    entries: tuple[CapabilityTeachingEntry, ...] = ()
+    evidence_manifest: tuple[CapabilityAnnotationEvidenceRef, ...] = field(default=(), repr=False)
+    schema_version: int = CAPABILITY_ANNOTATION_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != CAPABILITY_ANNOTATION_SCHEMA_VERSION:
+            raise CapabilityAnnotationError("unsupported capability annotation schema")
+        _bounded_identifier(self.capability_id, "capability_id", max_length=128)
+        if not _SHA256_PATTERN.fullmatch(self.request_fingerprint):
+            raise CapabilityAnnotationError("request_fingerprint must be a SHA-256 digest")
+        if type(self.knowledge_enabled) is not bool:
+            raise CapabilityAnnotationError("knowledge_enabled must be a boolean")
+        if (
+            not isinstance(self.entries, tuple)
+            or len(self.entries) > 32
+            or any(not isinstance(item, CapabilityTeachingEntry) for item in self.entries)
+        ):
+            raise CapabilityAnnotationError("teaching entries are invalid")
+        entry_ids = [item.entry_id for item in self.entries]
+        if len(entry_ids) != len(set(entry_ids)):
+            raise CapabilityAnnotationError("teaching entry IDs must be unique")
+        if self.knowledge_enabled != bool(self.entries):
+            raise CapabilityAnnotationError(
+                "knowledge_enabled must match whether teaching entries exist"
+            )
         if (
             not isinstance(self.evidence_manifest, tuple)
             or len(self.evidence_manifest) > 16
@@ -249,80 +344,42 @@ class CapabilityTeachingAnnotation:
         if len({item.evidence_id for item in ordered_manifest}) != len(ordered_manifest):
             raise CapabilityAnnotationError("evidence_manifest contains duplicate IDs")
         object.__setattr__(self, "evidence_manifest", ordered_manifest)
-        if not any(
-            (
-                self.summary,
-                self.usages,
-                self.synonyms,
-                self.supported_subjects,
-                self.input_requirements,
-                self.behavior_boundaries,
-                self.requirements,
-                self.interaction,
-            )
-        ):
-            raise CapabilityAnnotationError("capability annotation must not be empty")
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
             "capability_id": self.capability_id,
             "request_fingerprint": self.request_fingerprint,
-            "summary": self.summary,
-            "usages": list(self.usages),
-            "synonyms": list(self.synonyms),
-            "supported_subjects": list(self.supported_subjects),
-            "input_requirements": list(self.input_requirements),
-            "behavior_boundaries": list(self.behavior_boundaries),
-            "requirements": [item.to_dict() for item in self.requirements],
-            "interaction": self.interaction.to_dict() if self.interaction is not None else None,
+            "knowledge_enabled": self.knowledge_enabled,
+            "entries": [item.to_dict() for item in self.entries],
             "evidence_manifest": [item.to_dict() for item in self.evidence_manifest],
         }
 
     @classmethod
     def from_dict(cls, payload: object) -> CapabilityTeachingAnnotation:
-        if not isinstance(payload, dict):
-            raise CapabilityAnnotationError("capability annotation must be an object")
-        expected = {
+        if not isinstance(payload, dict) or set(payload) != {
             "schema_version",
             "capability_id",
             "request_fingerprint",
-            "summary",
-            "usages",
-            "synonyms",
-            "supported_subjects",
-            "input_requirements",
-            "behavior_boundaries",
-            "requirements",
-            "interaction",
+            "knowledge_enabled",
+            "entries",
             "evidence_manifest",
-        }
-        if set(payload) != expected:
+        }:
             raise CapabilityAnnotationError("capability annotation fields do not match schema")
-        summary = payload["summary"]
-        if summary is not None and not isinstance(summary, str):
-            raise CapabilityAnnotationError("summary must be a string or null")
-        interaction = payload["interaction"]
-        return cls(
-            schema_version=payload["schema_version"],
-            capability_id=payload["capability_id"],
-            request_fingerprint=payload["request_fingerprint"],
-            summary=summary,
-            usages=_string_tuple(payload["usages"], "usages"),
-            synonyms=_string_tuple(payload["synonyms"], "synonyms"),
-            supported_subjects=_string_tuple(payload["supported_subjects"], "supported_subjects"),
-            input_requirements=_string_tuple(payload["input_requirements"], "input_requirements"),
-            behavior_boundaries=_string_tuple(
-                payload["behavior_boundaries"], "behavior_boundaries"
-            ),
-            requirements=_requirements(payload["requirements"]),
-            interaction=(
-                CapabilityTeachingInteraction.from_dict(interaction)
-                if interaction is not None
-                else None
-            ),
-            evidence_manifest=_evidence_manifest(payload["evidence_manifest"]),
-        )
+        raw_entries = payload["entries"]
+        if not isinstance(raw_entries, list):
+            raise CapabilityAnnotationError("teaching entries must be a list")
+        try:
+            return cls(
+                schema_version=payload["schema_version"],
+                capability_id=payload["capability_id"],
+                request_fingerprint=payload["request_fingerprint"],
+                knowledge_enabled=payload["knowledge_enabled"],
+                entries=tuple(CapabilityTeachingEntry.from_dict(item) for item in raw_entries),
+                evidence_manifest=_evidence_manifest(payload["evidence_manifest"]),
+            )
+        except (TypeError, ValueError) as error:
+            raise CapabilityAnnotationError("annotation fields are invalid") from error
 
 
 @dataclass(frozen=True)
@@ -392,6 +449,26 @@ def capability_analysis_fingerprint(
             "kind": request.capability.kind,
             "adapter": request.capability.adapter,
         },
+        "invocations": [
+            {
+                "entry_id": item.entry_id,
+                "mode": item.mode.value,
+                "command_body": item.command_body,
+                "canonical_usages": list(item.canonical_usages),
+                "aliases": list(item.aliases),
+                "requires_mention": item.requires_mention,
+            }
+            for item in request.invocations
+        ],
+        "gate_candidates": [
+            {
+                "candidate_id": item.candidate_id,
+                "kind": item.kind.value,
+                "entry_ids": list(item.entry_ids),
+                "evidence_ids": list(item.evidence_ids),
+            }
+            for item in request.gate_candidates
+        ],
         "source_context": (
             {
                 "module_name": request.source_context.module_name,
@@ -448,27 +525,78 @@ def project_capability_annotation(
         raise TypeError("request must be CapabilityAnalysisRequest")
     if not isinstance(output, CapabilityAnalysisOutput):
         raise TypeError("output must be CapabilityAnalysisOutput")
-    grouped: dict[SemanticClaimKind, list[str]] = {kind: [] for kind in SemanticClaimKind}
-    all_evidence = (*request.evidence_units, *output.evidence_units)
-    for claim in output.claims:
-        try:
-            statement = _validated_model_text(
-                claim.statement,
-                request=request,
-                evidence_units=all_evidence,
-                allow_at_bot=claim.kind is SemanticClaimKind.USAGE,
-            )
-            if claim.kind is SemanticClaimKind.USAGE:
-                statement = validate_capability_usage_pattern(statement)
-            elif claim.kind is SemanticClaimKind.SUPPORTED_SUBJECT and len(statement) > 20:
-                raise CapabilityAnnotationError(
-                    "supported_subjects must contain short noun phrases"
+    if not output.knowledge_enabled:
+        return CapabilityTeachingAnnotation(
+            capability_id=request.capability.capability_id,
+            request_fingerprint=capability_analysis_fingerprint(
+                request,
+                analysis_revision=analysis_revision,
+            ),
+            knowledge_enabled=False,
+            evidence_manifest=tuple(
+                CapabilityAnnotationEvidenceRef(
+                    evidence_id=item.evidence_id,
+                    source_kind=item.source_kind,
+                    locator=item.locator,
+                    revision=item.revision,
                 )
-        except CapabilityAnnotationError:
-            # 教学文案是低风险派生内容：单条格式不合格不应使同一能力的其余
-            # 有效教学内容全部失效。权限、场景和限流等约束仍在下方严格处理。
-            continue
+                for item in output.evidence_units
+                if item.locator is not None
+            ),
+        )
+    all_evidence = (*request.evidence_units, *output.evidence_units)
+    targets = {item.entry_id: item for item in request.invocations}
+    entries = tuple(
+        _project_teaching_entry(
+            request,
+            entry,
+            target=targets[entry.entry_id],
+            evidence_units=all_evidence,
+        )
+        for entry in output.entries
+    )
+    return CapabilityTeachingAnnotation(
+        capability_id=request.capability.capability_id,
+        request_fingerprint=capability_analysis_fingerprint(
+            request,
+            analysis_revision=analysis_revision,
+        ),
+        knowledge_enabled=True,
+        entries=entries,
+        evidence_manifest=tuple(
+            CapabilityAnnotationEvidenceRef(
+                evidence_id=item.evidence_id,
+                source_kind=item.source_kind,
+                locator=item.locator,
+                revision=item.revision,
+            )
+            for item in output.evidence_units
+            if item.locator is not None
+        ),
+    )
+
+
+def _project_teaching_entry(
+    request: CapabilityAnalysisRequest,
+    output: CapabilityAnalysisEntryOutput,
+    *,
+    target: CapabilityInvocationTarget,
+    evidence_units: tuple[CapabilityEvidenceUnit, ...],
+) -> CapabilityTeachingEntry:
+    grouped: dict[SemanticClaimKind, list[str]] = {kind: [] for kind in SemanticClaimKind}
+    for claim in output.claims:
+        statement = _validated_model_text(
+            claim.statement,
+            request=request,
+            evidence_units=evidence_units,
+            allow_at_bot=claim.kind is SemanticClaimKind.USAGE,
+        )
+        if claim.kind is SemanticClaimKind.USAGE:
+            statement = _validated_usage(statement, target=target)
+        elif claim.kind is SemanticClaimKind.SUPPORTED_SUBJECT and len(statement) > 20:
+            raise CapabilityAnnotationError("supported_subjects must contain short noun phrases")
         grouped[claim.kind].append(statement)
+    names = _canonical_texts(grouped[SemanticClaimKind.NAME])
     summaries = _canonical_texts(grouped[SemanticClaimKind.SUMMARY])
     usages = _ordered_unique(grouped[SemanticClaimKind.USAGE])[:4]
     requirements = tuple(
@@ -480,7 +608,7 @@ def project_capability_annotation(
                         text=_validated_model_text(
                             item.statement,
                             request=request,
-                            evidence_units=all_evidence,
+                            evidence_units=evidence_units,
                         ),
                         role=item.role,
                         rate_limit_policy=item.rate_limit_policy,
@@ -499,30 +627,14 @@ def project_capability_annotation(
             )
         )
     )
-    interaction = None
-    if output.interaction is not None:
-        valid_steps: list[str] = []
-        for value in output.interaction.steps:
-            try:
-                valid_steps.append(
-                    _validated_model_text(
-                        value,
-                        request=request,
-                        evidence_units=all_evidence,
-                    )
-                )
-            except CapabilityAnnotationError:
-                continue
-        interaction = CapabilityTeachingInteraction(
-            mode=output.interaction.mode,
-            steps=_ordered_unique(valid_steps),
-        )
-    return CapabilityTeachingAnnotation(
-        capability_id=request.capability.capability_id,
-        request_fingerprint=capability_analysis_fingerprint(
-            request,
-            analysis_revision=analysis_revision,
-        ),
+    answer_markdown = _validated_model_markdown(
+        output.answer_markdown,
+        request=request,
+        evidence_units=evidence_units,
+    )
+    return CapabilityTeachingEntry(
+        entry_id=output.entry_id,
+        name=names[0] if names else None,
         summary=summaries[0] if summaries else None,
         usages=usages,
         synonyms=_canonical_texts(grouped[SemanticClaimKind.SYNONYM])[:16],
@@ -530,17 +642,7 @@ def project_capability_annotation(
         input_requirements=_canonical_texts(grouped[SemanticClaimKind.INPUT_REQUIREMENT])[:16],
         behavior_boundaries=_canonical_texts(grouped[SemanticClaimKind.BEHAVIOR_BOUNDARY])[:16],
         requirements=requirements,
-        interaction=interaction,
-        evidence_manifest=tuple(
-            CapabilityAnnotationEvidenceRef(
-                evidence_id=item.evidence_id,
-                source_kind=item.source_kind,
-                locator=item.locator,
-                revision=item.revision,
-            )
-            for item in output.evidence_units
-            if item.locator is not None
-        ),
+        answer_markdown=answer_markdown,
     )
 
 
@@ -550,10 +652,12 @@ def _validated_model_text(
     request: CapabilityAnalysisRequest,
     evidence_units: tuple[CapabilityEvidenceUnit, ...],
     allow_at_bot: bool = False,
+    allow_framework_terms: bool = False,
 ) -> str:
     normalized = validate_capability_public_statement(
         value,
         allow_at_bot=allow_at_bot,
+        allow_framework_terms=allow_framework_terms,
     )
     lowered = normalized.casefold()
     forbidden = {item.evidence_id.casefold() for item in evidence_units}
@@ -571,10 +675,31 @@ def _validated_model_text(
     return normalized
 
 
+def _validated_model_markdown(
+    value: str | None,
+    *,
+    request: CapabilityAnalysisRequest,
+    evidence_units: tuple[CapabilityEvidenceUnit, ...],
+) -> str | None:
+    if value is None:
+        return None
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    _public_markdown(normalized, "answer_markdown")
+    lowered = normalized.casefold()
+    forbidden = {item.evidence_id.casefold() for item in evidence_units}
+    forbidden.update(item.source_symbol.casefold() for item in request.config_projections)
+    forbidden.update(item.source_symbol.casefold() for item in request.unknown_config)
+    forbidden.update(item.locator.casefold() for item in evidence_units if item.locator is not None)
+    if any(token and token in lowered for token in forbidden):
+        raise CapabilityAnnotationError("answer_markdown exposes an internal evidence symbol")
+    return normalized
+
+
 def validate_capability_public_statement(
     value: str,
     *,
     allow_at_bot: bool = False,
+    allow_framework_terms: bool = False,
 ) -> str:
     """验证模型教学文字不包含实现层术语，并返回规范化文本。"""
     normalized = " ".join(value.split())
@@ -582,11 +707,16 @@ def validate_capability_public_statement(
     lowered = normalized.casefold()
     if any(marker.casefold() in lowered for marker in _IMPLEMENTATION_MARKERS):
         raise CapabilityAnnotationError("model statement exposes implementation details")
+    if not allow_framework_terms and re.search(
+        r"\b(?:OWNER|MEMBER|ADMIN|SUPERUSER|Permission|Rule|Matcher|Alconna|Option|Subcommand)\b",
+        normalized,
+    ):
+        raise CapabilityAnnotationError("model statement exposes framework terms")
     return normalized
 
 
 def validate_capability_usage_pattern(value: str) -> str:
-    """验证教学用法使用统一占位符与紧凑展示语法。"""
+    """验证完整、可直接展示的教学用法。"""
     normalized = _usage_pattern(value)
     if "[回复" in normalized and not normalized.startswith("[回复"):
         raise CapabilityAnnotationError("reply context must precede the command")
@@ -595,6 +725,78 @@ def validate_capability_usage_pattern(value: str) -> str:
         for marker in (" 后发送", "然后发送", "再发送", "随后发送", " 后回复", "然后回复", "再回复")
     ):
         raise CapabilityAnnotationError("multi-turn instructions do not belong in usage")
+    for opening, closing in (("[", "]"), ("(", ")"), ("<", ">")):
+        for content in re.findall(
+            rf"{re.escape(opening)}([^{re.escape(closing)}]+){re.escape(closing)}",
+            normalized,
+        ):
+            if content.count("|") >= 4:
+                raise CapabilityAnnotationError(
+                    "同一用法槽位最多枚举四个备选值；超过四个时必须改用一个简短概念槽位，"
+                    "例如 <滤镜名>，不得继续列出成员"
+                )
+    return normalized
+
+
+_GENERIC_INPUT_SLOTS = frozenset(
+    {
+        "内容",
+        "参数",
+        "图片",
+        "文件",
+        "文本",
+        "消息",
+        "用户",
+        "视频",
+        "文字",
+        "音频",
+        "链接",
+    }
+)
+
+
+def validate_complete_aggregate_usage(value: str) -> str:
+    """验证参数化工厂用法包含独立于普通输入的成员选择位。"""
+    normalized = validate_capability_usage_pattern(value)
+    if re.search(r"\([^()]*\|[^()]*\)", normalized):
+        return normalized
+    slots = {item.strip() for item in re.findall(r"<([^<>]+)>", normalized)}
+    if slots.difference(_GENERIC_INPUT_SLOTS):
+        return normalized
+    raise CapabilityAnnotationError("complete aggregate usage requires a member selector")
+
+
+def _validated_usage(value: str, *, target: CapabilityInvocationTarget) -> str:
+    normalized = validate_capability_usage_pattern(value)
+    if target.canonical_usages:
+        if normalized not in target.canonical_usages:
+            raise CapabilityAnnotationError(
+                "usage must match a deterministic parser-provided canonical usage"
+            )
+        if (
+            target.requires_mention
+            and target.command_body is not None
+            and len(re.findall(rf"@bot {re.escape(target.command_body)}(?!\S)", normalized)) != 1
+        ):
+            raise CapabilityAnnotationError(
+                "usage for a mention-required invocation must place @bot before command_body"
+            )
+        return normalized
+    if target.mode is CapabilityInvocationMode.COMPLETE:
+        validate_complete_aggregate_usage(normalized)
+    if target.mode is CapabilityInvocationMode.ANCHORED:
+        assert target.command_body is not None
+        if len(re.findall(rf"(?<!\S){re.escape(target.command_body)}(?!\S)", normalized)) != 1:
+            raise CapabilityAnnotationError(
+                "anchored usage must contain the deterministic command body exactly once"
+            )
+        if (
+            target.requires_mention
+            and len(re.findall(rf"@bot {re.escape(target.command_body)}(?!\S)", normalized)) != 1
+        ):
+            raise CapabilityAnnotationError(
+                "usage for a mention-required invocation must place @bot before command_body"
+            )
     return normalized
 
 
@@ -607,10 +809,9 @@ def _usage_pattern(value: str) -> str:
     _public_text(normalized, "usage", allow_at_bot=True)
     if len(normalized) > 160:
         raise CapabilityAnnotationError("usage must be at most 160 characters")
-    if normalized.count("{command}") != 1:
-        raise CapabilityAnnotationError("usage must contain the {command} placeholder exactly once")
-    remainder = normalized.replace("{command}", "")
-    if "{" in remainder or "}" in remainder:
+    if "{command}" in normalized:
+        raise CapabilityAnnotationError("usage must contain the complete command, not {command}")
+    if "{" in normalized or "}" in normalized:
         raise CapabilityAnnotationError("usage contains an unsupported placeholder")
     for opening, closing in (("[", "]"), ("(", ")"), ("<", ">")):
         if normalized.count(opening) != normalized.count(closing):
@@ -627,6 +828,29 @@ def _public_text(value: object, label: str, *, allow_at_bot: bool = False) -> st
         unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in value
     ):
         raise CapabilityAnnotationError(f"{label} contains unsafe characters")
+    return value
+
+
+def _public_markdown(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 32_000:
+        raise CapabilityAnnotationError(f"{label} must be 1 to 32000 characters")
+    if value != value.strip():
+        raise CapabilityAnnotationError(f"{label} must be trimmed")
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs"} and character != "\n"
+        for character in value
+    ):
+        raise CapabilityAnnotationError(f"{label} contains unsafe characters")
+    lowered = value.casefold()
+    if "```" in value:
+        raise CapabilityAnnotationError(f"{label} must not contain fenced code blocks")
+    if any(marker.casefold() in lowered for marker in _MARKDOWN_IMPLEMENTATION_MARKERS):
+        raise CapabilityAnnotationError(f"{label} exposes implementation details")
+    if re.search(
+        r"\b(?:OWNER|MEMBER|ADMIN|SUPERUSER|Permission|Rule|Matcher|Alconna|Option|Subcommand)\b",
+        value,
+    ):
+        raise CapabilityAnnotationError(f"{label} exposes framework terms")
     return value
 
 
@@ -657,7 +881,7 @@ def _usage_tuple(value: object) -> None:
     for item in value:
         if not isinstance(item, str):
             raise CapabilityAnnotationError("usages must contain strings")
-        _usage_pattern(item)
+        validate_capability_usage_pattern(item)
 
 
 def _ordered_unique(values: Any) -> tuple[str, ...]:
@@ -689,16 +913,20 @@ def _bounded_identifier(value: object, label: str, *, max_length: int) -> str:
 
 
 __all__ = (
+    "CAPABILITY_ANNOTATION_BUDGET_PROFILE",
+    "CAPABILITY_ANNOTATION_PRIVACY_POLICY",
     "CAPABILITY_ANNOTATION_PROMPT_ID",
     "CAPABILITY_ANNOTATION_SCHEMA_VERSION",
+    "CAPABILITY_ANNOTATION_TASK",
     "CapabilityAnnotationCache",
     "CapabilityAnnotationError",
     "CapabilityAnnotationEvidenceRef",
     "CapabilityTeachingAnnotation",
-    "CapabilityTeachingInteraction",
+    "CapabilityTeachingEntry",
     "CapabilityTeachingRequirement",
     "capability_analysis_fingerprint",
     "project_capability_annotation",
     "validate_capability_public_statement",
     "validate_capability_usage_pattern",
+    "validate_complete_aggregate_usage",
 )

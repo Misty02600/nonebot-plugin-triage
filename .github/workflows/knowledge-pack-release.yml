@@ -20,6 +20,11 @@ jobs:
     name: Verify draft assets
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      asset: ${{ steps.identity.outputs.asset }}
+      version: ${{ steps.identity.outputs.version }}
     steps:
       - name: Check out tagged release contract
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,3 +102,39 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: gh release edit "${RELEASE_TAG}" --draft=false --latest=false
+
+      - name: Update stable knowledge catalog
+        shell: bash
+        env:
+          ASSET: ${{ needs.verify.outputs.asset }}
+          CATALOG_TAG: knowledge-stable
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PACK_VERSION: ${{ needs.verify.outputs.version }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir stable-catalog
+          gh release download "${RELEASE_TAG}" \
+            --pattern "${ASSET}.sha256" \
+            --dir stable-catalog
+          archive_sha256="$(awk '{print $1}' "stable-catalog/${ASSET}.sha256")"
+          asset_url="https://github.com/${GH_REPO}/releases/download/${RELEASE_TAG}/${ASSET}"
+          jq -n \
+            --arg pack_version "${PACK_VERSION}" \
+            --arg asset_url "${asset_url}" \
+            --arg archive_sha256 "${archive_sha256}" \
+            '{
+              schema_version: 1,
+              pack_id: "nbtriage-default",
+              pack_version: $pack_version,
+              asset_url: $asset_url,
+              archive_sha256: $archive_sha256
+            }' > stable-catalog/catalog.json
+          if ! gh release view "${CATALOG_TAG}" >/dev/null 2>&1; then
+            gh release create "${CATALOG_TAG}" \
+              --title "Stable knowledge pack channel" \
+              --notes "Mutable pointer used by plugin startup update checks." \
+              --latest=false
+          fi
+          gh release upload "${CATALOG_TAG}" stable-catalog/catalog.json --clobber

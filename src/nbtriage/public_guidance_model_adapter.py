@@ -36,7 +36,7 @@ SYSTEM_INSTRUCTION = """\
 - 只返回已配置的结构化输出。
 """
 
-_QUALIFIED_STRUCTURED_OUTPUT_MODES = frozenset({"native", "tool"})
+_SUPPORTED_STRUCTURED_OUTPUT_MODES = frozenset({"native", "tool"})
 
 
 class PublicGuidanceModelAdapterError(RuntimeError):
@@ -61,9 +61,9 @@ class PydanticAIPublicGuidanceClient:
         if max_output_tokens < 1:
             raise PublicGuidanceModelAdapterError("max_output_tokens must be positive")
         output_mode = model.profile.get("default_structured_output_mode", "tool")
-        if output_mode not in _QUALIFIED_STRUCTURED_OUTPUT_MODES:
+        if output_mode not in _SUPPORTED_STRUCTURED_OUTPUT_MODES:
             raise PublicGuidanceModelAdapterError(
-                "public guidance task has not accepted the model profile output mode"
+                "public guidance task does not support the model profile output mode"
             )
         self._max_output_tokens = max_output_tokens
         self._expected_provider = expected_provider

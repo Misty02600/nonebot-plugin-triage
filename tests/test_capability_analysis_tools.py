@@ -14,10 +14,13 @@ from nbtriage.capability_analysis import (
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
     CapabilityIdentity,
+    CapabilityInvocationMode,
+    CapabilityInvocationTarget,
     CapabilitySourceContext,
 )
 from nbtriage.capability_annotations import CapabilityAnnotationEvidenceRef
 from nbtriage.capability_source_evidence import CapabilitySourceEvidencePack
+from nbtriage.knowledge_index import KnowledgeEvidence
 from nbtriage.readonly_tools import ReadOnlyRoot, ReadOnlyTaskProfile
 from nonebot_plugin_triage.capability_analysis_tools import (
     CapabilityTeachingToolProvider,
@@ -74,6 +77,13 @@ def _request(revision: str) -> CapabilityAnalysisRequest:
                 "runtime_capability_facts",
                 '{"command":"demo"}',
                 "sha256:runtime",
+            ),
+        ),
+        invocations=(
+            CapabilityInvocationTarget(
+                entry_id="root",
+                mode=CapabilityInvocationMode.ANCHORED,
+                command_body="demo",
             ),
         ),
     )
@@ -166,4 +176,98 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
     )
     assert provider.evidence_is_current(_request(revision), manifest) is True
     handler.write_text("def handle():\n    return True\n", encoding="utf-8")
+    assert provider.evidence_is_current(_request(revision), manifest) is False
+
+
+def test_teaching_tools_offer_version_bound_framework_rag_and_capture_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profiles = _profiles(tmp_path)
+    revision = "plugin-revision-v1"
+    pack = {"revision": "archive-v1"}
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_analysis_tools.build_evidence_access_profiles",
+        lambda *_args, **_kwargs: profiles,
+    )
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_analysis_tools.build_capability_source_evidence",
+        lambda *_args, **_kwargs: _source_pack(revision),
+    )
+
+    class FakeKnowledgeReader:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def search(self, query: str, **kwargs: object) -> list[KnowledgeEvidence]:
+            assert "on_command" in query
+            assert kwargs["component"] == "nonebot2"
+            return [
+                KnowledgeEvidence(
+                    evidence_id="knowledge:nonebot:on-command",
+                    component="nonebot2",
+                    source_kind="user_docs",
+                    applicability="exact_version",
+                    version="2.5.0",
+                    revision="docs-v1",
+                    content_sha256="2" * 64,
+                    source_url="https://nonebot.dev/",
+                    locator="matcher.md#on-command",
+                    excerpt="on_command 使用当前 COMMAND_START 解析命令。",
+                    excerpt_truncated=False,
+                    score=0.1,
+                )
+            ]
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_analysis_tools.KnowledgeIndexReader",
+        FakeKnowledgeReader,
+    )
+    provider = CapabilityTeachingToolProvider(
+        pyproject_path=tmp_path / "pyproject.toml",
+        knowledge_index_path=lambda: tmp_path / "knowledge.sqlite3",
+        knowledge_pack_revision=lambda: pack["revision"],
+    )
+    runtime = provider.create_runtime(_request(revision))
+    assert runtime is not None
+    observed_tools: set[str] = set()
+    calls = 0
+
+    def respond(_messages, info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        observed_tools.update(tool.name for tool in info.function_tools)
+        if calls == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "framework_search_docs",
+                        {"query": "NoneBot on_command COMMAND_START"},
+                        "call-docs",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("done")], finish_reason="stop")
+
+    agent = Agent(
+        FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
+        toolsets=cast(Any, list(runtime.toolsets)),
+    )
+    asyncio.run(agent.run("Read the framework docs."))
+
+    assert "framework_search_docs" in observed_tools
+    evidence = runtime.evidence_units()
+    assert len(evidence) == 1
+    assert evidence[0].source_kind == "knowledge_user_docs"
+    assert evidence[0].revision == "pack:archive-v1:docs-v1"
+    manifest = (
+        CapabilityAnnotationEvidenceRef(
+            evidence_id=evidence[0].evidence_id,
+            source_kind=evidence[0].source_kind,
+            locator=evidence[0].locator or "",
+            revision=evidence[0].revision,
+        ),
+    )
+    assert provider.evidence_is_current(_request(revision), manifest) is True
+    pack["revision"] = "archive-v2"
     assert provider.evidence_is_current(_request(revision), manifest) is False

@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import Any, cast
 
 import pytest
 
 from nbtriage.capability_analysis import (
+    CapabilityAnalysisEntryOutput,
     CapabilityAnalysisError,
     CapabilityAnalysisOutput,
     CapabilityAnalysisRequest,
     CapabilityAnalysisService,
     CapabilityEvidenceUnit,
+    CapabilityGateCandidate,
+    CapabilityGateKind,
+    CapabilityGateResolution,
+    CapabilityGateResolutionKind,
     CapabilityIdentity,
+    CapabilityInvocationMode,
+    CapabilityInvocationTarget,
     ConfigProjection,
     FakeCapabilityAnalysisClient,
     RateLimitPolicy,
@@ -66,24 +74,36 @@ def _request() -> CapabilityAnalysisRequest:
                 reason="current value is not available through the standard Config chain",
             ),
         ),
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "搜图",
+            ),
+        ),
     )
 
 
 def _output(*, evidence_id: str = "ev-handler") -> CapabilityAnalysisOutput:
     return CapabilityAnalysisOutput(
-        claims=(
-            SemanticClaim(
-                kind=SemanticClaimKind.SUMMARY,
-                statement="查找二次元图片来源",
-                evidence_ids=(evidence_id,),
-            ),
-        ),
-        constraints=(
-            SemanticConstraint(
-                kind=SemanticConstraintKind.INPUT,
-                statement="需要回复一张图片",
-                evidence_ids=(evidence_id, "ev-readme"),
-                config_reference_ids=("cfg-enabled",),
+        entries=(
+            CapabilityAnalysisEntryOutput(
+                entry_id="root",
+                claims=(
+                    SemanticClaim(
+                        kind=SemanticClaimKind.SUMMARY,
+                        statement="查找二次元图片来源",
+                        evidence_ids=(evidence_id,),
+                    ),
+                ),
+                constraints=(
+                    SemanticConstraint(
+                        kind=SemanticConstraintKind.INPUT,
+                        statement="需要回复一张图片",
+                        evidence_ids=(evidence_id, "ev-readme"),
+                        config_reference_ids=("cfg-enabled",),
+                    ),
+                ),
             ),
         ),
     )
@@ -106,6 +126,7 @@ def test_request_rejects_duplicate_and_ambiguous_references() -> None:
         CapabilityAnalysisRequest(
             capability=_request().capability,
             evidence_units=(_request().evidence_units[0], _request().evidence_units[0]),
+            invocations=_request().invocations,
         )
     with pytest.raises(CapabilityAnalysisError, match="both projected and unknown"):
         CapabilityAnalysisRequest(
@@ -125,6 +146,46 @@ def test_request_rejects_duplicate_and_ambiguous_references() -> None:
                     reason="unavailable",
                 ),
             ),
+            invocations=_request().invocations,
+        )
+
+
+def test_invocation_target_bounds_parser_owned_canonical_usages() -> None:
+    target = CapabilityInvocationTarget(
+        "root",
+        CapabilityInvocationMode.ANCHORED,
+        "订阅 添加",
+        ("订阅 添加 <主题> [-q|--quiet]",),
+    )
+
+    assert target.canonical_usages == ("订阅 添加 <主题> [-q|--quiet]",)
+    mention_target = CapabilityInvocationTarget(
+        "root",
+        CapabilityInvocationMode.ANCHORED,
+        "状态",
+        aliases=("运行状态",),
+        requires_mention=True,
+    )
+    assert mention_target.aliases == ("运行状态",)
+    assert mention_target.requires_mention is True
+    with pytest.raises(CapabilityAnalysisError, match="only anchored"):
+        CapabilityInvocationTarget(
+            "family",
+            CapabilityInvocationMode.COMPLETE,
+            canonical_usages=("<效果名> <文字>",),
+        )
+    with pytest.raises(CapabilityAnalysisError, match="bounded tuple"):
+        CapabilityInvocationTarget(
+            "root",
+            CapabilityInvocationMode.ANCHORED,
+            "测试",
+            tuple(f"测试 {index}" for index in range(5)),
+        )
+    with pytest.raises(CapabilityAnalysisError, match=r"only anchored.*aliases"):
+        CapabilityInvocationTarget(
+            "family",
+            CapabilityInvocationMode.COMPLETE,
+            aliases=("别名",),
         )
 
 
@@ -158,6 +219,7 @@ def test_output_has_only_semantic_fields_and_evidence_ids() -> None:
         "role",
         "rate_limit_policy",
         "rate_limit_scope",
+        "gate_candidate_ids",
     }
     with pytest.raises(TypeError):
         cast(Any, SemanticClaim)(
@@ -181,6 +243,110 @@ def test_service_calls_fake_client_once_and_accepts_closed_references() -> None:
         asyncio.run(service.analyze(request))
 
 
+def test_service_accepts_gate_proven_to_have_no_constraint() -> None:
+    request = replace(
+        _request(),
+        evidence_units=(
+            *_request().evidence_units,
+            CapabilityEvidenceUnit(
+                evidence_id="ev-definition",
+                source_kind="approved_python_definition",
+                content="def AllowAll(): return True",
+                revision="sha256:definition",
+            ),
+        ),
+        gate_candidates=(
+            CapabilityGateCandidate(
+                "gate:allow-all",
+                CapabilityGateKind.PERMISSION,
+                ("root",),
+                ("ev-handler",),
+            ),
+        ),
+    )
+    expected = replace(
+        _output(evidence_id="ev-definition"),
+        gate_resolutions=(
+            CapabilityGateResolution(
+                "gate:allow-all",
+                CapabilityGateResolutionKind.NO_CONSTRAINT,
+                ("ev-handler", "ev-definition"),
+            ),
+        ),
+    )
+    client = FakeCapabilityAnalysisClient(expected)
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+
+    assert result == expected
+    assert client.requests == [request]
+
+
+def test_service_closes_only_after_gate_remains_unresolved() -> None:
+    request = replace(
+        _request(),
+        evidence_units=(
+            CapabilityEvidenceUnit(
+                evidence_id="ev-unknown-rate",
+                source_kind="matcher_source_structure",
+                content="第三方使用门禁无法定位定义。",
+                revision="sha256:unknown-rate",
+            ),
+        ),
+        gate_candidates=(
+            CapabilityGateCandidate(
+                "gate:unknown-rate",
+                CapabilityGateKind.EXECUTION_GUARD,
+                ("root",),
+                ("ev-unknown-rate",),
+            ),
+        ),
+    )
+    expected = CapabilityAnalysisOutput(
+        knowledge_enabled=False,
+        gate_resolutions=(
+            CapabilityGateResolution(
+                "gate:unknown-rate",
+                CapabilityGateResolutionKind.UNRESOLVED,
+                ("ev-unknown-rate",),
+            ),
+        ),
+    )
+    client = FakeCapabilityAnalysisClient(expected)
+
+    assert asyncio.run(CapabilityAnalysisService(client).analyze(request)) == expected
+    assert client.requests == [request]
+
+
+def test_service_rejects_no_constraint_without_semantic_support() -> None:
+    request = replace(
+        _request(),
+        gate_candidates=(
+            CapabilityGateCandidate(
+                "gate:unknown",
+                CapabilityGateKind.PERMISSION,
+                ("root",),
+                ("ev-handler",),
+            ),
+        ),
+    )
+    output = replace(
+        _output(),
+        gate_resolutions=(
+            CapabilityGateResolution(
+                "gate:unknown",
+                CapabilityGateResolutionKind.NO_CONSTRAINT,
+                ("ev-handler",),
+            ),
+        ),
+    )
+
+    with pytest.raises(CapabilityAnalysisError, match="requires definition"):
+        asyncio.run(
+            CapabilityAnalysisService(FakeCapabilityAnalysisClient(output)).analyze(request)
+        )
+
+
 def test_service_rejects_evidence_ids_outside_request() -> None:
     service = CapabilityAnalysisService(FakeCapabilityAnalysisClient(_output(evidence_id="ev-x")))
 
@@ -190,14 +356,19 @@ def test_service_rejects_evidence_ids_outside_request() -> None:
 
 def test_service_rejects_config_reference_ids_outside_request() -> None:
     output = CapabilityAnalysisOutput(
-        constraints=(
-            SemanticConstraint(
-                kind=SemanticConstraintKind.RATE_LIMIT,
-                statement="存在调用间隔",
-                evidence_ids=("ev-handler",),
-                config_reference_ids=("cfg-missing",),
-                rate_limit_policy=RateLimitPolicy.COOLDOWN,
-                rate_limit_scope=RateLimitScope.USER,
+        entries=(
+            CapabilityAnalysisEntryOutput(
+                "root",
+                constraints=(
+                    SemanticConstraint(
+                        kind=SemanticConstraintKind.RATE_LIMIT,
+                        statement="存在调用间隔",
+                        evidence_ids=("ev-handler",),
+                        config_reference_ids=("cfg-missing",),
+                        rate_limit_policy=RateLimitPolicy.COOLDOWN,
+                        rate_limit_scope=RateLimitScope.USER,
+                    ),
+                ),
             ),
         )
     )
@@ -209,12 +380,17 @@ def test_service_rejects_config_reference_ids_outside_request() -> None:
 
 def test_service_rejects_unknown_config_reference_as_semantic_support() -> None:
     output = CapabilityAnalysisOutput(
-        constraints=(
-            SemanticConstraint(
-                kind=SemanticConstraintKind.FEATURE_STATE,
-                statement="无法确认动态配置状态",
-                evidence_ids=("ev-handler",),
-                config_reference_ids=("cfg-dynamic-scope",),
+        entries=(
+            CapabilityAnalysisEntryOutput(
+                "root",
+                constraints=(
+                    SemanticConstraint(
+                        kind=SemanticConstraintKind.FEATURE_STATE,
+                        statement="无法确认动态配置状态",
+                        evidence_ids=("ev-handler",),
+                        config_reference_ids=("cfg-dynamic-scope",),
+                    ),
+                ),
             ),
         )
     )

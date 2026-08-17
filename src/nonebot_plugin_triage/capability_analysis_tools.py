@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, cast
 
@@ -20,6 +23,7 @@ from nbtriage.capability_source_evidence import (
     CapabilitySourceEvidenceError,
     build_capability_source_evidence,
 )
+from nbtriage.knowledge_index import KnowledgeEvidence, KnowledgeIndexReader, KnowledgePackError
 from nbtriage.readonly_tools import (
     READ_ONLY_FILE_TOOL_NAMES,
     DefinitionNavigator,
@@ -102,6 +106,22 @@ class _EvidenceCapture:
     def units(self) -> tuple[CapabilityEvidenceUnit, ...]:
         return tuple(self._units[key] for key in sorted(self._units))
 
+    def record_knowledge(
+        self,
+        evidence: KnowledgeEvidence,
+        *,
+        pack_revision: str,
+    ) -> CapabilityEvidenceUnit:
+        unit = CapabilityEvidenceUnit(
+            evidence_id=evidence.evidence_id,
+            source_kind=f"knowledge_{evidence.source_kind}",
+            content=evidence.excerpt,
+            revision=f"pack:{pack_revision}:{evidence.revision}",
+            locator=f"knowledge/{evidence.component}/{evidence.locator}",
+        )
+        self._units[unit.evidence_id] = unit
+        return unit
+
 
 class _EvidenceRecordingToolset(WrapperToolset[Any]):
     def __init__(
@@ -159,9 +179,13 @@ class CapabilityTeachingToolProvider:
         *,
         pyproject_path: Path = Path("pyproject.toml"),
         additional_denied_patterns: tuple[str, ...] = (),
+        knowledge_index_path: Callable[[], Path | None] | None = None,
+        knowledge_pack_revision: Callable[[], str | None] | None = None,
     ) -> None:
         self._pyproject_path = Path(pyproject_path)
         self._additional_denied_patterns = additional_denied_patterns
+        self._knowledge_index_path = knowledge_index_path
+        self._knowledge_pack_revision = knowledge_pack_revision
 
     def create_runtime(
         self,
@@ -220,6 +244,7 @@ class CapabilityTeachingToolProvider:
                 navigator,
                 plugin_root_name=profiles.plugin_source_root.name,
             )
+            knowledge_toolset = self._knowledge_toolset(capture)
         except (
             EvidenceAccessError,
             ReadOnlyFileSystemError,
@@ -243,7 +268,11 @@ class CapabilityTeachingToolProvider:
             )
 
         return CapabilityAnalysisToolRuntime(
-            toolsets=(*wrapped_file_tools, navigation_toolset),
+            toolsets=tuple(
+                item
+                for item in (*wrapped_file_tools, navigation_toolset, knowledge_toolset)
+                if item is not None
+            ),
             evidence_units=capture.units,
             validate_source_context=validate_source_context,
         )
@@ -268,6 +297,15 @@ class CapabilityTeachingToolProvider:
         except EvidenceAccessError:
             return False
         for reference in manifest:
+            if reference.source_kind.startswith("knowledge_"):
+                if self._knowledge_pack_revision is None:
+                    return False
+                current_revision = self._knowledge_pack_revision()
+                if current_revision is None or not reference.revision.startswith(
+                    f"pack:{current_revision}:"
+                ):
+                    return False
+                continue
             if reference.source_kind != _DYNAMIC_EVIDENCE_SOURCE_KIND:
                 return False
             root_name, separator, locator = reference.locator.partition("/")
@@ -278,6 +316,62 @@ class CapabilityTeachingToolProvider:
             if state is None or f"sha256:{state.revision}" != reference.revision:
                 return False
         return True
+
+    def _knowledge_toolset(
+        self,
+        capture: _EvidenceCapture,
+    ) -> AbstractToolset[Any] | None:
+        if self._knowledge_index_path is None or self._knowledge_pack_revision is None:
+            return None
+        path = self._knowledge_index_path()
+        pack_revision = self._knowledge_pack_revision()
+        if path is None or pack_revision is None:
+            return None
+        try:
+            reader = KnowledgeIndexReader(path)
+            nonebot_version = version("nonebot2")
+        except (KnowledgePackError, PackageNotFoundError):
+            return None
+
+        async def search_docs(query: str) -> list[dict[str, object]]:
+            """检索当前 NoneBot 版本对应的公开框架文档片段。"""
+            try:
+                evidence = await asyncio.to_thread(
+                    reader.search,
+                    query,
+                    component="nonebot2",
+                    version=nonebot_version,
+                    source_kinds=("user_docs",),
+                    limit=3,
+                    max_excerpt_chars=1_800,
+                )
+            except KnowledgePackError:
+                return []
+            return [
+                {
+                    "evidence_id": capture.record_knowledge(
+                        item,
+                        pack_revision=pack_revision,
+                    ).evidence_id,
+                    "component": item.component,
+                    "version": item.version,
+                    "locator": item.locator,
+                    "content": item.excerpt,
+                }
+                for item in evidence
+            ]
+
+        return cast(
+            AbstractToolset[Any],
+            FunctionToolset(
+                tools=[search_docs],
+                instructions=(
+                    "framework_search_docs 只检索与当前运行环境版本匹配的 NoneBot 公开文档。"
+                    "涉及 on_command、Matcher、Rule、Permission、依赖注入或 Alconna 集成语义时，"
+                    "优先查询文档，不要反复阅读依赖包源码。返回的 evidence_id 可以直接用于最终输出。"
+                ),
+            ).prefixed("framework"),
+        )
 
 
 def _navigation_toolset(

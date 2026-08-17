@@ -15,16 +15,12 @@ from nbtriage.bug_assessment import (
     BugEvidence,
     BugEvidenceKind,
     BugOccurrence,
-    BugProblemRecord,
-    BugProblemStatus,
     BugReason,
     BugResponsibility,
     BugVerdict,
     build_bug_case_fingerprint,
-    build_bug_problem_catalog,
     format_bug_assessment_reply,
     format_bug_supplement_request,
-    parse_bug_problem_catalog,
     reconcile_bug_candidate,
 )
 
@@ -101,64 +97,8 @@ def _toolbox(*, on_call: list[str] | None = None) -> BugAssessmentToolbox:
     )
 
 
-def _reviewed_record() -> BugProblemRecord:
-    return BugProblemRecord(
-        record_id="bug-reminder-001",
-        status=BugProblemStatus.VERIFIED,
-        fingerprint=_fingerprint(),
-        verdict=BugVerdict.BUG,
-        responsibility_candidates=(BugResponsibility.TARGET_PLUGIN,),
-        review_revision="review-v2",
-        created_at="2026-08-14T00:00:00+00:00",
-        reviewed_at="2026-08-14T01:00:00+00:00",
-    )
-
-
-def test_catalog_rejects_modified_content() -> None:
-    payload = build_bug_problem_catalog(
-        [_reviewed_record()], catalog_revision="catalog-v1"
-    ).model_dump(mode="json")
-    payload["catalog_revision"] = "catalog-v2"
-
-    with pytest.raises(ValueError, match="hash mismatch"):
-        parse_bug_problem_catalog(payload)
-
-
-@pytest.mark.asyncio
-async def test_verified_catalog_match_short_circuits_all_other_work() -> None:
-    calls: list[str] = []
-
-    class Repository:
-        def find_verified(self, fingerprint):
-            assert fingerprint == _fingerprint()
-            calls.append("catalog")
-            return _reviewed_record()
-
-    class Prechecker:
-        async def check(self, case, toolbox):
-            del case, toolbox
-            pytest.fail("precheck must not run after a verified exact match")
-
-    def create_agent():
-        pytest.fail("agent must not be created after a verified exact match")
-
-    decision = await BugAssessmentCoordinator(Repository(), Prechecker(), create_agent).assess(
-        _case(), _toolbox(on_call=calls)
-    )
-
-    assert calls == ["catalog"]
-    assert decision.verdict is BugVerdict.BUG
-    assert decision.source is BugDecisionSource.VERIFIED_CATALOG
-    assert decision.reason is BugReason.VERIFIED_PROBLEM_MATCH
-
-
 @pytest.mark.asyncio
 async def test_public_precheck_short_circuits_agent() -> None:
-    class Repository:
-        def find_verified(self, fingerprint):
-            del fingerprint
-            return None
-
     class Prechecker:
         async def check(self, case, toolbox):
             del case
@@ -177,7 +117,7 @@ async def test_public_precheck_short_circuits_agent() -> None:
         pytest.fail("agent must not run after a conclusive public precheck")
 
     calls: list[str] = []
-    decision = await BugAssessmentCoordinator(Repository(), Prechecker(), create_agent).assess(
+    decision = await BugAssessmentCoordinator(Prechecker(), create_agent).assess(
         _case(), _toolbox(on_call=calls)
     )
 
@@ -404,3 +344,30 @@ def test_unknown_bug_does_not_ask_user_for_system_owned_evidence() -> None:
     )
 
     assert format_bug_supplement_request(decision) is None
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    (
+        (BugReason.SUBJECT_UNRESOLVED, "具体功能或指令"),
+        (BugReason.OPERATION_CONTEXT_MISSING, "实际执行的指令"),
+    ),
+)
+def test_intake_precheck_requests_only_the_missing_user_context(
+    reason: BugReason,
+    expected: str,
+) -> None:
+    decision = BugAssessmentDecision(
+        verdict=BugVerdict.UNKNOWN,
+        occurrence=BugOccurrence.UNKNOWN,
+        responsibility_candidates=(BugResponsibility.UNKNOWN,),
+        reason=reason,
+        evidence_ids=(),
+        missing_evidence=(BugEvidenceKind.CONVERSATION_CONTEXT,),
+        source=BugDecisionSource.PUBLIC_PRECHECK,
+    )
+
+    prompt = format_bug_supplement_request(decision)
+
+    assert prompt is not None
+    assert expected in prompt

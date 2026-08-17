@@ -28,13 +28,14 @@ def _config() -> NBTriageConfig:
     )
 
 
-def test_public_guidance_factory_fails_before_reading_secret_without_task() -> None:
-    with pytest.raises(ValueError, match="controlled dogfood"):
-        create_opencode_go_public_guidance_client_factory(
-            _config(),
-            environ={"OPENCODE_API_KEY": "SECRET_MUST_NOT_LEAK"},
-            provisional_tasks=frozenset(),
-        )
+def test_public_guidance_factory_allows_unverified_combination() -> None:
+    factory = create_opencode_go_public_guidance_client_factory(
+        _config(),
+        environ={"OPENCODE_API_KEY": "test-only"},
+        provisional_tasks=frozenset(),
+    )
+
+    assert callable(factory)
 
 
 def test_public_guidance_factory_requires_opencode_key() -> None:

@@ -3,17 +3,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as distribution_version
 from pathlib import Path
 from types import ModuleType
 from typing import Protocol
 
-from nonebot import require
+from nonebot import logger
 
 from nbtriage.bug_agent import BUG_AGENT_PROMPT_ID
 from nbtriage.bug_assessment import (
@@ -23,10 +23,13 @@ from nbtriage.bug_assessment import (
     BugAssessmentCoordinator,
     BugAssessmentDecision,
     BugAssessmentToolbox,
+    BugDecisionSource,
     BugEvidence,
     BugEvidenceKind,
+    BugOccurrence,
     BugReason,
-    ReviewedBugProblemRepository,
+    BugResponsibility,
+    BugVerdict,
     build_bug_case_fingerprint,
     unknown_bug_decision,
 )
@@ -36,14 +39,25 @@ from nbtriage.bug_conversation import (
     BugConversationPage,
 )
 from nbtriage.bug_design import BugDesignIndexReader
+from nbtriage.bug_intake import BugIntakeStatus, evaluate_bug_intake
 from nbtriage.bug_logs import (
     CorrelatedBugLogBuffer,
     bug_log_bundle_evidence,
     redact_bug_evidence_text,
 )
-from nbtriage.bug_source import ApprovedSourceRoot
+from nbtriage.bug_source import ApprovedSourceRoot, BoundedSourceReader
+from nbtriage.bug_workflow import (
+    BugOccurrenceInput,
+    BugReportInput,
+    ProblemDecisionInput,
+    ProblemDecisionSource,
+    RecordBugCommand,
+    build_problem_signature,
+    evidence_receipts,
+)
 from nbtriage.capabilities import CapabilityRecord, CapabilitySearchHit
-from nbtriage.opencode_go_semantic_adapter import (
+from nbtriage.capability_annotations import CapabilityTeachingAnnotation
+from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_BUG_ASSESSMENT_BUDGET_PROFILE,
     OPENCODE_GO_BUG_ASSESSMENT_EVALUATION,
     OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
@@ -52,14 +66,16 @@ from nbtriage.opencode_go_semantic_adapter import (
     OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
     OPENCODE_GO_SEMANTIC_API_FAMILY,
     OPENCODE_GO_SEMANTIC_MODELS,
-    create_opencode_go_bug_assessment_agent,
 )
 from nbtriage.runtime_observations import RuntimeObservationBuffer
-from nbtriage.serena_source import BoundedBugSourceBackend, create_bug_source_backend
-from nonebot_plugin_triage.bug_problem_store import LocalBugProblemRepository
 from nonebot_plugin_triage.capability_shadow import CapabilityShadowService
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.knowledge_pack_runtime import KnowledgePackService
+from nonebot_plugin_triage.task_model_runtime import (
+    TaskModelRuntimeConfigurationError,
+    create_task_model_binding,
+    unverified_evaluation_id,
+)
 
 _CONVERSATION_MESSAGE_CONTENT_MAX_CHARS = 2_000
 _CONVERSATION_SENDER_NAME_MAX_CHARS = 128
@@ -82,7 +98,8 @@ class BugTaskQualification:
     prompt_id: str
     privacy_policy: str
     budget_profile: str
-    evaluation: str
+    evaluation: str | None
+    verified: bool = True
 
 
 OPENCODE_GO_BUG_TASK_QUALIFICATION = BugTaskQualification(
@@ -103,14 +120,31 @@ QUALIFIED_BUG_TASKS: frozenset[BugTaskQualification] = frozenset(
 
 
 @dataclass(frozen=True, slots=True)
+class _BugAgentRuntimeBinding:
+    client_factory: Callable[[], BugAssessmentAgentClient]
+    qualification: BugTaskQualification
+
+
+@dataclass(frozen=True, slots=True)
 class BugAssessmentRuntimeRequest:
     request_text: str
     adapter_name: str
     adapter_type: type[object]
     correlation_id: str | None
+    reported_observation: bool = False
     conversation_context: str | None = None
     reply_message: BugConversationMessage | None = None
     conversation_reader: BoundBugConversationReader | None = None
+    report_key: str | None = None
+    actor_scope_hmac: str | None = None
+    occurrence_key: str | None = None
+    correlation_digest: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BugAssessmentRuntimeOutcome:
+    decision: BugAssessmentDecision
+    record_command: RecordBugCommand | None = None
 
 
 class BugAssessmentServiceLike(Protocol):
@@ -135,34 +169,104 @@ class _PublicContractPrechecker:
         return None
 
 
+@dataclass(frozen=True, slots=True)
+class _ResolvedPublicSubject:
+    hit: CapabilitySearchHit
+    annotation: CapabilityTeachingAnnotation | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PublicSubjectResolution:
+    subject: _ResolvedPublicSubject | None
+    unavailable: bool = False
+
+
+class _BoundedBugSourceBackend:
+    """把同步的批准根源码读取器适配成 Bug 工具使用的异步接口。"""
+
+    def __init__(self, approved_root: ApprovedSourceRoot) -> None:
+        self._reader = BoundedSourceReader(approved_root)
+
+    async def find_symbol(self, query: str) -> tuple[BugEvidence, ...]:
+        return await asyncio.to_thread(self._reader.search, query)
+
+    async def read(self, relative_path: str) -> tuple[BugEvidence, ...]:
+        return await asyncio.to_thread(self._reader.read, relative_path)
+
+    async def aclose(self) -> None:
+        return None
+
+
 class BugAssessmentRuntimeService:
     def __init__(
         self,
         *,
-        repository: ReviewedBugProblemRepository,
         capability_shadow: CapabilityShadowService | None,
         knowledge_pack: KnowledgePackService | None,
         runtime_buffer: RuntimeObservationBuffer,
         log_buffer: CorrelatedBugLogBuffer,
         agent_client_factory: Callable[[], BugAssessmentAgentClient] | None,
-        serena_home: Path | None,
         design_component_versions: Mapping[str, str],
+        agent_qualification: BugTaskQualification | None,
     ) -> None:
-        self._repository = repository
         self._capability_shadow = capability_shadow
         self._knowledge_pack = knowledge_pack
         self._runtime_buffer = runtime_buffer
         self._log_buffer = log_buffer
         self._agent_client_factory = agent_client_factory
-        self._serena_home = serena_home
         self._design_component_versions = dict(design_component_versions)
+        self._agent_qualification = agent_qualification
 
     async def assess(self, request: BugAssessmentRuntimeRequest) -> BugAssessmentDecision:
+        return (await self.assess_outcome(request)).decision
+
+    async def assess_outcome(
+        self,
+        request: BugAssessmentRuntimeRequest,
+    ) -> BugAssessmentRuntimeOutcome:
         subject_query = _subject_query(request)
-        subject_hit = await self._select_subject(subject_query)
-        subject = subject_hit.record if subject_hit is not None else None
+        subject_resolution = await self._select_subject(subject_query, request.adapter_type)
+        if subject_resolution.unavailable:
+            return BugAssessmentRuntimeOutcome(unknown_bug_decision(BugReason.ANALYSIS_UNAVAILABLE))
+        resolved_subject = subject_resolution.subject
+        subject = resolved_subject.hit.record if resolved_subject is not None else None
+        annotation = resolved_subject.annotation if resolved_subject is not None else None
+        intake = evaluate_bug_intake(
+            capability_id=subject.capability_id if subject is not None else None,
+            invocation=_record_invocation(subject),
+            annotation=annotation,
+            reported_observation=request.reported_observation,
+            reply_message=request.reply_message,
+        )
+        if intake.status is BugIntakeStatus.NEEDS_SUBJECT:
+            return BugAssessmentRuntimeOutcome(
+                _bug_intake_unknown(
+                    BugReason.SUBJECT_UNRESOLVED,
+                    missing_evidence=(BugEvidenceKind.PUBLIC_CONTRACT,),
+                )
+            )
+        if intake.status is BugIntakeStatus.NEEDS_OBSERVATION:
+            return BugAssessmentRuntimeOutcome(
+                _bug_intake_unknown(
+                    BugReason.OPERATION_CONTEXT_MISSING,
+                    missing_evidence=(BugEvidenceKind.CONVERSATION_CONTEXT,),
+                )
+            )
+        if intake.status is BugIntakeStatus.TEACH_CORRECTION:
+            assert subject is not None
+            return BugAssessmentRuntimeOutcome(
+                BugAssessmentDecision(
+                    verdict=BugVerdict.NOT_BUG,
+                    occurrence=BugOccurrence.SINGLE_OBSERVED,
+                    responsibility_candidates=(BugResponsibility.USER_INPUT,),
+                    reason=BugReason.PUBLIC_PRECONDITION_NOT_MET,
+                    evidence_ids=(_teaching_contract_evidence_id(subject, annotation),),
+                    missing_evidence=(),
+                    source=BugDecisionSource.PUBLIC_PRECHECK,
+                )
+            )
         source_revision = _record_source_revision(subject)
-        contract_revision = _record_revision(subject)
+        contract_revision = intake.contract_revision or _record_revision(subject)
         deployment_generation = (
             self._capability_shadow.status.deployment_generation
             if self._capability_shadow is not None
@@ -192,11 +296,7 @@ class BugAssessmentRuntimeService:
             deployment_generation=deployment_generation,
         )
         case = BugAssessmentCase(request_text=request.request_text, fingerprint=fingerprint)
-        source_backend = _source_backend(
-            subject,
-            serena_home=self._serena_home,
-            source_revision=source_revision,
-        )
+        source_backend = _source_backend(subject)
 
         async def runtime_loader() -> tuple[BugEvidence, ...]:
             if request.correlation_id is None:
@@ -296,16 +396,9 @@ class BugAssessmentRuntimeService:
             )
 
         async def public_contract_loader() -> tuple[BugEvidence, ...]:
-            if self._capability_shadow is None:
+            if subject is None:
                 return ()
-            result = await self._capability_shadow.search_public(
-                subject_query,
-                request.adapter_type,
-                limit=5,
-            )
-            if result is None:
-                return ()
-            return tuple(_public_record_evidence(hit.record) for hit in result.hits)
+            return (_public_record_evidence(subject, annotation),)
 
         toolbox = BugAssessmentToolbox(
             runtime_loader=runtime_loader,
@@ -321,29 +414,50 @@ class BugAssessmentRuntimeService:
             ),
         )
         coordinator = BugAssessmentCoordinator(
-            self._repository,
             _PublicContractPrechecker(),
             self._agent_client_factory,
         )
         try:
-            return await coordinator.assess(case, toolbox)
+            decision = await coordinator.assess(case, toolbox)
         finally:
             if source_backend is not None:
                 await source_backend.aclose()
+        command = _record_bug_command(
+            request,
+            decision,
+            toolbox.evidence,
+            subject=subject,
+            annotation=annotation,
+            source_revision=source_revision,
+            contract_revision=contract_revision,
+            deployment_generation=deployment_generation,
+            qualification=self._agent_qualification,
+        )
+        return BugAssessmentRuntimeOutcome(decision, command)
 
-    async def _select_subject(self, query: str) -> CapabilitySearchHit | None:
+    async def _select_subject(
+        self,
+        query: str,
+        adapter_type: type[object],
+    ) -> _PublicSubjectResolution:
         if self._capability_shadow is None:
-            return None
-        result = await self._capability_shadow.search_for_bug_assessment(query, limit=3)
-        if result is None or result.stale or result.partial is not False or not result.hits:
-            return None
+            return _PublicSubjectResolution(None, unavailable=True)
+        result = await self._capability_shadow.search_public(query, adapter_type, limit=3)
+        if result is None or result.stale or result.partial is not False:
+            return _PublicSubjectResolution(None, unavailable=True)
+        if not result.hits:
+            return _PublicSubjectResolution(None)
         first = result.hits[0]
-        if len(result.hits) == 1:
-            return first
-        second = result.hits[1]
-        if first.score >= 50 or first.score >= second.score * 1.5:
-            return first
-        return None
+        if len(result.hits) > 1:
+            second = result.hits[1]
+            if (second.score > 0 and first.score < second.score * 1.5) or (
+                second.score <= 0 and first.score <= 0
+            ):
+                return _PublicSubjectResolution(None)
+        annotations = {item.capability_id: item for item in result.annotations}
+        return _PublicSubjectResolution(
+            _ResolvedPublicSubject(first, annotations.get(first.record.capability_id))
+        )
 
 
 def create_bug_assessment_agent_factory(
@@ -352,60 +466,126 @@ def create_bug_assessment_agent_factory(
     environ: Mapping[str, str] | None = None,
     qualified_tasks: frozenset[BugTaskQualification] = QUALIFIED_BUG_TASKS,
 ) -> Callable[[], BugAssessmentAgentClient] | None:
-    if config.nbtriage_model_backend != "opencode-go-chat":
+    runtime_binding = _create_bug_agent_runtime_binding(
+        config,
+        environ=environ,
+        qualified_tasks=qualified_tasks,
+    )
+    return runtime_binding.client_factory if runtime_binding is not None else None
+
+
+def _create_bug_agent_runtime_binding(
+    config: NBTriageConfig,
+    *,
+    environ: Mapping[str, str] | None = None,
+    qualified_tasks: frozenset[BugTaskQualification] = QUALIFIED_BUG_TASKS,
+) -> _BugAgentRuntimeBinding | None:
+    if config.nbtriage_model_backend is None:
         return None
-    model = config.nbtriage_model_name
-    if model is None or model not in OPENCODE_GO_SEMANTIC_MODELS:
+    try:
+        binding = create_task_model_binding(config, environ=environ)
+    except TaskModelRuntimeConfigurationError as error:
+        logger.warning(
+            "NoneBot Triage Bug assessment is unavailable; deterministic handling "
+            "remains active ({})",
+            type(error).__name__,
+        )
         return None
-    qualification = BugTaskQualification(
-        provider="opencode-go",
-        api_family=OPENCODE_GO_SEMANTIC_API_FAMILY,
+    qualified_candidate = _bug_task_qualification(
+        config,
+        binding.provider,
+        binding.model_name,
+        binding.api_family,
+        verified=True,
+    )
+    verified = qualified_candidate in qualified_tasks
+    qualification = (
+        qualified_candidate
+        if verified
+        else _bug_task_qualification(
+            config,
+            binding.provider,
+            binding.model_name,
+            binding.api_family,
+            verified=False,
+        )
+    )
+    if not verified:
+        logger.info(
+            "NoneBot Triage Bug assessment is using an unverified model combination; "
+            "the evaluation label will be recorded with any accepted verdict: {}/{}",
+            config.nbtriage_model_backend,
+            config.nbtriage_model_name,
+        )
+
+    def create_client() -> BugAssessmentAgentClient:
+        from nbtriage.bug_agent import PydanticAIBugAssessmentAgent
+
+        return PydanticAIBugAssessmentAgent(
+            binding.model,
+            timeout_seconds=OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
+            max_output_tokens=OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
+            model_settings=binding.model_settings,
+            expected_provider=binding.provider,
+            expected_model=binding.model_name,
+        )
+
+    return _BugAgentRuntimeBinding(create_client, qualification)
+
+
+def create_bug_assessment_runtime_service(
+    config: NBTriageConfig,
+    *,
+    capability_shadow: CapabilityShadowService | None,
+    knowledge_pack: KnowledgePackService | None,
+    runtime_buffer: RuntimeObservationBuffer,
+    log_buffer: CorrelatedBugLogBuffer,
+) -> BugAssessmentRuntimeService:
+    runtime_binding = _create_bug_agent_runtime_binding(config)
+    return BugAssessmentRuntimeService(
+        capability_shadow=capability_shadow,
+        knowledge_pack=knowledge_pack,
+        runtime_buffer=runtime_buffer,
+        log_buffer=log_buffer,
+        agent_client_factory=(
+            runtime_binding.client_factory if runtime_binding is not None else None
+        ),
+        design_component_versions=_installed_design_component_versions(),
+        agent_qualification=(
+            runtime_binding.qualification if runtime_binding is not None else None
+        ),
+    )
+
+
+def _bug_task_qualification(
+    config: NBTriageConfig,
+    provider: str,
+    model: str,
+    api_family: str,
+    *,
+    verified: bool,
+) -> BugTaskQualification:
+    verified_profile = verified and (
+        config.nbtriage_model_backend == "opencode-go-chat" and model in OPENCODE_GO_SEMANTIC_MODELS
+    )
+    return BugTaskQualification(
+        provider=provider,
+        api_family=api_family,
         model=model,
         task=OPENCODE_GO_BUG_ASSESSMENT_TASK,
         schema_version=1,
         prompt_id=BUG_AGENT_PROMPT_ID,
         privacy_policy=OPENCODE_GO_BUG_ASSESSMENT_PRIVACY_POLICY,
         budget_profile=OPENCODE_GO_BUG_ASSESSMENT_BUDGET_PROFILE,
-        evaluation=OPENCODE_GO_BUG_ASSESSMENT_EVALUATION,
-    )
-    if qualification not in qualified_tasks:
-        return None
-    environment = os.environ if environ is None else environ
-    api_key = environment.get("OPENCODE_API_KEY", "")
-    if not api_key.strip():
-        return None
-
-    def create_client() -> BugAssessmentAgentClient:
-        return create_opencode_go_bug_assessment_agent(
-            api_key=api_key,
-            model=model,
-            timeout_seconds=OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
-            max_output_tokens=OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
-        )
-
-    return create_client
-
-
-def create_bug_assessment_runtime_service(
-    config: NBTriageConfig,
-    *,
-    repository: LocalBugProblemRepository,
-    capability_shadow: CapabilityShadowService | None,
-    knowledge_pack: KnowledgePackService | None,
-    runtime_buffer: RuntimeObservationBuffer,
-    log_buffer: CorrelatedBugLogBuffer,
-) -> BugAssessmentRuntimeService:
-    return BugAssessmentRuntimeService(
-        repository=repository,
-        capability_shadow=capability_shadow,
-        knowledge_pack=knowledge_pack,
-        runtime_buffer=runtime_buffer,
-        log_buffer=log_buffer,
-        agent_client_factory=create_bug_assessment_agent_factory(config),
-        serena_home=(
-            _resolve_serena_home() if config.nbtriage_bug_source_backend == "serena" else None
+        evaluation=(
+            OPENCODE_GO_BUG_ASSESSMENT_EVALUATION
+            if verified_profile
+            else unverified_evaluation_id(
+                task=OPENCODE_GO_BUG_ASSESSMENT_TASK,
+                prompt_id=BUG_AGENT_PROMPT_ID,
+            )
         ),
-        design_component_versions=_installed_design_component_versions(),
+        verified=verified_profile,
     )
 
 
@@ -444,23 +624,12 @@ def _search_design_knowledge(
         if len(selected) >= _DESIGN_EVIDENCE_LIMIT:
             return tuple(selected[:_DESIGN_EVIDENCE_LIMIT])
 
-    add(reader.search(query, limit=_DESIGN_EVIDENCE_LIMIT - len(selected)))
     return tuple(selected[:_DESIGN_EVIDENCE_LIMIT])
-
-
-def _resolve_serena_home() -> Path:
-    require("nonebot_plugin_localstore")
-    from nonebot_plugin_localstore import get_cache_dir
-
-    return get_cache_dir("nonebot_plugin_triage") / "serena"
 
 
 def _source_backend(
     record: CapabilityRecord | None,
-    *,
-    serena_home: Path | None,
-    source_revision: str | None,
-) -> BoundedBugSourceBackend | None:
+) -> _BoundedBugSourceBackend | None:
     if record is None:
         return None
     module_name = _record_module_name(record)
@@ -473,11 +642,7 @@ def _source_backend(
     if root is None:
         return None
     try:
-        return create_bug_source_backend(
-            ApprovedSourceRoot(module_name, root),
-            serena_home=serena_home,
-            source_revision=source_revision,
-        )
+        return _BoundedBugSourceBackend(ApprovedSourceRoot(module_name, root))
     except (OSError, ValueError):
         return None
 
@@ -505,6 +670,23 @@ def _record_module_name(record: CapabilityRecord) -> str | None:
         ),
         None,
     )
+
+
+def _record_invocation(record: CapabilityRecord | None) -> str | None:
+    if record is None:
+        return None
+    for field in ("invocation.header", "command.header"):
+        value = next(
+            (
+                claim.value
+                for claim in record.claims
+                if claim.field == field and isinstance(claim.value, str)
+            ),
+            None,
+        )
+        if value is not None:
+            return value
+    return None
 
 
 def _record_source_revision(record: CapabilityRecord | None) -> str | None:
@@ -536,7 +718,28 @@ def _record_revision(record: CapabilityRecord | None) -> str | None:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _public_record_evidence(record: CapabilityRecord) -> BugEvidence:
+def _public_record_evidence(
+    record: CapabilityRecord,
+    annotation: CapabilityTeachingAnnotation | None = None,
+) -> BugEvidence:
+    teaching_contract = None
+    if annotation is not None:
+        teaching_contract = {
+            "revision": annotation.request_fingerprint,
+            "entries": [
+                {
+                    "entry_id": entry.entry_id,
+                    "name": entry.name,
+                    "summary": entry.summary,
+                    "usages": list(entry.usages),
+                    "supported_subjects": list(entry.supported_subjects),
+                    "input_requirements": list(entry.input_requirements),
+                    "behavior_boundaries": list(entry.behavior_boundaries),
+                    "requirements": [item.to_dict() for item in entry.requirements],
+                }
+                for entry in annotation.entries
+            ],
+        }
     body = json.dumps(
         {
             "capability_id": record.capability_id,
@@ -546,6 +749,7 @@ def _public_record_evidence(record: CapabilityRecord) -> BugEvidence:
             "platform_scope": record.platform_scope.to_dict(),
             "claims": [claim.to_dict() for claim in record.claims],
             "constraints": [constraint.to_dict() for constraint in record.constraints],
+            "active_teaching_contract": teaching_contract,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -560,6 +764,33 @@ def _public_record_evidence(record: CapabilityRecord) -> BugEvidence:
         current=True,
         partial=len(body) > 48_000,
     )
+
+
+def _bug_intake_unknown(
+    reason: BugReason,
+    *,
+    missing_evidence: tuple[BugEvidenceKind, ...],
+) -> BugAssessmentDecision:
+    return BugAssessmentDecision(
+        verdict=BugVerdict.UNKNOWN,
+        occurrence=BugOccurrence.UNKNOWN,
+        responsibility_candidates=(BugResponsibility.UNKNOWN,),
+        reason=reason,
+        evidence_ids=(),
+        missing_evidence=missing_evidence,
+        source=BugDecisionSource.PUBLIC_PRECHECK,
+    )
+
+
+def _teaching_contract_evidence_id(
+    record: CapabilityRecord,
+    annotation: CapabilityTeachingAnnotation | None,
+) -> str:
+    revision = (
+        annotation.request_fingerprint if annotation is not None else _record_revision(record)
+    )
+    digest = hashlib.sha256(f"{record.capability_id}\0{revision or ''}".encode()).hexdigest()
+    return f"public-contract:{digest[:32]}"
 
 
 def _subject_query(request: BugAssessmentRuntimeRequest) -> str:
@@ -712,6 +943,88 @@ def _bounded_string_list(
     return bounded, partial
 
 
+def _record_bug_command(
+    request: BugAssessmentRuntimeRequest,
+    decision: BugAssessmentDecision,
+    evidence: tuple[BugEvidence, ...],
+    *,
+    subject: CapabilityRecord | None,
+    annotation: CapabilityTeachingAnnotation | None,
+    source_revision: str | None,
+    contract_revision: str | None,
+    deployment_generation: str | None,
+    qualification: BugTaskQualification | None,
+) -> RecordBugCommand | None:
+    if (
+        decision.verdict is not BugVerdict.BUG
+        or decision.source is not BugDecisionSource.AGENT
+        or subject is None
+        or qualification is None
+        or request.report_key is None
+    ):
+        return None
+    now = datetime.now(UTC).isoformat()
+    receipts = evidence_receipts(decision, evidence)
+    signature = build_problem_signature(
+        decision,
+        evidence,
+        subject_id=subject.capability_id,
+    )
+    failure_signature = next(
+        (
+            item.revision
+            for item in receipts
+            if item.kind is BugEvidenceKind.CORRELATED_LOG and item.revision is not None
+        ),
+        signature.digest if signature is not None else None,
+    )
+    invocation = _record_invocation(subject)
+    title_subject = invocation or subject.capability_id
+    annotation_summary = (
+        annotation.entries[0].summary if annotation is not None and annotation.entries else None
+    )
+    if annotation_summary is not None and annotation_summary.strip():
+        title = f"{title_subject}：{annotation_summary.strip()}"
+    else:
+        title = f"{title_subject} 功能异常"
+    decision_key = hashlib.sha256(f"agent-decision:{request.report_key}".encode()).hexdigest()
+    occurrence_key = request.occurrence_key or request.report_key
+    return RecordBugCommand(
+        report=BugReportInput(
+            report_key=request.report_key,
+            received_at=now,
+            actor_scope_hmac=request.actor_scope_hmac,
+        ),
+        occurrence=BugOccurrenceInput(
+            occurrence_key=occurrence_key,
+            observed_at=now,
+            subject_id=subject.capability_id,
+            adapter_name=request.adapter_name,
+            correlation_digest=request.correlation_digest,
+            failure_signature=failure_signature,
+            source_revision=source_revision,
+            contract_revision=contract_revision,
+            deployment_generation=deployment_generation,
+            evidence_receipts=receipts,
+        ),
+        signature=signature,
+        title=title[:256],
+        responsibility_candidates=tuple(item.value for item in decision.responsibility_candidates),
+        decision=ProblemDecisionInput(
+            occurred_at=now,
+            verdict=BugVerdict.BUG,
+            source=ProblemDecisionSource.AGENT,
+            assessment_revision=qualification.prompt_id,
+            evidence_receipts=receipts,
+            idempotency_key=decision_key,
+            provider=qualification.provider,
+            model=qualification.model,
+            task=qualification.task,
+            evaluation=qualification.evaluation,
+        ),
+    )
+
+
 def _redacted_evidence(evidence: tuple[BugEvidence, ...]) -> tuple[BugEvidence, ...]:
     return tuple(
         item.model_copy(update={"body": redact_bug_evidence_text(item.body)}) for item in evidence
@@ -721,6 +1034,7 @@ def _redacted_evidence(evidence: tuple[BugEvidence, ...]) -> tuple[BugEvidence, 
 __all__ = (
     "OPENCODE_GO_BUG_TASK_QUALIFICATION",
     "QUALIFIED_BUG_TASKS",
+    "BugAssessmentRuntimeOutcome",
     "BugAssessmentRuntimeRequest",
     "BugAssessmentRuntimeService",
     "BugAssessmentServiceLike",

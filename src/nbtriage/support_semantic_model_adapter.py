@@ -88,7 +88,7 @@ SYSTEM_INSTRUCTION = """\
 """
 
 SUPPORT_SEMANTIC_PROMPT_ID = "support-semantic-v7-prompt-v5-zh"
-_QUALIFIED_STRUCTURED_OUTPUT_MODES = frozenset({"native", "tool"})
+_SUPPORTED_STRUCTURED_OUTPUT_MODES = frozenset({"native", "tool"})
 
 
 class SupportSemanticModelAdapterError(RuntimeError):
@@ -113,9 +113,9 @@ class PydanticAISupportSemanticClient:
         if max_output_tokens < 1:
             raise SupportSemanticModelAdapterError("max_output_tokens must be positive")
         output_mode = model.profile.get("default_structured_output_mode", "tool")
-        if output_mode not in _QUALIFIED_STRUCTURED_OUTPUT_MODES:
+        if output_mode not in _SUPPORTED_STRUCTURED_OUTPUT_MODES:
             raise SupportSemanticModelAdapterError(
-                "support semantic task has not qualified the model profile output mode"
+                "support semantic task does not support the model profile output mode"
             )
         self._max_output_tokens = max_output_tokens
         self._expected_provider = expected_provider

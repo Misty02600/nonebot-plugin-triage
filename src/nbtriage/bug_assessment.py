@@ -55,7 +55,6 @@ class BugEvidenceKind(StrEnum):
 
 
 class BugReason(StrEnum):
-    VERIFIED_PROBLEM_MATCH = "verified_problem_match"
     IMPLEMENTATION_CONTRADICTS_CONTRACT = "implementation_contradicts_contract"
     RUNTIME_CONTRADICTS_CONTRACT = "runtime_contradicts_contract"
     PUBLIC_PRECONDITION_NOT_MET = "public_precondition_not_met"
@@ -66,6 +65,8 @@ class BugReason(StrEnum):
     INVALID_CITATION = "invalid_citation"
     STALE_OR_PARTIAL_EVIDENCE = "stale_or_partial_evidence"
     ANALYSIS_UNAVAILABLE = "analysis_unavailable"
+    SUBJECT_UNRESOLVED = "subject_unresolved"
+    OPERATION_CONTEXT_MISSING = "operation_context_missing"
 
 
 class BugCandidateReason(StrEnum):
@@ -81,15 +82,9 @@ class BugCandidateReason(StrEnum):
 
 
 class BugDecisionSource(StrEnum):
-    VERIFIED_CATALOG = "verified_catalog"
     PUBLIC_PRECHECK = "public_precheck"
     AGENT = "agent"
     FAIL_CLOSED = "fail_closed"
-
-
-class BugProblemStatus(StrEnum):
-    VERIFIED = "verified"
-    REVOKED = "revoked"
 
 
 class _StrictModel(BaseModel):
@@ -225,55 +220,6 @@ class BugAssessmentDecision(_StrictModel):
     evidence_ids: tuple[str, ...]
     missing_evidence: tuple[BugEvidenceKind, ...]
     source: BugDecisionSource
-
-
-class BugProblemRecord(_StrictModel):
-    schema_version: Literal[1] = BUG_ASSESSMENT_SCHEMA_VERSION
-    record_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
-    status: BugProblemStatus
-    fingerprint: BugCaseFingerprint
-    verdict: BugVerdict
-    responsibility_candidates: Annotated[
-        tuple[BugResponsibility, ...],
-        Field(min_length=1, max_length=4),
-    ]
-    review_revision: Annotated[str, Field(min_length=1, max_length=256)]
-    created_at: Annotated[str, Field(min_length=1, max_length=64)]
-    reviewed_at: Annotated[str, Field(min_length=1, max_length=64)]
-    invalidation_conditions: Annotated[tuple[str, ...], Field(max_length=16)] = ()
-
-    @model_validator(mode="after")
-    def validate_reviewed_record(self) -> BugProblemRecord:
-        if self.verdict is BugVerdict.UNKNOWN:
-            raise ValueError("reviewed records cannot persist unknown verdicts")
-        if not self.fingerprint.complete:
-            raise ValueError("reviewed records require a complete fingerprint")
-        return self
-
-
-class BugProblemCatalog(_StrictModel):
-    schema_version: Literal[1] = BUG_ASSESSMENT_SCHEMA_VERSION
-    catalog_revision: Annotated[str, Field(min_length=1, max_length=256)]
-    records: tuple[BugProblemRecord, ...]
-    content_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
-
-    @model_validator(mode="after")
-    def require_unique_records(self) -> BugProblemCatalog:
-        record_ids = [record.record_id for record in self.records]
-        if len(record_ids) != len(set(record_ids)):
-            raise ValueError("bug problem catalog contains duplicate record IDs")
-        verified_keys = [
-            _fingerprint_key(record.fingerprint)
-            for record in self.records
-            if record.status is BugProblemStatus.VERIFIED
-        ]
-        if len(verified_keys) != len(set(verified_keys)):
-            raise ValueError("bug problem catalog contains conflicting verified fingerprints")
-        return self
-
-
-class ReviewedBugProblemRepository(Protocol):
-    def find_verified(self, fingerprint: BugCaseFingerprint) -> BugProblemRecord | None: ...
 
 
 class BugAssessmentAgentClient(Protocol):
@@ -469,11 +415,9 @@ class BugAssessmentCoordinator:
 
     def __init__(
         self,
-        repository: ReviewedBugProblemRepository,
         prechecker: PublicBugPrechecker,
         agent_client_factory: Callable[[], BugAssessmentAgentClient] | None,
     ) -> None:
-        self._repository = repository
         self._prechecker = prechecker
         self._agent_client_factory = agent_client_factory
 
@@ -483,18 +427,6 @@ class BugAssessmentCoordinator:
         toolbox: BugAssessmentToolbox,
     ) -> BugAssessmentDecision:
         canonical_case = parse_bug_assessment_case(case.model_dump(mode="json"))
-        reviewed = self._repository.find_verified(canonical_case.fingerprint)
-        if reviewed is not None:
-            return BugAssessmentDecision(
-                verdict=reviewed.verdict,
-                occurrence=BugOccurrence.UNKNOWN,
-                responsibility_candidates=reviewed.responsibility_candidates,
-                reason=BugReason.VERIFIED_PROBLEM_MATCH,
-                evidence_ids=(),
-                missing_evidence=(),
-                source=BugDecisionSource.VERIFIED_CATALOG,
-            )
-
         prechecked = await self._prechecker.check(canonical_case, toolbox)
         if prechecked is not None:
             return parse_bug_assessment_decision(prechecked.model_dump(mode="json"))
@@ -527,31 +459,6 @@ def build_bug_case_fingerprint(
         contract_revision=contract_revision,
         deployment_generation=deployment_generation,
     )
-
-
-def build_bug_problem_catalog(
-    records: Sequence[BugProblemRecord],
-    *,
-    catalog_revision: str,
-) -> BugProblemCatalog:
-    ordered = tuple(sorted(records, key=lambda item: item.record_id))
-    digest = _catalog_digest(catalog_revision, ordered)
-    return BugProblemCatalog(
-        catalog_revision=catalog_revision,
-        records=ordered,
-        content_sha256=digest,
-    )
-
-
-def parse_bug_problem_catalog(payload: object) -> BugProblemCatalog:
-    try:
-        catalog = BugProblemCatalog.model_validate(payload)
-    except ValidationError as error:
-        raise BugAssessmentContractError("invalid bug problem catalog") from error
-    expected = _catalog_digest(catalog.catalog_revision, catalog.records)
-    if catalog.content_sha256 != expected:
-        raise BugAssessmentContractError("bug problem catalog hash mismatch")
-    return catalog
 
 
 def parse_bug_assessment_case(payload: object) -> BugAssessmentCase:
@@ -659,6 +566,16 @@ def format_bug_supplement_request(decision: BugAssessmentDecision) -> str | None
     """只在用户下一轮能够补足实际上下文时生成一次追问。"""
     if decision.verdict is not BugVerdict.UNKNOWN:
         return None
+    if decision.reason is BugReason.SUBJECT_UNRESOLVED:
+        return (
+            "判断结果：暂时无法判断是不是 Bug。请在下一条 triage 中写明具体功能或指令；"
+            "也可以 Reply 当时的操作消息或机器人返回。"
+        )
+    if decision.reason is BugReason.OPERATION_CONTEXT_MISSING:
+        return (
+            "判断结果：暂时无法判断是不是 Bug。请在下一条 triage 中补充实际执行的指令、"
+            "输入或操作对象，以及你看到的结果；也可以 Reply 当时的操作消息或机器人返回。"
+        )
     user_suppliable = {
         BugEvidenceKind.CONVERSATION_CONTEXT,
         BugEvidenceKind.RUNTIME_OBSERVATION,
@@ -670,29 +587,6 @@ def format_bug_supplement_request(decision: BugAssessmentDecision) -> str | None
         "判断结果：暂时无法判断。请回复实际执行的命令或机器人返回，"
         "并在下一条 triage 中补充操作对象、输入与可见结果。"
     )
-
-
-def _catalog_digest(
-    catalog_revision: str,
-    records: Sequence[BugProblemRecord],
-) -> str:
-    payload = {
-        "schema_version": BUG_ASSESSMENT_SCHEMA_VERSION,
-        "catalog_revision": catalog_revision,
-        "records": [record.model_dump(mode="json") for record in records],
-    }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def _fingerprint_key(fingerprint: BugCaseFingerprint) -> str:
-    encoded = json.dumps(
-        fingerprint.model_dump(mode="json"),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _empty_conversation_page_evidence() -> BugEvidence:
@@ -774,21 +668,15 @@ __all__ = (
     "BugEvidence",
     "BugEvidenceKind",
     "BugOccurrence",
-    "BugProblemCatalog",
-    "BugProblemRecord",
-    "BugProblemStatus",
     "BugReason",
     "BugResponsibility",
     "BugVerdict",
     "PublicBugPrechecker",
-    "ReviewedBugProblemRepository",
     "build_bug_case_fingerprint",
-    "build_bug_problem_catalog",
     "format_bug_assessment_reply",
     "format_bug_supplement_request",
     "parse_bug_assessment_case",
     "parse_bug_assessment_decision",
-    "parse_bug_problem_catalog",
     "reconcile_bug_candidate",
     "unknown_bug_decision",
 )

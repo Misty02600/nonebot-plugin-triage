@@ -1,0 +1,257 @@
+{
+  "schema_version": 3,
+  "fixture_set_id": "capability-teaching-v4-development-regression-18-20260816-v-v34-zh",
+  "split": "held_out",
+  "synthetic_only": true,
+  "contains_real_user_data": false,
+  "capability_schema_version": 6,
+  "qualification_contract": {
+    "provider": "opencode-go",
+    "model": "deepseek-v4-flash",
+    "task": "capability-teaching-annotation-agent-v3",
+    "schema_version": 6,
+    "prompt_id": "capability-teaching-annotation-v4-prompt-v34-zh",
+    "prompt_sha256": "438d89cafbbb80de57a36092c1b2cb53f3090157c806ae0405e13d059b021255",
+    "privacy_policy": "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2",
+    "budget_profile": "background-sequential-8req-5read-navigation-tools-160line-120k-4096out-0.05usd-v10"
+  },
+  "cases": [
+    {
+      "case_id": "ct4-d01-parser-owned-option",
+      "coverage": ["ordinary_command", "alconna_structure"],
+      "request": {
+        "capability": {"capability_id": "command:subscription:add", "owner": "fixture.subscription", "kind": "command", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "add", "mode": "anchored", "command_body": "订阅 添加", "canonical_usages": ["订阅 添加 <主题> [-q|--quiet]"]}],
+        "evidence_units": [{"evidence_id": "ev:ct4:d01", "source_kind": "runtime_alconna_tree", "revision": "fixture:ct4:d01:1", "content": "当前已注册‘订阅 添加’子命令。主题是必填参数；-q 与 --quiet 是同一个可选 Option，用于静默添加。"}]
+      },
+      "expected": {"knowledge_enabled": true, "entry_ids": ["add"], "required_claim_kinds": ["name", "summary", "usage"], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": ["^订阅 添加 <主题> \\[-q\\|--quiet\\]$"], "required_usage_patterns": ["^订阅 添加 <主题> \\[-q\\|--quiet\\]$"], "allowed_options": ["-q", "--quiet"], "required_public_text_groups": [["订阅"], ["主题"]], "forbidden_public_substrings": ["Alconna", "Option", "{command}"]}
+    },
+    {
+      "case_id": "ct4-d02-unknown-rate-closes",
+      "coverage": ["ordinary_command", "knowledge_disabled", "untrusted_third_party"],
+      "request": {
+        "capability": {"capability_id": "command:poster", "owner": "fixture.poster", "kind": "command", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "root", "mode": "anchored", "command_body": "海报"}],
+        "evidence_units": [{"evidence_id": "ev:ct4:d02", "source_kind": "matcher_source_structure", "revision": "fixture:ct4:d02:1", "content": "命令正文为‘海报’，必须提供标题。源码还经过一个第三方使用门禁，但本轮无法获得其稳定语义，不能确认它是否实施冷却、配额或并发限制。"}],
+        "gate_candidates": [{"candidate_id": "gate:ct4:d02", "kind": "execution_guard", "entry_ids": ["root"], "evidence_ids": ["ev:ct4:d02"]}]
+      },
+      "expected": {"knowledge_enabled": false, "entry_ids": [], "required_claim_kinds": [], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": [], "required_usage_patterns": [], "allowed_options": [], "required_public_text_groups": [], "forbidden_public_substrings": []}
+    },
+    {
+      "case_id": "ct4-d03-shared-handler-concept-slot",
+      "coverage": ["parameterized_handler", "usage_variants"],
+      "request": {
+        "capability": {"capability_id": "family:filters:five", "owner": "fixture.filters", "kind": "command_family", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "family", "mode": "complete"}],
+        "evidence_units": [{"evidence_id": "ev:ct4:d03", "source_kind": "python_function", "revision": "fixture:ct4:d03:5", "content": "async def handle_filter(alc_matches: AlcMatches):\n    image = alc_matches.all_matched_args[\"image\"]\n    await matcher.finish(await apply_filter(filter_name, image))"}]
+      },
+      "tool_evidence": [{"key": "family_source", "evidence_id": "ev:ct4:d03:family_source", "source_kind": "approved_source_file", "revision": "fixture:ct4:d03:family_source:5", "content": "from nonebot_plugin_alconna import AlcMatches, Alconna, Args, Image, on_alconna\n\nFILTERS = (\"抖动\", \"翻转\", \"波浪\", \"黑白\", \"浮雕\")\n\ndef create_filter(filter_name):\n    matcher = on_alconna(Alconna(filter_name, Args[\"image\", Image]))\n\n    @matcher.handle()\n    async def handle_filter(alc_matches: AlcMatches):\n        image = alc_matches.all_matched_args[\"image\"]\n        await matcher.finish(await apply_filter(filter_name, image))\n\n    return matcher\n\nfor filter_name in FILTERS:\n    create_filter(filter_name)"}],
+      "expected": {"knowledge_enabled": true, "entry_ids": ["family"], "required_claim_kinds": ["name", "summary", "usage"], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": ["^<滤镜(名)?> (?:<图片>|\\[图片\\])$"], "required_usage_patterns": [".*图片.*"], "allowed_options": [], "required_public_text_groups": [["滤镜", "图片处理"], ["图片"]], "forbidden_public_substrings": ["工厂", "Matcher", "{command}"], "minimum_tool_calls": 1, "dynamic_evidence_cited": true}
+    },
+    {
+      "case_id": "ct4-d04-shared-handler-insufficient-closes",
+      "coverage": ["parameterized_handler", "knowledge_disabled"],
+      "request": {
+        "capability": {"capability_id": "family:memes:five", "owner": "fixture.memes", "kind": "command_family", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "family", "mode": "complete"}],
+        "evidence_units": [{"evidence_id": "ev:ct4:d04", "source_kind": "python_function", "revision": "fixture:ct4:d04:3", "content": "async def handle_operation(value):\n    await matcher.finish(await operation(value))"}]
+      },
+      "expected": {"knowledge_enabled": false, "entry_ids": [], "required_claim_kinds": [], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": [], "required_usage_patterns": [], "allowed_options": [], "required_public_text_groups": [], "forbidden_public_substrings": []}
+    },
+    {
+      "case_id": "ct4-s05-format-command-source",
+      "coverage": ["source_extraction", "ordinary_command", "usage_variants"],
+      "request": {
+        "capability": {"capability_id": "command:format", "owner": "fixture.format", "kind": "command", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "root", "mode": "anchored", "command_body": "排版"}],
+        "evidence_units": [{"evidence_id": "ev:ct4:s05", "source_kind": "runtime_command", "revision": "fixture:ct4:s05:1", "content": "本轮已注册命令正文“排版”。必须提供待排版文本，可选提供宽度。"}]
+      },
+      "source_case": {
+        "module_name": "fixture_format",
+        "source_root": "capability-teaching-v4-development-sources/ct4-s05-format-command",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["排版"], "handler_names": ["handle_format"], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {"knowledge_enabled": true, "entry_ids": ["root"], "required_claim_kinds": ["name", "summary", "usage"], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": ["^排版 <文本> \\[宽度\\]$"], "required_usage_patterns": ["^排版 <文本> \\[宽度\\]$"], "allowed_options": [], "required_public_text_groups": [["排版"], ["文本"]], "forbidden_public_substrings": ["handle_format", "format_text", "{command}"]}
+    },
+    {
+      "case_id": "ct4-s06-uninfo-admin-source",
+      "coverage": ["source_extraction", "ordinary_command", "uninfo_permission"],
+      "request": {
+        "capability": {"capability_id": "command:cleanup", "owner": "fixture.cleanup", "kind": "command", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "root", "mode": "anchored", "command_body": "撤回最近"}],
+        "evidence_units": [{"evidence_id": "ev:ct4:s06", "source_kind": "runtime_command_and_source", "revision": "fixture:ct4:s06:1", "content": "本轮已注册命令正文“撤回最近”。入口使用已确认的 Uninfo ADMIN 权限，允许管理员及群主；数量可选，默认 10。"}]
+      },
+      "source_case": {
+        "module_name": "fixture_cleanup_v4",
+        "source_root": "capability-teaching-v4-development-sources/ct4-s06-uninfo-admin",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["撤回最近"], "handler_names": ["handle_cleanup"], "config_references": [], "permission_operations": ["administrator_or_owner"], "permission_roles": ["admin"], "partial": false}
+      },
+      "expected": {"knowledge_enabled": true, "entry_ids": ["root"], "required_claim_kinds": ["name", "summary", "usage"], "required_constraints": [{"kind": "role", "role": "admin"}], "forbidden_constraint_kinds": [], "allowed_usage_patterns": ["^撤回最近(?: \\[数量\\])?$"], "required_usage_patterns": ["^撤回最近.*$"], "allowed_options": [], "required_public_text_groups": [["撤回"], ["管理", "群主"]], "forbidden_public_substrings": ["ADMIN", "Permission", "handle_cleanup", "{command}"]}
+    },
+    {
+      "case_id": "ct4-s07-small-family-source",
+      "coverage": ["source_extraction", "parameterized_handler", "usage_variants"],
+      "request": {
+        "capability": {"capability_id": "family:filters:three", "owner": "fixture.filters", "kind": "command_family", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "family", "mode": "complete"}],
+        "evidence_units": [{"evidence_id": "ev:ct4:s07", "source_kind": "runtime_handler_identity", "revision": "fixture:ct4:s07:1", "content": "本轮多条公开 Runtime Matcher 已确认执行同一段闭包 Handler 代码。共同语义和完整用法必须根据获准源码判断。"}]
+      },
+      "source_case": {
+        "module_name": "fixture_small_family",
+        "source_root": "capability-teaching-v4-development-sources/ct4-s07-small-family",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": [], "registration_entries": [], "handler_names": [], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {"knowledge_enabled": true, "entry_ids": ["family"], "required_claim_kinds": ["name", "summary", "usage"], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": ["^\\(旋转\\|镜像\\|灰度\\) (?:<图片>|\\[图片\\])$"], "required_usage_patterns": [".*旋转.*镜像.*灰度.*", ".*图片.*"], "allowed_options": [], "required_public_text_groups": [["滤镜", "图片处理"], ["图片"]], "forbidden_public_substrings": ["create_filter", "handle_filter", "FILTERS", "Matcher", "{command}"]}
+    },
+    {
+      "case_id": "ct4-s08-heterogeneous-family-source",
+      "coverage": ["source_extraction", "parameterized_handler", "knowledge_disabled"],
+      "request": {
+        "capability": {"capability_id": "family:mixed:heterogeneous", "owner": "fixture.mixed", "kind": "command_family", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "family", "mode": "complete"}],
+        "evidence_units": [{"evidence_id": "ev:ct4:s08", "source_kind": "runtime_handler_identity", "revision": "fixture:ct4:s08:1", "content": "本轮多条公开 Runtime Matcher 已确认执行同一段闭包 Handler 代码。共同语义和完整用法必须根据获准源码判断；不允许自行拆分分析单元。"}]
+      },
+      "source_case": {
+        "module_name": "fixture_mixed_family",
+        "source_root": "capability-teaching-v4-development-sources/ct4-s08-heterogeneous-family",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": [], "registration_entries": [], "handler_names": [], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {"knowledge_enabled": false, "entry_ids": [], "required_claim_kinds": [], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": [], "required_usage_patterns": [], "allowed_options": [], "required_public_text_groups": [], "forbidden_public_substrings": []}
+    },
+    {
+      "case_id": "ct4-s09-alias-reply-source",
+      "coverage": ["source_extraction", "ordinary_command", "usage_variants"],
+      "request": {
+        "capability": {"capability_id": "command:barcode", "owner": "fixture.barcode", "kind": "command", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "root", "mode": "anchored", "command_body": "解析条码", "aliases": ["扫条码"]}],
+        "evidence_units": [{"evidence_id": "ev:ct4:s09", "source_kind": "runtime_command", "revision": "fixture:ct4:s09:1", "content": "本轮已注册命令正文“解析条码”，别名“扫条码”。可以在命令后发送图片，也可以回复一张条码图片后发送命令；功能返回识别出的条码内容。"}]
+      },
+      "source_case": {
+        "module_name": "fixture_barcode_v4", "source_root": "capability-teaching-v4-development-sources/ct4-s09-alias-reply", "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["解析条码"], "handler_names": ["handle_barcode"], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {"knowledge_enabled": true, "entry_ids": ["root"], "required_claim_kinds": ["name", "summary", "usage"], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": ["^解析条码(?: \\[图片\\])?$", "^\\[回复(?:条码)?图片\\] 解析条码$"], "required_usage_patterns": ["^解析条码.*$", "^\\[回复.*图片\\] 解析条码$"], "allowed_options": [], "required_public_text_groups": [["条码"], ["图片"]], "forbidden_public_substrings": ["handle_barcode", "decode_barcode", "plugin.py", "{command}"]}
+    },
+    {
+      "case_id": "ct4-s10-to-me-health-source",
+      "coverage": ["source_extraction", "ordinary_command", "to_me"],
+      "request": {
+        "capability": {"capability_id": "command:health", "owner": "fixture.health", "kind": "command", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "root", "mode": "anchored", "command_body": "运行概况", "requires_mention": true}],
+        "evidence_units": [{"evidence_id": "ev:ct4:s10", "source_kind": "runtime_rule", "revision": "fixture:ct4:s10:1", "content": "本轮命令正文为“运行概况”；在群聊中必须提及 Bot，功能返回可公开的当前运行概况。"}]
+      },
+      "source_case": {
+        "module_name": "fixture_health_v4", "source_root": "capability-teaching-v4-development-sources/ct4-s10-to-me-health", "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["运行概况"], "handler_names": ["handle_health"], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {"knowledge_enabled": true, "entry_ids": ["root"], "required_claim_kinds": ["name", "summary", "usage"], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": ["^@bot 运行概况$"], "required_usage_patterns": ["^@bot 运行概况$"], "allowed_options": [], "required_public_text_groups": [["运行", "概况", "状态"]], "forbidden_public_substrings": ["to_me", "Rule", "handle_health", "{command}"]}
+    },
+    {
+      "case_id": "ct4-s11-prefixed-family-source",
+      "coverage": ["source_extraction", "parameterized_handler", "usage_variants"],
+      "request": {
+        "capability": {"capability_id": "family:styles:three", "owner": "fixture.styles", "kind": "command_family", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "family", "mode": "complete"}],
+        "evidence_units": [{"evidence_id": "ev:ct4:s11", "source_kind": "runtime_handler_identity", "revision": "fixture:ct4:s11:1", "content": "本轮多条公开 Runtime Matcher 已确认执行同一段闭包 Handler 代码。共同语义和完整用法必须根据获准源码判断。"}]
+      },
+      "source_case": {
+        "module_name": "fixture_styles_v4", "source_root": "capability-teaching-v4-development-sources/ct4-s11-prefixed-family", "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": [], "registration_entries": [], "handler_names": [], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {"knowledge_enabled": true, "entry_ids": ["family"], "required_claim_kinds": ["name", "summary", "usage"], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": ["^%\\(素描\\|油画\\|像素\\) (?:<图片>|\\[图片\\])$"], "required_usage_patterns": [".*素描.*油画.*像素.*", ".*图片.*"], "allowed_options": [], "required_public_text_groups": [["风格", "图片"], ["图片"]], "forbidden_public_substrings": ["create_style", "handle_style", "STYLES", "Matcher", "{command}"]}
+    },
+    {
+      "case_id": "ct4-s12-two-rate-limits-source",
+      "coverage": ["source_extraction", "ordinary_command", "runtime_config", "multiple_rate_limits"],
+      "request": {
+        "capability": {"capability_id": "command:draw", "owner": "fixture.draw", "kind": "command", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "root", "mode": "anchored", "command_body": "绘图", "canonical_usages": ["绘图 <描述>"]}],
+        "evidence_units": [{"evidence_id": "ev:ct4:s12", "source_kind": "runtime_command_and_source", "revision": "fixture:ct4:s12:1", "content": "本轮命令正文为“绘图”，必须提供图片描述。已确认存在按用户冷却和按群聊配额两种限流，具体数值来自当前运行配置。"}],
+        "config_projections": [
+          {"reference_id": "cfg:ct4:s12:cooldown", "source_symbol": "plugin_config.user_cooldown", "value": 30},
+          {"reference_id": "cfg:ct4:s12:quota", "source_symbol": "plugin_config.scene_quota", "value": 100}
+        ]
+      },
+      "source_case": {
+        "module_name": "fixture_draw_v4", "source_root": "capability-teaching-v4-development-sources/ct4-s12-two-rate-limits", "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": ["on_command"], "registration_entries": ["绘图"], "handler_names": ["handle_draw"], "config_references": ["plugin_config.user_cooldown", "plugin_config.scene_quota"], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {"knowledge_enabled": true, "entry_ids": ["root"], "required_claim_kinds": ["name", "summary", "usage"], "required_constraints": [{"kind": "rate_limit", "rate_limit_policy": "cooldown", "rate_limit_scope": "user", "text_contains": "30"}, {"kind": "rate_limit", "rate_limit_policy": "quota", "rate_limit_scope": "scene", "text_contains": "100"}], "forbidden_constraint_kinds": [], "allowed_usage_patterns": ["^绘图 <描述>$"], "required_usage_patterns": ["^绘图 <描述>$"], "allowed_options": [], "required_public_text_groups": [["绘图", "图片"], ["30"], ["100"]], "forbidden_public_substrings": ["plugin_config", "handle_draw", "{command}"], "required_config_reference_ids": ["cfg:ct4:s12:cooldown", "cfg:ct4:s12:quota"]}
+    },
+    {
+      "case_id": "ct4-d13-unresolved-image-dependency-closes",
+      "coverage": ["parameterized_handler", "knowledge_disabled", "usage_variants"],
+      "request": {
+        "capability": {"capability_id": "family:effects:opaque-input", "owner": "fixture.effects", "kind": "command_family", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "family", "mode": "complete"}],
+        "evidence_units": [{"evidence_id": "ev:ct4:d13", "source_kind": "python_function", "revision": "fixture:ct4:d13:2", "content": "from nonebot.params import Depends\nfrom .input_sources import resolve_image\n\n@matcher.handle()\nasync def handle_effect(image: bytes = Depends(resolve_image)):\n    await matcher.finish(await apply_effect(effect_name, image))\n\n当前材料没有提供 resolve_image 的定义，也没有 parser 结构、消息读取或回复读取代码。"}]
+      },
+      "expected": {"knowledge_enabled": false, "entry_ids": [], "required_claim_kinds": [], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": [], "required_usage_patterns": [], "allowed_options": [], "required_public_text_groups": [], "forbidden_public_substrings": []}
+    },
+    {
+      "case_id": "ct4-d14-current-config-proves-gate-open",
+      "coverage": ["ordinary_command", "runtime_config", "untrusted_third_party"],
+      "request": {
+        "capability": {"capability_id": "command:status-subscription", "owner": "fixture.subscription", "kind": "command", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "root", "mode": "anchored", "command_body": "状态订阅"}],
+        "evidence_units": [{"evidence_id": "ev:ct4:d14:gate", "source_kind": "matcher_source_structure", "revision": "fixture:ct4:d14:1", "content": "入口 feature_guard 的完整定义只读取当前配置 subscription_enabled 并原样返回；true 表示放行，false 表示拒绝。"}],
+        "config_projections": [{"reference_id": "cfg:ct4:d14:enabled", "source_symbol": "plugin_config.subscription_enabled", "value": true}],
+        "gate_candidates": [{"candidate_id": "gate:ct4:d14", "kind": "execution_guard", "entry_ids": ["root"], "evidence_ids": ["ev:ct4:d14:gate"]}]
+      },
+      "expected": {"knowledge_enabled": true, "entry_ids": ["root"], "required_claim_kinds": ["name", "summary", "usage"], "required_constraints": [], "forbidden_constraint_kinds": ["role", "rate_limit", "scene", "feature_state"], "allowed_usage_patterns": ["^状态订阅$"], "required_usage_patterns": ["^状态订阅$"], "allowed_options": [], "required_public_text_groups": [["订阅"]], "forbidden_public_substrings": ["feature_guard", "subscription_enabled", "当前开启", "开启后", "{command}"]}
+    },
+    {
+      "case_id": "ct4-s15-affixed-family-source",
+      "coverage": ["source_extraction", "parameterized_handler", "usage_variants"],
+      "request": {
+        "capability": {"capability_id": "family:frames:five", "owner": "fixture.frames", "kind": "command_family", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "family", "mode": "complete"}],
+        "evidence_units": [{"evidence_id": "ev:ct4:s15", "source_kind": "runtime_handler_identity", "revision": "fixture:ct4:s15:1", "content": "本轮多条公开 Runtime Matcher 已确认执行同一段闭包 Handler 代码。共同语义和完整用法必须根据获准源码判断。"}]
+      },
+      "source_case": {
+        "module_name": "fixture_affixed_frames_v4",
+        "source_root": "capability-teaching-v4-development-sources/ct4-s15-affixed-family",
+        "include_files": ["plugin.py"],
+        "expected_extraction": {"registration_factories": [], "registration_entries": [], "handler_names": [], "config_references": [], "permission_operations": [], "permission_roles": [], "partial": false}
+      },
+      "expected": {"knowledge_enabled": true, "entry_ids": ["family"], "required_claim_kinds": ["name", "summary", "usage"], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": ["^\\^<[^>]+>图 (?:<图片>|\\[图片\\])$"], "required_usage_patterns": ["^\\^<.*>图 .*图片.*$"], "allowed_options": [], "required_public_text_groups": [["边框", "相框", "画框", "风格"], ["图片"]], "forbidden_public_substrings": ["create_frame", "handle_frame", "FRAMES", "Matcher", "{command}"]}
+    },
+    {
+      "case_id": "ct4-d16-baseline-retrieval-fields-stable",
+      "coverage": ["ordinary_command", "previous_baseline"],
+      "request": {
+        "capability": {"capability_id": "command:watchlist-pick", "owner": "fixture.watchlist", "kind": "command", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "root", "mode": "anchored", "command_body": "影单推荐", "canonical_usages": ["影单推荐 [类型]"]}],
+        "evidence_units": [{"evidence_id": "ev:ct4:d16", "source_kind": "runtime_command_and_source", "revision": "fixture:ct4:d16:2", "content": "当前证据与上一版一致：‘影单推荐’根据可选类型推荐电影；省略类型时随机推荐。"}],
+        "previous_annotation": {"entries": [{"entry_id": "root", "name": "影单推荐", "summary": "根据类型推荐电影", "usages": ["影单推荐 [类型]"], "synonyms": ["找电影", "推荐片子"], "supported_subjects": ["电影", "影单"], "input_requirements": ["类型可以省略"], "behavior_boundaries": ["省略类型时随机推荐"], "requirements": [], "answer_markdown": "可以指定电影类型；省略时会随机推荐。"}]}
+      },
+      "expected": {"knowledge_enabled": true, "entry_ids": ["root"], "required_claim_kinds": ["name", "summary", "usage", "synonym", "supported_subject", "input_requirement", "behavior_boundary"], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": ["^影单推荐 \\[类型\\]$"], "required_usage_patterns": ["^影单推荐 \\[类型\\]$"], "allowed_options": [], "required_public_text_groups": [["电影", "影单"], ["类型", "随机"]], "forbidden_public_substrings": ["{command}"], "preserve_baseline_fields": ["synonyms", "supported_subjects", "input_requirements", "behavior_boundaries"], "preserve_baseline_member_fields": ["synonyms", "supported_subjects", "input_requirements", "behavior_boundaries"]}
+    },
+    {
+      "case_id": "ct4-d17-baseline-adds-one-boundary",
+      "coverage": ["ordinary_command", "previous_baseline"],
+      "request": {
+        "capability": {"capability_id": "command:book-pick", "owner": "fixture.books", "kind": "command", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "root", "mode": "anchored", "command_body": "书单推荐", "canonical_usages": ["书单推荐 [主题]"]}],
+        "evidence_units": [{"evidence_id": "ev:ct4:d17", "source_kind": "runtime_command_and_source", "revision": "fixture:ct4:d17:3", "content": "‘书单推荐’根据可选主题推荐图书；省略主题时随机推荐。新证据只补充一项用户可见边界：每次最多返回 10 本。上一版的名称、同义说法、操作对象和输入要求仍然成立。"}],
+        "previous_annotation": {"entries": [{"entry_id": "root", "name": "书单推荐", "summary": "根据主题推荐图书", "usages": ["书单推荐 [主题]"], "synonyms": ["找书", "推荐读物"], "supported_subjects": ["图书", "书单"], "input_requirements": ["主题可以省略"], "behavior_boundaries": ["省略主题时随机推荐"], "requirements": [], "answer_markdown": "可以指定阅读主题；省略时会随机推荐。"}]}
+      },
+      "expected": {"knowledge_enabled": true, "entry_ids": ["root"], "required_claim_kinds": ["name", "summary", "usage", "synonym", "supported_subject", "input_requirement", "behavior_boundary"], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": ["^书单推荐 \\[主题\\]$"], "required_usage_patterns": ["^书单推荐 \\[主题\\]$"], "allowed_options": [], "required_public_text_groups": [["图书", "书单", "读物"], ["主题", "随机"], ["10"]], "forbidden_public_substrings": ["{command}"], "preserve_baseline_fields": ["synonyms", "supported_subjects", "input_requirements"], "preserve_baseline_member_fields": ["synonyms", "supported_subjects", "input_requirements", "behavior_boundaries"]}
+    },
+    {
+      "case_id": "ct4-d18-baseline-contradiction-allows-replacement",
+      "coverage": ["ordinary_command", "previous_baseline"],
+      "request": {
+        "capability": {"capability_id": "command:material-pick", "owner": "fixture.materials", "kind": "command", "adapter": "onebot.v11"},
+        "invocations": [{"entry_id": "root", "mode": "anchored", "command_body": "素材推荐", "canonical_usages": ["素材推荐 [主题]"]}],
+        "evidence_units": [{"evidence_id": "ev:ct4:d18", "source_kind": "runtime_command_and_source", "revision": "fixture:ct4:d18:4", "content": "当前版本的‘素材推荐’已改为根据可选主题推荐文案模板，不再搜索或返回图片；上一版中的‘找图’同义说法和‘图片’操作对象已经失效。"}],
+        "previous_annotation": {"entries": [{"entry_id": "root", "name": "素材推荐", "summary": "根据主题推荐图片素材", "usages": ["素材推荐 [主题]"], "synonyms": ["找图"], "supported_subjects": ["图片"], "input_requirements": ["主题可以省略"], "behavior_boundaries": [], "requirements": [], "answer_markdown": "可以按主题查找图片素材。"}]}
+      },
+      "expected": {"knowledge_enabled": true, "entry_ids": ["root"], "required_claim_kinds": ["name", "summary", "usage", "supported_subject", "input_requirement", "behavior_boundary"], "required_constraints": [], "forbidden_constraint_kinds": [], "allowed_usage_patterns": ["^素材推荐 \\[主题\\]$"], "required_usage_patterns": ["^素材推荐 \\[主题\\]$"], "allowed_options": [], "required_public_text_groups": [["文案", "模板"], ["主题"]], "forbidden_public_substrings": ["找图", "{command}"]}
+    }
+  ]
+}

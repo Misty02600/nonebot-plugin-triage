@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-13 |
+| 顶层维护命令由 ADR-0075、ADR-0076 部分替代；其余决定继续有效 | 2026-08-13 |
 
 ## 当时遇到了什么
 
@@ -73,6 +73,11 @@
 
 ## 替代关系
 
+- Problem 查询的独立顶层 `报错查询` 由
+  [ADR-0075](0075-register-problem-maintenance-under-triage-subcommand.md) 部分替代；`triage` 根、固定产品合同和
+  统一冷却继续有效；
+- `报错反馈` 与 `报错统计` 顶层聊天命令由
+  [ADR-0076](0076-remove-legacy-trial-feedback-and-stats-chat-commands.md) 删除；底层 trial 与离线汇总不受影响；
 - 部分替代 [ADR-0020](0020-use-triage-command-for-natural-language-support.md) 的动态命令和两级限流决定；
 - 部分替代 [ADR-0021](0021-use-deployment-local-capability-shadow-index.md) 的默认关闭与显式路径启用决定；
 - 部分替代 [ADR-0040](0040-require-trusted-preflight-failure-before-incident.md) 的 Incident 专用限流阶段；可信
@@ -80,7 +85,7 @@
 
 ## 相关文档
 
-- [PLAN-0014：收敛插件部署配置面并重写 README 配置语义](../plans/todo/PLAN-0014-simplify-plugin-configuration-surface.md)
+- [PLAN-0014：收敛插件部署配置面并重写 README 配置语义](../plans/done/PLAN-0014-simplify-plugin-configuration-surface.md)
 - [架构概览](../architecture/overview.md)
 - [统一支持入口](../architecture/flows/support-intake-routing.md)
 - [能力影子索引](../architecture/flows/capability-shadow-index.md)

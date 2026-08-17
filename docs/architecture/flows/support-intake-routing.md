@@ -18,7 +18,7 @@ Semantic assessment（只接收当前文字）
    ├─ GUIDANCE → public facts + 路由后 Thread / Reply context
    │            → Answer Agent v2 → 有依据回答或确定性回退
    ├─ BUG_ASSESSMENT / reported_observation
-   │            → reviewed catalog → public contract → bounded Bug Agent
+   │            → public teaching contract → bounded Bug Agent
    │            → runtime / log / conversation / source / design / deployment
    │            → deterministic reconciliation → bug / not_bug / unknown
    ├─ BEHAVIOR_EXPLORATION → 模型外 SUPERUSER 鉴权；受限取证尚未接通
@@ -93,17 +93,20 @@ v2 已完成两条真实 smoke：Reply 上下文成功定位“回复图片后�
 
 ## 普通用户 Bug 判定
 
-Bug 协调器先用完整 fingerprint 查询 LocalStore data 中维护者原子发布的 reviewed catalog。只有 verified、
-未撤销、subject / source revision / contract revision / deployment generation 全部精确匹配的记录才能零模型
-短路；catalog 损坏、陈旧或不兼容不会阻止 Bot 启动。
+ADR-0066 的首个保守纵切已经接入：模型外 resolver 先从当前 ServingView 定位唯一 public 主动能力，并检查
+语义路由是否报告具体观察；缺少能力或观察时共用 scope Thread 的一次补充，在信息就绪前不创建案件指纹、
+源码后端或 Agent 工具箱。索引本身不可用时直接按分析不可用结束，不错误要求用户补充。当前生效的公开结构
+化教学注释作为第一层用法合同并进入 public contract Evidence；只有直接 Reply 精确指向报障者本人操作、且
+能够机器验证其缺少所有 usage 都要求的 Reply 上下文时，才零调查工具复用 Guidance 纠正。其他参数、媒体、
+角色、场景、限流与 behavior boundary 仍保持不确定并进入下述正式调查；被动能力门禁由能力索引层统一决定。
 
-未命中时，协调器先固定 subject、source root、revision、adapter、correlation 和部署 generation，并预加载
+协调器先固定 subject、source root、revision、adapter、correlation 和部署 generation，并预加载
 公开合同、首轮上下文与直接 Reply。Agent 在最多 9 次模型请求、一次独立聊天窗口、6 次通用证据工具调用、120k total token、
 800 output token 和 0.50 美元单轮上限内按需读取：
 
 - 与 Reply correlation 精确绑定的 runtime observation 与异常 traceback；
 - OneBot V11 群聊中由当前 Bot 和群预绑定、一次读取的最新最多 30 条可见聊天窗口；精确 Reply 独立预装，不受窗口是否覆盖影响；
-- 当前已加载 subject 的批准源码根与可选 Serena 符号导航；
+- 当前已加载 subject 的批准源码根与有界 Python 文本搜索 / 文件读取；
 - 版本适用的设计知识包、部署和安全配置摘要。
 
 聊天工具不接收 Bot、群、用户或 message ID 参数，模型不能切换 scope；NapCat 群历史只是 OneBot V11 的
@@ -114,7 +117,14 @@ Bug 协调器先用完整 fingerprint 查询 LocalStore data 中维护者原子�
 
 Agent 候选必须引用实际 Evidence ID。确定性 reconciler 要求同 revision 的预期与实际证据闭合；缺失、冲突、
 stale、partial、预算耗尽或只有聊天陈述时都只能得到 `unknown`。普通用户只看到三值与安全原因，不会看到
-源码、日志、内部路径、Evidence ID 或责任候选，也不会自动上报、创建 incident 或写 reviewed catalog。
+源码、日志、内部路径、Evidence ID 或责任候选。合格 Agent 确认 `bug` 时，在一个 ORM 事务中写入薄 Report、
+可去重 Occurrence、长期 Problem 和追加式 Decision；普通用户得到中性 `P-...` 编号。同一报告重放不重复计数，
+有完整、版本兼容且可从引用 Evidence 复算的技术签名时才自动聚合到已有 Problem。无可靠签名则建立新 Problem，
+不根据用户措辞或自然语言相似度合并。`not_bug` 和 `unknown` 不写入问题库，也不创建 incident 或外部工单。
+
+SUPERUSER 通过真实 Alconna 子命令 `triage 报错查询` 列出待处理 Problem，加 `P-...` 查看详情，再加
+`确认Bug`、`确认非Bug` 或 `解决` 追加人工判断或更新 lifecycle。子命令在 Semantic 之前确定性鉴权，不创建 Thread，
+不调用任何 Agent。
 
 当前中文 Prompt v8 包含 Reply / 最新 conversation 窗口、独立聊天调用和 6 次通用证据预算，并通过初始信封
 明确告知 Agent 本案是否存在聊天历史 Provider。它不能继承 v6、v7 或旧英文 Prompt 的历史 Gate。全新的
@@ -150,10 +160,19 @@ revision 的精确组合，匹配部署配置与密钥后才建立真实 Bug Age
 - [ADR-0051：允许 Bug Agent 查询受控设计 RAG](../../adr/0051-let-the-bug-assessment-agent-query-design-rag.md)
 - [ADR-0052：把 Bug 定义到整个 Bot 软件责任链](../../adr/0052-define-bug-across-the-bot-software-responsibility-chain.md)
 - [ADR-0053：允许 Bug Agent 使用相关源码与日志正文](../../adr/0053-allow-relevant-source-and-log-bodies-for-bug-assessment.md)
-- [ADR-0054：使用 LocalStore 保存已审核 Bug 问题记录](../../adr/0054-store-reviewed-bug-problems-in-localstore.md)
+- [ADR-0054：使用 LocalStore 保存已审核 Bug 问题记录](../../adr/0054-store-reviewed-bug-problems-in-localstore.md)（已被 ORM 工作流替代）
 - [ADR-0060：用作用域 Thread 承接一次补充并在路由后投影会话上下文](../../adr/0060-use-scope-thread-and-post-route-conversation-context.md)
 - [ADR-0061：为 Bug 判断读取当前会话最新有界聊天窗口](../../adr/0061-read-latest-bounded-conversation-window-for-bug-assessment.md)
 - [ADR-0064：收窄 Bug 会话证据与结论合同](../../adr/0064-refine-bug-conversation-evidence-and-verdict-contract.md)
 - [ADR-0065：只为明确支持的平台提供 Bug 会话历史工具](../../adr/0065-only-expose-conversation-history-for-supported-platforms.md)
+- [ADR-0066：用当前公开教学合同前置筛查普通用户 Bug](../../adr/0066-use-active-teaching-contract-as-bug-precheck.md)
+- [ADR-0068：把合格 Agent Bug verdict 作为正式判断](../../adr/0068-treat-qualified-agent-bug-verdicts-as-operational-decisions.md)
+- [ADR-0070：分离 Bug Report、Occurrence 与 Problem](../../adr/0070-separate-bug-reports-occurrences-and-problems.md)
+- [ADR-0071：用版本化 Evidence 指纹聚合 Bug Problem](../../adr/0071-group-bug-problems-with-versioned-evidence-fingerprints.md)
+- [ADR-0073：使用 NoneBot ORM 保存权威 Bug 工作流状态](../../adr/0073-use-nonebot-orm-for-authoritative-bug-workflow-state.md)
+- [ADR-0074：用追加式 Problem Decision 保留判断历史](../../adr/0074-preserve-append-only-problem-decisions.md)
+- [ADR-0075：把问题维护注册为 triage 子命令](../../adr/0075-register-problem-maintenance-under-triage-subcommand.md)
+- [ADR-0078：在可记录性合同确定前不持久化 unknown](../../adr/0078-defer-persisting-unknown-bug-assessments.md)
+- [ADR-0079：用无编号的 triage 报错查询列出待处理问题](../../adr/0079-list-pending-problems-with-triage-query.md)
 - [Alconna 能力与解析回执](alconna-capability-and-parse-receipts.md)
 - [运行观察入口](runtime-observation-intake.md)

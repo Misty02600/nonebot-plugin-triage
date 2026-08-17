@@ -25,14 +25,12 @@ from nonebot_plugin_triage.bug_assessment_runtime import (
     BugAssessmentServiceLike,
     create_bug_assessment_runtime_service,
 )
-from nonebot_plugin_triage.bug_problem_store import (
-    LocalBugProblemRepository,
-    register_bug_problem_repository,
-)
+from nonebot_plugin_triage.bug_workflow_identity import BugWorkflowIdentity
+from nonebot_plugin_triage.bug_workflow_orm import NoneBotORMBugWorkflowRepository
 from nonebot_plugin_triage.capability_analysis_tools import CapabilityTeachingToolProvider
 from nonebot_plugin_triage.capability_annotation_runtime import (
-    CAPABILITY_ANNOTATION_ANALYSIS_REVISION,
     CapabilityAnnotationRuntimeConfigurationError,
+    capability_annotation_analysis_revision,
     create_capability_annotation_client_factory,
 )
 from nonebot_plugin_triage.capability_shadow import (
@@ -46,7 +44,11 @@ from nonebot_plugin_triage.knowledge_pack_runtime import (
     register_knowledge_pack,
 )
 from nonebot_plugin_triage.live_reports import LiveReportService
-from nonebot_plugin_triage.model_runtime import NBTriageModelService, create_model_service
+from nonebot_plugin_triage.model_runtime import (
+    ModelRuntimeConfigurationError,
+    NBTriageModelService,
+    create_model_service,
+)
 from nonebot_plugin_triage.nonebot_runtime import NoneBotRuntimeObserver
 from nonebot_plugin_triage.public_guidance import PublicGuidanceServiceLike
 from nonebot_plugin_triage.semantic_assessment import (
@@ -125,7 +127,8 @@ class NBTriagePluginRuntime:
     support_rate_limiter: KeyedRateLimiter
     report_service: LiveReportService
     bug_log_buffer: CorrelatedBugLogBuffer
-    bug_problem_repository: LocalBugProblemRepository
+    bug_workflow_repository: NoneBotORMBugWorkflowRepository
+    bug_workflow_identity: BugWorkflowIdentity
     bug_assessment_service: BugAssessmentServiceLike
     query_service: IncidentQueryService
     incidents: LiveIncidentBuffer
@@ -201,12 +204,31 @@ def create_plugin_runtime(
         trial_service=trial_service,
     )
     query_service = IncidentQueryService(incident_buffer)
-    model_service = model_service_factory(config)
+    try:
+        model_service = model_service_factory(config)
+    except ModelRuntimeConfigurationError as error:
+        logger.warning(
+            "NoneBot Triage B1 model service is unavailable; model-enhanced "
+            "features will degrade independently ({})",
+            type(error).__name__,
+        )
+        model_service = None
     semantic_assessment_service = semantic_assessment_service_factory(config)
     public_guidance_service = public_guidance_service_factory(config)
     config_value_policy = ConfigValuePolicy.from_keys(config.nbtriage_restricted_config)
+    knowledge_pack = register_knowledge_pack(config)
     capability_teaching_tools = CapabilityTeachingToolProvider(
         additional_denied_patterns=config.nbtriage_evidence_denied_patterns,
+        knowledge_index_path=lambda: (
+            knowledge_pack.status.index_path
+            if knowledge_pack is not None and knowledge_pack.status.ready
+            else None
+        ),
+        knowledge_pack_revision=lambda: (
+            knowledge_pack.status.archive_sha256
+            if knowledge_pack is not None and knowledge_pack.status.ready
+            else None
+        ),
     )
     capability_annotation_client_factory = _create_capability_annotation_client_factory(
         config,
@@ -221,14 +243,13 @@ def create_plugin_runtime(
     capability_shadow = register_capability_shadow(
         annotation_client_factory=capability_annotation_client_factory,
         config_policy=config_value_policy,
-        annotation_analysis_revision=CAPABILITY_ANNOTATION_ANALYSIS_REVISION,
+        annotation_analysis_revision=capability_annotation_analysis_revision(config),
         annotation_evidence_validator=capability_teaching_tools.evidence_is_current,
     )
-    knowledge_pack = register_knowledge_pack(config)
-    bug_problem_repository = register_bug_problem_repository()
+    bug_workflow_repository = NoneBotORMBugWorkflowRepository()
+    bug_workflow_identity = BugWorkflowIdentity()
     bug_assessment_service = create_bug_assessment_runtime_service(
         config,
-        repository=bug_problem_repository,
         capability_shadow=capability_shadow,
         knowledge_pack=knowledge_pack,
         runtime_buffer=runtime_buffer,
@@ -244,7 +265,8 @@ def create_plugin_runtime(
         support_rate_limiter=support_rate_limiter,
         report_service=report_service,
         bug_log_buffer=bug_log_buffer,
-        bug_problem_repository=bug_problem_repository,
+        bug_workflow_repository=bug_workflow_repository,
+        bug_workflow_identity=bug_workflow_identity,
         bug_assessment_service=bug_assessment_service,
         query_service=query_service,
         incidents=incident_buffer,

@@ -16,30 +16,28 @@ from nbtriage.capability_model_adapter import (
     CapabilityAnalysisToolRuntimeFactory,
     PydanticAICapabilityAnalysisClient,
 )
+from nbtriage.opencode_go_contracts import (
+    OPENCODE_GO_BASE_URL,
+    OPENCODE_GO_BUG_ASSESSMENT_BUDGET_PROFILE,
+    OPENCODE_GO_BUG_ASSESSMENT_EVALUATION,
+    OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
+    OPENCODE_GO_BUG_ASSESSMENT_PRIVACY_POLICY,
+    OPENCODE_GO_BUG_ASSESSMENT_TASK,
+    OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
+    OPENCODE_GO_CHAT_PROVIDER_ID,
+    OPENCODE_GO_PROVIDER_SYSTEM,
+    OPENCODE_GO_SEMANTIC_API_FAMILY,
+    OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
+    OPENCODE_GO_SEMANTIC_EVALUATION,
+    OPENCODE_GO_SEMANTIC_MAX_OUTPUT_TOKENS,
+    OPENCODE_GO_SEMANTIC_MODELS,
+    OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
+    OPENCODE_GO_SEMANTIC_TASK,
+    OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS,
+)
 from nbtriage.public_guidance_model_adapter import PydanticAIPublicGuidanceClient
 from nbtriage.support_semantic_model_adapter import PydanticAISupportSemanticClient
 
-OPENCODE_GO_CHAT_PROVIDER_ID = "opencode-go-chat-completions"
-OPENCODE_GO_PROVIDER_SYSTEM = "opencode-go"
-OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
-OPENCODE_GO_SEMANTIC_MODELS = frozenset({"deepseek-v4-flash"})
-OPENCODE_GO_SEMANTIC_MAX_OUTPUT_TOKENS = 240
-OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS = 60.0
-OPENCODE_GO_SEMANTIC_API_FAMILY = "chat-completions"
-OPENCODE_GO_SEMANTIC_TASK = "support-semantic-v7"
-OPENCODE_GO_SEMANTIC_PRIVACY_POLICY = "current-request-text-only-v1"
-OPENCODE_GO_SEMANTIC_BUDGET_PROFILE = "single-call-60s-240-v1"
-OPENCODE_GO_SEMANTIC_EVALUATION = "opencode-go-forward-heldout-40-20260815-v7-prompt-v5-zh-e"
-OPENCODE_GO_BUG_ASSESSMENT_TASK = "bug-assessment-agent-v1"
-OPENCODE_GO_BUG_ASSESSMENT_PRIVACY_POLICY = "bounded-visible-conversation-source-log-design-v1"
-OPENCODE_GO_BUG_ASSESSMENT_BUDGET_PROFILE = (
-    "agent-9req-1conversation-plus-6evidence-tool-output-correction-120k-0.50usd-v3"
-)
-OPENCODE_GO_BUG_ASSESSMENT_EVALUATION = (
-    "opencode-go-bug-forward-heldout-16-20260815-v1-prompt-v8-zh-d"
-)
-OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS = 120.0
-OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS = 800
 OPENCODE_GO_MODEL_PROFILE = OpenAIModelProfile(
     supports_tools=True,
     supports_json_schema_output=False,
@@ -77,7 +75,11 @@ class OpenCodeGoChatModel(OpenAIChatModel):
 
     def _map_usage(self, response: ChatCompletion) -> RequestUsage:
         usage = super()._map_usage(response)
-        usage.cost = opencode_go_deepseek_cost_usd(usage)
+        usage.cost = (
+            opencode_go_deepseek_cost_usd(usage)
+            if self.model_name in OPENCODE_GO_SEMANTIC_MODELS
+            else None
+        )
         return usage
 
 
@@ -91,14 +93,12 @@ def create_opencode_go_support_semantic_client(
     """构造 OpenCode Go 的单次语义 assessment 客户端。"""
     if not api_key.strip():
         raise ValueError("OpenCode Go API key must not be blank")
-    if model not in OPENCODE_GO_SEMANTIC_MODELS:
-        raise ValueError("OpenCode Go semantic model is not qualified")
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     if max_output_tokens < 1:
         raise ValueError("max_output_tokens must be positive")
 
-    pydantic_model = _create_opencode_go_chat_model(
+    pydantic_model = create_opencode_go_chat_model(
         api_key=api_key,
         model=model,
         timeout_seconds=timeout_seconds,
@@ -109,7 +109,7 @@ def create_opencode_go_support_semantic_client(
         max_output_tokens=max_output_tokens,
         expected_provider=OPENCODE_GO_PROVIDER_SYSTEM,
         expected_model=model,
-        model_settings=_opencode_go_model_settings(),
+        model_settings=opencode_go_model_settings(),
     )
 
 
@@ -123,14 +123,12 @@ def create_opencode_go_public_guidance_client(
     """构造 OpenCode Go 的单次公开能力回答客户端。"""
     if not api_key.strip():
         raise ValueError("OpenCode Go API key must not be blank")
-    if model not in OPENCODE_GO_SEMANTIC_MODELS:
-        raise ValueError("OpenCode Go public guidance model is not supported")
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     if max_output_tokens < 1:
         raise ValueError("max_output_tokens must be positive")
     return PydanticAIPublicGuidanceClient(
-        _create_opencode_go_chat_model(
+        create_opencode_go_chat_model(
             api_key=api_key,
             model=model,
             timeout_seconds=timeout_seconds,
@@ -139,7 +137,7 @@ def create_opencode_go_public_guidance_client(
         max_output_tokens=max_output_tokens,
         expected_provider=OPENCODE_GO_PROVIDER_SYSTEM,
         expected_model=model,
-        model_settings=_opencode_go_model_settings(),
+        model_settings=opencode_go_model_settings(),
     )
 
 
@@ -154,14 +152,12 @@ def create_opencode_go_capability_analysis_client(
     """构造 OpenCode Go 的有界 Agentic 公开能力注释客户端。"""
     if not api_key.strip():
         raise ValueError("OpenCode Go API key must not be blank")
-    if model not in OPENCODE_GO_SEMANTIC_MODELS:
-        raise ValueError("OpenCode Go capability annotation model is not supported")
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     if max_output_tokens < 1:
         raise ValueError("max_output_tokens must be positive")
     return PydanticAICapabilityAnalysisClient(
-        _create_opencode_go_chat_model(
+        create_opencode_go_chat_model(
             api_key=api_key,
             model=model,
             timeout_seconds=timeout_seconds,
@@ -170,7 +166,7 @@ def create_opencode_go_capability_analysis_client(
         max_output_tokens=max_output_tokens,
         expected_provider=OPENCODE_GO_PROVIDER_SYSTEM,
         expected_model=model,
-        model_settings=_opencode_go_model_settings(),
+        model_settings=opencode_go_model_settings(),
         tool_runtime_factory=tool_runtime_factory,
     )
 
@@ -185,10 +181,8 @@ def create_opencode_go_bug_assessment_agent(
     """构造使用原生 Tools 和 output_type 的 OpenCode Go Bug Agent。"""
     if not api_key.strip():
         raise ValueError("OpenCode Go API key must not be blank")
-    if model not in OPENCODE_GO_SEMANTIC_MODELS:
-        raise ValueError("OpenCode Go bug assessment model is not supported")
     return PydanticAIBugAssessmentAgent(
-        _create_opencode_go_chat_model(
+        create_opencode_go_chat_model(
             api_key=api_key,
             model=model,
             timeout_seconds=timeout_seconds,
@@ -197,11 +191,11 @@ def create_opencode_go_bug_assessment_agent(
         max_output_tokens=max_output_tokens,
         expected_provider=OPENCODE_GO_PROVIDER_SYSTEM,
         expected_model=model,
-        model_settings=_opencode_go_model_settings(),
+        model_settings=opencode_go_model_settings(),
     )
 
 
-def _create_opencode_go_chat_model(
+def create_opencode_go_chat_model(
     *,
     api_key: str,
     model: str,
@@ -220,7 +214,7 @@ def _create_opencode_go_chat_model(
     )
 
 
-def _opencode_go_model_settings() -> OpenAIChatModelSettings:
+def opencode_go_model_settings() -> OpenAIChatModelSettings:
     return OpenAIChatModelSettings(
         parallel_tool_calls=False,
         tool_choice="auto",

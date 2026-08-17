@@ -20,10 +20,16 @@ from nbtriage.capabilities import (
     EvidenceRef,
     RecordState,
 )
+from nbtriage.capability_analysis import (
+    CapabilityInvocationMode,
+    CapabilityInvocationTarget,
+)
 from nonebot_plugin_triage.capability_analysis_adapter import (
     AnalysisSourcePolicy,
     CapabilityAnalysisAdapterError,
     build_capability_analysis_request,
+    build_parameterized_family_analysis_request,
+    parameterized_handler_code_identity,
 )
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
 
@@ -46,13 +52,17 @@ def _loaded_module(
 def _record(
     module_name: str,
     *,
+    capability_id: str = "capability:test",
     handlers: list[dict[str, object]],
     config_references: list[dict[str, object]],
     owner: str | None = None,
     plugin_module_name: str | None = None,
     disclosure: Disclosure = Disclosure.PUBLIC,
     superuser_only: bool = False,
-    command_header: str | None = None,
+    command_header: str | None = "test",
+    command_aliases: list[str] | None = None,
+    command_arguments: list[dict[str, object]] | None = None,
+    command_components: list[dict[str, object]] | None = None,
 ) -> CapabilityRecord:
     plugin_evidence_id = "evidence:plugin"
     matcher_evidence_id = "evidence:matcher"
@@ -88,8 +98,35 @@ def _record(
                 (matcher_evidence_id,),
             )
         )
+    if command_aliases:
+        claims.append(
+            Claim(
+                "command.aliases",
+                command_aliases,
+                ClaimBasis.OBSERVED,
+                (matcher_evidence_id,),
+            )
+        )
+    if command_arguments:
+        claims.append(
+            Claim(
+                "command.arguments",
+                command_arguments,
+                ClaimBasis.OBSERVED,
+                (matcher_evidence_id,),
+            )
+        )
+    if command_components:
+        claims.append(
+            Claim(
+                "command.components",
+                command_components,
+                ClaimBasis.OBSERVED,
+                (matcher_evidence_id,),
+            )
+        )
     return CapabilityRecord(
-        capability_id="capability:test",
+        capability_id=capability_id,
         owner=owner or module_name,
         kind="command",
         disclosure=disclosure,
@@ -159,10 +196,14 @@ def _handler_reference(
     function: str,
     line: int,
 ) -> dict[str, object]:
+    call = module.__dict__[function]
+    assert callable(call)
     return {
         "module": module.__name__,
-        "function": function,
+        "function": call.__name__,
+        "qualname": call.__qualname__,
         "line": line,
+        "code_firstlineno": call.__code__.co_firstlineno,
         "source_revision": _source_revision(module),
     }
 
@@ -240,6 +281,169 @@ async def handle_search():
     assert request.unknown_config == ()
 
 
+def test_alconna_subcommands_become_separate_invocation_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def on_alconna(*args, **kwargs):
+    return object()
+
+async def handle():
+    return True
+
+matcher = on_alconna("仓库", handlers=[handle])
+""",
+    )
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle", 4)],
+            config_references=[],
+            command_header="仓库",
+            command_components=[
+                {
+                    "kind": "subcommand",
+                    "name": "搜索",
+                    "arguments": (
+                        {
+                            "name": "主题",
+                            "required": True,
+                            "hidden": False,
+                            "variadic": False,
+                            "has_default": False,
+                        },
+                    ),
+                    "components": (
+                        {
+                            "kind": "option",
+                            "name": "--quiet",
+                            "aliases": ("-q",),
+                            "arguments": (),
+                            "components": (),
+                        },
+                    ),
+                },
+                {
+                    "kind": "subcommand",
+                    "name": "详情",
+                    "arguments": (
+                        {
+                            "name": "编号",
+                            "required": True,
+                            "hidden": False,
+                            "variadic": False,
+                            "has_default": False,
+                        },
+                    ),
+                    "components": (),
+                },
+            ],
+        ),
+        ConfigValuePolicy(),
+    )
+
+    assert [item.command_body for item in request.invocations] == [
+        "仓库 搜索",
+        "仓库 详情",
+    ]
+    assert [item.canonical_usages for item in request.invocations] == [
+        ("仓库 搜索 <主题> [--quiet|-q]",),
+        ("仓库 详情 <编号>",),
+    ]
+
+
+def test_invocation_target_keeps_runtime_aliases_and_precise_to_me_rule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def on_command(*args, **kwargs):
+    return object()
+
+def to_me():
+    return object()
+
+async def handle_status():
+    return True
+
+status = on_command("状态", aliases={"运行状态"}, rule=to_me(), handlers=[handle_status])
+""",
+    )
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle_status", 7)],
+            config_references=[],
+            command_header="状态",
+            command_aliases=["运行状态"],
+        ),
+        ConfigValuePolicy(),
+    )
+
+    assert request.invocations == (
+        CapabilityInvocationTarget(
+            "root",
+            CapabilityInvocationMode.ANCHORED,
+            "状态",
+            aliases=("运行状态",),
+            requires_mention=True,
+        ),
+    )
+
+
+def test_variadic_arguments_use_migut_multi_value_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def on_alconna(*args, **kwargs):
+    return object()
+
+async def handle_tags():
+    return True
+
+matcher = on_alconna("标签", handlers=[handle_tags])
+""",
+    )
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle_tags", 4)],
+            config_references=[],
+            command_header="标签",
+            command_arguments=[
+                {
+                    "name": "词语",
+                    "required": True,
+                    "hidden": False,
+                    "variadic": True,
+                    "has_default": False,
+                },
+                {
+                    "name": "备注",
+                    "required": False,
+                    "hidden": False,
+                    "variadic": True,
+                    "has_default": True,
+                },
+            ],
+        ),
+        ConfigValuePolicy(),
+    )
+
+    assert request.invocations[0].canonical_usages == ("标签 <词语...> [备注...]",)
+
+
 def test_parameterized_runtime_handler_requires_family_analysis(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -271,6 +475,209 @@ handler = create_handler("搜图")
             ),
             ConfigValuePolicy(),
         )
+
+
+def test_parameterized_family_is_one_complete_usage_analysis_unit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def create_handler(command):
+    async def handler():
+        return command
+    return handler
+
+first = create_handler("摸摸")
+second = create_handler("亲亲")
+""",
+    )
+    reference = _handler_reference(module, "first", 2)
+    reference["closure_freevars"] = ["command"]
+    records = (
+        _record(
+            module.__name__,
+            capability_id="command:touch",
+            handlers=[reference],
+            config_references=[],
+            command_header="摸摸",
+        ),
+        _record(
+            module.__name__,
+            capability_id="command:kiss",
+            handlers=[reference],
+            config_references=[],
+            command_header="亲亲",
+        ),
+    )
+
+    identity = parameterized_handler_code_identity(records[0])
+    request = build_parameterized_family_analysis_request(
+        records,
+        ConfigValuePolicy(),
+    )
+
+    assert identity is not None
+    assert request.capability.capability_id == identity.analysis_unit_id
+    assert request.capability.kind == "command_family"
+    assert request.invocations[0].mode.value == "complete"
+    handler = next(item for item in request.evidence_units if item.source_kind == "python_function")
+    assert handler.content.startswith("async def handler():")
+    assert all(item.source_kind != "runtime_family_members" for item in request.evidence_units)
+
+
+def test_parameterized_handlers_in_same_outer_function_are_not_grouped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def create_handlers(first_value, second_value):
+    async def first_handler():
+        return first_value
+
+    async def second_handler():
+        return second_value
+
+    return first_handler, second_handler
+
+first_handler, second_handler = create_handlers("一", "二")
+""",
+    )
+    first = _handler_reference(module, "first_handler", 2)
+    first["closure_freevars"] = ["first_value"]
+    second = _handler_reference(module, "second_handler", 5)
+    second["closure_freevars"] = ["second_value"]
+    records = (
+        _record(
+            module.__name__,
+            capability_id="command:first",
+            handlers=[first],
+            config_references=[],
+            command_header="一",
+        ),
+        _record(
+            module.__name__,
+            capability_id="command:second",
+            handlers=[second],
+            config_references=[],
+            command_header="二",
+        ),
+    )
+
+    assert parameterized_handler_code_identity(records[0]) != (
+        parameterized_handler_code_identity(records[1])
+    )
+    with pytest.raises(
+        CapabilityAnalysisAdapterError,
+        match="do not share one handler code identity",
+    ):
+        build_parameterized_family_analysis_request(records, ConfigValuePolicy())
+
+
+def test_parameterized_handler_requires_complete_runtime_code_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def create_handler(command):
+    async def handler():
+        return command
+    return handler
+
+first = create_handler("一")
+""",
+    )
+    reference = _handler_reference(module, "first", 2)
+    reference["closure_freevars"] = ["command"]
+    reference.pop("qualname")
+    record = _record(
+        module.__name__,
+        handlers=[reference],
+        config_references=[],
+        command_header="一",
+    )
+
+    with pytest.raises(
+        CapabilityAnalysisAdapterError,
+        match="handler code identity is unavailable",
+    ):
+        parameterized_handler_code_identity(record)
+
+
+def test_parameterized_matcher_with_multiple_handlers_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def create_handler(command):
+    async def handler():
+        return command
+    return handler
+
+first = create_handler("一")
+
+async def audit_handler():
+    return True
+""",
+    )
+    parameterized = _handler_reference(module, "first", 2)
+    parameterized["closure_freevars"] = ["command"]
+    record = _record(
+        module.__name__,
+        handlers=[parameterized, _handler_reference(module, "audit_handler", 8)],
+        config_references=[],
+        command_header="一",
+    )
+
+    with pytest.raises(
+        CapabilityAnalysisAdapterError,
+        match="must have exactly one runtime handler",
+    ):
+        parameterized_handler_code_identity(record)
+
+
+def test_parameterized_family_rejects_handler_source_revision_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def create_handler(command):
+    async def handler():
+        return command
+    return handler
+
+first = create_handler("一")
+""",
+    )
+    reference = _handler_reference(module, "first", 2)
+    reference["closure_freevars"] = ["command"]
+    reference["source_revision"] = f"sha256:{'0' * 64}"
+    record = _record(
+        module.__name__,
+        handlers=[reference],
+        config_references=[],
+        command_header="一",
+    )
+
+    with pytest.raises(
+        CapabilityAnalysisAdapterError,
+        match="handler source is unavailable",
+    ):
+        build_parameterized_family_analysis_request((record,), ConfigValuePolicy())
 
 
 def test_includes_resolved_uninfo_permission_without_dependency_navigation(
@@ -314,6 +721,7 @@ matcher = on_command("secure", permission=ADMIN(), handlers=[handle])
             "kind": "role",
             "operation": "administrator_or_owner",
             "owner": "matcher",
+            "symbol": "ADMIN",
             "teaching_role": "admin",
             "source": {
                 "digest": payload["permission_constraints"][0]["source"]["digest"],
@@ -326,6 +734,47 @@ matcher = on_command("secure", permission=ADMIN(), handlers=[handle])
     assert any(
         item["kind"] == "permission" and item["symbol"] == "ADMIN" for item in payload["symbols"]
     )
+    assert request.gate_candidates == ()
+
+
+def test_unknown_registration_permission_becomes_gate_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def on_command(*args, **kwargs):
+    return object()
+
+def custom_permission():
+    return True
+
+async def handle():
+    return True
+
+matcher = on_command("secure", permission=custom_permission(), handlers=[handle])
+""",
+    )
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle", 7)],
+            config_references=[],
+            command_header="secure",
+        ),
+        ConfigValuePolicy(),
+    )
+
+    assert len(request.gate_candidates) == 1
+    candidate = request.gate_candidates[0]
+    assert candidate.kind.value == "permission"
+    assert candidate.entry_ids == ("root",)
+    structure = next(
+        item for item in request.evidence_units if item.source_kind == "matcher_source_structure"
+    )
+    assert candidate.evidence_ids == (structure.evidence_id,)
 
 
 def test_restricted_missing_and_opaque_values_become_hashed_unknown_references(

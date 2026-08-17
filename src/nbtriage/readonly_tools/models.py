@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 _ROOT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _MAX_PATTERN_LENGTH = 512
+DEFAULT_MAX_READ_LINES = 160
 
 # 这些规则保护所有消费者都不应读取的秘密或高风险运行状态。日志不是全局拒绝项；
 # teaching、Bug 等消费者可通过 task_denied_patterns 分别决定是否读取日志。
@@ -91,7 +92,7 @@ class ReadOnlyRoot:
 @dataclass(frozen=True, slots=True)
 class ReadOnlyPolicyProfile:
     task_denied_patterns: tuple[str, ...] = ()
-    max_read_lines: int = 2_000
+    max_read_lines: int = DEFAULT_MAX_READ_LINES
     max_search_results: int = 200
     max_find_results: int = 200
 
@@ -202,6 +203,7 @@ def _patterns(values: tuple[str, ...], label: str) -> tuple[str, ...]:
 
 
 __all__ = (
+    "DEFAULT_MAX_READ_LINES",
     "HARD_DENIED_PATTERNS",
     "ReadOnlyPolicyProfile",
     "ReadOnlyRoot",

@@ -95,13 +95,18 @@ def build_read_only_file_toolsets(
                 )
             )
             prefixed = filtered.prefixed(root.name)
+            bounded = _bounded_read_file_toolset(
+                prefixed,
+                root_name=root.name,
+                max_read_lines=profile.policy.max_read_lines,
+            )
         except ReadOnlyFileSystemError:
             raise
         except Exception as error:
             raise ReadOnlyFileSystemError(
                 f"failed to build the read-only file toolset for root {root.name}"
             ) from error
-        toolsets.append(prefixed)
+        toolsets.append(bounded)
         names.extend(f"{root.name}_{name}" for name in sorted(allowed_tool_names))
     return ReadOnlyFileToolsets(
         task_id=profile.task_id,
@@ -133,6 +138,21 @@ def _load_filesystem_factory() -> FileSystemFactory:
     if not callable(factory):
         raise ReadOnlyFileSystemUnavailableError("pydantic-ai-harness FileSystem is unavailable")
     return cast(FileSystemFactory, factory)
+
+
+def _bounded_read_file_toolset(
+    toolset: object,
+    *,
+    root_name: str,
+    max_read_lines: int,
+) -> object:
+    from ._pydantic_file_limits import bounded_read_file_toolset
+
+    return bounded_read_file_toolset(
+        toolset,
+        root_name=root_name,
+        max_read_lines=max_read_lines,
+    )
 
 
 __all__ = (

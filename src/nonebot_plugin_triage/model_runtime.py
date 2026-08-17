@@ -61,8 +61,7 @@ MODEL_BACKEND_SPECS: Mapping[ModelBackend, ModelBackendSpec] = MappingProxyType(
     }
 )
 
-# 只有通过离线门和获授权线上资格门的精确组合才能进入这里。当前支持矩阵中的两个
-# Provider 均为实验性。插件运行时因此没有可启用的真实组合。
+# 这里记录公开通过 held-out 的精确组合；它是质量标签，不再是运行许可表。
 QUALIFIED_PLUGIN_MODELS: frozenset[ModelQualification] = frozenset()
 
 
@@ -73,19 +72,21 @@ def create_model_service(
     qualified_models: Set[ModelQualification] = QUALIFIED_PLUGIN_MODELS,
     factories: Mapping[ModelBackend, ModelClientFactory] | None = None,
 ) -> NBTriageModelService | None:
-    """按插件资格门装配惰性、单步骤模型客户端 factory。
+    """为旧 B1 流程装配惰性、单步骤模型客户端 factory。
 
     Args:
         config: 已由 NoneBot/Pydantic 校验的公开插件配置。
         environ: 密钥来源；默认只读取当前进程环境变量，测试可注入隔离映射。
-        qualified_models: 已通过完整插件运行资格门的精确 backend/model 组合。
+        qualified_models: 已通过完整 B1 评测的精确 backend/model 组合。
+            为兼容既有调用保留；资格是质量标签，不阻止未验证组合运行。
         factories: 测试或受控装配注入的 backend factory；生产默认按 extra 惰性导入。
 
     Returns:
-        未配置远端 transport 身份时返回 ``None``；配置且通过资格门时返回不主动发起请求的模型服务。
+        未配置远端 transport 身份、或该 backend 由任务专用 runtime 负责时返回
+        ``None``；其余已配置 transport 返回不主动发起请求的模型服务。
 
     Raises:
-        ModelRuntimeConfigurationError: 组合未准入、依赖缺失、密钥缺失或 factory 无效。
+        ModelRuntimeConfigurationError: 依赖缺失、密钥缺失或 factory 无效。
     """
     backend = config.nbtriage_model_backend
     model = config.nbtriage_model_name
@@ -95,12 +96,9 @@ def create_model_service(
         raise ModelRuntimeConfigurationError(
             "model backend and model name must be configured together"
         )
-    if backend == "opencode-go-chat":
+    if backend in ("opencode-go-chat", "pydantic-ai"):
         return None
-    if (backend, model) not in qualified_models:
-        raise ModelRuntimeConfigurationError(
-            f"model combination is not qualified for plugin runtime: {backend}/{model}"
-        )
+    del qualified_models
 
     spec = MODEL_BACKEND_SPECS[backend]
     factory = _resolve_factory(spec, factories)

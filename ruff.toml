@@ -1,6 +1,7 @@
 target-version = "py311"
 line-length = 100
 src = ["src", "tests", "scripts"]
+extend-exclude = ["evals/datasets/fixtures"]
 
 [format]
 line-ending = "lf"

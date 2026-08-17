@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳
+已采纳；默认无网络与固定资产发现策略由 ADR-0067 部分替代
 
 ## 日期
 
@@ -70,17 +70,21 @@
 ## 落实与确认
 
 - 实施情况：维护工具可以把全部来源均已批准再分发的 SQLite 索引封装为带 manifest 的独立 ZIP，并输出
-  归档 SHA-256。插件只有同时配置精确 HTTPS 资产 URL 与 SHA-256 时，才在 NoneBot 启动后创建后台下载
-  任务；下载、摘要、manifest 或 SQLite 校验失败均回退到明确的无知识库模式，不阻断 Bot 启动。
-- 运行副本写入 LocalStore cache，不进入 `site-packages`；未配置知识包时只记录一次启动警告，不进行网络
-  请求。Bug assessment Agent 已通过只读 `search_design_rag` 工具消费已安装知识包，并由运行时按当前安装
-  的组件精确版本限定检索；当前仍未发布正式知识包资产，因此没有配置资产的部署继续使用无知识模式。
+  归档 SHA-256。插件启动后先恢复 LocalStore 中的 active 包，再默认后台检查 stable catalog；也可以用精确
+  HTTPS 资产 URL 与 SHA-256 固定版本。下载、摘要、manifest 或 SQLite 校验失败均保留旧包或回退到明确的
+  无知识库模式，不阻断 Bot 启动。
+- 运行副本写入 LocalStore cache，不进入 `site-packages`。Bug assessment Agent 已通过只读
+  `search_design_rag` 工具消费已安装知识包，并由运行时按当前安装的组件精确版本限定检索。
+- 首个正式资产 [`knowledge-v2026.08.1`](https://github.com/Misty02600/nonebot-plugin-triage/releases/tag/knowledge-v2026.08.1)
+  已发布：只包含 NoneBot 2.5.0 官方版本化文档的 92 个 Markdown / MDX 页面，构建为 1,306 个 FTS5
+  chunk；归档 SHA-256 为 `3775b10b10780153acadbae460f89032540e87aaebb0239e9ad4b119d15d8098`。
 - 当前验证覆盖配置成对校验、HTTPS 限制、后台下载、完整性与兼容校验、失败回退、分发许可门和归档成员。
 - 独立工作流只发布已经人工创建的 Draft Release：它从 `knowledge-v*` tag checkout 发布合同，复核候选资产
   与 tag commit 的绑定和全部完整性条件，成功后发布 Draft；不会改动插件 `v*` / PyPI 发布链。
 
 ## 替代关系
 
+- 部分被替代：[ADR-0067：启动后从 stable catalog 刷新知识包](0067-refresh-knowledge-pack-from-stable-catalog-at-startup.md)
 - 补充：[ADR-0015：分离版本化评测合同与本地运行数据](0015-separate-versioned-evals-from-local-runtime-data.md)
 - 补充：[ADR-0016：将维护者评测工具排除在插件安装面之外](0016-keep-maintainer-evaluation-tooling-out-of-install-surface.md)
 - 补充：[ADR-0018：只用 LocalStore 保存显式启用的 trial 审计日志](0018-use-localstore-only-for-enabled-trial-audit-log.md)

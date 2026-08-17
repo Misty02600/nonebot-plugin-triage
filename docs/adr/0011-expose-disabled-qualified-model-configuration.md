@@ -1,5 +1,8 @@
 # ADR-0011：公开默认关闭且按资格门装配的模型配置
 
+> 后续关系：ADR-0086 已把 held-out 评测改为质量标签，不再作为模型运行许可；本 ADR 的密钥、固定
+> transport 身份、禁止任意 base URL 与惰性客户端边界继续有效。
+
 ## 状态
 
 部分被 [ADR-0037](0037-make-semantic-assessment-the-default-triage-path.md) 替代

@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any, Literal
+from typing import Any
 
-SourceKind = Literal["user_docs", "api_spec", "release_notes", "source_code"]
-Applicability = Literal["exact_version", "declared_range", "snapshot_only"]
-DistributionPolicy = Literal["redistributable", "local_only"]
-
-
-class KnowledgePackError(ValueError):
-    pass
+from nbtriage.knowledge_index import (
+    Applicability,
+    DistributionPolicy,
+    SourceKind,
+)
+from nbtriage.knowledge_index import KnowledgeEvidence as KnowledgeEvidence
+from nbtriage.knowledge_index import KnowledgePackError as KnowledgePackError
 
 
 @dataclass(frozen=True)
@@ -56,24 +56,6 @@ class KnowledgeBuildSummary:
     component_counts: dict[str, int]
     retriever_id: str
     schema_version: int
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class KnowledgeEvidence:
-    evidence_id: str
-    component: str
-    source_kind: SourceKind
-    applicability: Applicability
-    version: str | None
-    revision: str
-    content_sha256: str
-    source_url: str
-    locator: str
-    excerpt: str
-    score: float
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
