@@ -436,6 +436,7 @@ class CapabilityAnalysisEntryOutput:
     answer_markdown: str | None = None
     answer_evidence_ids: tuple[str, ...] = ()
     answer_config_reference_ids: tuple[str, ...] = ()
+    display_trigger: str | None = None
 
     def __post_init__(self) -> None:
         _bounded_text(self.entry_id, "analysis entry_id", max_length=128)
@@ -453,6 +454,8 @@ class CapabilityAnalysisEntryOutput:
             self.answer_config_reference_ids,
             "answer_config_reference_ids",
         )
+        if self.display_trigger is not None:
+            _bounded_text(self.display_trigger, "display_trigger", max_length=256)
 
 
 @dataclass(frozen=True)

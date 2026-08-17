@@ -677,8 +677,8 @@ def _render_arguments(
         variadic = argument.get("variadic")
         if name is None or not isinstance(required, bool) or not isinstance(variadic, bool):
             return None
-        suffix = "..." if variadic else ""
-        result.append(f"<{name}{suffix}>" if required else f"[{name}{suffix}]")
+        slot = f"<{name}>" if required else f"[{name}]"
+        result.append(f"{slot}..." if variadic else slot)
     return tuple(result)
 
 

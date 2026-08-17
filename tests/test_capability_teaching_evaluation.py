@@ -156,7 +156,7 @@ def test_modified_official_source_is_not_qualification_eligible(tmp_path: Path) 
     assert report["quality_gate"]["qualification_eligible"] is False
 
 
-def test_v8_source_bundle_matches_qualification_identity_before_provider_run() -> None:
+def test_v8_source_bundle_remains_frozen_after_prompt_contract_changes() -> None:
     report = asyncio.run(
         evaluate_capability_teaching(
             _OFFICIAL_FIXTURE,
@@ -171,12 +171,12 @@ def test_v8_source_bundle_matches_qualification_identity_before_provider_run() -
     assert report["summary"]["case_count"] == 20
     assert report["summary"]["source_case_count"] == 12
     assert report["summary"]["source_extraction_valid_rate"] == 1.0
-    assert report["quality_gate"]["qualification_checks"]["contract_exact"] is True
-    assert report["quality_gate"]["qualification_eligible"] is True
+    assert report["quality_gate"]["qualification_checks"]["contract_exact"] is False
+    assert report["quality_gate"]["qualification_eligible"] is False
     assert report["quality_gate"]["status"] == "failed"
 
 
-def test_v34_development_bundle_prepares_without_becoming_qualification_data() -> None:
+def test_v34_development_bundle_prepares_as_historical_regression_data() -> None:
     report = asyncio.run(
         evaluate_capability_teaching(
             _DEVELOPMENT_FIXTURE,
@@ -190,7 +190,7 @@ def test_v34_development_bundle_prepares_without_becoming_qualification_data() -
     assert report["summary"]["case_count"] == 18
     assert report["summary"]["source_case_count"] == 9
     assert report["summary"]["source_extraction_valid_rate"] == 1.0
-    assert report["quality_gate"]["qualification_checks"]["contract_exact"] is True
+    assert report["quality_gate"]["qualification_checks"]["contract_exact"] is False
     assert report["quality_gate"]["qualification_checks"]["fixture_set_id"] is False
     assert report["quality_gate"]["qualification_eligible"] is False
 

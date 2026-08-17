@@ -166,6 +166,13 @@ def test_prompt_requires_complete_usage_literal_affix_self_check() -> None:
     assert "实际注册表达式或变量替换关系无法确认，必须关闭知识" in SYSTEM_INSTRUCTION
 
 
+def test_prompt_separates_alias_display_from_usage_and_places_repeat_marker_after_slot() -> None:
+    assert "usage claim 仍必须使用 command_body" in SYSTEM_INSTRUCTION
+    assert "entry.display_trigger" in SYSTEM_INSTRUCTION
+    assert "展开后必须恰好等于 command_body 与全部 aliases" in SYSTEM_INSTRUCTION
+    assert "`<参数>...` 表示至少一项、`[参数]...` 表示零项或多项" in SYSTEM_INSTRUCTION
+
+
 def test_prompt_preserves_supported_baseline_retrieval_fields() -> None:
     assert "必须按 entry_id 逐字段对照旧值" in SYSTEM_INSTRUCTION
     assert "不得把这些非空数组改成空数组" in SYSTEM_INSTRUCTION
@@ -297,6 +304,75 @@ def test_agent_receives_aliases_and_retries_missing_required_mention() -> None:
     payload = json.loads(cast(str, cast(UserPromptPart, messages[0].parts[0]).content))
     assert payload["invocations"][0]["aliases"] == ["运行状态"]
     assert payload["invocations"][0]["requires_mention"] is True
+
+
+def test_agent_accepts_exact_nested_alias_display_trigger() -> None:
+    aliases = ("禁他", "禁她", "口他", "口她", "踩他", "踩她")
+
+    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+        output = _output(usage="禁言 <用户>")
+        entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
+        entry["display_trigger"] = "(禁言|(禁|口|踩)(他|她))"
+        return ModelResponse(
+            parts=[TextPart(json.dumps(output, ensure_ascii=False))],
+            finish_reason="stop",
+        )
+
+    request = replace(
+        _request(),
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "禁言",
+                aliases=aliases,
+            ),
+        ),
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+
+    assert result.entries[0].display_trigger == "(禁言|(禁|口|踩)(他|她))"
+
+
+def test_agent_retries_alias_pattern_once_then_uses_deterministic_fallback() -> None:
+    provider_calls = 0
+
+    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal provider_calls
+        provider_calls += 1
+        output = _output(usage="禁言 <用户>")
+        entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
+        entry["display_trigger"] = "(禁言|口他)"
+        return ModelResponse(
+            parts=[TextPart(json.dumps(output, ensure_ascii=False))],
+            finish_reason="stop",
+        )
+
+    request = replace(
+        _request(),
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "禁言",
+                aliases=("口他", "禁她"),
+            ),
+        ),
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+
+    assert provider_calls == 2
+    assert result.entries[0].display_trigger == "(禁言|口他|禁她)"
 
 
 def test_agent_retries_rate_limit_text_that_omits_cited_numeric_config() -> None:

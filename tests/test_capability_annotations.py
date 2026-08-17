@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +25,7 @@ from nbtriage.capability_analysis import (
     CapabilityIdentity,
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
+    CapabilitySourceContext,
     FakeCapabilityAnalysisClient,
     RateLimitPolicy,
     RateLimitScope,
@@ -37,6 +41,11 @@ from nbtriage.capability_annotations import (
     CapabilityAnnotationEvidenceRef,
     CapabilityTeachingAnnotation,
     project_capability_annotation,
+    validate_capability_usage_pattern,
+)
+from nbtriage.capability_model_adapter import (
+    CapabilityModelAdapterError,
+    CapabilityModelAdapterReason,
 )
 from nonebot_plugin_triage.capability_analysis_adapter import (
     ParameterizedHandlerCodeIdentity,
@@ -52,6 +61,66 @@ from nonebot_plugin_triage.capability_annotation_runtime import (
 from nonebot_plugin_triage.capability_annotations import CapabilityAnnotationService
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.infos: list[tuple[str, tuple[object, ...]]] = []
+        self.warnings: list[tuple[str, tuple[object, ...]]] = []
+
+    def info(self, message: str, *args: object) -> None:
+        self.infos.append((message, args))
+
+    def warning(self, message: str, *args: object) -> None:
+        self.warnings.append((message, args))
+
+
+class _FailingCapabilityAnalysisClient:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def analyze(self, request: CapabilityAnalysisRequest) -> CapabilityAnalysisOutput:
+        del request
+        raise self._error
+
+
+class _PluginConcurrencyTracker:
+    def __init__(self) -> None:
+        self.active_total = 0
+        self.max_active_total = 0
+        self.active_by_plugin: dict[str, int] = {}
+        self.max_active_by_plugin: dict[str, int] = {}
+        self.started: list[tuple[str, str]] = []
+        self.two_plugins_started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def analyze(self, request: CapabilityAnalysisRequest) -> CapabilityAnalysisOutput:
+        plugin = request.capability.owner
+        self.active_total += 1
+        self.max_active_total = max(self.max_active_total, self.active_total)
+        active_for_plugin = self.active_by_plugin.get(plugin, 0) + 1
+        self.active_by_plugin[plugin] = active_for_plugin
+        self.max_active_by_plugin[plugin] = max(
+            self.max_active_by_plugin.get(plugin, 0),
+            active_for_plugin,
+        )
+        self.started.append((plugin, request.capability.capability_id))
+        if self.active_total == 2:
+            self.two_plugins_started.set()
+        try:
+            await self.release.wait()
+            return _output()
+        finally:
+            self.active_total -= 1
+            self.active_by_plugin[plugin] -= 1
+
+
+class _PluginConcurrencyClient:
+    def __init__(self, tracker: _PluginConcurrencyTracker) -> None:
+        self._tracker = tracker
+
+    async def analyze(self, request: CapabilityAnalysisRequest) -> CapabilityAnalysisOutput:
+        return await self._tracker.analyze(request)
 
 
 def _request(capability_id: str = "command:image") -> CapabilityAnalysisRequest:
@@ -318,6 +387,61 @@ def test_complete_usage_requires_bounded_member_selector() -> None:
     ).entries[0].usages == ("(复古|锐化|黑白|素描) [图片]",)
 
 
+def test_annotation_replaces_verified_command_body_with_alias_expression() -> None:
+    request = replace(
+        _request(),
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "禁言",
+                ("禁言 <用户>",),
+                aliases=("禁他", "禁她", "口他", "口她", "踩他", "踩她"),
+            ),
+        ),
+    )
+    output = CapabilityAnalysisOutput(
+        entries=(
+            CapabilityAnalysisEntryOutput(
+                "root",
+                claims=(
+                    SemanticClaim(
+                        SemanticClaimKind.NAME,
+                        "禁言用户",
+                        ("evidence-handler",),
+                    ),
+                    SemanticClaim(
+                        SemanticClaimKind.USAGE,
+                        "禁言 <用户>",
+                        ("evidence-handler",),
+                    ),
+                ),
+                answer_markdown="禁言指定用户。",
+                answer_evidence_ids=("evidence-handler",),
+                display_trigger="(禁言|(禁|口|踩)(他|她))",
+            ),
+        )
+    )
+
+    annotation = project_capability_annotation(request, output, analysis_revision="analysis-v1")
+
+    assert annotation.entries[0].usages == ("(禁言|(禁|口|踩)(他|她)) <用户>",)
+
+
+@pytest.mark.parametrize(
+    "usage",
+    ("批量 <图片...>", "批量 [图片...]", "批量 ...<图片>"),
+)
+def test_usage_repetition_requires_ellipsis_after_complete_slot(usage: str) -> None:
+    with pytest.raises(CapabilityAnnotationError):
+        validate_capability_usage_pattern(usage)
+
+
+def test_usage_repetition_accepts_required_and_optional_slots() -> None:
+    assert validate_capability_usage_pattern("批量 <图片>...") == "批量 <图片>..."
+    assert validate_capability_usage_pattern("批量 [图片]...") == "批量 [图片]..."
+
+
 def test_multiple_invocation_entries_are_projected_separately() -> None:
     request = CapabilityAnalysisRequest(
         capability=_request().capability,
@@ -402,15 +526,17 @@ def test_runtime_rejects_missing_mandatory_annotation_transport() -> None:
         create_capability_annotation_client_factory(NBTriageConfig(), environ={})
 
 
-def test_runtime_uses_exact_qualified_annotation_contract() -> None:
+def test_runtime_marks_changed_annotation_prompt_unverified_until_new_evaluation() -> None:
     qualification = OPENCODE_GO_CAPABILITY_ANNOTATION_QUALIFICATION
 
     assert qualification.evaluation == CAPABILITY_ANNOTATION_EVALUATION
-    assert qualification.prompt_id == "capability-teaching-annotation-v4-prompt-v34-zh"
+    assert qualification.prompt_id == "capability-teaching-annotation-v4-prompt-v35-zh"
     assert qualification.evaluation == (
-        "opencode-go-capability-teaching-forward-heldout-20-20260816-v8-v34-zh-a"
+        "unverified:capability-teaching-annotation-agent-v3:"
+        "capability-teaching-annotation-v4-prompt-v35-zh"
     )
-    assert frozenset({qualification}) == QUALIFIED_CAPABILITY_ANNOTATION_TASKS
+    assert qualification.verified is False
+    assert frozenset() == QUALIFIED_CAPABILITY_ANNOTATION_TASKS
 
 
 def test_runtime_uses_independent_annotation_output_budget() -> None:
@@ -425,7 +551,7 @@ def test_runtime_uses_independent_annotation_output_budget() -> None:
         environ={"OPENCODE_API_KEY": "test-only"},
     )()
 
-    assert client._max_output_tokens == CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS == 4_096
+    assert vars(client)["_max_output_tokens"] == CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS == 4_096
 
 
 @pytest.mark.asyncio
@@ -477,6 +603,59 @@ async def test_runtime_snapshot_is_public_availability_gate(
     assert service.get("command:image") is not None
     assert service.get("command:restricted") is None
     assert service.get("trigger:event") is None
+
+
+@pytest.mark.asyncio
+async def test_annotations_run_plugins_concurrently_and_units_within_plugin_sequentially(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "sha256:source"),
+        )
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    tracker = _PluginConcurrencyTracker()
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=lambda: _PluginConcurrencyClient(tracker),
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+        max_plugin_concurrency=2,
+    )
+    records = tuple(
+        replace(_record(f"command:{plugin}-{index}", Disclosure.PUBLIC), owner=f"plugin.{plugin}")
+        for plugin in ("a", "b", "c")
+        for index in (1, 2)
+    )
+
+    refresh = asyncio.create_task(service.refresh(CapabilitySnapshot.create(records)))
+    await asyncio.wait_for(tracker.two_plugins_started.wait(), timeout=1)
+
+    assert tracker.active_total == 2
+    assert tracker.max_active_total == 2
+    assert all(active == 1 for active in tracker.active_by_plugin.values())
+    tracker.release.set()
+    status = await asyncio.wait_for(refresh, timeout=2)
+
+    assert status.generated_count == 6
+    assert status.failed_count == 0
+    assert tracker.max_active_total == 2
+    assert set(tracker.max_active_by_plugin.values()) == {1}
+    for plugin in ("a", "b", "c"):
+        assert [
+            capability_id for owner, capability_id in tracker.started if owner == f"plugin.{plugin}"
+        ] == [f"command:{plugin}-1", f"command:{plugin}-2"]
 
 
 @pytest.mark.asyncio
@@ -553,6 +732,69 @@ async def test_disabled_teaching_unit_is_counted_and_not_served(
     assert status.family_disabled_count == 0
     assert status.family_failed_count == 0
     assert service.get("command:image") is None
+
+
+@pytest.mark.asyncio
+async def test_failed_teaching_unit_log_has_safe_location_and_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nonebot_plugin_triage.capability_annotations as capability_annotations_module
+
+    private_text = "SECRET model output C:\\private\\plugin.py api_key=value"
+    request = replace(
+        _request(),
+        source_context=CapabilitySourceContext("plugin.image", "sha256:source"),
+    )
+    monkeypatch.setattr(
+        capability_annotations_module,
+        "build_capability_analysis_request",
+        lambda _record, _policy, **_kwargs: request,
+    )
+    logger = _RecordingLogger()
+    monkeypatch.setattr(capability_annotations_module, "logger", logger)
+    monkeypatch.setattr(
+        capability_annotations_module,
+        "uuid4",
+        lambda: SimpleNamespace(hex="0123456789abcdef0123456789abcdef"),
+    )
+    clock = iter((10.0, 20.0, 20.125))
+    monkeypatch.setattr(capability_annotations_module, "perf_counter", lambda: next(clock))
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=lambda: _FailingCapabilityAnalysisClient(
+            CapabilityModelAdapterError(
+                private_text,
+                reason_code=CapabilityModelAdapterReason.OUTPUT_VALIDATION,
+            )
+        ),
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+
+    status = await service.refresh(
+        CapabilitySnapshot.create((_record("command:image", Disclosure.PUBLIC),))
+    )
+
+    assert status.failed_count == 1
+    assert status.generated_count == 0
+    assert logger.warnings == [
+        (
+            "NoneBot Triage capability annotation failed: refresh_id={}, "
+            "plugin_module={}, unit_label={}, unit_id={}, stage={}, reason={}, "
+            "duration_ms={}",
+            (
+                "0123456789abcdef0123456789abcdef",
+                "plugin.image",
+                '"搜图"',
+                "command:image",
+                "agent_run",
+                "output_validation",
+                125,
+            ),
+        )
+    ]
+    assert private_text not in repr(logger.warnings)
 
 
 @pytest.mark.asyncio

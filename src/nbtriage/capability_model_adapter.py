@@ -6,6 +6,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -42,6 +43,7 @@ from nbtriage.capability_analysis import (
     CapabilityGateResolution,
     CapabilityGateResolutionKind,
     CapabilityInvocationMode,
+    CapabilityInvocationTarget,
     RateLimitPolicy,
     RateLimitScope,
     SemanticClaim,
@@ -56,6 +58,11 @@ from nbtriage.capability_annotations import (
     validate_capability_public_statement,
     validate_capability_usage_pattern,
     validate_complete_aggregate_usage,
+)
+from nbtriage.capability_usage import (
+    CapabilityUsageExpressionError,
+    deterministic_literal_expression,
+    validate_literal_expression,
 )
 
 SYSTEM_INSTRUCTION = """\
@@ -84,7 +91,9 @@ SYSTEM_INSTRUCTION = """\
 输出指导：
 - payload.invocations 是模型必须逐项返回的功能入口；knowledge_enabled=true 时，entries 的 entry_id 必须与它完全一致，不得自行合并、拆分或新增入口。
 - mode=anchored 时 command_body 是已经确定的完整命令正文。每条 usage 都必须原样包含它一次；不要添加 NoneBot 全局 COMMAND_START，也不要使用 `{command}`。插件自己的业务前缀如果已在 command_body 中，应原样保留。
-- aliases 是 Runtime 已确认的同义命令入口。默认 usage 仍使用 command_body；不要为了列出 alias 复制一条用法。alias 可用于 synonym 和 answer_markdown，但不得被当成新的功能入口。
+- aliases 是 Runtime 已确认的同义命令入口。usage claim 仍必须使用 command_body，不要把别名写进 usage，也不要为了列出 alias 复制用法。
+- aliases 非空时，为 entry.display_trigger 生成一条只由固定文字、`|` 和可嵌套圆括号组成的紧凑表达式；它展开后必须恰好等于 command_body 与全部 aliases，不能遗漏、增加或重复命令。例如可把“取消全体禁言、关闭全体禁言、取消全员禁言、关闭全员禁言”写成 `(取消|关闭)(全体|全员)禁言`。aliases 为空时 display_trigger 必须为 null。
+- display_trigger 只负责同一功能入口的触发词展示，不得包含参数槽位、`@bot`、NoneBot 全局 COMMAND_START 或额外说明。不要修改 usage claim 中的 command_body；模型外会在全部校验通过后替换展示触发词。
 - requires_mention=true 时，每条 usage 必须在 command_body 紧前写 `@bot `；回复上下文仍放在最前，例如 `[回复图片] @bot 识图`。
 - canonical_usages 非空时，它来自 Runtime parser 的确定结构；usage 必须逐字复制这些值且不得增删。参数必选性、Option 与别名已经由模型外负责。
 - mode=complete 时，当前入口需要模型根据工厂代码生成一个完整聚合用法；只输出一条 usage。证据不足则关闭整个知识。
@@ -97,7 +106,7 @@ SYSTEM_INSTRUCTION = """\
 - 一条带 `[...]` 的 usage 已经同时表达“省略该参数”和“提供该参数”，不得再额外输出省略后的短写法。如果命令正文单独可用，而同一 entry 还能追加一个参数，该参数就是可选参数，应合并为一条 `[参数]` 用法，不得另写成 `<参数>`。
 - name 是简短功能名；summary 写用途和必要的用户特殊说明，不重复 usage。summary 作为帮助图中的短行，默认不加句末句号。参数占位优先简洁，如 `<用户>`、`<话题>`、`<文本>`。
 - `<参数>` 表示当次调用必须提供；`[参数]` 表示可省略。可选 Option 放入方括号；同义触发或 Option 别名可用 `(A|B)`。`[图片] [文字]` 表示可分别组合，`[图片|文字]` 表示二选一，不得混用。
-- 同一参数可以重复提供多次时，用 `<参数...>` 表示至少一项、`[参数...]` 表示零项或多项；不要为了展示重复性把同一个参数槽位连续写很多遍。Runtime parser 已提供 canonical_usages 时仍须逐字复制，不得自行增删 `...`。
+- 同一参数可以重复提供多次时，把省略号写在完整槽位之后：`<参数>...` 表示至少一项、`[参数]...` 表示零项或多项；不要写成 `<参数...>`、`[参数...]`，也不要为了展示重复性把同一个参数槽位连续写很多遍。Runtime parser 已提供 canonical_usages 时仍须逐字复制，不得自行增删 `...`。
 - 同一位置由当前证据明确给出的备选值不超过四个时可以直接枚举；超过四个时改用一个简短概念槽位。聚合能力的成员槽位是必填时使用 `<成员名>`，不要用表示可省略的方括号。
 - 参数化能力只保证所有 Runtime Matcher 执行同一段闭包 Handler 代码；不会额外提供成员数量、成员名或“外层函数就是工厂”的结论。请阅读获准源码判断是否存在共同语义和完整用法，不得猜测未提供的成员表；无法确认时关闭知识。
 - Handler 形参的名称或类型本身不等于用户输入合同。`image: bytes`、`text: str` 等普通形参不能证明用户要在命令后发送、回复消息或经历后续交互；只有 Runtime parser 结构、定义与行为均已提供的依赖注入来源，或 Handler 实际读取消息/回复的代码才能证明输入方式。只看到 `Depends(resolve_image)` 而没有 `resolve_image` 的定义时，仍然不能判断图片来自当前消息、回复还是其他来源。
@@ -111,8 +120,28 @@ SYSTEM_INSTRUCTION = """\
 """
 
 
+class CapabilityModelAdapterReason(StrEnum):
+    TRANSPORT = "transport"
+    HTTP = "http"
+    BUDGET = "budget"
+    OUTPUT_VALIDATION = "output_validation"
+    SCHEMA = "schema"
+    PROVIDER_IDENTITY = "provider_identity"
+    SOURCE_CHANGED = "source_changed"
+    UNKNOWN = "unknown"
+
+
 class CapabilityModelAdapterError(CapabilityAnalysisError):
-    pass
+    """携带可安全记录的稳定失败分类，同时保留内部异常链供调用方诊断。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: CapabilityModelAdapterReason = CapabilityModelAdapterReason.UNKNOWN,
+    ) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 class _BoundedNavigationToolset(WrapperToolset[Any]):
@@ -253,6 +282,7 @@ class _GateResolutionOutput(_StrictModel):
 
 class _AnalysisEntryOutput(_StrictModel):
     entry_id: Annotated[str, Field(min_length=1, max_length=128)]
+    display_trigger: Annotated[str | None, Field(max_length=256)] = None
     claims: Annotated[list[_ClaimOutput], Field(max_length=64)] = []
     constraints: Annotated[list[_ConstraintOutput], Field(max_length=64)] = []
     answer_markdown: Annotated[str | None, Field(max_length=32_000)] = None
@@ -326,6 +356,61 @@ _NEGATED_RESTRICTION_RE = re.compile(
 )
 
 
+def _alias_literals(target: CapabilityInvocationTarget) -> tuple[str, ...]:
+    if target.mode is not CapabilityInvocationMode.ANCHORED or target.command_body is None:
+        return ()
+    return (target.command_body, *target.aliases)
+
+
+def _alias_pattern_failures(
+    entries: Sequence[_AnalysisEntryOutput],
+    targets: Mapping[str, CapabilityInvocationTarget],
+) -> tuple[tuple[_AnalysisEntryOutput, CapabilityInvocationTarget, str], ...]:
+    failures: list[tuple[_AnalysisEntryOutput, CapabilityInvocationTarget, str]] = []
+    for entry in entries:
+        target = targets[entry.entry_id]
+        literals = _alias_literals(target)
+        fallback = deterministic_literal_expression(literals)
+        if len(literals) <= 1 or fallback is None:
+            entry.display_trigger = None
+            continue
+        if entry.display_trigger is None:
+            failures.append((entry, target, "缺少 display_trigger"))
+            continue
+        try:
+            validate_literal_expression(entry.display_trigger, literals)
+        except CapabilityUsageExpressionError as error:
+            failures.append((entry, target, str(error)))
+            continue
+        usage_error = _display_trigger_usage_error(entry, target, entry.display_trigger)
+        if usage_error is not None:
+            failures.append((entry, target, usage_error))
+    return tuple(failures)
+
+
+def _display_trigger_usage_error(
+    entry: _AnalysisEntryOutput,
+    target: CapabilityInvocationTarget,
+    display_trigger: str,
+) -> str | None:
+    assert target.command_body is not None
+    pattern = rf"(?<!\S){re.escape(target.command_body)}(?!\S)"
+    for usage in (item.statement for item in entry.claims if item.kind == "usage"):
+        rendered, substitutions = re.subn(
+            pattern,
+            lambda _match: display_trigger,
+            usage,
+            count=1,
+        )
+        if substitutions != 1:
+            return "usage 未包含唯一的 command_body"
+        try:
+            validate_capability_usage_pattern(rendered, allow_verified_aliases=True)
+        except CapabilityAnnotationError as error:
+            return f"替换后的 usage 不可展示：{error}"
+    return None
+
+
 class PydanticAICapabilityAnalysisClient:
     """通过一次有界 Pydantic AI Agent 运行生成公开能力注释候选。"""
 
@@ -345,13 +430,25 @@ class PydanticAICapabilityAnalysisClient:
         cost_limit_usd: Decimal = Decimal("0.05"),
     ) -> None:
         if timeout_seconds <= 0:
-            raise CapabilityModelAdapterError("timeout_seconds must be positive")
+            raise CapabilityModelAdapterError(
+                "timeout_seconds must be positive",
+                reason_code=CapabilityModelAdapterReason.BUDGET,
+            )
         if max_output_tokens < 1:
-            raise CapabilityModelAdapterError("max_output_tokens must be positive")
+            raise CapabilityModelAdapterError(
+                "max_output_tokens must be positive",
+                reason_code=CapabilityModelAdapterReason.BUDGET,
+            )
         if max_requests < 1 or max_tool_calls < 0 or total_tokens_limit < 1:
-            raise CapabilityModelAdapterError("capability Agent budgets are invalid")
+            raise CapabilityModelAdapterError(
+                "capability Agent budgets are invalid",
+                reason_code=CapabilityModelAdapterReason.BUDGET,
+            )
         if cost_limit_usd <= 0:
-            raise CapabilityModelAdapterError("cost_limit_usd must be positive")
+            raise CapabilityModelAdapterError(
+                "cost_limit_usd must be positive",
+                reason_code=CapabilityModelAdapterReason.BUDGET,
+            )
         if tool_runtime_factory is not None and not model.profile.get("supports_tools", False):
             raise CapabilityModelAdapterError("capability navigation requires model tool support")
         output_mode = model.profile.get("default_structured_output_mode", "tool")
@@ -369,6 +466,7 @@ class PydanticAICapabilityAnalysisClient:
         self._total_tokens_limit = total_tokens_limit
         self._cost_limit_usd = cost_limit_usd
         self._last_validation_failure: str | None = None
+        self._alias_retry_used = False
         self._called = False
         self._last_response: ModelResponse | None = None
         self._last_usage: RunUsage | None = None
@@ -405,6 +503,26 @@ class PydanticAICapabilityAnalysisClient:
                 if {item.entry_id for item in output.entries} != set(targets):
                     raise CapabilityAnnotationError(
                         "entries must exactly match payload.invocations"
+                    )
+                alias_failures = _alias_pattern_failures(output.entries, targets)
+                if alias_failures and not self._alias_retry_used:
+                    self._alias_retry_used = True
+                    detail = "；".join(
+                        f"entry_id={entry.entry_id}: {reason}"
+                        for entry, _target, reason in alias_failures
+                    )
+                    self._last_validation_failure = detail
+                    raise ModelRetry(
+                        "display_trigger 必须恰好展开为 Runtime 已确认的全部同义命令；"
+                        f"只修正 display_trigger，其他字段保持不变。{detail}"
+                    )
+                for entry, target, _reason in alias_failures:
+                    fallback = deterministic_literal_expression(_alias_literals(target))
+                    entry.display_trigger = (
+                        fallback
+                        if fallback is not None
+                        and _display_trigger_usage_error(entry, target, fallback) is None
+                        else None
                     )
                 for entry in output.entries:
                     target = targets[entry.entry_id]
@@ -486,8 +604,12 @@ class PydanticAICapabilityAnalysisClient:
         if not isinstance(request, CapabilityAnalysisRequest):
             raise TypeError("request must be CapabilityAnalysisRequest")
         if self._called:
-            raise CapabilityModelAdapterError("capability model-call limit reached: 1")
+            raise CapabilityModelAdapterError(
+                "capability model-call limit reached: 1",
+                reason_code=CapabilityModelAdapterReason.BUDGET,
+            )
         self._called = True
+        self._alias_retry_used = False
         tool_runtime = (
             self._tool_runtime_factory(request) if self._tool_runtime_factory is not None else None
         )
@@ -521,15 +643,18 @@ class PydanticAICapabilityAnalysisClient:
                     )
             except ModelHTTPError as error:
                 raise CapabilityModelAdapterError(
-                    f"capability model request failed with HTTP {error.status_code}"
+                    f"capability model request failed with HTTP {error.status_code}",
+                    reason_code=CapabilityModelAdapterReason.HTTP,
                 ) from error
             except (ModelAPIError, TimeoutError) as error:
                 raise CapabilityModelAdapterError(
-                    "capability model request failed during transport"
+                    "capability model request failed during transport",
+                    reason_code=CapabilityModelAdapterReason.TRANSPORT,
                 ) from error
             except UsageLimitExceeded as error:
                 raise CapabilityModelAdapterError(
-                    f"capability model request exceeded the {_usage_limit_name(error)} budget"
+                    f"capability model request exceeded the {_usage_limit_name(error)} budget",
+                    reason_code=CapabilityModelAdapterReason.BUDGET,
                 ) from error
             except UnexpectedModelBehavior as error:
                 detail = (
@@ -538,7 +663,8 @@ class PydanticAICapabilityAnalysisClient:
                     or _unexpected_behavior_reason(error)
                 )
                 raise CapabilityModelAdapterError(
-                    f"capability model output validation retries exhausted: {detail}"
+                    f"capability model output validation retries exhausted: {detail}",
+                    reason_code=CapabilityModelAdapterReason.OUTPUT_VALIDATION,
                 ) from error
             except (AgentRunError, UserError, ValueError) as error:
                 raise CapabilityModelAdapterError("capability model request failed") from error
@@ -551,34 +677,48 @@ class PydanticAICapabilityAnalysisClient:
         response = self._last_response
         if response is None:
             raise CapabilityModelAdapterError(
-                "capability model request returned no provider response"
+                "capability model request returned no provider response",
+                reason_code=CapabilityModelAdapterReason.TRANSPORT,
             )
         if (
             self._expected_provider is not None
             and response.provider_name != self._expected_provider
         ):
             raise CapabilityModelAdapterError(
-                "capability model response provider identity mismatch"
+                "capability model response provider identity mismatch",
+                reason_code=CapabilityModelAdapterReason.PROVIDER_IDENTITY,
             )
         if self._expected_model is not None and response.model_name != self._expected_model:
-            raise CapabilityModelAdapterError("capability model response model identity mismatch")
+            raise CapabilityModelAdapterError(
+                "capability model response model identity mismatch",
+                reason_code=CapabilityModelAdapterReason.PROVIDER_IDENTITY,
+            )
         if response.finish_reason not in (None, "stop", "tool_call"):
-            raise CapabilityModelAdapterError("capability model response did not finish normally")
+            raise CapabilityModelAdapterError(
+                "capability model response did not finish normally",
+                reason_code=CapabilityModelAdapterReason.OUTPUT_VALIDATION,
+            )
         if not 1 <= result.usage.requests <= self._max_requests:
             raise CapabilityModelAdapterError(
-                "capability Agent exceeded the qualified provider request budget"
+                "capability Agent exceeded the qualified provider request budget",
+                reason_code=CapabilityModelAdapterReason.BUDGET,
             )
         if type(result.output) is not _AnalysisOutput:
-            raise CapabilityModelAdapterError("capability model response failed schema validation")
+            raise CapabilityModelAdapterError(
+                "capability model response failed schema validation",
+                reason_code=CapabilityModelAdapterReason.SCHEMA,
+            )
         if tool_runtime is not None and not tool_runtime.validate_source_context():
             raise CapabilityModelAdapterError(
-                "capability plugin source changed during Agent analysis"
+                "capability plugin source changed during Agent analysis",
+                reason_code=CapabilityModelAdapterReason.SOURCE_CHANGED,
             )
         captured_evidence = tool_runtime.evidence_units() if tool_runtime is not None else ()
         return _to_domain_output(result.output, captured_evidence)
 
 
 def _build_payload(request: CapabilityAnalysisRequest) -> str:
+    invocation_targets = {item.entry_id: item for item in request.invocations}
     payload = {
         "schema_version": 4,
         "prompt_id": CAPABILITY_ANNOTATION_PROMPT_ID,
@@ -654,7 +794,14 @@ def _build_payload(request: CapabilityAnalysisRequest) -> str:
                         "entry_id": entry.entry_id,
                         "name": entry.name,
                         "summary": entry.summary,
-                        "usages": list(entry.usages),
+                        "usages": (
+                            []
+                            if (
+                                (target := invocation_targets.get(entry.entry_id)) is not None
+                                and target.aliases
+                            )
+                            else list(entry.usages)
+                        ),
                         "synonyms": list(entry.synonyms),
                         "supported_subjects": list(entry.supported_subjects),
                         "input_requirements": list(entry.input_requirements),
@@ -769,6 +916,7 @@ def _validate_gate_resolution_output(
 def _to_domain_entry(output: _AnalysisEntryOutput) -> CapabilityAnalysisEntryOutput:
     return CapabilityAnalysisEntryOutput(
         entry_id=output.entry_id,
+        display_trigger=output.display_trigger,
         claims=tuple(
             SemanticClaim(
                 kind=SemanticClaimKind(item.kind),
@@ -903,5 +1051,6 @@ __all__ = (
     "CapabilityAnalysisToolRuntime",
     "CapabilityAnalysisToolRuntimeFactory",
     "CapabilityModelAdapterError",
+    "CapabilityModelAdapterReason",
     "PydanticAICapabilityAnalysisClient",
 )

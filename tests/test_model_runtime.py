@@ -35,12 +35,19 @@ def test_model_config_has_no_product_enable_toggle_and_transport_identity_is_opt
     assert config.nbtriage_model_name is None
     assert config.nbtriage_model_timeout_seconds == 60
     assert config.nbtriage_model_max_output_tokens == 240
+    assert config.nbtriage_capability_annotation_max_concurrency == 4
     with pytest.raises(ValidationError, match="was removed"):
         NBTriageConfig.model_validate({"nbtriage_model_enabled": True})
     with pytest.raises(ValidationError, match="configured together"):
         NBTriageConfig(nbtriage_model_backend="openai-responses")
     with pytest.raises(ValidationError, match="configured together"):
         NBTriageConfig(nbtriage_model_name="gpt-test")
+
+
+@pytest.mark.parametrize("value", (0, 33))
+def test_capability_annotation_concurrency_is_bounded(value: int) -> None:
+    with pytest.raises(ValidationError):
+        NBTriageConfig(nbtriage_capability_annotation_max_concurrency=value)
 
 
 @pytest.mark.parametrize(

@@ -87,3 +87,5 @@
 | [ADR-0084](0084-install-pydantic-ai-control-plane-by-default-and-keep-providers-and-adapters-optional.md) | 已采纳；已实现 | 默认安装 Pydantic AI 控制层、Harness 与 Jedi，Provider SDK 和 NoneBot Adapter 仍由部署按需安装 |
 | [ADR-0085](0085-remove-serena-bug-source-backend.md) | 已采纳；已实现 | 删除 Serena MCP extra、Bug-only 后端与配置，Bug 固定使用内置有界文本源码读取 |
 | [ADR-0086](0086-treat-model-evaluation-as-a-quality-label.md) | 已采纳；已实现 | held-out 只提供公开质量标签；未评测模型可运行全部任务并在相同安全合同下写入本地 Bug Problem |
+| [ADR-0087](0087-validate-and-factor-runtime-command-aliases-for-teaching-usages.md) | 已采纳；已实现，待新模型评测 | Runtime 拥有别名真值，模型只生成可展开验证的紧凑触发表达式；失败一次重试后确定性回退 |
+| [ADR-0088](0088-bound-capability-annotation-concurrency-by-plugin.md) | 已采纳；已实现 | 教学注释按插件有限并发、插件内顺序生成；复用全局模型 timeout，只新增插件并发上限 |

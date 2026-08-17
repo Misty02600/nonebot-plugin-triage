@@ -544,6 +544,7 @@ def register_capability_shadow(
     config_policy: ConfigValuePolicy | None = None,
     annotation_analysis_revision: str | None = None,
     annotation_evidence_validator: CapabilityAnnotationEvidenceValidator | None = None,
+    annotation_max_concurrency: int = 4,
 ) -> CapabilityShadowService:
     """注册后台能力快照刷新，并把 LocalStore 路径解析延后到启动阶段。"""
     if startup_registrar is None:
@@ -561,6 +562,7 @@ def register_capability_shadow(
             config_policy=config_policy,
             analysis_revision=annotation_analysis_revision,
             evidence_validator=annotation_evidence_validator,
+            max_plugin_concurrency=annotation_max_concurrency,
         )
         teaching_output_writer = CapabilityTeachingOutputWriter(teaching_output_directory_resolver)
     service = CapabilityShadowService(

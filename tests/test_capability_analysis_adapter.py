@@ -441,7 +441,7 @@ matcher = on_alconna("标签", handlers=[handle_tags])
         ConfigValuePolicy(),
     )
 
-    assert request.invocations[0].canonical_usages == ("标签 <词语...> [备注...]",)
+    assert request.invocations[0].canonical_usages == ("标签 <词语>... [备注]...",)
 
 
 def test_parameterized_runtime_handler_requires_family_analysis(

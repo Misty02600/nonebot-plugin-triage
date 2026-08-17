@@ -20,9 +20,13 @@ from nbtriage.capability_analysis import (
     SemanticConstraintKind,
     TeachingRole,
 )
+from nbtriage.capability_usage import (
+    CapabilityUsageExpressionError,
+    validate_literal_expression,
+)
 
 CAPABILITY_ANNOTATION_SCHEMA_VERSION = 6
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v4-prompt-v34-zh"
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v4-prompt-v35-zh"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v3"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
@@ -592,7 +596,11 @@ def _project_teaching_entry(
             allow_at_bot=claim.kind is SemanticClaimKind.USAGE,
         )
         if claim.kind is SemanticClaimKind.USAGE:
-            statement = _validated_usage(statement, target=target)
+            statement = _validated_usage(
+                statement,
+                target=target,
+                display_trigger=output.display_trigger,
+            )
         elif claim.kind is SemanticClaimKind.SUPPORTED_SUBJECT and len(statement) > 20:
             raise CapabilityAnnotationError("supported_subjects must contain short noun phrases")
         grouped[claim.kind].append(statement)
@@ -715,7 +723,11 @@ def validate_capability_public_statement(
     return normalized
 
 
-def validate_capability_usage_pattern(value: str) -> str:
+def validate_capability_usage_pattern(
+    value: str,
+    *,
+    allow_verified_aliases: bool = False,
+) -> str:
     """验证完整、可直接展示的教学用法。"""
     normalized = _usage_pattern(value)
     if "[回复" in normalized and not normalized.startswith("[回复"):
@@ -725,16 +737,23 @@ def validate_capability_usage_pattern(value: str) -> str:
         for marker in (" 后发送", "然后发送", "再发送", "随后发送", " 后回复", "然后回复", "再回复")
     ):
         raise CapabilityAnnotationError("multi-turn instructions do not belong in usage")
-    for opening, closing in (("[", "]"), ("(", ")"), ("<", ">")):
-        for content in re.findall(
-            rf"{re.escape(opening)}([^{re.escape(closing)}]+){re.escape(closing)}",
-            normalized,
-        ):
-            if content.count("|") >= 4:
-                raise CapabilityAnnotationError(
-                    "同一用法槽位最多枚举四个备选值；超过四个时必须改用一个简短概念槽位，"
-                    "例如 <滤镜名>，不得继续列出成员"
-                )
+    if re.search(r"(?:<[^<>]*\.\.\.>|\[[^\[\]]*\.\.\.\])", normalized):
+        raise CapabilityAnnotationError(
+            "重复参数的省略号必须写在完整槽位之后，例如 <参数>... 或 [参数]..."
+        )
+    if re.search(r"(?<![>\]])\.\.\.", normalized) or re.search(r"\.\.\.(?!\s|$)", normalized):
+        raise CapabilityAnnotationError("省略号只能紧跟一个完整参数槽位")
+    if not allow_verified_aliases:
+        for opening, closing in (("[", "]"), ("(", ")"), ("<", ">")):
+            for content in re.findall(
+                rf"{re.escape(opening)}([^{re.escape(closing)}]+){re.escape(closing)}",
+                normalized,
+            ):
+                if content.count("|") >= 4:
+                    raise CapabilityAnnotationError(
+                        "同一用法槽位最多枚举四个备选值；超过四个时必须改用一个简短概念槽位，"
+                        "例如 <滤镜名>，不得继续列出成员"
+                    )
     return normalized
 
 
@@ -766,7 +785,12 @@ def validate_complete_aggregate_usage(value: str) -> str:
     raise CapabilityAnnotationError("complete aggregate usage requires a member selector")
 
 
-def _validated_usage(value: str, *, target: CapabilityInvocationTarget) -> str:
+def _validated_usage(
+    value: str,
+    *,
+    target: CapabilityInvocationTarget,
+    display_trigger: str | None = None,
+) -> str:
     normalized = validate_capability_usage_pattern(value)
     if target.canonical_usages:
         if normalized not in target.canonical_usages:
@@ -781,7 +805,11 @@ def _validated_usage(value: str, *, target: CapabilityInvocationTarget) -> str:
             raise CapabilityAnnotationError(
                 "usage for a mention-required invocation must place @bot before command_body"
             )
-        return normalized
+        return _render_display_trigger(
+            normalized,
+            target=target,
+            display_trigger=display_trigger,
+        )
     if target.mode is CapabilityInvocationMode.COMPLETE:
         validate_complete_aggregate_usage(normalized)
     if target.mode is CapabilityInvocationMode.ANCHORED:
@@ -797,7 +825,43 @@ def _validated_usage(value: str, *, target: CapabilityInvocationTarget) -> str:
             raise CapabilityAnnotationError(
                 "usage for a mention-required invocation must place @bot before command_body"
             )
-    return normalized
+    return _render_display_trigger(
+        normalized,
+        target=target,
+        display_trigger=display_trigger,
+    )
+
+
+def _render_display_trigger(
+    usage: str,
+    *,
+    target: CapabilityInvocationTarget,
+    display_trigger: str | None,
+) -> str:
+    if display_trigger is None:
+        return usage
+    if (
+        target.mode is not CapabilityInvocationMode.ANCHORED
+        or target.command_body is None
+        or not target.aliases
+    ):
+        raise CapabilityAnnotationError(
+            "display_trigger requires an anchored invocation with Runtime aliases"
+        )
+    try:
+        validate_literal_expression(
+            display_trigger,
+            (target.command_body, *target.aliases),
+        )
+    except CapabilityUsageExpressionError as error:
+        raise CapabilityAnnotationError(str(error)) from error
+    pattern = rf"(?<!\S){re.escape(target.command_body)}(?!\S)"
+    rendered, substitutions = re.subn(pattern, lambda _match: display_trigger, usage, count=1)
+    if substitutions != 1:
+        raise CapabilityAnnotationError(
+            "usage must contain the deterministic command body exactly once"
+        )
+    return validate_capability_usage_pattern(rendered, allow_verified_aliases=True)
 
 
 def _canonical_texts(values: Any) -> tuple[str, ...]:

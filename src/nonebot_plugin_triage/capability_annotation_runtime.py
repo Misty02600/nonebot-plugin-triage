@@ -26,8 +26,9 @@ from nonebot_plugin_triage.task_model_runtime import (
 )
 
 CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS = 4_096
-CAPABILITY_ANNOTATION_EVALUATION = (
-    "opencode-go-capability-teaching-forward-heldout-20-20260816-v8-v34-zh-a"
+CAPABILITY_ANNOTATION_EVALUATION = unverified_evaluation_id(
+    task=CAPABILITY_ANNOTATION_TASK,
+    prompt_id=CAPABILITY_ANNOTATION_PROMPT_ID,
 )
 CAPABILITY_ANNOTATION_ANALYSIS_REVISION = (
     f"{CAPABILITY_ANNOTATION_TASK}:{CAPABILITY_ANNOTATION_PROMPT_ID}:"
@@ -59,8 +60,11 @@ OPENCODE_GO_CAPABILITY_ANNOTATION_QUALIFICATION = CapabilityAnnotationTaskQualif
     privacy_policy=CAPABILITY_ANNOTATION_PRIVACY_POLICY,
     budget_profile=CAPABILITY_ANNOTATION_BUDGET_PROFILE,
     evaluation=CAPABILITY_ANNOTATION_EVALUATION,
+    verified=False,
 )
-QUALIFIED_CAPABILITY_ANNOTATION_TASKS = frozenset({OPENCODE_GO_CAPABILITY_ANNOTATION_QUALIFICATION})
+QUALIFIED_CAPABILITY_ANNOTATION_TASKS: frozenset[CapabilityAnnotationTaskQualification] = (
+    frozenset()
+)
 
 
 class CapabilityAnnotationRuntimeConfigurationError(RuntimeError):
@@ -150,11 +154,7 @@ def _capability_annotation_qualification(
     provider: str,
     model: str,
 ) -> CapabilityAnnotationTaskQualification:
-    verified_profile = (
-        config.nbtriage_model_backend == "opencode-go-chat"
-        and model in OPENCODE_GO_SEMANTIC_MODELS
-        and config.nbtriage_model_timeout_seconds == 60.0
-    )
+    verified_profile = False
     return CapabilityAnnotationTaskQualification(
         provider=provider,
         api_family=(

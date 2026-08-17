@@ -132,6 +132,7 @@ uv run nb orm upgrade
 | `NBTRIAGE_MODEL_NAME` | 未设置 | 与 backend 成对选择精确模型。未设置时沿用无模型降级；与 backend 只设置一项仍属于配置错误。held-out 只标记项目已经验证的精确组合，未评测模型不会因此被拒绝运行。 |
 | `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 单次语义、公开能力回答或自动教学注释请求的最长等待时间；这三类请求都不做 Provider 自动重试。Bug Agent 使用独立的 120 秒任务上限。与已发布评测预算不同只会使组合显示为未验证，不会成为运行禁令。 |
 | `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 单次语义 assessment 与 Answer Agent 结构化输出的 token 上限。自动教学注释使用任务内固定的 4096 output token；Bug Agent 使用独立的 800 output token、最多 8 次请求、6 次实际证据读取和 0.50 美元单轮预算。它不限制用户输入长度；与已发布评测预算不同会使用新的未验证质量标签。 |
+| `NBTRIAGE_CAPABILITY_ANNOTATION_MAX_CONCURRENCY` | `4` | 自动教学注释同时分析的插件数上限，范围 `1..32`。不同插件有限并发，同一插件内分析单元保持顺序；设为 `1` 可恢复全局串行。它不改变单次请求 timeout，较慢 Provider 继续通过 `NBTRIAGE_MODEL_TIMEOUT_SECONDS` 调整。 |
 | `NBTRIAGE_RESTRICTED_CONFIG` | `[]` | JSON 数组，列出禁止把实际值交给能力分析模型的 NoneBot 顶层配置键；键名大小写不敏感，`FOO__BAR` 等嵌套写法按顶层 `foo` 整项限制。命中后在读取实际值前拒绝；它不会删除 NoneBot 配置、禁止分析公开 schema/源码，也不表示未列出的整份 `.env` 会被发送。 |
 | `NBTRIAGE_EVIDENCE_DENIED_PATTERNS` | `[]` | JSON 数组，为所有只读源码与文件证据根追加相对 POSIX glob 拒绝项；例如 `"private/**"`。它只能在内置硬拒绝之外继续缩小范围，不能重新允许 `.env`、凭据、越界路径或 symlink 外跳。教学和 Bug 仍分别应用自己的任务级拒绝与日志准入规则。 |
 
@@ -219,8 +220,8 @@ flowchart LR
     C --> B["Bug 用法预检<br/>第一层公开合同"]
 ```
 
-配置了可用的模型 transport 后，后台教学注释任务会依次分析本轮
-所有符合准入条件但没有有效缓存的当前能力，并从当前 runtime
+配置了可用的模型 transport 后，后台教学注释任务会按插件有限并发地分析本轮
+所有符合准入条件但没有有效缓存的当前能力；同一插件内的分析单元仍保持顺序。每个单元从当前 runtime
 snapshot 出发，先提供确定性的命令结构、ast-grep Matcher 结构、已加载 handler 片段和当前内存配置投影；
 初始 Evidence 不足时，Agent 才能在批准的 Bot、插件与 LocalStore 根中使用只读 glob/search/read，或用 Jedi
 从已读 Python 标识符转到当前解释器依赖的定义。依赖根不允许自由 glob，只允许按已知位置读取；`.env*`、

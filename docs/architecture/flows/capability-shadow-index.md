@@ -89,8 +89,10 @@ help-display。Bot 项目、目标插件及其 LocalStore config/data/cache 是�
 - 新索引在临时文件完整写入并校验后替换目标；构建失败保留最近可用索引。
 - LocalStore 路径只在启动刷新阶段解析；解析失败、cache 不可写或版本不兼容时记录稳定错误类型并降级，
   不阻止插件加载、`triage` 或模型语义分流。
-- 自动注释按分析单元串行生成；一轮中任一单元失败时，成功项只写入可复用 cache，不激活半套新视图，也不
-  切换文件 generation。确定性 SQLite 索引继续可用，下次完整成功会复用本轮已缓存成功项。
+- 自动注释按插件分组有限并发，同一插件内的分析单元保持顺序；活动插件数由
+  `NBTRIAGE_CAPABILITY_ANNOTATION_MAX_CONCURRENCY` 限制。一轮中任一单元失败时，成功项只写入可复用 cache，
+  不激活半套新视图，也不切换文件 generation。确定性 SQLite 索引继续可用，下次完整成功会复用本轮已缓存
+  成功项。单次请求继续复用 `NBTRIAGE_MODEL_TIMEOUT_SECONDS`，不另设教学专用超时。
 - 插件受管 Python 源码 inventory 不完整、含未处理 symlink 或分析期间 revision 改变时，不发布新注释；
   插件源码任意变化会让该插件的全部教学注释重算。源码与其他生成输入均未变化且动态 Evidence revision
   仍匹配时，逐字复用缓存并不调用模型。
@@ -98,6 +100,9 @@ help-display。Bot 项目、目标插件及其 LocalStore config/data/cache 是�
   Evidence。新 entry 中的 claim、constraint 与 Answer Markdown 仍须引用本轮当前 Evidence。该引用闭包可以阻止旧 Evidence
   或虚构 ID 被继续引用，但不能一般性证明自然语言陈述一定被所引证据语义蕴含；后者由模型资格与离线评测
   观察。
+- Runtime 同一 command entry 的完整 literal 集合由模型外拥有。模型只提出可选的紧凑 `display_trigger`；
+  Triage 展开后必须与 Runtime 集合完全相等，首次错误定向重试，第二次仍错则使用确定性完整枚举。最终 usage
+  才把已校验的触发表达式替换进固定参数结构；别名压缩失败不会关闭原本正确的知识。
 - YAML 与 Markdown 只在完整 snapshot 和整轮注释成功后作为一个 generation 切换；partial snapshot 保留
   `current.json`，文件写入或指针切换失败时同时关闭本轮模型生成的 Answer 内存视图。不可变旧 generation
   可以保留用于恢复，不会被误拼进新输出。
@@ -122,3 +127,4 @@ help-display。Bot 项目、目标插件及其 LocalStore config/data/cache 是�
 - [ADR-0069：分离帮助展示与 Answer 知识，并让静态分析只界定证据范围](../../adr/0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md)
 - [ADR-0077：把上一版机器生成教学内容作为非证据的最小改写基线](../../adr/0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md)
 - [ADR-0080：把一次能力分析投影为多个公开教学条目](../../adr/0080-model-capability-teaching-as-multiple-public-entries.md)
+- [ADR-0088：按插件限制教学注释并发并保持插件内顺序](../../adr/0088-bound-capability-annotation-concurrency-by-plugin.md)
