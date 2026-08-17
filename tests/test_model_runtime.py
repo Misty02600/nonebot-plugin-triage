@@ -29,10 +29,10 @@ def test_model_config_has_no_product_enable_toggle_and_transport_identity_is_opt
     config = NBTriageConfig()
 
     assert "nbtriage_model_api_key" not in NBTriageConfig.model_fields
-    assert "nbtriage_model_base_url" not in NBTriageConfig.model_fields
     assert "nbtriage_model_enabled" not in NBTriageConfig.model_fields
     assert config.nbtriage_model_backend is None
     assert config.nbtriage_model_name is None
+    assert config.nbtriage_model_base_url is None
     assert config.nbtriage_model_timeout_seconds == 60
     assert config.nbtriage_model_max_output_tokens == 240
     assert config.nbtriage_capability_annotation_max_concurrency == 4
@@ -50,19 +50,64 @@ def test_capability_annotation_concurrency_is_bounded(value: int) -> None:
         NBTriageConfig(nbtriage_capability_annotation_max_concurrency=value)
 
 
-@pytest.mark.parametrize(
-    "field",
-    ["nbtriage_model_api_key", "nbtriage_model_base_url"],
-)
-def test_model_config_rejects_secret_and_custom_endpoint_without_echoing_value(
-    field: str,
-) -> None:
+def test_model_config_rejects_secret_without_echoing_value() -> None:
     private_value = "PRIVATE_MODEL_SETTING_MUST_NOT_LEAK"
 
     with pytest.raises(ValidationError, match="must not be configured") as captured:
-        NBTriageConfig.model_validate({field: private_value})
+        NBTriageConfig.model_validate({"nbtriage_model_api_key": private_value})
 
     assert private_value not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (
+            " https://DASHSCOPE.ALIYUNCS.COM/compatible-mode/v1/ ",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        ),
+        ("http://localhost:11434/v1/", "http://localhost:11434/v1"),
+        ("http://[::1]:11434/v1", "http://[::1]:11434/v1"),
+    ],
+)
+def test_model_config_normalizes_trusted_base_url(value: str, expected: str) -> None:
+    config = NBTriageConfig(
+        nbtriage_model_backend="pydantic-ai",
+        nbtriage_model_name="alibaba:qwen-max",
+        nbtriage_model_base_url=value,
+    )
+
+    assert config.nbtriage_model_base_url == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://example.com/v1",
+        "https://user:PRIVATE@example.com/v1",
+        "https://example.com/v1?token=PRIVATE",
+        "https://example.com/v1#PRIVATE",
+        "https://169.254.169.254/v1",
+    ],
+)
+def test_model_config_rejects_unsafe_base_url_without_echoing_value(value: str) -> None:
+    with pytest.raises(ValidationError, match="model base URL") as captured:
+        NBTriageConfig(
+            nbtriage_model_backend="pydantic-ai",
+            nbtriage_model_name="alibaba:qwen-max",
+            nbtriage_model_base_url=value,
+        )
+
+    assert "PRIVATE" not in str(captured.value)
+
+
+def test_model_config_rejects_base_url_for_dedicated_backend() -> None:
+    with pytest.raises(ValidationError, match="only supported by the pydantic-ai backend"):
+        NBTriageConfig(
+            nbtriage_model_backend="anthropic-messages",
+            nbtriage_model_name="claude-test",
+            nbtriage_model_base_url="https://model.example/v1",
+        )
 
 
 def test_absent_model_transport_does_not_import_provider_extra(

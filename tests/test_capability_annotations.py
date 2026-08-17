@@ -57,6 +57,7 @@ from nonebot_plugin_triage.capability_annotation_runtime import (
     OPENCODE_GO_CAPABILITY_ANNOTATION_QUALIFICATION,
     QUALIFIED_CAPABILITY_ANNOTATION_TASKS,
     CapabilityAnnotationRuntimeConfigurationError,
+    capability_annotation_analysis_revision,
     create_capability_annotation_client_factory,
 )
 from nonebot_plugin_triage.capability_annotations import CapabilityAnnotationService
@@ -553,6 +554,26 @@ def test_runtime_uses_independent_annotation_output_budget() -> None:
     )()
 
     assert vars(client)["_max_output_tokens"] == CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS == 16_384
+
+
+def test_annotation_revision_isolated_by_custom_endpoint_without_exposing_url() -> None:
+    first = NBTriageConfig(
+        nbtriage_model_backend="pydantic-ai",
+        nbtriage_model_name="alibaba:qwen-max",
+        nbtriage_model_base_url="https://first.example/v1",
+    )
+    second = NBTriageConfig(
+        nbtriage_model_backend="pydantic-ai",
+        nbtriage_model_name="alibaba:qwen-max",
+        nbtriage_model_base_url="https://second.example/v1",
+    )
+
+    first_revision = capability_annotation_analysis_revision(first)
+    second_revision = capability_annotation_analysis_revision(second)
+
+    assert first_revision != second_revision
+    assert "first.example" not in first_revision
+    assert "second.example" not in second_revision
 
 
 def test_domain_analysis_error_is_classified_as_output_validation() -> None:

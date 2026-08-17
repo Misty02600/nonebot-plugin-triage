@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import suppress
+from ipaddress import ip_address
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import (
     BaseModel,
@@ -66,6 +69,7 @@ class NBTriageConfig(BaseModel):
     nbtriage_trial_log_backup_count: int = Field(default=5, ge=1, le=100)
     nbtriage_model_backend: ModelBackend | None = None
     nbtriage_model_name: ModelName | None = None
+    nbtriage_model_base_url: str | None = None
     nbtriage_model_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
     nbtriage_model_max_output_tokens: int = Field(default=240, ge=1, le=8_192)
     nbtriage_agent_trace_enabled: bool = True
@@ -118,6 +122,15 @@ class NBTriageConfig(BaseModel):
     def normalize_knowledge_pack_sha256(cls, value: object) -> object:
         return value.strip().lower() if isinstance(value, str) else value
 
+    @field_validator("nbtriage_model_base_url", mode="before")
+    @classmethod
+    def normalize_model_base_url(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("model base URL must be a string")
+        return _normalize_model_base_url(value)
+
     @model_validator(mode="before")
     @classmethod
     def reject_removed_or_forbidden_settings(cls, data: Any) -> Any:
@@ -161,14 +174,9 @@ class NBTriageConfig(BaseModel):
                     "nbtriage_trial_log_path was removed; configure "
                     "LOCALSTORE_PLUGIN_DATA_DIR and pass summarize-trials --log-path instead"
                 )
-            forbidden = {
-                "nbtriage_model_api_key",
-                "nbtriage_model_base_url",
-            }.intersection(data)
+            forbidden = {"nbtriage_model_api_key"}.intersection(data)
             if forbidden:
-                raise ValueError(
-                    "model API keys and custom base URLs must not be configured in NBTriageConfig"
-                )
+                raise ValueError("model API keys must not be configured in NBTriageConfig")
         return data
 
     @model_validator(mode="after")
@@ -177,4 +185,64 @@ class NBTriageConfig(BaseModel):
             raise ValueError("thread absolute lifetime must not be shorter than idle lifetime")
         if (self.nbtriage_model_backend is None) is not (self.nbtriage_model_name is None):
             raise ValueError("model backend and model name must be configured together")
+        if (
+            self.nbtriage_model_base_url is not None
+            and self.nbtriage_model_backend != "pydantic-ai"
+        ):
+            raise ValueError("model base URL is only supported by the pydantic-ai backend")
         return self
+
+
+def _normalize_model_base_url(value: str) -> str:
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > 2_048
+        or "\\" in normalized
+        or any(character.isspace() or ord(character) < 32 for character in normalized)
+    ):
+        raise ValueError("model base URL must be a bounded HTTP URL without whitespace")
+    try:
+        parsed = urlsplit(normalized)
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("model base URL is invalid") from error
+    scheme = parsed.scheme.casefold()
+    hostname = parsed.hostname
+    if scheme not in {"http", "https"} or hostname is None:
+        raise ValueError("model base URL must use HTTP or HTTPS and include a host")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("model base URL must not contain credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("model base URL must not contain a query or fragment")
+    try:
+        canonical_host = hostname.encode("idna").decode("ascii").casefold()
+    except UnicodeError as error:
+        raise ValueError("model base URL host is invalid") from error
+    if "%" in canonical_host:
+        raise ValueError("model base URL host is invalid")
+
+    literal_address = None
+    with suppress(ValueError):
+        literal_address = ip_address(canonical_host)
+    is_loopback = canonical_host == "localhost" or (
+        literal_address is not None and literal_address.is_loopback
+    )
+    if scheme == "http" and not is_loopback:
+        raise ValueError("non-loopback model base URLs must use HTTPS")
+    if (
+        literal_address is not None
+        and not is_loopback
+        and (
+            literal_address.is_link_local
+            or literal_address.is_unspecified
+            or literal_address.is_multicast
+            or literal_address.is_reserved
+        )
+    ):
+        raise ValueError("model base URL uses a forbidden network address")
+
+    authority_host = f"[{canonical_host}]" if ":" in canonical_host else canonical_host
+    authority = f"{authority_host}:{port}" if port is not None else authority_host
+    path = parsed.path.rstrip("/")
+    return urlunsplit((scheme, authority, path, "", ""))

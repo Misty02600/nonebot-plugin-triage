@@ -11,6 +11,10 @@
 > [ADR-0047](0047-reuse-pydantic-ai-provider-extras.md) 已替代项目自造 `model-` extra 名称与重复固定底层
 > SDK 的安装决定；这里保留的旧名称和版本是当时的实施历史，不再是当前公开安装接口。
 
+> [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) 已窄范围替代固定 endpoint 边界：
+> 部署者可以为标准 Pydantic AI Provider 配置受限 Base URL；Provider / Model / Profile、参数门和失败关闭
+> 继续有效。
+
 ## 背景
 
 当前 B1 领域边界已经通过 `B1ModelClient` 把模型调用隔离在核心之外，但具体实现直接依赖 OpenAI Python

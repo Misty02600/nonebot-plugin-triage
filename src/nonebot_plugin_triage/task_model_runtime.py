@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from hashlib import sha256
+from typing import Any, cast
 
 from pydantic_ai.models import Model, infer_model
+from pydantic_ai.providers import Provider, infer_provider_class
 from pydantic_ai.settings import ModelSettings
 
 from nonebot_plugin_triage.config import NBTriageConfig
-
-_ALIBABA_CN_MODEL_PREFIX = "alibaba-cn:"
-_ALIBABA_CN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 
 class TaskModelRuntimeConfigurationError(RuntimeError):
@@ -24,6 +24,7 @@ class TaskModelBinding:
     model_name: str
     api_family: str
     model_settings: ModelSettings | None = None
+    connection_revision: str = "provider-default"
 
 
 def create_task_model_binding(
@@ -129,35 +130,20 @@ def create_task_model_binding(
         if backend == "pydantic-ai":
             if ":" not in configured_model:
                 raise TaskModelRuntimeConfigurationError(
-                    "pydantic-ai model names must use provider:model"
+                    "pydantic-ai model names must use provider:model, for example alibaba:qwen-max"
                 )
-            if configured_model.startswith(_ALIBABA_CN_MODEL_PREFIX):
-                model_name = configured_model.removeprefix(_ALIBABA_CN_MODEL_PREFIX).strip()
-                if not model_name:
-                    raise TaskModelRuntimeConfigurationError(
-                        "alibaba-cn model name must not be empty"
-                    )
-                api_key = environment.get("ALIBABA_API_KEY") or environment.get("DASHSCOPE_API_KEY")
-                if not api_key or not api_key.strip():
-                    raise TaskModelRuntimeConfigurationError(
-                        "ALIBABA_API_KEY or DASHSCOPE_API_KEY is required for alibaba-cn"
-                    )
-                from pydantic_ai.models.openai import OpenAIChatModel
-                from pydantic_ai.providers.alibaba import AlibabaProvider
-
-                model = OpenAIChatModel(
-                    model_name,
-                    provider=AlibabaProvider(
-                        api_key=api_key,
-                        base_url=_ALIBABA_CN_BASE_URL,
-                    ),
+            if config.nbtriage_model_base_url is None:
+                model = infer_model(configured_model)
+            else:
+                model = infer_model(
+                    configured_model,
+                    provider_factory=_base_url_provider_factory(config.nbtriage_model_base_url),
                 )
-                return _binding(model, api_family="pydantic-ai")
-            model = infer_model(configured_model)
             return _binding(
                 model,
                 api_family="pydantic-ai",
                 model_settings=_privacy_model_settings(model),
+                connection_revision=model_connection_revision(config),
             )
     except TaskModelRuntimeConfigurationError:
         raise
@@ -174,6 +160,7 @@ def _binding(
     *,
     api_family: str,
     model_settings: ModelSettings | None = None,
+    connection_revision: str = "provider-default",
 ) -> TaskModelBinding:
     return TaskModelBinding(
         model=model,
@@ -181,7 +168,30 @@ def _binding(
         model_name=model.model_name,
         api_family=api_family,
         model_settings=model_settings,
+        connection_revision=connection_revision,
     )
+
+
+def _base_url_provider_factory(base_url: str) -> Callable[[str], Provider[Any]]:
+    def create_provider(provider_name: str) -> Provider[Any]:
+        provider_class = infer_provider_class(provider_name)
+        constructor = cast(Callable[..., Provider[Any]], provider_class)
+        try:
+            return constructor(base_url=base_url)
+        except TypeError as error:
+            raise TaskModelRuntimeConfigurationError(
+                f"provider {provider_name} does not support a base URL override"
+            ) from error
+
+    return create_provider
+
+
+def model_connection_revision(config: NBTriageConfig) -> str:
+    base_url = config.nbtriage_model_base_url
+    if base_url is None:
+        return "provider-default"
+    digest = sha256(base_url.encode("utf-8")).hexdigest()
+    return f"custom-endpoint-sha256:{digest}"
 
 
 def _privacy_model_settings(model: Model) -> ModelSettings | None:
@@ -207,5 +217,6 @@ __all__ = (
     "TaskModelBinding",
     "TaskModelRuntimeConfigurationError",
     "create_task_model_binding",
+    "model_connection_revision",
     "unverified_evaluation_id",
 )

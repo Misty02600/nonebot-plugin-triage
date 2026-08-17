@@ -71,6 +71,12 @@ _SAFE_METADATA_KEYS: Final[frozenset[str]] = frozenset(
         "nbtriage.task",
     }
 )
+_SAFE_RESOURCE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "nbtriage.model.connection",
+        "service.name",
+    }
+)
 
 AgentInstrumentation = bool | InstrumentationSettings
 _active_instrumentation: AgentInstrumentation = False
@@ -181,6 +187,7 @@ def install_local_agent_telemetry(
     *,
     max_bytes: int = 10 * 1_024 * 1_024,
     backup_count: int = 5,
+    resource_attributes: Mapping[str, str] | None = None,
 ) -> AgentTelemetryRuntime:
     """安装进程级脱敏 Agent instrumentation，并替换此前的本地实例。"""
 
@@ -194,8 +201,11 @@ def install_local_agent_telemetry(
         max_bytes=max_bytes,
         backup_count=backup_count,
     )
+    resource_values = {"service.name": "nonebot-plugin-triage"}
+    if resource_attributes is not None:
+        resource_values.update(resource_attributes)
     provider = TracerProvider(
-        resource=Resource.create({"service.name": "nonebot-plugin-triage"}),
+        resource=Resource.create(resource_values),
         shutdown_on_exit=False,
     )
     provider.add_span_processor(
@@ -372,12 +382,26 @@ def _span_record(span: ReadableSpan) -> dict[str, Any]:
     metadata = _safe_metadata((span.attributes or {}).get("metadata"))
     if metadata:
         record["context"] = metadata
+    resource = _safe_resource_attributes(span.resource.attributes)
+    if resource:
+        record["resource"] = resource
     return record
 
 
 def _safe_attributes(attributes: Mapping[str, Any]) -> dict[str, Any]:
     accepted: dict[str, Any] = {}
     for key in sorted(_SAFE_ATTRIBUTE_KEYS):
+        if key not in attributes:
+            continue
+        value = _safe_attribute_value(attributes[key])
+        if value is not None:
+            accepted[key] = value
+    return accepted
+
+
+def _safe_resource_attributes(attributes: Mapping[str, Any]) -> dict[str, Any]:
+    accepted: dict[str, Any] = {}
+    for key in sorted(_SAFE_RESOURCE_KEYS):
         if key not in attributes:
             continue
         value = _safe_attribute_value(attributes[key])

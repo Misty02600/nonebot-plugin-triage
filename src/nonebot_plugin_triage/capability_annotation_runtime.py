@@ -22,6 +22,7 @@ from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.task_model_runtime import (
     TaskModelRuntimeConfigurationError,
     create_task_model_binding,
+    model_connection_revision,
     unverified_evaluation_id,
 )
 
@@ -140,13 +141,18 @@ def create_capability_annotation_client_factory(
 def capability_annotation_analysis_revision(config: NBTriageConfig) -> str:
     backend = config.nbtriage_model_backend or "none"
     model = config.nbtriage_model_name or "none"
+    connection_revision = model_connection_revision(config)
     if (
         backend == "opencode-go-chat"
         and model in OPENCODE_GO_SEMANTIC_MODELS
         and config.nbtriage_model_timeout_seconds == 60.0
+        and connection_revision == "provider-default"
     ):
         return CAPABILITY_ANNOTATION_ANALYSIS_REVISION
-    return f"{CAPABILITY_ANNOTATION_ANALYSIS_REVISION}:unverified:{backend}:{model}"
+    return (
+        f"{CAPABILITY_ANNOTATION_ANALYSIS_REVISION}:unverified:{backend}:{model}:"
+        f"{connection_revision}"
+    )
 
 
 def _capability_annotation_qualification(

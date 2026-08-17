@@ -9,10 +9,10 @@
 | [ADR-0005](0005-first-group-report-interaction-policy.md) | 已被替代 | 原 OneBot 专属报障交互策略，保留为决策历史 |
 | [ADR-0006](0006-cross-platform-alconna-entry-and-reference-providers.md) | 部分被替代 | 从第一版采用 Alconna 跨平台入口，并把出站引用差异隔离为 Provider；统一私聊拒绝由 ADR-0028 收窄 |
 | [ADR-0007](0007-single-distribution-dual-namespace.md) | 已采纳 | 采用单仓库、单发行包、插件入口与领域核心双命名空间结构 |
-| [ADR-0008](0008-pydantic-ai-controlled-model-adaptation.md) | 已采纳；语义 assessment 实现由 ADR-0044、Provider extra 所有权由 ADR-0047 部分替代 | 采用 Pydantic AI 的 Model / Provider / Profile 与 Direct Request 作为受控 B1 多模型 API 适配层 |
+| [ADR-0008](0008-pydantic-ai-controlled-model-adaptation.md) | 已采纳；语义 assessment 实现由 ADR-0044、Provider extra 所有权由 ADR-0047、部署端地址由 ADR-0090 部分替代 | 采用 Pydantic AI 的 Model / Provider / Profile 与 Direct Request 作为受控 B1 多模型 API 适配层 |
 | [ADR-0009](0009-use-async-model-boundary.md) | 已采纳 | 模型调用核心采用异步协议，同步 CLI 只在进程边缘桥接 |
 | [ADR-0010](0010-use-bounded-evidence-seeking-agent-loop.md) | 已采纳 | 用单 Agent、typed tools、有界循环、HITL 与 trajectory Gate 验证 Agent 能力 |
-| [ADR-0011](0011-expose-disabled-qualified-model-configuration.md) | 部分被 ADR-0037、ADR-0086 替代 | 保留无配置密钥/base URL 和单步客户端；产品启用开关由 ADR-0037 删除，评测不再是运行许可 |
+| [ADR-0011](0011-expose-disabled-qualified-model-configuration.md) | 部分被 ADR-0037、ADR-0086、ADR-0090 替代 | 保留无配置密钥和单步客户端；产品启用开关由 ADR-0037 删除，评测不再是运行许可，部署端地址由 ADR-0090 接续 |
 | [ADR-0012](0012-use-pydantic-ai-deferred-tools-behind-domain-runtime.md) | 已采纳 | 用领域 runtime 掌握循环与授权，只借用 Pydantic AI Deferred Tools 做单步多 Provider 适配 |
 | [ADR-0013](0013-use-mandatory-output-tool-for-opencode-go-b1.md) | 未采纳 | 不把一次 OpenCode Go 测试升级为 B1 输出契约或产品网关决定 |
 | [ADR-0014](0014-use-observation-first-production-trials.md) | 部分被替代 | 先用零模型、脱敏、可反馈的观察型生产 trial 建立真实评测闭环 |
@@ -86,7 +86,8 @@
 | [ADR-0083](0083-resolve-unknown-teaching-gates-before-closing-public-knowledge.md) | 已采纳；已实现，待新 Provider Gate | AST 只登记疑似门禁；Agent 以实际定义、框架或运行配置解释为约束、无约束或仍未知，只有仍未知才关闭公开知识 |
 | [ADR-0084](0084-install-pydantic-ai-control-plane-by-default-and-keep-providers-and-adapters-optional.md) | 已采纳；已实现 | 默认安装 Pydantic AI 控制层、Harness 与 Jedi，Provider SDK 和 NoneBot Adapter 仍由部署按需安装 |
 | [ADR-0085](0085-remove-serena-bug-source-backend.md) | 已采纳；已实现 | 删除 Serena MCP extra、Bug-only 后端与配置，Bug 固定使用内置有界文本源码读取 |
-| [ADR-0086](0086-treat-model-evaluation-as-a-quality-label.md) | 已采纳；已实现 | held-out 只提供公开质量标签；未评测模型可运行全部任务并在相同安全合同下写入本地 Bug Problem |
+| [ADR-0086](0086-treat-model-evaluation-as-a-quality-label.md) | 已采纳；部署端地址由 ADR-0090 补充 | held-out 只提供公开质量标签；未评测模型和自定义连接可在相同安全合同下运行 |
 | [ADR-0087](0087-validate-and-factor-runtime-command-aliases-for-teaching-usages.md) | 已采纳；已实现，待新模型评测 | Runtime 拥有别名真值，模型只生成可展开验证的紧凑触发表达式；失败一次重试后确定性回退 |
 | [ADR-0088](0088-bound-capability-annotation-concurrency-by-plugin.md) | 已采纳；已实现 | 教学注释按插件有限并发、插件内顺序生成；复用全局模型 timeout，只新增插件并发上限 |
-| [ADR-0089](0089-persist-redacted-pydantic-ai-agent-traces.md) | 已采纳；已实现 | 用 Pydantic AI 原生 OpenTelemetry spans 记录无正文 Agent 调用轨迹，并轮转写入 LocalStore data |
+| [ADR-0089](0089-persist-redacted-pydantic-ai-agent-traces.md) | 已采纳；连接身份由 ADR-0090 补充 | 用 Pydantic AI 原生 OpenTelemetry spans 记录无正文 Agent 调用轨迹，并轮转写入 LocalStore data |
+| [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) | 已采纳；已实现 | 保留标准 `provider:model` 与 ModelProfile，并允许部署者为支持该参数的 Pydantic AI Provider 配置受限 Base URL |

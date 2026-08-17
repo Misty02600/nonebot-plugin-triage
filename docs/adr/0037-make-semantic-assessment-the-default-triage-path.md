@@ -9,6 +9,8 @@
 > output tool；本 ADR 的默认 assessment、零可执行工具、零重试与失败关闭继续有效。
 > 当前目标 / 现象 / 维护深度 schema 与资格 revision 已由
 > [ADR-0043](0043-separate-support-goals-observations-and-maintenance-depth.md) 替代。
+> [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) 已窄范围替代本 ADR 保留的
+> custom Base URL 禁令；默认 assessment、零可执行工具、零重试与失败关闭继续有效。
 
 ## 当时遇到了什么
 

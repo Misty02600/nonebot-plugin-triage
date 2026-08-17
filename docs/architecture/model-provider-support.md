@@ -6,13 +6,15 @@
 全部能力，也不是运行白名单。Pydantic AI `ModelProfile` 负责模型传输能力和默认结构化输出方式；项目按
 `Provider + API 族 + 精确 model + task/schema/Prompt + 隐私策略 + 预算 + 评测 revision` 记录 held-out。
 未登记组合可以运行，但只能标记为未验证；B1、B4、支持入口语义 assessment、教学注释、公开 Answer 和
-Bug Agent 的质量结论分别记账，不能相互继承。“OpenAI-compatible”本身也不授权任意 base URL。
+Bug Agent 的质量结论分别记账，不能相互继承。“OpenAI-compatible”本身不能决定 Provider 身份；部署端
+Base URL 只能覆盖已经显式选择、且构造器支持该参数的 Pydantic AI Provider。
 
 ## 状态含义
 
 - **已验证**：精确 transport、任务、Prompt、隐私和预算组合完成了所列 held-out；
 - **未验证**：Pydantic AI 与项目任务合同允许运行，但项目没有该精确组合的完整质量结论；
-- **不可用**：缺少实现或 Provider 依赖、ModelProfile 不满足任务技术要求，或请求了项目禁止的任意 base URL。
+- **不可用**：缺少实现或 Provider 依赖、ModelProfile 不满足任务技术要求，地址不符合安全策略，或所选
+  Provider 不支持部署端地址覆盖。
 
 已采纳的产品契约要求每轮非空 `triage` 请求默认经过受限语义 assessment，不设产品级模型启用开关。
 传输无关的 v7 请求投影与输出 schema、一次性失败关闭 service、固定 Prompt 的结构化 Pydantic AI Agent client
@@ -84,9 +86,9 @@ service 只验证调用编排，不产生质量标签。
 | DeepSeek | Responses | `deepseek-v4-flash` 滚动别名；`reasoning=none`；`temperature=0`；Provider wire 不承诺 OpenAI strict 字段 | 仓库 `maintainer` group：`pydantic-ai-slim[openai]==2.28.0`；底层 OpenAI SDK 由该 Provider extra 声明；使用显式 `DeepSeekProvider` 和固定官方 endpoint；不提供插件 extra，适配器不进入 wheel | B1 Direct Request 原生 JSON Schema 与 B4 `function_call` 假 HTTP 合约通过；`store=false`、零 SDK retry、usage / request ID / cost 归一化已覆盖；B4 参数仍由 Pydantic 与领域层本地复核 | 有旧直接 SDK B1 工件；三次正式 B4 Gate 均失败关闭且无完整报告。run-3 partial 证明可恢复已知响应/费用与未知请求边界，但不提供 promotion decision | 未验证 | 此行 adapter 仅供维护者评测；产品可另通过 Pydantic AI 官方 Provider 标识运行，但不继承这三次 Gate 的质量结论 |
 | Anthropic | Messages | 部署者选择模型；profile 必须声明当前任务所需的结构化输出与 tools；离线合约使用 `claude-sonnet-4-5` | `anthropic` extra 补 Provider SDK | B1 native JSON Schema 与 B4 `tool_use` 假 HTTP 合约通过 | 未执行当前任务 held-out | 未验证 | 可通过 `anthropic-messages` 或 `pydantic-ai` backend 使用；离线模型名不构成质量承诺 |
 | Google | GenAI | 使用 Pydantic AI 官方 `google-gla:<model>` 等模型标识 | 部署者另行安装 Pydantic AI 所需 Google Provider 依赖 | 运行时由 ModelProfile 检查当前任务能力 | 未执行 | 未验证 | 无项目专用 adapter；通用 Pydantic AI transport 可运行，实际能力不足时任务失败关闭 |
-| Alibaba Cloud Model Studio | OpenAI-compatible Chat | 国际站使用 Pydantic AI 官方 `alibaba:<model>`；中国大陆使用项目固定的 `alibaba-cn:<model>`，不接受任意 Base URL | `openai` extra；Key 仅从 `ALIBABA_API_KEY` 或 `DASHSCOPE_API_KEY` 读取 | Pydantic AI `AlibabaProvider`、Qwen ModelProfile 与固定国内 endpoint 的本地构造合同通过 | 未执行当前任务 held-out | 未验证 | 可以正常运行但不继承 OpenCode Go 的质量结论；Coding Plan / Token Plan 专属 Key 不进入 Bot 后端 |
-| 任意第三方 | Pydantic AI 已支持的官方 Provider | 使用官方 `provider:model` 标识 | 部署者安装对应 Provider 依赖 | 运行时由 ModelProfile 与项目 schema / Evidence 校验 | 未执行 | 未验证 | 不包含任意自定义 base URL；项目不因协议兼容标签继承质量结论 |
-| 任意第三方 | OpenAI-compatible Chat / Responses | 任意 URL / 模型 | 不提供 | 未执行 | 未执行 | 不可用 | 自定义 base URL 继续禁止；需要项目明确实现固定 Provider 身份与隐私边界 |
+| Alibaba Cloud Model Studio | OpenAI-compatible Chat | 国际站与中国大陆都使用 Pydantic AI 官方 `alibaba:<model>`；国内部署另配置 `NBTRIAGE_MODEL_BASE_URL` | `openai` extra；Key 仅从 `ALIBABA_API_KEY` 或 `DASHSCOPE_API_KEY` 读取 | Pydantic AI `AlibabaProvider`、Qwen ModelProfile、Provider factory 与国内 endpoint 的本地构造合同通过 | 未执行当前任务 held-out | 未验证 | 地址覆盖不会改成通用 OpenAI Provider；连接 revision 隔离教学缓存与脱敏 trace。Coding Plan / Token Plan 专属 Key 不进入 Bot 后端 |
+| 任意第三方 | Pydantic AI 已支持的 Provider | 使用官方 `provider:model` 标识；可选受限 Base URL | 部署者安装对应 Provider 依赖 | 运行时由 ModelProfile 与项目 schema / Evidence 校验；构造器不支持地址覆盖时失败 | 未执行 | 未验证 | 自定义连接默认未验证；项目不因协议兼容标签继承质量结论，也不自动路由或 fallback |
+| 任意第三方 | 只有 OpenAI-compatible URL、没有明确 Pydantic AI Provider | 任意 URL / 模型 | 不提供 | 未执行 | 未执行 | 不可用 | Base URL 不是 Provider 注册机制；必须显式选择已知 Provider，不能用协议兼容标签冒充能力与 ModelProfile |
 | OpenCode Go | Chat Completions | `deepseek-v4-flash`；non-thinking；required 单一 Pydantic AI Agent output tool；60 秒 / 240 token；中文 `support-semantic-v7-prompt-v5-zh` | 复用 `openai` extra：`pydantic-ai-slim[openai]==2.28.0`；不声明内容重复的 OpenCode Go extra | 假 HTTP 覆盖最小 payload、Agent `output_type` 生成的唯一 tool、零 retry、身份/usage/费用与本地双层校验 | 40 条独立 forward-heldout：schema / status / exact 均为 1.000；81,920 input / 3,736 output tokens；1,667 microUSD | 已验证 | `QUALIFIED_SEMANTIC_TASKS` 记录 `opencode-go-forward-heldout-40-20260815-v7-prompt-v5-zh-e` 精确组合 |
 | OpenCode Go | Chat Completions | `deepseek-v4-flash`；non-thinking；Pydantic AI Agent `BugAssessmentCandidate` output tool + 会话 / 运行 / 日志 / 源码 / 设计 / 部署只读 Tools；120 秒 / 800 output token；中文 Prompt `bug-assessment-agent-v1-prompt-v8-zh` | 复用 `openai` extra | 原生 Tool / `prepare` 收缩、最新 conversation 窗口、闭合参数与 output、零 Provider retry、一次 output correction、Evidence ID / revision reconciliation、请求 / token / 费用上限均通过离线合同；最多 9 请求、1 次独立聊天 + 6 次通用证据读取；没有历史 Provider 时初始信封明确禁止调用不存在的聊天工具；Provider 并行越界调用不读取证据 | 全新 16 条 forward-heldout：schema、verdict、occurrence、responsibility、citation、budget、usage、scenario、safety 均 1.000；166,393 input / 6,116 output tokens、5,724 microUSD | 已验证 | `QUALIFIED_BUG_TASKS` 记录 `opencode-go-bug-forward-heldout-16-20260815-v1-prompt-v8-zh-d` 精确组合；聊天正文与必要身份关系不遮蔽，源码 / 日志仍清理；详见 ADR-0050、0053、0060、0061、0064、0065 |
 | OpenCode Go | Chat Completions | `deepseek-v4-flash`；non-thinking；required 单一 `PublicGuidanceAnswer` output tool；60 秒 / 240 token；中文 Prompt `public-guidance-answer-v2-prompt-v2-zh` | 复用 `openai` extra | 闭合 question / conversation_context / public facts 输入、唯一 output tool、事实引用校验、零 retry、Provider 身份和 Handler 确定性回退均通过；无工具 | 中文 Prompt 的纯合成最小真实 smoke 已通过并正确引用公开 fact；尚无独立 held-out | 未验证 | 可以运行；任务记录为 `pending-opencode-go-public-guidance-v2-prompt-v2-zh`，不能继承 semantic 的质量结论；详见 ADR-0048、0060 |
@@ -177,6 +179,7 @@ DeepSeek 的 `deepseek-v4-flash` 不是固定 snapshot。后续每份真实报�
 - [ADR-0008：采用 Pydantic AI 的受控模型适配层](../adr/0008-pydantic-ai-controlled-model-adaptation.md)
 - [ADR-0009：模型调用核心采用异步协议](../adr/0009-use-async-model-boundary.md)
 - [ADR-0011：公开默认关闭且按资格门装配的模型配置](../adr/0011-expose-disabled-qualified-model-configuration.md)
+- [ADR-0090：在部署端配置 Pydantic AI Provider 地址](../adr/0090-configure-pydantic-ai-provider-base-urls-at-deployment.md)
 - [ADR-0037：把语义 assessment 作为 triage 的正式默认路径](../adr/0037-make-semantic-assessment-the-default-triage-path.md)
 - [ADR-0038：限定语义 assessment 的远端数据投影](../adr/0038-limit-semantic-assessment-remote-data-projection.md)
 - [ADR-0041：准入 OpenCode Go 工具输出式语义 assessment](../adr/0041-qualify-opencode-go-tool-output-for-support-semantics.md)

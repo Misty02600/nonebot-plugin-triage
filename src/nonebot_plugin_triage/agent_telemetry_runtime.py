@@ -11,6 +11,7 @@ from nbtriage.agent_telemetry import (
     install_local_agent_telemetry,
 )
 from nonebot_plugin_triage.config import NBTriageConfig
+from nonebot_plugin_triage.task_model_runtime import model_connection_revision
 
 _TRACE_FILENAME = "agent-traces.jsonl"
 _TRACE_MAX_BYTES = 10 * 1_024 * 1_024
@@ -37,6 +38,9 @@ def create_agent_telemetry_runtime(
             trace_path_resolver(_TRACE_FILENAME),
             max_bytes=_TRACE_MAX_BYTES,
             backup_count=_TRACE_BACKUP_COUNT,
+            resource_attributes={
+                "nbtriage.model.connection": model_connection_revision(config),
+            },
         )
     except Exception as error:
         disable_agent_telemetry()

@@ -128,8 +128,9 @@ uv run nb orm upgrade
 | `NBTRIAGE_KNOWLEDGE_PACK_AUTO_UPDATE` | `true` | 启动后后台检查项目维护的 stable catalog；先恢复本地 active 包，新包完整校验后才原子切换。断网、catalog / 下载 / 校验失败均继续使用旧包或降级为 no-knowledge，不阻止插件加载。设为 `false` 可关闭默认联网检查。 |
 | `NBTRIAGE_KNOWLEDGE_PACK_URL` | 未设置 | 与 SHA-256 成对固定经过发布审核的 HTTPS knowledge pack 资产，并覆盖 stable catalog；适合离线镜像或可复现实验。固定包安装仍在后台执行；URL / SHA 只配一项或格式非法时只禁用知识服务，不阻止 Bot 启动，也不会偷偷改用 stable catalog。 |
 | `NBTRIAGE_KNOWLEDGE_PACK_SHA256` | 未设置 | 与 URL 成对固定 knowledge pack 压缩包的 64 位十六进制 SHA-256；下载内容不匹配时拒绝安装。它校验制品身份，不表示制品来源或许可证已自动获准。 |
-| `NBTRIAGE_MODEL_BACKEND` | 未设置 | 与 `NBTRIAGE_MODEL_NAME` 成对选择模型 transport；可用内置别名，或设为 `pydantic-ai` 并使用 Pydantic AI 的 `provider:model` 标识。未设置时插件仍能启动并提供确定性能力索引，但不会生成教学注释、执行语义分类或调用 Answer Agent。Provider SDK、密钥或传输能力不可用时，对应模型增强会降级而不阻断插件加载。 |
-| `NBTRIAGE_MODEL_NAME` | 未设置 | 与 backend 成对选择精确模型。未设置时沿用无模型降级；与 backend 只设置一项仍属于配置错误。held-out 只标记项目已经验证的精确组合，未评测模型不会因此被拒绝运行。 |
+| `NBTRIAGE_MODEL_BACKEND` | 未设置 | 选择 Triage 如何构造模型客户端：`opencode-go-chat`、`openai-responses`、`anthropic-messages` 是专用接法；`pydantic-ai` 表示交给 Pydantic AI 的官方 Provider 系统解析，此时 Provider 写在 `NBTRIAGE_MODEL_NAME` 的冒号前。未设置时插件仍能启动并提供确定性能力索引，但不会生成教学注释、执行语义分类或调用 Answer Agent。 |
+| `NBTRIAGE_MODEL_NAME` | 未设置 | 与 backend 成对选择精确模型。专用 backend 只填模型 ID，例如 `deepseek-v4-flash`；`pydantic-ai` 必须使用其通用 `provider:model`，例如百炼为 `alibaba:qwen-max`。held-out 只标记项目已经验证的精确组合，未评测模型不会因此被拒绝运行。 |
+| `NBTRIAGE_MODEL_BASE_URL` | 未设置 | 仅在 `pydantic-ai` backend 下覆盖所选 Provider 的部署端地址，例如中国大陆百炼地址。它不替代 `provider:model`，也不改变 Provider 的 ModelProfile；Provider 不支持地址覆盖时失败关闭。外部地址必须为 HTTPS，HTTP 只允许本机 loopback，且 URL 不得携带凭据、query 或 fragment。 |
 | `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 单次语义、公开能力回答或自动教学注释请求的最长等待时间；这三类请求都不做 Provider 自动重试。Bug Agent 使用独立的 120 秒任务上限。与已发布评测预算不同只会使组合显示为未验证，不会成为运行禁令。 |
 | `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 单次语义 assessment 与 Answer Agent 结构化输出的 token 上限。自动教学注释使用任务内固定的 16384 output token；Bug Agent 使用独立的 800 output token、最多 8 次请求、6 次实际证据读取和 0.50 美元单轮预算。它不限制用户输入长度；与已发布评测预算不同会使用新的未验证质量标签。 |
 | `NBTRIAGE_AGENT_TRACE_ENABLED` | `true` | 模型 transport 已配置时，把脱敏后的 Pydantic AI Agent / model / tool spans 写入本插件 LocalStore data 下的 `agent-traces.jsonl`；固定按 10 MiB、5 个备份轮转。文件只含调用结构、耗时、状态、Provider/model、token、费用、安全关联 ID，以及响应 part 类型和正文/工具参数长度等无内容形状，不含 Prompt、源码、模型原文、工具参数/结果或配置值。设为 `false` 时不解析路径、不创建文件。 |
@@ -146,24 +147,42 @@ NBTRIAGE_MODEL_TIMEOUT_SECONDS=60
 NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS=240
 ```
 
-其他 Pydantic AI Provider 可使用通用模型标识，例如：
+`pydantic-ai` 不是一家模型服务商，而是通用 Provider 入口。常见填写方式如下：
+
+| 服务 | `NBTRIAGE_MODEL_BACKEND` | `NBTRIAGE_MODEL_NAME` | 密钥环境变量 |
+|---|---|---|---|
+| 中国大陆百炼 | `pydantic-ai` | `alibaba:<百炼模型 ID>`，另配置国内 Base URL | `DASHSCOPE_API_KEY` 或 `ALIBABA_API_KEY` |
+| 国际站 DashScope | `pydantic-ai` | `alibaba:<模型 ID>` | `DASHSCOPE_API_KEY` 或 `ALIBABA_API_KEY` |
+| Google Gemini API | `pydantic-ai` | `google-gla:<模型 ID>` | Pydantic AI 对应 Provider 的标准密钥变量 |
+
+例如，Google Provider 可以这样填写：
 
 ```dotenv
 NBTRIAGE_MODEL_BACKEND=pydantic-ai
 NBTRIAGE_MODEL_NAME=google-gla:gemini-2.5-flash
 ```
 
-中国大陆百炼使用项目固定的国内端点标识，不开放任意 Base URL：
+中国大陆百炼继续使用 Pydantic AI 官方 `alibaba` Provider，只覆盖部署端地址：
 
 ```dotenv
 DASHSCOPE_API_KEY=<百炼 API Key>
 NBTRIAGE_MODEL_BACKEND=pydantic-ai
-NBTRIAGE_MODEL_NAME=alibaba-cn:qwen-max
+NBTRIAGE_MODEL_NAME=alibaba:qwen-max
+NBTRIAGE_MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ```
 
-Pydantic AI 原生的 `alibaba:<模型>` 仍表示国际站 DashScope；`alibaba-cn:<模型>` 固定使用中国大陆
-OpenAI-compatible endpoint。两者都需要安装 `openai` Provider 依赖。Coding Plan / Token Plan 专属 Key
-不适用于 Bot 后端或自动批量生成。
+`qwen-max` 是示例模型 ID，不是 Triage 强制的默认模型。部署者应从
+[百炼模型列表](https://help.aliyun.com/zh/model-studio/models)选择当前账号可调用且满足任务需要的模型，
+把其精确 ID 放在 `alibaba:` 后面；Triage 不维护容易过期的模型名白名单。
+
+不设置 `NBTRIAGE_MODEL_BASE_URL` 时，`alibaba:<模型>` 使用 Pydantic AI Provider 的默认国际站地址。Base URL
+只是受信任的部署配置，不是新的 Provider 名称；Triage 通过 Pydantic AI 原生 Provider factory 保留 Alibaba / Qwen
+的 ModelProfile。两种地址都需要安装 `openai` Provider 依赖。Coding Plan / Token Plan 专属 Key 不适用于
+Bot 后端或自动批量生成。
+
+其他 Pydantic AI Provider 也可以在其构造器支持时使用同一 Base URL 字段。自定义地址默认标为未验证，
+更换地址会使教学注释缓存失效；脱敏 Agent 轨迹只保存地址的 SHA-256 身份，不保存完整 URL。API Key 仍只用
+Provider 的标准环境变量配置，不能写进 Base URL 或 `NBTriageConfig`。
 
 部署者还需安装该 Provider 的 Pydantic AI SDK 依赖并配置其标准密钥环境变量。项目支持矩阵中的 held-out
 结果用于说明已验证质量，不是运行白名单；未评测组合仍执行相同 schema、Evidence、安全和预算检查。

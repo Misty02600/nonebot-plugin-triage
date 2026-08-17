@@ -4,6 +4,9 @@
 |---|---|
 | 已采纳；已实现 | 2026-08-17 |
 
+> [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) 已补充连接地址身份：轨迹保存
+> 规范化 Base URL 的 SHA-256 revision，不保存完整 URL。
+
 ## 背景
 
 生产教学注释已经能在日志中标出插件、分析单元、阶段与粗粒度失败原因，但 `http`、`budget` 和
