@@ -551,7 +551,7 @@ def test_runtime_uses_independent_annotation_output_budget() -> None:
         environ={"OPENCODE_API_KEY": "test-only"},
     )()
 
-    assert vars(client)["_max_output_tokens"] == CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS == 4_096
+    assert vars(client)["_max_output_tokens"] == CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS == 8_192
 
 
 @pytest.mark.asyncio

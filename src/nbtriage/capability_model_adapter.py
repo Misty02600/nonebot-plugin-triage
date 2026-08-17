@@ -125,6 +125,7 @@ class CapabilityModelAdapterReason(StrEnum):
     TRANSPORT = "transport"
     HTTP = "http"
     BUDGET = "budget"
+    OUTPUT_TRUNCATED = "output_truncated"
     OUTPUT_VALIDATION = "output_validation"
     SCHEMA = "schema"
     PROVIDER_IDENTITY = "provider_identity"
@@ -667,14 +668,26 @@ class PydanticAICapabilityAnalysisClient:
                     reason_code=CapabilityModelAdapterReason.BUDGET,
                 ) from error
             except UnexpectedModelBehavior as error:
+                truncated = any(
+                    isinstance(message, ModelResponse) and message.finish_reason == "length"
+                    for message in captured_messages
+                )
                 detail = (
-                    self._last_validation_failure
-                    or _captured_retry_reason(captured_messages)
-                    or _unexpected_behavior_reason(error)
+                    "finish_reason:length"
+                    if truncated
+                    else (
+                        self._last_validation_failure
+                        or _captured_retry_reason(captured_messages)
+                        or _unexpected_behavior_reason(error)
+                    )
                 )
                 raise CapabilityModelAdapterError(
-                    f"capability model output validation retries exhausted: {detail}",
-                    reason_code=CapabilityModelAdapterReason.OUTPUT_VALIDATION,
+                    f"capability model output validation failed: {detail}",
+                    reason_code=(
+                        CapabilityModelAdapterReason.OUTPUT_TRUNCATED
+                        if truncated
+                        else CapabilityModelAdapterReason.OUTPUT_VALIDATION
+                    ),
                 ) from error
             except (AgentRunError, UserError, ValueError) as error:
                 raise CapabilityModelAdapterError("capability model request failed") from error

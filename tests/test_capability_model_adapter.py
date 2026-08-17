@@ -30,6 +30,7 @@ from nbtriage.capability_model_adapter import (
     SYSTEM_INSTRUCTION,
     CapabilityAnalysisToolRuntime,
     CapabilityModelAdapterError,
+    CapabilityModelAdapterReason,
     PydanticAICapabilityAnalysisClient,
 )
 
@@ -684,9 +685,29 @@ def test_output_entry_ids_must_match_invocation_targets() -> None:
 
     with pytest.raises(
         CapabilityModelAdapterError,
-        match="output validation retries exhausted",
+        match="output validation failed",
     ):
         asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+
+def test_length_finish_reason_is_classified_as_output_truncated() -> None:
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(
+            lambda _messages, _info: ModelResponse(
+                parts=[TextPart('{"knowledge_enabled":true')],
+                finish_reason="length",
+            ),
+            model_name="fixture-model",
+            profile=_NATIVE_PROFILE,
+        ),
+        max_output_tokens=240,
+    )
+
+    with pytest.raises(CapabilityModelAdapterError) as error_info:
+        asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert error_info.value.reason_code is CapabilityModelAdapterReason.OUTPUT_TRUNCATED
+    assert "finish_reason:length" in str(error_info.value)
 
 
 def test_disabled_output_contains_no_entries() -> None:

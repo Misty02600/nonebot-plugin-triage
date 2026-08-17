@@ -25,7 +25,7 @@ from nonebot_plugin_triage.task_model_runtime import (
     unverified_evaluation_id,
 )
 
-CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS = 4_096
+CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS = 8_192
 CAPABILITY_ANNOTATION_EVALUATION = unverified_evaluation_id(
     task=CAPABILITY_ANNOTATION_TASK,
     prompt_id=CAPABILITY_ANNOTATION_PROMPT_ID,
