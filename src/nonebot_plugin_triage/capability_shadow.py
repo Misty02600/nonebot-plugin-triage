@@ -47,6 +47,7 @@ from nonebot_plugin_triage.capability_annotations import (
 )
 from nonebot_plugin_triage.capability_snapshot import build_capability_snapshot
 from nonebot_plugin_triage.capability_teaching_outputs import (
+    CapabilityTeachingOutputError,
     CapabilityTeachingOutputWriter,
     resolve_capability_teaching_data_dir,
 )
@@ -402,7 +403,7 @@ class CapabilityShadowService:
             self._record_refresh_failure(error)
             return
         logger.info(
-            "NoneBot Triage capability shadow is ready: generation={}, "
+            "NoneBot Triage 确定性能力索引就绪：generation={}, "
             "indexed={}, restricted={}, partial={}",
             status.served_generation[:12] if status.served_generation else "none",
             status.indexed_capability_count,
@@ -447,7 +448,7 @@ class CapabilityShadowService:
                 self._annotation_service.deactivate()
                 raise
             logger.info(
-                "NoneBot Triage capability teaching was manually refreshed: plugin={}, "
+                "NoneBot Triage 教学知识已手动刷新：plugin={}, "
                 "generated={}, cached={}, skipped={}, files={}",
                 plugin_module or "all",
                 status.generated_count,
@@ -474,15 +475,13 @@ class CapabilityShadowService:
             status = await self._annotation_service.refresh(snapshot)
         except Exception as error:
             logger.warning(
-                "NoneBot Triage capability annotation refresh failed; "
-                "the deterministic capability index remains active ({})",
+                "NoneBot Triage 教学注释刷新失败；确定性能力索引仍会正常运行：error_type={}",
                 type(error).__name__,
             )
             return
         if status.failed_count:
             logger.warning(
-                "NoneBot Triage capability teaching output was not switched because "
-                "one or more analyses failed: failed={}",
+                "NoneBot Triage 未切换教学知识输出：存在分析失败；failed={}",
                 status.failed_count,
             )
             return
@@ -493,17 +492,22 @@ class CapabilityShadowService:
                     snapshot,
                     self._annotation_service.get,
                 )
+            except CapabilityTeachingOutputError:
+                self._annotation_service.deactivate()
+                logger.warning(
+                    "NoneBot Triage 未切换教学知识输出：reason=empty_output；"
+                    "本轮没有生成任何 Help 或 Answer 文件，上一版仍然有效"
+                )
             except Exception as error:
                 self._annotation_service.deactivate()
                 logger.warning(
-                    "NoneBot Triage capability teaching output refresh failed; "
-                    "the model-generated Answer view was deactivated and the previous "
-                    "file generation remains active ({})",
+                    "NoneBot Triage 教学知识输出刷新失败；已停用本轮模型 Answer 视图，"
+                    "上一版文件仍然有效：error_type={}",
                     type(error).__name__,
                 )
             else:
                 logger.info(
-                    "NoneBot Triage capability teaching outputs refreshed: files={}",
+                    "NoneBot Triage 教学知识输出刷新完成：files={}",
                     len(paths),
                 )
 

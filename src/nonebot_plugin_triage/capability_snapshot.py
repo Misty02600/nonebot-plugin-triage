@@ -919,7 +919,7 @@ def _matcher_handler_references(
     state: _CollectorState,
 ) -> tuple[dict[str, object], ...]:
     result: list[dict[str, object]] = []
-    for dependent in _safe_collection(getattr(matcher, "handlers", ())):
+    for binding_index, dependent in enumerate(_safe_collection(getattr(matcher, "handlers", ()))):
         call = getattr(dependent, "call", None)
         if not inspect.isfunction(call):
             continue
@@ -953,9 +953,10 @@ def _matcher_handler_references(
                 "code_firstlineno": call.__code__.co_firstlineno,
                 "source_revision": source_revision,
                 "closure_freevars": sorted(call.__code__.co_freevars),
+                "binding_index": binding_index,
             }
         )
-    return tuple(sorted(result, key=lambda item: (str(item["module"]), str(item["function"]))))
+    return tuple(result)
 
 
 def _module_config_bindings(

@@ -430,7 +430,12 @@ async def test_deployment_failure_does_not_block_snapshot_or_expose_details(
     maintainer = await service.search_for_maintainer("搜图")
     assert maintainer is not None
     assert [hit.record.capability_id for hit in maintainer.hits] == ["command:image"]
-    assert logger.warnings == [
+    deployment_warnings = [
+        item
+        for item in logger.warnings
+        if item[0].startswith("NoneBot Triage deployment inventory refresh failed")
+    ]
+    assert deployment_warnings == [
         (
             "NoneBot Triage deployment inventory refresh failed; "
             "capability snapshot refresh will continue ({})",

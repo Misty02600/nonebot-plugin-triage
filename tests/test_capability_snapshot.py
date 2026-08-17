@@ -780,6 +780,7 @@ second = create_matcher("二")
             reference["qualname"],
             reference["code_firstlineno"],
             tuple(reference["closure_freevars"]),
+            reference["binding_index"],
         )
         for record in snapshot.records
         for reference in _record_values(record, "handler.references")[0]
@@ -791,8 +792,43 @@ second = create_matcher("二")
             "create_matcher.<locals>.handler",
             6,
             ("command",),
+            0,
         )
     }
+
+
+def test_handler_references_preserve_multiple_same_named_runtime_bindings(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    plugin = _source_plugin(
+        tmp_path,
+        monkeypatch,
+        """\
+from nonebot import on_command
+
+async def _():
+    return "first"
+first_handler = _
+
+async def _():
+    return "second"
+second_handler = _
+
+matcher = on_command("multi", handlers=[first_handler, second_handler])
+""",
+    )
+    matcher_cleanup.extend(plugin.matcher)
+
+    snapshot = build_capability_snapshot(plugins=[plugin])
+
+    assert len(snapshot.records) == 1
+    references = _record_values(snapshot.records[0], "handler.references")[0]
+    assert [item["binding_index"] for item in references] == [0, 1]
+    assert [item["function"] for item in references] == ["_", "_"]
+    assert [item["qualname"] for item in references] == ["_", "_"]
+    assert len({item["code_firstlineno"] for item in references}) == 2
 
 
 def test_does_not_treat_unrelated_runtime_models_as_plugin_config(

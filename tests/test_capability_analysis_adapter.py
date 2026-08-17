@@ -444,6 +444,145 @@ matcher = on_alconna("标签", handlers=[handle_tags])
     assert request.invocations[0].canonical_usages == ("标签 <词语>... [备注]...",)
 
 
+def test_same_named_handlers_are_bound_to_their_exact_matcher_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+class FakeMatcher:
+    def handle(self):
+        return lambda function: function
+
+def on_command(*args, **kwargs):
+    return FakeMatcher()
+
+first = on_command("one")
+@first.handle()
+async def _():
+    return "first handler"
+first_handler = _
+
+second = on_command("two")
+@second.handle()
+async def _():
+    return "second handler"
+second_handler = _
+""",
+    )
+
+    first_request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "first_handler", 9)],
+            config_references=[],
+            command_header="one",
+        ),
+        ConfigValuePolicy(),
+    )
+    second_request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "second_handler", 15)],
+            config_references=[],
+            command_header="two",
+        ),
+        ConfigValuePolicy(),
+    )
+
+    first_functions = [
+        item.content
+        for item in first_request.evidence_units
+        if item.source_kind == "python_function"
+    ]
+    second_functions = [
+        item.content
+        for item in second_request.evidence_units
+        if item.source_kind == "python_function"
+    ]
+    assert first_functions == ['async def _():\n    return "first handler"']
+    assert second_functions == ['async def _():\n    return "second handler"']
+    first_structure = json.loads(
+        next(
+            item.content
+            for item in first_request.evidence_units
+            if item.source_kind == "matcher_source_structure"
+        )
+    )
+    second_structure = json.loads(
+        next(
+            item.content
+            for item in second_request.evidence_units
+            if item.source_kind == "matcher_source_structure"
+        )
+    )
+    assert [item["matcher_names"] for item in first_structure["handlers"]] == [["first"]]
+    assert [item["matcher_names"] for item in second_structure["handlers"]] == [["second"]]
+
+
+def test_one_matcher_keeps_multiple_same_named_handler_bindings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+class FakeMatcher:
+    def handle(self):
+        return lambda function: function
+
+    def receive(self):
+        return lambda function: function
+
+def on_command(*args, **kwargs):
+    return FakeMatcher()
+
+matcher = on_command("multi")
+@matcher.handle()
+async def _():
+    return "first step"
+first_handler = _
+
+@matcher.receive()
+async def _():
+    return "second step"
+second_handler = _
+""",
+    )
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[
+                _handler_reference(module, "first_handler", 12),
+                _handler_reference(module, "second_handler", 17),
+            ],
+            config_references=[],
+            command_header="multi",
+        ),
+        ConfigValuePolicy(),
+    )
+
+    functions = [item for item in request.evidence_units if item.source_kind == "python_function"]
+    assert len(functions) == 2
+    assert len({item.evidence_id for item in functions}) == 2
+    assert {item.content for item in functions} == {
+        'async def _():\n    return "first step"',
+        'async def _():\n    return "second step"',
+    }
+    structure = json.loads(
+        next(
+            item.content
+            for item in request.evidence_units
+            if item.source_kind == "matcher_source_structure"
+        )
+    )
+    assert len(structure["handlers"]) == 2
+    assert {tuple(item["matcher_names"]) for item in structure["handlers"]} == {("matcher",)}
+
+
 def test_parameterized_runtime_handler_requires_family_analysis(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -721,6 +860,12 @@ matcher = on_command("secure", permission=ADMIN(), handlers=[handle])
             "kind": "role",
             "operation": "administrator_or_owner",
             "owner": "matcher",
+            "owner_source": {
+                "digest": payload["permission_constraints"][0]["owner_source"]["digest"],
+                "end_line": 9,
+                "line": 9,
+                "locator": Path(module.__dict__["__file__"]).name,
+            },
             "symbol": "ADMIN",
             "teaching_role": "admin",
             "source": {

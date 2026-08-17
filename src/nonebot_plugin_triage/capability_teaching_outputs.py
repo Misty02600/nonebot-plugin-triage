@@ -65,6 +65,8 @@ class CapabilityTeachingOutputWriter:
             annotation_lookup,
             help_plugins,
         )
+        if not help_documents and not answer_documents:
+            raise CapabilityTeachingOutputError("teaching output contains no documents")
         generation = _generation_digest(help_documents, answer_documents)
         root = self._resolved_root()
         objects = root / _OBJECTS_DIRECTORY_NAME

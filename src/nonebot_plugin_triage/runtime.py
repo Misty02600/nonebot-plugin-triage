@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -69,6 +70,19 @@ class OutgoingReferenceProvider(Protocol):
     def register(self) -> None: ...
 
 
+_PROVIDER_CREDENTIAL_ENVIRONMENTS: dict[str, tuple[str, ...]] = {
+    "alibaba": ("ALIBABA_API_KEY", "DASHSCOPE_API_KEY"),
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "cohere": ("CO_API_KEY",),
+    "deepseek": ("DEEPSEEK_API_KEY",),
+    "google-gla": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+    "groq": ("GROQ_API_KEY",),
+    "mistral": ("MISTRAL_API_KEY",),
+    "openai": ("OPENAI_API_KEY",),
+    "openrouter": ("OPENROUTER_API_KEY",),
+}
+
+
 def _create_semantic_assessment_service(
     config: NBTriageConfig,
 ) -> SemanticAssessmentService:
@@ -86,6 +100,10 @@ def _create_capability_annotation_client_factory(
     tool_provider: CapabilityTeachingToolProvider,
 ) -> Callable[[], CapabilityAnalysisClient] | None:
     if config.nbtriage_model_backend is None:
+        logger.info(
+            "NoneBot Triage 教学注释未启用：reason=model_not_configured；"
+            "未配置模型后端和模型名称，确定性能力索引仍会正常运行"
+        )
         return None
     try:
         return create_capability_annotation_client_factory(
@@ -93,12 +111,79 @@ def _create_capability_annotation_client_factory(
             tool_runtime_factory=tool_provider.create_runtime,
         )
     except CapabilityAnnotationRuntimeConfigurationError as error:
-        logger.warning(
-            "NoneBot Triage capability annotations are unavailable; "
-            "the deterministic capability index remains active ({})",
-            type(error).__name__,
-        )
+        reason = _capability_annotation_initialization_failure_reason(config, error)
+        expected_environments = _expected_provider_credential_environments(config)
+        if reason == "provider_credentials_unavailable" and expected_environments:
+            logger.warning(
+                "NoneBot Triage 教学注释未启用：backend={}, model={}, reason={}, "
+                "expected_env={}；当前 Bot 进程未获得 Provider 凭据，"
+                "请确认环境变量已传入启动 Bot 的进程；确定性能力索引仍会正常运行",
+                config.nbtriage_model_backend,
+                config.nbtriage_model_name,
+                reason,
+                "|".join(expected_environments),
+            )
+        else:
+            logger.warning(
+                "NoneBot Triage 教学注释未启用：backend={}, model={}, reason={}；"
+                "请检查模型名称、Provider 依赖和运行环境；"
+                "确定性能力索引仍会正常运行",
+                config.nbtriage_model_backend,
+                config.nbtriage_model_name,
+                reason,
+            )
         return None
+
+
+def _capability_annotation_initialization_failure_reason(
+    config: NBTriageConfig,
+    error: CapabilityAnnotationRuntimeConfigurationError,
+) -> str:
+    expected_environments = _expected_provider_credential_environments(config)
+    if expected_environments and not any(
+        os.environ.get(name, "").strip() for name in expected_environments
+    ):
+        return "provider_credentials_unavailable"
+    chain = tuple(_exception_chain(error))
+    if any(isinstance(item, ImportError) for item in chain):
+        return "provider_dependency_unavailable"
+    messages = " ".join(str(item).casefold() for item in chain)
+    if "unsupported model backend" in messages:
+        return "model_backend_unsupported"
+    if "must use provider:model" in messages or "does not support a base url" in messages:
+        return "model_configuration_invalid"
+    if "api key" in messages or "credentials" in messages:
+        return "provider_credentials_unavailable"
+    return "provider_initialization_failed"
+
+
+def _expected_provider_credential_environments(
+    config: NBTriageConfig,
+) -> tuple[str, ...]:
+    backend = config.nbtriage_model_backend
+    if backend == "opencode-go-chat":
+        return ("OPENCODE_API_KEY",)
+    if backend == "openai-responses":
+        return ("OPENAI_API_KEY",)
+    if backend == "anthropic-messages":
+        return ("ANTHROPIC_API_KEY",)
+    if backend != "pydantic-ai" or config.nbtriage_model_name is None:
+        return ()
+    provider, separator, _model = config.nbtriage_model_name.partition(":")
+    if not separator:
+        return ()
+    return _PROVIDER_CREDENTIAL_ENVIRONMENTS.get(provider.casefold(), ())
+
+
+def _exception_chain(error: BaseException) -> tuple[BaseException, ...]:
+    chain: list[BaseException] = []
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return tuple(chain)
 
 
 def _create_outgoing_reference_providers(

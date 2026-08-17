@@ -576,6 +576,22 @@ def test_annotation_revision_isolated_by_custom_endpoint_without_exposing_url() 
     assert "second.example" not in second_revision
 
 
+def test_qwen36_annotation_revision_binds_provider_settings_and_timeout() -> None:
+    revision = capability_annotation_analysis_revision(
+        NBTriageConfig(
+            nbtriage_model_backend="pydantic-ai",
+            nbtriage_model_name="alibaba:qwen3.6-flash",
+            nbtriage_model_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            nbtriage_model_timeout_seconds=300,
+        )
+    )
+
+    assert "alibaba-qwen3.6-non-thinking-v2" in revision
+    assert "timeout-300" in revision
+    assert "output-16384" in revision
+    assert "dashscope.aliyuncs.com" not in revision
+
+
 def test_domain_analysis_error_is_classified_as_output_validation() -> None:
     import nonebot_plugin_triage.capability_annotations as capability_annotations_module
 
@@ -811,9 +827,22 @@ async def test_failed_teaching_unit_log_has_safe_location_and_reason(
 
     assert status.failed_count == 1
     assert status.generated_count == 0
+    assert logger.infos[0] == (
+        "NoneBot Triage 教学注释刷新开始：refresh_id={}, eligible={}, cached={}, "
+        "pending={}, plugin_groups={}, max_plugin_concurrency={}, scope={}",
+        (
+            "0123456789abcdef0123456789abcdef",
+            1,
+            0,
+            1,
+            1,
+            4,
+            "all",
+        ),
+    )
     assert logger.warnings == [
         (
-            "NoneBot Triage capability annotation failed: refresh_id={}, "
+            "NoneBot Triage 教学注释单元分析失败：refresh_id={}, "
             "plugin_module={}, unit_label={}, unit_id={}, stage={}, reason={}, "
             "duration_ms={}",
             (

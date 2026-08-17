@@ -67,7 +67,7 @@ _HANDLER_DECORATOR_PATTERNS = (
     "@$MATCHER.$DECORATOR",
     "@$MATCHER.$DECORATOR($$$ARGS)",
 )
-_EXTRACTOR_VERSION = "nbtriage-capability-source-evidence-v3-gate-candidates"
+_EXTRACTOR_VERSION = "nbtriage-capability-source-evidence-v4-handler-owner"
 
 
 class CapabilitySourceEvidenceError(ValueError):
@@ -158,6 +158,7 @@ class ConfigReferenceFact:
     binding_name: str
     field_name: str
     source: SourceSpan
+    handler_source: SourceSpan
 
 
 class StructuralSymbolKind(StrEnum):
@@ -171,6 +172,7 @@ class StructuralSymbolFact:
     symbol: str
     owner: str
     source: SourceSpan
+    owner_source: SourceSpan
 
 
 @dataclass(frozen=True)
@@ -181,6 +183,7 @@ class PermissionConstraintFact:
     symbol: str
     owner: str
     source: SourceSpan
+    owner_source: SourceSpan
 
 
 @dataclass(frozen=True)
@@ -590,6 +593,7 @@ def _registration_anchors(
                         symbol=name,
                         owner=owner,
                         source=_span(source_file, expression),
+                        owner_source=source,
                     )
                 )
             if kind is StructuralSymbolKind.PERMISSION:
@@ -598,6 +602,7 @@ def _registration_anchors(
                         tree,
                         expression,
                         owner=owner,
+                        owner_source=source,
                         source_file=source_file,
                         profiles=permission_semantic_profiles,
                         before_index=call.range().start.index,
@@ -868,7 +873,14 @@ def _handler_facts(
         function_key = _node_key(function.definition)
         if function_key not in known_handlers:
             continue
-        direct = _body_facts(binding_names, function.name, function, 0, source_file)
+        direct = _body_facts(
+            binding_names,
+            function.name,
+            function,
+            0,
+            source_file,
+            handler_source=function.source,
+        )
         helper_names = tuple(
             sorted(
                 name for name in direct.calls if name != function.name and name in functions_by_name
@@ -878,7 +890,14 @@ def _handler_facts(
         symbols.extend(direct.symbols)
         for helper_name in helper_names:
             helper = _resolve_runtime_function(functions_by_name[helper_name])
-            helper_facts = _body_facts(binding_names, function.name, helper, 1, source_file)
+            helper_facts = _body_facts(
+                binding_names,
+                function.name,
+                helper,
+                1,
+                source_file,
+                handler_source=function.source,
+            )
             references.extend(helper_facts.config_references)
             symbols.extend(helper_facts.symbols)
         facts.append(
@@ -898,6 +917,8 @@ def _body_facts(
     function: _FunctionSource,
     helper_depth: int,
     source_file: _SourceFile,
+    *,
+    handler_source: SourceSpan,
 ) -> _BodyFactCollector:
     result = _BodyFactCollector(set(), [], [])
     for node in function.container.find_all(kind="call"):
@@ -916,6 +937,7 @@ def _body_facts(
                         symbol=_qualified_name(target) or name,
                         owner=handler_name,
                         source=_span(source_file, target),
+                        owner_source=handler_source,
                     )
                 )
     for node in function.container.find_all(kind="attribute"):
@@ -937,6 +959,7 @@ def _body_facts(
                     binding_name=owner.text(),
                     field_name=field.text(),
                     source=_span(source_file, node),
+                    handler_source=handler_source,
                 )
             )
     return result
@@ -1096,6 +1119,7 @@ def _resolved_permission_constraints(
     expression: SgNode,
     *,
     owner: str,
+    owner_source: SourceSpan,
     source_file: _SourceFile,
     profiles: tuple[PermissionSemanticProfile, ...],
     before_index: int,
@@ -1126,6 +1150,7 @@ def _resolved_permission_constraints(
                 symbol=symbol,
                 owner=owner,
                 source=_span(source_file, expression),
+                owner_source=owner_source,
             )
         )
     return tuple(result)
@@ -1417,6 +1442,10 @@ def _deduplicate_symbols(
             item.kind,
             item.symbol,
             item.owner,
+            item.owner_source.locator,
+            item.owner_source.line,
+            item.owner_source.end_line,
+            item.owner_source.digest,
             item.source.locator,
             item.source.line,
             item.source.end_line,
@@ -1444,6 +1473,10 @@ def _deduplicate_permission_constraints(
             item.operation,
             item.symbol,
             item.owner,
+            item.owner_source.locator,
+            item.owner_source.line,
+            item.owner_source.end_line,
+            item.owner_source.digest,
             item.source.locator,
             item.source.line,
             item.source.end_line,

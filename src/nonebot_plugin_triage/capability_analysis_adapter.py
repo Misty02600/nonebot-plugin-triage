@@ -7,7 +7,7 @@ import keyword
 import sys
 import textwrap
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import ModuleType
@@ -29,6 +29,7 @@ from nbtriage.capability_source_evidence import (
     CapabilitySourceEvidenceError,
     CapabilitySourceEvidencePack,
     RegistrationAnchor,
+    SourceSpan,
     StructuralSymbolKind,
     build_capability_source_evidence,
 )
@@ -74,6 +75,27 @@ class _FunctionReference:
     code_firstlineno: int | None
     source_revision: str
     closure_freevars: tuple[str, ...]
+    binding_index: int | None = None
+
+
+@dataclass(frozen=True)
+class HandlerCodeIdentity:
+    """标识已加载插件中一段可精确回到源码的 Handler 实现。"""
+
+    module_root: str
+    module: str
+    function: str = field(compare=False)
+    qualname: str
+    firstlineno: int
+    source_revision: str
+
+
+@dataclass(frozen=True)
+class _ResolvedAnalysisTarget:
+    reference: _FunctionReference
+    content: str
+    source: SourceSpan
+    handler_identity: HandlerCodeIdentity | None
 
 
 @dataclass(frozen=True)
@@ -100,6 +122,7 @@ class _ConfigReference:
 @dataclass(frozen=True)
 class _ParsedModule:
     module: ModuleType
+    locator: str
     source: str
     revision: str
     tree: ast.Module
@@ -107,15 +130,8 @@ class _ParsedModule:
 
 
 @dataclass(frozen=True)
-class ParameterizedHandlerCodeIdentity:
+class ParameterizedHandlerCodeIdentity(HandlerCodeIdentity):
     """标识一组 Runtime Matcher 共同执行的同一段闭包 Handler 代码。"""
-
-    module_root: str
-    module: str
-    function: str
-    qualname: str
-    firstlineno: int
-    source_revision: str
 
     @property
     def analysis_unit_id(self) -> str:
@@ -185,13 +201,28 @@ def build_capability_analysis_request(
     )
     if not _source_inventory_complete(source_pack.partial_errors):
         raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
-    targets = _analysis_targets(handler_references, config_references)
+    handler_identities = _handler_code_identities(module_root, handler_references)
+    targets = _analysis_targets(module_root, handler_references, config_references)
     parsed_modules: dict[str, _ParsedModule] = {}
-    invocations = _invocation_targets(record, source_pack, handler_references)
+    resolved_targets = _resolve_analysis_targets(
+        targets,
+        module_root=module_root,
+        source_root=source_root,
+        parsed_modules=parsed_modules,
+    )
+    resolved_handler_identities = {
+        item.handler_identity for item in resolved_targets if item.handler_identity is not None
+    }
+    if resolved_handler_identities != set(handler_identities):
+        raise CapabilityAnalysisAdapterError("capability has no readable bounded handler evidence")
+    handler_sources = tuple(
+        item.source for item in resolved_targets if item.handler_identity is not None
+    )
+    invocations = _invocation_targets(record, source_pack, handler_sources)
     structure_evidence = _source_structure_evidence(
         record,
         source_pack,
-        handler_references,
+        handler_sources,
     )
     evidence_units: list[CapabilityEvidenceUnit] = [
         _runtime_fact_evidence(record),
@@ -200,40 +231,33 @@ def build_capability_analysis_request(
     accepted_targets: set[tuple[str, str]] = set()
     total_chars = sum(len(item.content) for item in evidence_units)
 
-    for target in targets:
-        parsed = parsed_modules.get(target.module)
-        if parsed is None:
-            if len(parsed_modules) >= _MAX_MODULES:
-                break
-            parsed = _load_parsed_module(target.module, module_root, source_root)
-            if parsed is None:
-                continue
-            parsed_modules[target.module] = parsed
-        if parsed.revision != target.source_revision:
-            continue
-        function = _select_function(parsed.functions, target.function, target.line)
-        if function is None:
-            continue
-        content = _function_source(parsed.source, function)
-        if content is None:
-            continue
-        if len(content) > _MAX_FUNCTION_CHARS:
-            continue
-        if total_chars + len(content) > _MAX_TOTAL_EVIDENCE_CHARS:
+    for target in resolved_targets:
+        if total_chars + len(target.content) > _MAX_TOTAL_EVIDENCE_CHARS:
+            if target.handler_identity is not None:
+                raise CapabilityAnalysisAdapterError(
+                    "capability has no readable bounded handler evidence"
+                )
             break
 
-        locator = _module_locator(target.module, target.function, function.lineno)
+        reference = target.reference
+        locator = _module_locator(reference.module, reference.function, target.source.line)
+        symbol = reference.qualname or reference.function
+        source_position = reference.code_firstlineno or target.source.line
         evidence_units.append(
             CapabilityEvidenceUnit(
-                evidence_id=_evidence_id(record.capability_id, target.module, target.function),
+                evidence_id=_evidence_id(
+                    record.capability_id,
+                    reference.module,
+                    f"{symbol}@{source_position}",
+                ),
                 source_kind="python_function",
-                content=content,
-                revision=parsed.revision,
+                content=target.content,
+                revision=reference.source_revision,
                 locator=locator,
             )
         )
-        total_chars += len(content)
-        accepted_targets.add((target.module, target.function))
+        total_chars += len(target.content)
+        accepted_targets.add((reference.module, reference.function))
 
     if not accepted_targets:
         raise CapabilityAnalysisAdapterError("capability has no readable bounded handler evidence")
@@ -262,7 +286,7 @@ def build_capability_analysis_request(
         gate_candidates=_gate_candidates(
             record,
             source_pack,
-            handler_references,
+            handler_sources,
             invocations,
             structure_evidence,
         ),
@@ -285,15 +309,16 @@ def parameterized_handler_code_identity(
         )
     module_root = _plugin_module_root(record)
     reference = parameterized[0]
-    if reference.qualname is None or reference.code_firstlineno is None:
+    identity = _handler_code_identity(module_root, reference)
+    if identity is None:
         raise CapabilityAnalysisAdapterError("parameterized handler code identity is unavailable")
     return ParameterizedHandlerCodeIdentity(
-        module_root=module_root,
-        module=reference.module,
-        function=reference.function,
-        qualname=reference.qualname,
-        firstlineno=reference.code_firstlineno,
-        source_revision=reference.source_revision,
+        module_root=identity.module_root,
+        module=identity.module,
+        function=identity.function,
+        qualname=identity.qualname,
+        firstlineno=identity.firstlineno,
+        source_revision=identity.source_revision,
     )
 
 
@@ -423,7 +448,7 @@ def build_parameterized_family_analysis_request(
 def _invocation_targets(
     record: CapabilityRecord,
     source_pack: CapabilitySourceEvidencePack,
-    handlers: tuple[_FunctionReference, ...],
+    handler_sources: tuple[SourceSpan, ...],
 ) -> tuple[CapabilityInvocationTarget, ...]:
     headers = tuple(
         value
@@ -451,7 +476,7 @@ def _invocation_targets(
             key=lambda item: (item.casefold(), item),
         )
     )
-    selected_registrations = _selected_registrations(record, source_pack, handlers)
+    selected_registrations = _selected_registrations(record, source_pack, handler_sources)
     requires_mention = _requires_mention(source_pack, selected_registrations)
     arguments = tuple(
         value
@@ -514,10 +539,10 @@ def _requires_mention(
     pack: CapabilitySourceEvidencePack,
     registrations: tuple[RegistrationAnchor, ...],
 ) -> bool:
-    owners = {item.matcher_name or f"{item.factory}@{item.source.line}" for item in registrations}
+    registration_sources = {item.source for item in registrations}
     return any(
         item.kind is StructuralSymbolKind.RULE
-        and item.owner in owners
+        and item.owner_source in registration_sources
         and item.symbol.rpartition(".")[2] == "to_me"
         for item in pack.symbols
     )
@@ -526,16 +551,20 @@ def _requires_mention(
 def _gate_candidates(
     record: CapabilityRecord,
     pack: CapabilitySourceEvidencePack,
-    handlers: tuple[_FunctionReference, ...],
+    handler_sources: tuple[SourceSpan, ...],
     invocations: tuple[CapabilityInvocationTarget, ...],
     structure_evidence: CapabilityEvidenceUnit,
 ) -> tuple[CapabilityGateCandidate, ...]:
-    registrations = _selected_registrations(record, pack, handlers)
-    owners = {item.matcher_name or f"{item.factory}@{item.source.line}" for item in registrations}
+    registrations = _selected_registrations(record, pack, handler_sources)
+    registration_sources = {item.source for item in registrations}
     known_permissions = {
-        (item.owner, item.symbol) for item in pack.permission_constraints if item.owner in owners
+        (item.owner, item.symbol)
+        for item in pack.permission_constraints
+        if item.owner_source in registration_sources
     }
-    selected_symbols = tuple(item for item in pack.symbols if item.owner in owners)
+    selected_symbols = tuple(
+        item for item in pack.symbols if item.owner_source in registration_sources
+    )
     maximal_symbols = {
         (item.owner, item.kind, item.symbol)
         for item in selected_symbols
@@ -819,18 +848,15 @@ def _canonical_json_sort_key(value: object) -> str:
 def _source_structure_evidence(
     record: CapabilityRecord,
     pack: CapabilitySourceEvidencePack,
-    handlers: tuple[_FunctionReference, ...],
+    handler_sources: tuple[SourceSpan, ...],
 ) -> CapabilityEvidenceUnit:
-    handler_names = {item.function for item in handlers}
-    selected_registrations = _selected_registrations(record, pack, handlers)
-    selected_handlers = tuple(item for item in pack.handlers if item.name in handler_names)
-    related_functions = handler_names.union(
-        helper for item in selected_handlers for helper in item.direct_helpers
+    expected_sources = {_source_location_key(item) for item in handler_sources}
+    selected_handlers = tuple(
+        item for item in pack.handlers if _source_location_key(item.source) in expected_sources
     )
-    registration_owners = {
-        item.matcher_name or f"{item.factory}@{item.source.line}" for item in selected_registrations
-    }
-    related_owners = related_functions.union(registration_owners)
+    selected_registrations = _selected_registrations(record, pack, handler_sources)
+    registration_sources = {item.source for item in selected_registrations}
+    selected_handler_sources = {item.source for item in selected_handlers}
     payload = {
         "extractor_generation": pack.generation,
         "registrations": [asdict(item) for item in selected_registrations],
@@ -838,13 +864,18 @@ def _source_structure_evidence(
         "config_references": [
             asdict(item)
             for item in pack.config_references
-            if item.handler_name in handler_names or item.function_name in related_functions
+            if item.handler_source in selected_handler_sources
         ],
-        "symbols": [asdict(item) for item in pack.symbols if item.owner in related_owners],
+        "symbols": [
+            asdict(item)
+            for item in pack.symbols
+            if item.owner_source in selected_handler_sources
+            or item.owner_source in registration_sources
+        ],
         "permission_constraints": [
             asdict(item)
             for item in pack.permission_constraints
-            if item.owner in registration_owners
+            if item.owner_source in registration_sources
         ],
         "opaque_or_partial": bool(pack.partial_errors),
     }
@@ -861,9 +892,13 @@ def _source_structure_evidence(
 def _selected_registrations(
     record: CapabilityRecord,
     pack: CapabilitySourceEvidencePack,
-    handlers: tuple[_FunctionReference, ...],
+    handler_sources: tuple[SourceSpan, ...],
 ) -> tuple[RegistrationAnchor, ...]:
-    handler_names = {item.function for item in handlers}
+    handler_source_keys = {_source_location_key(item) for item in handler_sources}
+    selected_handlers = tuple(
+        item for item in pack.handlers if _source_location_key(item.source) in handler_source_keys
+    )
+    handler_names = {item.name for item in selected_handlers}
     observed_entries = {
         value
         for field in (
@@ -888,17 +923,27 @@ def _selected_registrations(
         for value in tuple(observed_entries)
         for separator in separators
     )
-    selected_handlers = tuple(item for item in pack.handlers if item.name in handler_names)
     matcher_names = {name for item in selected_handlers for name in item.matcher_names}
-    return tuple(
+    entry_candidates = tuple(
         item
         for item in pack.registrations
-        if (
-            set(item.handlers).intersection(handler_names)
-            or (item.matcher_name is not None and item.matcher_name in matcher_names)
-        )
-        and (not item.entries or bool(set(item.entries).intersection(observed_entries)))
+        if not item.entries or bool(set(item.entries).intersection(observed_entries))
     )
+    precise = tuple(
+        item
+        for item in entry_candidates
+        if item.matcher_name is not None and item.matcher_name in matcher_names
+    )
+    if len(precise) == 1:
+        return precise
+    if len(precise) > 1:
+        raise CapabilityAnalysisAdapterError("Matcher registration source is ambiguous")
+    fallback = tuple(
+        item for item in entry_candidates if set(item.handlers).intersection(handler_names)
+    )
+    if len(fallback) > 1:
+        raise CapabilityAnalysisAdapterError("Matcher registration source is ambiguous")
+    return fallback
 
 
 def _bounded_evidence_json(payload: object, label: str) -> str:
@@ -912,6 +957,10 @@ def _bounded_evidence_json(payload: object, label: str) -> str:
     if not content or len(content) > _MAX_FUNCTION_CHARS:
         raise CapabilityAnalysisAdapterError(f"{label} exceeds the evidence budget")
     return content
+
+
+def _source_location_key(source: SourceSpan) -> tuple[str, int, int]:
+    return source.locator, source.line, source.end_line
 
 
 def _source_inventory_complete(errors: tuple[str, ...]) -> bool:
@@ -993,6 +1042,7 @@ def _valid_qualname(value: object) -> bool:
 
 def _handler_references(record: CapabilityRecord) -> tuple[_FunctionReference, ...]:
     references: set[_FunctionReference] = set()
+    fallback_binding_index = 0
     for value in _claim_values(record, "handler.references", evidence_kind="matcher_source"):
         if not isinstance(value, list):
             continue
@@ -1006,6 +1056,7 @@ def _handler_references(record: CapabilityRecord) -> tuple[_FunctionReference, .
             code_firstlineno = item.get("code_firstlineno")
             source_revision = item.get("source_revision")
             closure_freevars = item.get("closure_freevars", [])
+            binding_index = item.get("binding_index")
             if (
                 not isinstance(module, str)
                 or not _valid_module_name(module)
@@ -1034,9 +1085,27 @@ def _handler_references(record: CapabilityRecord) -> tuple[_FunctionReference, .
                     ),
                     source_revision=source_revision,
                     closure_freevars=tuple(sorted(set(closure_freevars))),
+                    binding_index=(
+                        binding_index
+                        if isinstance(binding_index, int)
+                        and not isinstance(binding_index, bool)
+                        and binding_index >= 0
+                        else fallback_binding_index
+                    ),
                 )
             )
-    return tuple(sorted(references, key=lambda item: (item.module, item.function, item.line or 0)))
+            fallback_binding_index += 1
+    return tuple(
+        sorted(
+            references,
+            key=lambda item: (
+                item.binding_index if item.binding_index is not None else 2**31,
+                item.module,
+                item.qualname or item.function,
+                item.code_firstlineno or item.line or 0,
+            ),
+        )
+    )
 
 
 def _config_references(record: CapabilityRecord) -> tuple[_ConfigReference, ...]:
@@ -1112,16 +1181,60 @@ def _config_references(record: CapabilityRecord) -> tuple[_ConfigReference, ...]
     )
 
 
+def _handler_code_identity(
+    module_root: str,
+    reference: _FunctionReference,
+) -> HandlerCodeIdentity | None:
+    if reference.qualname is None or reference.code_firstlineno is None:
+        return None
+    return HandlerCodeIdentity(
+        module_root=module_root,
+        module=reference.module,
+        function=reference.function,
+        qualname=reference.qualname,
+        firstlineno=reference.code_firstlineno,
+        source_revision=reference.source_revision,
+    )
+
+
+def _handler_code_identities(
+    module_root: str,
+    handlers: tuple[_FunctionReference, ...],
+) -> tuple[HandlerCodeIdentity, ...]:
+    accepted: dict[HandlerCodeIdentity, HandlerCodeIdentity] = {}
+    for reference in handlers:
+        identity = _handler_code_identity(module_root, reference)
+        if identity is None:
+            raise CapabilityAnalysisAdapterError("handler code identity is unavailable")
+        accepted.setdefault(identity, identity)
+    if not accepted:
+        raise CapabilityAnalysisAdapterError("capability has no readable bounded handler evidence")
+    return tuple(accepted)
+
+
 def _analysis_targets(
+    module_root: str,
     handlers: tuple[_FunctionReference, ...],
     config_references: tuple[_ConfigReference, ...],
 ) -> tuple[_FunctionReference, ...]:
-    targets: dict[tuple[str, str], _FunctionReference] = {
-        (item.module, item.function): item for item in handlers
+    handler_targets: dict[HandlerCodeIdentity, _FunctionReference] = {}
+    for reference in handlers:
+        identity = _handler_code_identity(module_root, reference)
+        if identity is None:
+            raise CapabilityAnalysisAdapterError("handler code identity is unavailable")
+        handler_targets.setdefault(identity, reference)
+    if len(handler_targets) > _MAX_FUNCTIONS:
+        raise CapabilityAnalysisAdapterError("capability handler count exceeds budget")
+
+    handler_symbols = {
+        (item.module, item.function, item.source_revision) for item in handler_targets.values()
     }
+    config_targets: dict[tuple[str, str, int, str], _FunctionReference] = {}
     for item in config_references:
-        targets.setdefault(
-            (item.module, item.function),
+        if (item.module, item.function, item.source_revision) in handler_symbols:
+            continue
+        config_targets.setdefault(
+            (item.module, item.function, item.line or 0, item.source_revision),
             _FunctionReference(
                 item.module,
                 item.function,
@@ -1132,9 +1245,66 @@ def _analysis_targets(
                 (),
             ),
         )
-    return tuple(
-        sorted(targets.values(), key=lambda item: (item.module, item.function, item.line or 0))
-    )[:_MAX_FUNCTIONS]
+    ordered_handlers = tuple(
+        sorted(
+            handler_targets.values(),
+            key=lambda item: (
+                item.binding_index if item.binding_index is not None else 2**31,
+                item.module,
+                item.qualname or item.function,
+                item.code_firstlineno or 0,
+            ),
+        )
+    )
+    remaining = _MAX_FUNCTIONS - len(ordered_handlers)
+    ordered_config = tuple(
+        sorted(
+            config_targets.values(),
+            key=lambda item: (item.module, item.function, item.line or 0),
+        )
+    )[:remaining]
+    return (*ordered_handlers, *ordered_config)
+
+
+def _resolve_analysis_targets(
+    targets: tuple[_FunctionReference, ...],
+    *,
+    module_root: str,
+    source_root: tuple[Path, bool],
+    parsed_modules: dict[str, _ParsedModule],
+) -> tuple[_ResolvedAnalysisTarget, ...]:
+    resolved: list[_ResolvedAnalysisTarget] = []
+    for target in targets:
+        parsed = parsed_modules.get(target.module)
+        if parsed is None:
+            if len(parsed_modules) >= _MAX_MODULES:
+                continue
+            parsed = _load_parsed_module(target.module, module_root, source_root)
+            if parsed is None:
+                continue
+            parsed_modules[target.module] = parsed
+        if parsed.revision != target.source_revision:
+            continue
+        function = _select_reference_function(parsed, target)
+        if function is None:
+            continue
+        content = _function_source(parsed.source, function)
+        source = _function_source_span(parsed, function)
+        if content is None or source is None or len(content) > _MAX_FUNCTION_CHARS:
+            continue
+        resolved.append(
+            _ResolvedAnalysisTarget(
+                reference=target,
+                content=content,
+                source=source,
+                handler_identity=(
+                    _handler_code_identity(module_root, target)
+                    if target.binding_index is not None
+                    else None
+                ),
+            )
+        )
+    return tuple(resolved)
 
 
 def _plugin_source_root(module_root: str) -> tuple[Path, bool]:
@@ -1182,6 +1352,7 @@ def _load_parsed_module(
     digest = hashlib.sha256(source.encode("utf-8", errors="surrogatepass")).hexdigest()
     return _ParsedModule(
         module=module,
+        locator=(path.relative_to(source_root[0]).as_posix() if source_root[1] else path.name),
         source=source,
         revision=f"sha256:{digest}",
         tree=tree,
@@ -1232,6 +1403,20 @@ def _select_function(
     return matches[0] if len(matches) == 1 else None
 
 
+def _select_reference_function(
+    parsed: _ParsedModule,
+    reference: _FunctionReference,
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    if reference.qualname is not None and reference.code_firstlineno is not None:
+        return _exact_runtime_function(
+            parsed.tree,
+            function_name=reference.function,
+            qualname=reference.qualname,
+            firstlineno=reference.code_firstlineno,
+        )
+    return _select_function(parsed.functions, reference.function, reference.line)
+
+
 def _exact_runtime_function(
     tree: ast.Module,
     *,
@@ -1274,6 +1459,22 @@ def _function_source(
         return None
     content = textwrap.dedent("".join(lines[function.lineno - 1 : end_line])).rstrip()
     return content or None
+
+
+def _function_source_span(
+    parsed: _ParsedModule,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> SourceSpan | None:
+    end_line = function.end_lineno
+    segment = ast.get_source_segment(parsed.source, function)
+    if end_line is None or segment is None:
+        return None
+    return SourceSpan(
+        locator=parsed.locator,
+        line=function.lineno,
+        end_line=end_line,
+        digest=hashlib.sha256(segment.encode("utf-8")).hexdigest(),
+    )
 
 
 def _declared_teaching_evidence(
@@ -1388,6 +1589,7 @@ def _evidence_id(capability_id: str, module: str, function: str) -> str:
 __all__ = (
     "AnalysisSourcePolicy",
     "CapabilityAnalysisAdapterError",
+    "HandlerCodeIdentity",
     "ParameterizedHandlerCodeIdentity",
     "build_capability_analysis_request",
     "build_parameterized_family_analysis_request",

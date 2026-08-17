@@ -199,6 +199,17 @@ class CapabilityAnnotationService:
                 if (plugin_module is None or item.plugin_module == plugin_module)
                 and (force or item.request.capability.capability_id not in reusable_annotations)
             ]
+            logger.info(
+                "NoneBot Triage 教学注释刷新开始：refresh_id={}, eligible={}, cached={}, "
+                "pending={}, plugin_groups={}, max_plugin_concurrency={}, scope={}",
+                refresh_id,
+                len(prepared),
+                len(reusable_annotations),
+                len(missing),
+                len({item.plugin_module for item in missing}),
+                self._max_plugin_concurrency,
+                plugin_module or "all",
+            )
             attempts = await self._analyze_missing(missing, refresh_id=refresh_id, cached=cached)
             failed_units = [attempt.item for attempt in attempts if attempt.annotation is None]
             failed = len(failed_units)
@@ -239,13 +250,12 @@ class CapabilityAnnotationService:
                 if len(disabled_units) > len(labels):
                     labels.append(f"...+{len(disabled_units) - len(labels)}")
                 logger.warning(
-                    "NoneBot Triage disabled {} public teaching units because the model "
-                    "could not establish a complete safe contract: {}",
+                    "NoneBot Triage 已关闭 {} 个公开教学单元：模型未能建立完整的安全合同；units={}",
                     len(disabled_units),
                     ", ".join(labels),
                 )
             logger.info(
-                "NoneBot Triage capability annotations refreshed: eligible={}, cached={}, "
+                "NoneBot Triage 教学注释刷新完成：eligible={}, cached={}, "
                 "generated={}, disabled={}, family_eligible={}, family_disabled={}, "
                 "family_failed={}, skipped={}, failed={}, plugin_groups={}, "
                 "max_plugin_concurrency={}",
@@ -321,7 +331,7 @@ class CapabilityAnnotationService:
             )
         except Exception as error:
             logger.warning(
-                "NoneBot Triage capability annotation failed: refresh_id={}, "
+                "NoneBot Triage 教学注释单元分析失败：refresh_id={}, "
                 "plugin_module={}, unit_label={}, unit_id={}, stage={}, reason={}, "
                 "duration_ms={}",
                 refresh_id,
@@ -344,7 +354,7 @@ class CapabilityAnnotationService:
                 )
             except Exception as error:
                 logger.warning(
-                    "NoneBot Triage capability annotation cache write failed ({})",
+                    "NoneBot Triage 教学注释缓存写入失败：error_type={}",
                     type(error).__name__,
                 )
         return _AnalysisAttempt(item, annotation)

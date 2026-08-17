@@ -19,6 +19,7 @@ from nbtriage.capability_annotations import (
     CapabilityTeachingEntry,
 )
 from nonebot_plugin_triage.capability_teaching_outputs import (
+    CapabilityTeachingOutputError,
     CapabilityTeachingOutputWriter,
 )
 
@@ -105,3 +106,34 @@ def test_writer_failure_keeps_previous_generation_pointer(
         writer.refresh(snapshot, lambda _capability_id: _annotation("新说明。"))
 
     assert (root / "current.json").read_bytes() == previous
+
+
+def test_empty_output_keeps_previous_generation_pointer(tmp_path: Path) -> None:
+    record = _record()
+    root = tmp_path / "capability-teaching"
+    writer = CapabilityTeachingOutputWriter(root)
+    snapshot = CapabilitySnapshot.create((record,))
+    writer.refresh(snapshot, lambda _capability_id: _annotation("旧说明。"))
+    previous = (root / "current.json").read_bytes()
+
+    with pytest.raises(
+        CapabilityTeachingOutputError,
+        match="teaching output contains no documents",
+    ):
+        writer.refresh(snapshot, lambda _capability_id: None)
+
+    assert (root / "current.json").read_bytes() == previous
+    assert len(tuple((root / "objects").iterdir())) == 1
+
+
+def test_empty_first_generation_does_not_create_current_pointer(tmp_path: Path) -> None:
+    root = tmp_path / "capability-teaching"
+
+    with pytest.raises(CapabilityTeachingOutputError):
+        CapabilityTeachingOutputWriter(root).refresh(
+            CapabilitySnapshot.create((_record(),)),
+            lambda _capability_id: None,
+        )
+
+    assert not (root / "current.json").exists()
+    assert not (root / "objects").exists()
