@@ -1,5 +1,8 @@
 # ADR-0018：只用 LocalStore 保存显式启用的 trial 审计日志
 
+> 2026-08-17：[ADR-0089](0089-persist-redacted-pydantic-ai-agent-traces.md) 窄范围替代本 ADR 第 8 条中
+> “模型 trace 不写入 LocalStore”的决定；trial 审计、原始运行状态和自动遥测边界保持不变。
+
 ## 状态
 
 已采纳

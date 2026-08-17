@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from importlib.util import find_spec
 from typing import Protocol
 
-from nonebot import logger
+from nonebot import get_driver, logger
 
+from nbtriage.agent_telemetry import AgentTelemetryRuntime
 from nbtriage.bug_logs import CorrelatedBugLogBuffer
 from nbtriage.capability_analysis import CapabilityAnalysisClient
 from nbtriage.incident_queries import IncidentQueryService
@@ -21,6 +22,7 @@ from nbtriage.support_threads import (
     OutboundThreadReferenceIndex,
     SupportThreadTurnCoordinator,
 )
+from nonebot_plugin_triage.agent_telemetry_runtime import create_agent_telemetry_runtime
 from nonebot_plugin_triage.bug_assessment_runtime import (
     BugAssessmentServiceLike,
     create_bug_assessment_runtime_service,
@@ -118,6 +120,7 @@ def _create_outgoing_reference_providers(
 
 @dataclass(frozen=True)
 class NBTriagePluginRuntime:
+    agent_telemetry: AgentTelemetryRuntime | None
     observer: NoneBotRuntimeObserver
     reference_bridge: UniversalReferenceBridge
     thread_reference_bridge: SupportThreadReferenceBridge
@@ -154,7 +157,13 @@ def create_plugin_runtime(
         [NBTriageConfig], PublicGuidanceServiceLike
     ] = _create_public_guidance_service,
     trial_service_factory: Callable[[NBTriageConfig], LiveTrialService] = (create_trial_service),
+    agent_telemetry_factory: Callable[
+        [NBTriageConfig], AgentTelemetryRuntime | None
+    ] = create_agent_telemetry_runtime,
 ) -> NBTriagePluginRuntime:
+    agent_telemetry = agent_telemetry_factory(config)
+    if agent_telemetry is not None:
+        get_driver().on_shutdown(agent_telemetry.shutdown)
     runtime_buffer = RuntimeObservationBuffer(
         max_entries=config.nbtriage_observation_max_entries,
         retention_seconds=config.nbtriage_observation_retention_seconds,
@@ -257,6 +266,7 @@ def create_plugin_runtime(
         log_buffer=bug_log_buffer,
     )
     return NBTriagePluginRuntime(
+        agent_telemetry=agent_telemetry,
         observer=observer,
         reference_bridge=reference_bridge,
         thread_reference_bridge=thread_reference_bridge,

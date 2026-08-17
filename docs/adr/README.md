@@ -89,3 +89,4 @@
 | [ADR-0086](0086-treat-model-evaluation-as-a-quality-label.md) | 已采纳；已实现 | held-out 只提供公开质量标签；未评测模型可运行全部任务并在相同安全合同下写入本地 Bug Problem |
 | [ADR-0087](0087-validate-and-factor-runtime-command-aliases-for-teaching-usages.md) | 已采纳；已实现，待新模型评测 | Runtime 拥有别名真值，模型只生成可展开验证的紧凑触发表达式；失败一次重试后确定性回退 |
 | [ADR-0088](0088-bound-capability-annotation-concurrency-by-plugin.md) | 已采纳；已实现 | 教学注释按插件有限并发、插件内顺序生成；复用全局模型 timeout，只新增插件并发上限 |
+| [ADR-0089](0089-persist-redacted-pydantic-ai-agent-traces.md) | 已采纳；已实现 | 用 Pydantic AI 原生 OpenTelemetry spans 记录无正文 Agent 调用轨迹，并轮转写入 LocalStore data |

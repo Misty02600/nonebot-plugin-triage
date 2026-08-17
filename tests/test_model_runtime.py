@@ -202,6 +202,7 @@ def test_plugin_runtime_owns_optional_model_service(monkeypatch: pytest.MonkeyPa
             nbtriage_restricted_config=frozenset({"DISCORD_BOTS"}),
         ),
         model_service_factory=lambda _: service,
+        agent_telemetry_factory=lambda _: None,
     )
 
     assert runtime.model_service is service
@@ -223,6 +224,7 @@ def test_plugin_runtime_degrades_when_legacy_model_service_is_unavailable(
             nbtriage_model_name="deepseek-v4-flash",
         ),
         model_service_factory=unavailable,
+        agent_telemetry_factory=lambda _: None,
     )
 
     assert runtime.model_service is None

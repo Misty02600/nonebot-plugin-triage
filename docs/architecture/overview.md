@@ -93,6 +93,12 @@ ID 不上传；源码、日志和配置仍执行秘密清理。Probe、GitHub �
 和维护者枚举反馈，本地 JSONL 有界轮转；但 v7 当前不签发该授权，现行 `triage` 不会新增 incident 或 trial。
 模型 shadow 与 canary 只有在未来重新接入并通过独立决定后才有意义。
 
+生产 Pydantic AI Agent 共用脱敏 OpenTelemetry instrumentation。启用模型 transport 时，Agent run、模型请求
+和工具执行 spans 经过 Triage 字段白名单后写入 LocalStore data 的轮转 `agent-traces.jsonl`；它保留 trace ID、
+耗时、状态、Provider/model、token、费用和安全任务关联，不保留 Prompt、源码、模型原文、工具参数/结果、
+异常正文或配置值。telemetry 失败只关闭诊断记录，不阻断模型任务；完整边界见
+[ADR-0089](../adr/0089-persist-redacted-pydantic-ai-agent-traces.md)。
+
 该方向的核心不是“用 LLM 从群聊识别 Bug”。调研已发现 AstrBot BugCatcher 覆盖静默监听、LLM 识别、
 去重与 Dashboard，NoneBot 也已有 Sentry 错误跟踪。NoneBot Triage Agent 的产品边界保持在“显式支持分流、
 疑似故障与运行证据关联、NoneBot 责任层定位、最小补证和可审计验证”。长期决策见

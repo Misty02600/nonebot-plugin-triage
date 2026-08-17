@@ -21,6 +21,7 @@ dependencies = [
     "nonebot-plugin-alconna>=0.62,<0.63",
     "nonebot-plugin-localstore>=0.7.4,<0.8",
     "nonebot-plugin-orm[sqlite]>=0.8,<0.9",
+    "opentelemetry-sdk==1.44.0",
     "pydantic>=2.11",
     "pydantic-ai-harness==0.20.0",
     "pydantic-ai-slim==2.28.0",

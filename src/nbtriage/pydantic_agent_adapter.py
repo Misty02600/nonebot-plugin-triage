@@ -26,6 +26,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings, merge_model_settings
 from pydantic_ai.usage import RequestUsage, RunUsage
 
+from nbtriage.agent_telemetry import current_agent_instrumentation
 from nbtriage.bounded_agent import (
     AgentActionKind,
     AgentPolicyError,
@@ -144,6 +145,7 @@ class PydanticAIAgentStepClient:
             tools=tools,
             end_strategy="early",
         )
+        agent.instrument = current_agent_instrumentation()
         prompt = json.dumps(request.prompt_payload(), ensure_ascii=False, sort_keys=True)
         model_settings = merge_model_settings(
             self._model_settings,

@@ -34,6 +34,7 @@ from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
 from pydantic_ai.usage import RunUsage
 
+from nbtriage.agent_telemetry import current_agent_instrumentation
 from nbtriage.capability_analysis import (
     CapabilityAnalysisEntryOutput,
     CapabilityAnalysisError,
@@ -488,7 +489,7 @@ class PydanticAICapabilityAnalysisClient:
             end_strategy="early",
             tool_timeout=min(timeout_seconds, 15.0),
         )
-        self._agent.instrument = False
+        self._agent.instrument = current_agent_instrumentation()
 
         @self._agent.output_validator
         def validate_usage_contract(
@@ -619,6 +620,15 @@ class PydanticAICapabilityAnalysisClient:
                     result = await self._agent.run(
                         _build_payload(request),
                         deps=request,
+                        metadata={
+                            "nbtriage.task": "capability_annotation",
+                            "nbtriage.capability_id": request.capability.capability_id,
+                            "nbtriage.plugin_module": (
+                                request.source_context.module_name
+                                if request.source_context is not None
+                                else request.capability.owner
+                            ),
+                        },
                         retries={"tools": 1, "output": 5},
                         toolsets=(
                             tuple(

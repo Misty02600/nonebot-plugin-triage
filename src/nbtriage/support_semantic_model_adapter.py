@@ -13,6 +13,7 @@ from pydantic_ai.messages import ModelMessage, ModelResponse
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings, merge_model_settings
 
+from nbtriage.agent_telemetry import current_agent_instrumentation
 from nbtriage.support_semantics import (
     SupportAssessmentRequest,
     SupportSemanticAssessment,
@@ -137,7 +138,7 @@ class PydanticAISupportSemanticClient:
             retries={"tools": 0, "output": 0},
             end_strategy="early",
         )
-        self._agent.instrument = False
+        self._agent.instrument = current_agent_instrumentation()
 
     @property
     def last_response(self) -> ModelResponse | None:

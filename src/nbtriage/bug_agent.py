@@ -23,6 +23,7 @@ from pydantic_ai.settings import ModelSettings, merge_model_settings
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RunUsage
 
+from nbtriage.agent_telemetry import current_agent_instrumentation
 from nbtriage.bug_assessment import (
     BUG_ASSESSMENT_MAX_TOOL_CALLS,
     BUG_CONVERSATION_MAX_TOOL_CALLS,
@@ -261,7 +262,7 @@ class PydanticAIBugAssessmentAgent:
             end_strategy="early",
             tool_timeout=min(timeout_seconds, 15.0),
         )
-        self._agent.instrument = False
+        self._agent.instrument = current_agent_instrumentation()
 
     @property
     def last_response(self) -> ModelResponse | None:

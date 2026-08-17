@@ -68,6 +68,7 @@ class NBTriageConfig(BaseModel):
     nbtriage_model_name: ModelName | None = None
     nbtriage_model_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
     nbtriage_model_max_output_tokens: int = Field(default=240, ge=1, le=8_192)
+    nbtriage_agent_trace_enabled: bool = True
     nbtriage_capability_annotation_max_concurrency: int = Field(default=4, ge=1, le=32)
     nbtriage_restricted_config: frozenset[str] = Field(default_factory=frozenset)
     nbtriage_evidence_denied_patterns: tuple[str, ...] = ()

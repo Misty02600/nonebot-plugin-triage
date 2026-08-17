@@ -18,6 +18,7 @@ os.environ["NBTRIAGE_MODEL_BACKEND"] = "opencode-go-chat"
 os.environ["NBTRIAGE_MODEL_NAME"] = "deepseek-v4-flash"
 os.environ["NBTRIAGE_MODEL_TIMEOUT_SECONDS"] = "60"
 os.environ["NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS"] = "240"
+os.environ["NBTRIAGE_AGENT_TRACE_ENABLED"] = "false"
 os.environ["OPENCODE_API_KEY"] = "test-only-not-a-secret"
 # 普通测试使用独立内存数据库；迁移 upgrade/check 由专用子进程用例验证。
 os.environ["SQLALCHEMY_DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"

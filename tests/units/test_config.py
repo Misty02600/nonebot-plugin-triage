@@ -52,6 +52,11 @@ def test_generic_pydantic_ai_model_backend_is_publicly_configurable() -> None:
     assert config.nbtriage_model_name == "google-gla:gemini-2.5-flash"
 
 
+def test_agent_trace_is_enabled_by_default_and_can_be_disabled() -> None:
+    assert NBTriageConfig().nbtriage_agent_trace_enabled is True
+    assert NBTriageConfig(nbtriage_agent_trace_enabled=False).nbtriage_agent_trace_enabled is False
+
+
 def test_restricted_config_normalizes_nonebot_roots() -> None:
     config = NBTriageConfig(
         nbtriage_restricted_config=frozenset(
