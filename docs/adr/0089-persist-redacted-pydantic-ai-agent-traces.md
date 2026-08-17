@@ -62,6 +62,8 @@
 - `nbtriage.agent_telemetry` 提供共享 Pydantic AI instrumentation、字段白名单 exporter、轮转与生命周期；
 - `nonebot_plugin_triage.agent_telemetry_runtime` 只在模型已配置且 trace 启用时解析固定 LocalStore data 文件；
 - 所有生产 Agent adapter 从同一运行时设置取 instrumentation，教学注释 run 额外绑定安全的 capability 上下文；
+- 教学注释在同一 exporter 中追加无正文 response-shape span，只记录 part 类型、各类字符数、工具名与可解析的
+  entry / claim / constraint 数量；截断或解析失败不会把部分正文降级写入轨迹；
 - 测试使用真实 Pydantic AI `TestModel` 验证 spans 可写、trace ID 可关联、Prompt / 模型输出 / 未批准 metadata /
   完整消息不落盘，并覆盖轮转、关闭时零路径解析和静态类型检查。
 

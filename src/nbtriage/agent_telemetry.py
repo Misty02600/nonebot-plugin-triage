@@ -16,6 +16,7 @@ from opentelemetry.sdk.trace.export import (
     SpanExportResult,
 )
 from pydantic_ai import InstrumentationSettings
+from pydantic_ai.messages import BaseToolCallPart, ModelResponse, TextPart, ThinkingPart
 
 _TRACE_SCHEMA_VERSION: Final[int] = 1
 _MAX_RECORD_BYTES: Final[int] = 32 * 1024
@@ -47,6 +48,18 @@ _SAFE_ATTRIBUTE_KEYS: Final[frozenset[str]] = frozenset(
         "gen_ai.usage.output_tokens",
         "model_name",
         "operation.cost",
+        "nbtriage.response.answer_markdown_chars",
+        "nbtriage.response.claim_count",
+        "nbtriage.response.constraint_count",
+        "nbtriage.response.entry_count",
+        "nbtriage.response.finish_reason",
+        "nbtriage.response.part_count",
+        "nbtriage.response.part_kinds",
+        "nbtriage.response.text_chars",
+        "nbtriage.response.thinking_chars",
+        "nbtriage.response.tool_argument_chars",
+        "nbtriage.response.tool_call_count",
+        "nbtriage.response.tool_names",
         "pydantic_ai.tool.failure_stage",
         "pydantic_ai.variable_instructions",
     }
@@ -221,6 +234,124 @@ def current_agent_instrumentation() -> AgentInstrumentation:
     return _active_instrumentation
 
 
+def record_agent_response_shape(
+    response: ModelResponse | None,
+    *,
+    metadata: Mapping[str, str],
+) -> None:
+    """记录不含正文的模型响应形状，供生产失败诊断使用。
+
+    Args:
+        response: 最后一个已观察到的模型响应；没有响应时不写入轨迹。
+        metadata: 任务提供的关联字段，仍需经过既有 metadata 白名单。
+
+    Note:
+        诊断计算或 telemetry 写入失败不会影响原模型任务，也不会退化为保存响应正文。
+    """
+
+    runtime = _active_runtime
+    if runtime is None or response is None:
+        return
+    try:
+        attributes = _response_shape_attributes(response)
+        safe_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key in _SAFE_METADATA_KEYS and isinstance(value, str) and value
+        }
+        if safe_metadata:
+            attributes["metadata"] = json.dumps(
+                safe_metadata,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        tracer = runtime.provider.get_tracer("nbtriage.agent_telemetry")
+        with tracer.start_as_current_span(
+            "nbtriage agent response shape",
+            attributes=attributes,
+        ):
+            pass
+    except Exception:
+        return
+
+
+def _response_shape_attributes(response: ModelResponse) -> dict[str, Any]:
+    part_kinds: list[str] = []
+    tool_names: list[str] = []
+    text_chars = 0
+    thinking_chars = 0
+    tool_argument_chars = 0
+    structured_payloads: list[Mapping[str, Any]] = []
+
+    for part in response.parts:
+        part_kind = getattr(part, "part_kind", type(part).__name__)
+        part_kinds.append(str(part_kind))
+        if isinstance(part, TextPart):
+            text_chars += len(part.content)
+        elif isinstance(part, ThinkingPart):
+            thinking_chars += len(part.content)
+        elif isinstance(part, BaseToolCallPart):
+            tool_names.append(part.tool_name)
+            try:
+                encoded_arguments = part.args_as_json_str()
+            except (TypeError, ValueError):
+                encoded_arguments = ""
+            tool_argument_chars += len(encoded_arguments)
+            try:
+                arguments = part.args_as_dict()
+            except (TypeError, ValueError):
+                continue
+            if isinstance(arguments, Mapping):
+                structured_payloads.append(arguments)
+
+    attributes: dict[str, Any] = {
+        "nbtriage.response.part_count": len(response.parts),
+        "nbtriage.response.part_kinds": part_kinds,
+        "nbtriage.response.text_chars": text_chars,
+        "nbtriage.response.thinking_chars": thinking_chars,
+        "nbtriage.response.tool_argument_chars": tool_argument_chars,
+        "nbtriage.response.tool_call_count": len(tool_names),
+        "nbtriage.response.tool_names": tool_names,
+    }
+    if response.finish_reason is not None:
+        attributes["nbtriage.response.finish_reason"] = response.finish_reason
+    attributes.update(_structured_output_shape(structured_payloads))
+    return attributes
+
+
+def _structured_output_shape(payloads: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    entries: list[Mapping[str, Any]] = []
+    for payload in payloads:
+        raw_entries = payload.get("entries")
+        if not isinstance(raw_entries, list):
+            continue
+        entries.extend(item for item in raw_entries if isinstance(item, Mapping))
+    if not entries:
+        return {}
+
+    claim_count = 0
+    constraint_count = 0
+    answer_markdown_chars: list[int] = []
+    for entry in entries:
+        claims = entry.get("claims")
+        if isinstance(claims, list):
+            claim_count += len(claims)
+        constraints = entry.get("constraints")
+        if isinstance(constraints, list):
+            constraint_count += len(constraints)
+        answer_markdown = entry.get("answer_markdown")
+        if isinstance(answer_markdown, str):
+            answer_markdown_chars.append(len(answer_markdown))
+
+    return {
+        "nbtriage.response.answer_markdown_chars": answer_markdown_chars,
+        "nbtriage.response.claim_count": claim_count,
+        "nbtriage.response.constraint_count": constraint_count,
+        "nbtriage.response.entry_count": len(entries),
+    }
+
+
 def _span_record(span: ReadableSpan) -> dict[str, Any]:
     context = span.context
     parent = span.parent
@@ -333,4 +464,5 @@ __all__ = (
     "current_agent_instrumentation",
     "disable_agent_telemetry",
     "install_local_agent_telemetry",
+    "record_agent_response_shape",
 )

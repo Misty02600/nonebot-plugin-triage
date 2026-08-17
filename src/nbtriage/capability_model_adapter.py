@@ -34,7 +34,10 @@ from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
 from pydantic_ai.usage import RunUsage
 
-from nbtriage.agent_telemetry import current_agent_instrumentation
+from nbtriage.agent_telemetry import (
+    current_agent_instrumentation,
+    record_agent_response_shape,
+)
 from nbtriage.capability_analysis import (
     CapabilityAnalysisEntryOutput,
     CapabilityAnalysisError,
@@ -695,6 +698,18 @@ class PydanticAICapabilityAnalysisClient:
                 raise CapabilityModelAdapterError("capability model request failed") from error
             finally:
                 self._last_response = _last_model_response(captured_messages)
+                record_agent_response_shape(
+                    self._last_response,
+                    metadata={
+                        "nbtriage.task": "capability_annotation",
+                        "nbtriage.capability_id": request.capability.capability_id,
+                        "nbtriage.plugin_module": (
+                            request.source_context.module_name
+                            if request.source_context is not None
+                            else request.capability.owner
+                        ),
+                    },
+                )
         self._last_usage = result.usage
 
         response = self._last_response

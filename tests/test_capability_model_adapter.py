@@ -159,6 +159,37 @@ def test_agent_uses_native_output_and_bounded_source_payload() -> None:
     assert info.model_request_parameters.function_tools == []
 
 
+def test_analysis_records_last_response_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: dict[str, object] = {}
+
+    def capture_shape(response: ModelResponse | None, *, metadata: dict[str, str]) -> None:
+        observed.update(response=response, metadata=metadata)
+
+    monkeypatch.setattr(
+        "nbtriage.capability_model_adapter.record_agent_response_shape",
+        capture_shape,
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(
+            lambda _messages, _info: _native_response(),
+            model_name="fixture-model",
+            profile=_NATIVE_PROFILE,
+        ),
+        max_output_tokens=240,
+    )
+
+    asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    response = observed["response"]
+    assert isinstance(response, ModelResponse)
+    assert response.finish_reason == "stop"
+    assert observed["metadata"] == {
+        "nbtriage.task": "capability_annotation",
+        "nbtriage.capability_id": "plugin.demo:matcher.search",
+        "nbtriage.plugin_module": "plugin.demo",
+    }
+
+
 def test_prompt_requires_complete_usage_literal_affix_self_check() -> None:
     assert "固定字面量、成员变量和 parser 参数结构" in SYSTEM_INSTRUCTION
     assert "逐字符保留成员变量前后的全部固定字面量" in SYSTEM_INSTRUCTION

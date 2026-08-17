@@ -95,8 +95,9 @@ ID 不上传；源码、日志和配置仍执行秘密清理。Probe、GitHub �
 
 生产 Pydantic AI Agent 共用脱敏 OpenTelemetry instrumentation。启用模型 transport 时，Agent run、模型请求
 和工具执行 spans 经过 Triage 字段白名单后写入 LocalStore data 的轮转 `agent-traces.jsonl`；它保留 trace ID、
-耗时、状态、Provider/model、token、费用和安全任务关联，不保留 Prompt、源码、模型原文、工具参数/结果、
-异常正文或配置值。telemetry 失败只关闭诊断记录，不阻断模型任务；完整边界见
+耗时、状态、Provider/model、token、费用和安全任务关联。教学注释另记录最终响应的 part 类型、文本/思考/
+工具参数字符数和可解析结构数量，仍不保留 Prompt、源码、模型原文、工具参数/结果、异常正文或配置值。
+telemetry 失败只关闭诊断记录，不阻断模型任务；完整边界见
 [ADR-0089](../adr/0089-persist-redacted-pydantic-ai-agent-traces.md)。
 
 该方向的核心不是“用 LLM 从群聊识别 Bug”。调研已发现 AstrBot BugCatcher 覆盖静默监听、LLM 识别、
