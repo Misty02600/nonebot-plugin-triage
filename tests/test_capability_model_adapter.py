@@ -762,6 +762,24 @@ def test_length_finish_reason_is_classified_as_output_truncated() -> None:
     assert "finish_reason:length" in str(error_info.value)
 
 
+def test_request_timeout_is_classified_separately_from_transport_failure() -> None:
+    async def respond(_messages: object, _info: AgentInfo) -> ModelResponse:
+        await asyncio.sleep(0.05)
+        return _native_response()
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+        timeout_seconds=0.001,
+    )
+
+    with pytest.raises(CapabilityModelAdapterError) as error_info:
+        asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert error_info.value.reason_code is CapabilityModelAdapterReason.TIMEOUT
+    assert "timed out" in str(error_info.value)
+
+
 def test_disabled_output_contains_no_entries() -> None:
     response = ModelResponse(
         parts=[TextPart('{"knowledge_enabled":false,"entries":[]}')],

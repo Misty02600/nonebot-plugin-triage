@@ -126,6 +126,7 @@ SYSTEM_INSTRUCTION = """\
 
 
 class CapabilityModelAdapterReason(StrEnum):
+    TIMEOUT = "timeout"
     TRANSPORT = "transport"
     HTTP = "http"
     BUDGET = "budget"
@@ -684,7 +685,12 @@ class PydanticAICapabilityAnalysisClient:
                     f"capability model request failed with HTTP {error.status_code}",
                     reason_code=CapabilityModelAdapterReason.HTTP,
                 ) from error
-            except (ModelAPIError, TimeoutError) as error:
+            except TimeoutError as error:
+                raise CapabilityModelAdapterError(
+                    "capability model request timed out",
+                    reason_code=CapabilityModelAdapterReason.TIMEOUT,
+                ) from error
+            except ModelAPIError as error:
                 raise CapabilityModelAdapterError(
                     "capability model request failed during transport",
                     reason_code=CapabilityModelAdapterReason.TRANSPORT,
