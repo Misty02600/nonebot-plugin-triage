@@ -9,6 +9,9 @@ from pydantic_ai.settings import ModelSettings
 
 from nonebot_plugin_triage.config import NBTriageConfig
 
+_ALIBABA_CN_MODEL_PREFIX = "alibaba-cn:"
+_ALIBABA_CN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
 
 class TaskModelRuntimeConfigurationError(RuntimeError):
     pass
@@ -128,6 +131,28 @@ def create_task_model_binding(
                 raise TaskModelRuntimeConfigurationError(
                     "pydantic-ai model names must use provider:model"
                 )
+            if configured_model.startswith(_ALIBABA_CN_MODEL_PREFIX):
+                model_name = configured_model.removeprefix(_ALIBABA_CN_MODEL_PREFIX).strip()
+                if not model_name:
+                    raise TaskModelRuntimeConfigurationError(
+                        "alibaba-cn model name must not be empty"
+                    )
+                api_key = environment.get("ALIBABA_API_KEY") or environment.get("DASHSCOPE_API_KEY")
+                if not api_key or not api_key.strip():
+                    raise TaskModelRuntimeConfigurationError(
+                        "ALIBABA_API_KEY or DASHSCOPE_API_KEY is required for alibaba-cn"
+                    )
+                from pydantic_ai.models.openai import OpenAIChatModel
+                from pydantic_ai.providers.alibaba import AlibabaProvider
+
+                model = OpenAIChatModel(
+                    model_name,
+                    provider=AlibabaProvider(
+                        api_key=api_key,
+                        base_url=_ALIBABA_CN_BASE_URL,
+                    ),
+                )
+                return _binding(model, api_family="pydantic-ai")
             model = infer_model(configured_model)
             return _binding(
                 model,
