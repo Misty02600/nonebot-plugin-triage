@@ -599,7 +599,7 @@ def _alconna_candidate(
         analysis_issues.add(AnalysisIssue.EVIDENCE_INSUFFICIENT)
     confidence = CapabilityConfidence.HIGH if explicitly_public else CapabilityConfidence.MEDIUM
     arguments = _alconna_arguments(getattr(command, "args", None))
-    components = _alconna_components(getattr(command, "options", ()))
+    components = _alconna_matcher_components(matcher, command)
     alconna_constraints = set(constraints)
     if bool(getattr(command, "behaviors", ())):
         alconna_constraints.add("alconna_behaviors_opaque")
@@ -1041,28 +1041,77 @@ def _alconna_arguments(args: object) -> tuple[AlconnaArgument, ...]:
 def _alconna_components(value: object) -> tuple[AlconnaComponent, ...]:
     if not isinstance(value, Sequence) or isinstance(value, str | bytes):
         return ()
-    result: list[AlconnaComponent] = []
+    return tuple(
+        converted
+        for component in value
+        if (converted := _alconna_component(component)) is not None
+    )
+
+
+def _alconna_component(
+    component: object,
+    *,
+    nested: tuple[AlconnaComponent, ...] | None = None,
+) -> AlconnaComponent | None:
+    name = _safe_text(getattr(component, "name", None))
+    if name is None:
+        return None
+    raw_nested = getattr(component, "options", None)
+    kind = "subcommand" if isinstance(raw_nested, Sequence) else "option"
+    compact_value = getattr(component, "compact", None)
+    compact = compact_value if isinstance(compact_value, bool) else None
+    return AlconnaComponent(
+        kind=kind,
+        name=name,
+        aliases=_safe_string_sequence(getattr(component, "aliases", ())),
+        help_text=_safe_text(getattr(component, "help_text", None)),
+        requires=_safe_string_sequence(getattr(component, "requires", ())),
+        compact=compact,
+        arguments=_alconna_arguments(getattr(component, "args", None)),
+        components=_alconna_components(raw_nested) if nested is None else nested,
+    )
+
+
+def _alconna_matcher_components(
+    matcher: object,
+    command: object,
+) -> tuple[AlconnaComponent, ...]:
+    options = getattr(command, "options", ())
+    basepath = getattr(matcher, "basepath", None)
+    if not isinstance(basepath, str):
+        raise ValueError("Alconna matcher dispatch path is unavailable")
+    if not basepath:
+        return _alconna_components(options)
+    if basepath == "$main":
+        return ()
+
+    path = tuple(segment for segment in basepath.split(".") if segment)
+    scoped = _alconna_component_path(options, path)
+    if scoped is None:
+        raise ValueError("Alconna matcher dispatch path cannot be resolved")
+    return (scoped,)
+
+
+def _alconna_component_path(
+    value: object,
+    path: tuple[str, ...],
+) -> AlconnaComponent | None:
+    if not path or not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return None
+    head, *tail = path
     for component in value:
-        name = _safe_text(getattr(component, "name", None))
-        if name is None:
+        if _safe_text(getattr(component, "dest", None)) != head:
             continue
-        nested = getattr(component, "options", None)
-        kind = "subcommand" if isinstance(nested, Sequence) else "option"
-        compact_value = getattr(component, "compact", None)
-        compact = compact_value if isinstance(compact_value, bool) else None
-        result.append(
-            AlconnaComponent(
-                kind=kind,
-                name=name,
-                aliases=_safe_string_sequence(getattr(component, "aliases", ())),
-                help_text=_safe_text(getattr(component, "help_text", None)),
-                requires=_safe_string_sequence(getattr(component, "requires", ())),
-                compact=compact,
-                arguments=_alconna_arguments(getattr(component, "args", None)),
-                components=_alconna_components(nested),
-            )
-        )
-    return tuple(result)
+        converted = _alconna_component(component)
+        if converted is None or converted.kind != "subcommand":
+            return None
+        if not tail:
+            return converted
+        nested = _alconna_component_path(getattr(component, "options", ()), tuple(tail))
+        if nested is None:
+            return None
+        return _alconna_component(component, nested=(nested,))
+    return None
 
 
 _MISSING = object()

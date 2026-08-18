@@ -307,6 +307,51 @@ def test_zero_or_more_alconna_argument_is_not_marked_required(
     command_manager.delete(command)
 
 
+def test_alconna_dispatch_matchers_only_expose_their_own_subcommand_scope(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = Alconna(
+        "bili",
+        Subcommand("help"),
+        Subcommand("new", Args["uid", str]["count?", int]),
+        Subcommand("list"),
+        namespace=f"snapshot-{uuid4().hex}",
+    )
+    root = on_alconna(command)
+    main = root.dispatch("$main")
+    help_matcher = root.dispatch("help")
+    new_matcher = root.dispatch("new")
+    try:
+        plugin = _plugin(tmp_path, monkeypatch, {main, help_matcher, new_matcher})
+
+        snapshot = build_capability_snapshot(
+            plugins=[plugin],
+            explicit_public_alconna_paths={command.path},
+        )
+
+        assert len(snapshot.records) == 3
+        components = [
+            _record_values(record, "command.components") for record in snapshot.records
+        ]
+        assert components.count(()) == 1
+        scoped = {
+            values[0][0]["name"]: values[0][0]
+            for values in components
+            if values
+        }
+        assert set(scoped) == {"help", "new"}
+        assert scoped["help"]["components"] == []
+        assert [item["name"] for item in scoped["new"]["arguments"]] == ["uid", "count"]
+    finally:
+        for matcher in (main, help_matcher, new_matcher):
+            with suppress(ValueError, KeyError):
+                matchers[matcher.priority].remove(matcher)
+        root.clean()
+        with suppress(ValueError, KeyError):
+            command_manager.delete(command)
+
+
 def test_superuser_and_custom_constraints_fail_closed_without_execution(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
