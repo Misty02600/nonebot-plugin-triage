@@ -47,6 +47,7 @@ from nbtriage.capability_annotations import (
     CapabilityAnnotationEvidenceRef,
     CapabilityTeachingAnnotation,
     CapabilityTeachingRequirement,
+    capability_analysis_fingerprint,
     project_capability_annotation,
     validate_capability_usage_pattern,
 )
@@ -724,19 +725,49 @@ def test_annotation_revision_isolated_by_custom_endpoint_without_exposing_url() 
     assert "second.example" not in second_revision
 
 
-def test_qwen36_annotation_revision_binds_provider_settings_and_timeout() -> None:
-    revision = capability_annotation_analysis_revision(
+def test_qwen36_annotation_revision_binds_provider_settings_and_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nonebot_plugin_triage.capability_annotation_runtime as annotation_runtime
+
+    config = NBTriageConfig(
+        nbtriage_model_name="alibaba:qwen3.6-flash",
+        nbtriage_model_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        nbtriage_model_timeout_seconds=300,
+    )
+    revision = capability_annotation_analysis_revision(config)
+
+    default_timeout_revision = capability_annotation_analysis_revision(
         NBTriageConfig(
             nbtriage_model_name="alibaba:qwen3.6-flash",
             nbtriage_model_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+    )
+    monkeypatch.setattr(
+        annotation_runtime,
+        "task_model_settings_revision",
+        lambda _provider, _model: "alternate-settings-revision",
+    )
+    alternate_settings_revision = capability_annotation_analysis_revision(config)
+
+    assert revision != default_timeout_revision
+    assert revision != alternate_settings_revision
+    assert len(revision) <= 256
+    assert capability_analysis_fingerprint(_request(), analysis_revision=revision)
+    assert "dashscope.aliyuncs.com" not in revision
+
+
+def test_opencode_go_custom_timeout_revision_fits_fingerprint_identifier_budget() -> None:
+    revision = capability_annotation_analysis_revision(
+        NBTriageConfig(
+            nbtriage_model_name="openai-chat:deepseek-v4-flash",
+            nbtriage_model_base_url="https://opencode.ai/zen/go/v1",
             nbtriage_model_timeout_seconds=300,
         )
     )
 
-    assert "alibaba-qwen3.6-non-thinking-v2" in revision
-    assert "timeout-300" in revision
-    assert "output-16384" in revision
-    assert "dashscope.aliyuncs.com" not in revision
+    assert len(revision) <= 256
+    assert capability_analysis_fingerprint(_request(), analysis_revision=revision)
 
 
 def test_domain_analysis_error_is_classified_as_output_validation() -> None:
@@ -815,10 +846,13 @@ async def test_prepare_error_skips_only_the_invalid_teaching_unit(
             raise CapabilityAnalysisError("evidence units contain duplicate evidence IDs")
         return _request(record.capability_id)
 
+    import nonebot_plugin_triage.capability_annotations as capability_annotations_module
+
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
-        build_request,
+        capability_annotations_module, "build_capability_analysis_request", build_request
     )
+    logger = _RecordingLogger()
+    monkeypatch.setattr(capability_annotations_module, "logger", logger)
     service = CapabilityAnnotationService(
         tmp_path / "annotations.json",
         client_factory=lambda: FakeCapabilityAnalysisClient(_output()),
@@ -840,6 +874,7 @@ async def test_prepare_error_skips_only_the_invalid_teaching_unit(
     assert status.generated_count == 1
     assert service.get("command:invalid") is None
     assert service.get("command:valid") is not None
+    assert logger.infos[1][1][-1] == '{"request_validation": 1}'
 
 
 @pytest.mark.asyncio
@@ -1025,11 +1060,12 @@ async def test_failed_teaching_unit_log_has_safe_location_and_reason(
         ),
     )
     assert logger.infos[1] == (
-        "NoneBot Triage 教学注释准备完成：refresh_id={}, eligible={}, skipped={}",
+        "NoneBot Triage 教学注释准备完成：refresh_id={}, eligible={}, skipped={}, skip_reasons={}",
         (
             "0123456789abcdef0123456789abcdef",
             1,
             0,
+            "{}",
         ),
     )
     assert logger.infos[2] == (

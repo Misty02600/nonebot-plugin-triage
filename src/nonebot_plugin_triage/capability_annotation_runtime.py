@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
@@ -152,12 +153,19 @@ def capability_annotation_analysis_revision(config: NBTriageConfig) -> str:
     ):
         return CAPABILITY_ANNOTATION_ANALYSIS_REVISION
     transport = model.split(":", 1)[0] if ":" in model else "none"
-    return (
-        f"{CAPABILITY_ANNOTATION_ANALYSIS_REVISION}:unverified:{transport}:{model}:"
-        f"{connection_revision}:{settings_revision}:"
-        f"timeout-{config.nbtriage_model_timeout_seconds:g}:"
-        f"output-{CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS}"
+    runtime_identity = "\0".join(
+        (
+            CAPABILITY_ANNOTATION_ANALYSIS_REVISION,
+            transport,
+            model,
+            connection_revision,
+            settings_revision,
+            f"timeout-{config.nbtriage_model_timeout_seconds:g}",
+            f"output-{CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS}",
+        )
     )
+    digest = hashlib.sha256(runtime_identity.encode("utf-8")).hexdigest()
+    return f"{CAPABILITY_ANNOTATION_TASK}:runtime-v1:sha256:{digest}"
 
 
 def _capability_annotation_qualification(

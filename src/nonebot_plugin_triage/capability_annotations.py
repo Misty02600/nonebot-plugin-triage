@@ -170,7 +170,7 @@ class CapabilityAnnotationService:
                 len(cached),
                 plugin_module or "all",
             )
-            prepared, skipped = await asyncio.to_thread(
+            prepared, skipped, skip_reasons = await asyncio.to_thread(
                 self._prepare,
                 snapshot,
                 cached,
@@ -178,10 +178,12 @@ class CapabilityAnnotationService:
                 force_all=force and plugin_module is None,
             )
             logger.info(
-                "NoneBot Triage 教学注释准备完成：refresh_id={}, eligible={}, skipped={}",
+                "NoneBot Triage 教学注释准备完成：refresh_id={}, eligible={}, skipped={}, "
+                "skip_reasons={}",
                 refresh_id,
                 len(prepared),
                 skipped,
+                json.dumps(dict(skip_reasons), ensure_ascii=True, sort_keys=True),
             )
             known_plugins = {item.plugin_module for item in prepared}
             if plugin_module is not None and plugin_module not in known_plugins:
@@ -388,9 +390,10 @@ class CapabilityAnnotationService:
         force_plugins: frozenset[str] = frozenset(),
         *,
         force_all: bool = False,
-    ) -> tuple[tuple[_PreparedAnalysis, ...], int]:
+    ) -> tuple[tuple[_PreparedAnalysis, ...], int, tuple[tuple[str, int], ...]]:
         prepared: list[_PreparedAnalysis] = []
         skipped = 0
+        skip_reasons: dict[str, int] = {}
         source_pack_cache: dict[str, CapabilitySourceEvidencePack] = {}
         eligible = _ordered_eligible_records(snapshot.records)
         family_records: dict[ParameterizedHandlerCodeIdentity, list[CapabilityRecord]] = {}
@@ -411,6 +414,7 @@ class CapabilityAnnotationService:
         for record in eligible:
             if record.capability_id in invalid_identity_ids:
                 skipped += 1
+                _increment_skip_reason(skip_reasons, "invalid_handler_identity")
                 continue
             identity = identity_by_capability.get(record.capability_id)
             if identity is None:
@@ -424,6 +428,7 @@ class CapabilityAnnotationService:
                 # 同一 Handler 代码身份若还绑定未准入成员，首版不拆分或越过披露边界。
                 family_records.pop(identity)
                 skipped += 1
+                _increment_skip_reason(skip_reasons, "incomplete_parameterized_family")
 
         analysis_groups: list[tuple[CapabilityRecord, ...]] = [
             (record,) for record in regular_records
@@ -453,8 +458,9 @@ class CapabilityAnnotationService:
                 CapabilityAnalysisAdapterError,
                 CapabilityAnalysisError,
                 CapabilityAnnotationError,
-            ):
+            ) as error:
                 skipped += 1
+                _increment_skip_reason(skip_reasons, _preparation_skip_reason(error))
                 continue
             module_name = (
                 request.source_context.module_name
@@ -476,7 +482,7 @@ class CapabilityAnnotationService:
                     members,
                 )
             )
-        return tuple(prepared), skipped
+        return tuple(prepared), skipped, tuple(sorted(skip_reasons.items()))
 
     def _cached_evidence_is_current(
         self,
@@ -525,6 +531,18 @@ def _annotation_failure_reason(error: Exception) -> str:
     if isinstance(error, (CapabilityAnalysisError, CapabilityAnnotationError)):
         return CapabilityModelAdapterReason.OUTPUT_VALIDATION.value
     return CapabilityModelAdapterReason.UNKNOWN.value
+
+
+def _preparation_skip_reason(error: Exception) -> str:
+    if isinstance(error, CapabilityAnalysisAdapterError):
+        return "source_adapter"
+    if isinstance(error, CapabilityAnalysisError):
+        return "request_validation"
+    return "annotation_contract"
+
+
+def _increment_skip_reason(reasons: dict[str, int], reason: str) -> None:
+    reasons[reason] = reasons.get(reason, 0) + 1
 
 
 def _teaching_unit_log_label(item: _PreparedAnalysis) -> str:
