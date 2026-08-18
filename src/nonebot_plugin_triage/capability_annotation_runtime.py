@@ -14,10 +14,7 @@ from nbtriage.capability_annotations import (
     CAPABILITY_ANNOTATION_TASK,
 )
 from nbtriage.capability_model_adapter import CapabilityAnalysisToolRuntimeFactory
-from nbtriage.opencode_go_contracts import (
-    OPENCODE_GO_SEMANTIC_API_FAMILY,
-    OPENCODE_GO_SEMANTIC_MODELS,
-)
+from nbtriage.opencode_go_contracts import OPENCODE_GO_SEMANTIC_API_FAMILY
 from nbtriage.task_model_settings import (
     PROVIDER_DEFAULT_SETTINGS_REVISION,
     task_model_settings_revision,
@@ -26,6 +23,7 @@ from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.task_model_runtime import (
     TaskModelRuntimeConfigurationError,
     create_task_model_binding,
+    is_opencode_go_profile,
     model_connection_revision,
     unverified_evaluation_id,
 )
@@ -111,15 +109,14 @@ def create_capability_annotation_client_factory(
     except TaskModelRuntimeConfigurationError as error:
         raise CapabilityAnnotationRuntimeConfigurationError(str(error)) from error
     qualification = _capability_annotation_qualification(
-        config,
         binding.provider,
         binding.model_name,
+        binding.api_family,
     )
     verified = qualification in qualified_tasks
     if not verified:
         logger.info(
-            "NoneBot Triage 教学注释正在使用未经公开评测的模型组合：backend={}, model={}",
-            config.nbtriage_model_backend,
+            "NoneBot Triage 教学注释正在使用未经公开评测的模型组合：model={}",
             config.nbtriage_model_name,
         )
 
@@ -142,22 +139,21 @@ def create_capability_annotation_client_factory(
 
 
 def capability_annotation_analysis_revision(config: NBTriageConfig) -> str:
-    backend = config.nbtriage_model_backend or "none"
     model = config.nbtriage_model_name or "none"
     connection_revision = model_connection_revision(config)
     settings_revision = PROVIDER_DEFAULT_SETTINGS_REVISION
-    if backend == "pydantic-ai" and ":" in model:
+    if ":" in model:
         provider, provider_model = model.split(":", 1)
         settings_revision = task_model_settings_revision(provider, provider_model)
     if (
-        backend == "opencode-go-chat"
-        and model in OPENCODE_GO_SEMANTIC_MODELS
+        is_opencode_go_profile(config)
         and config.nbtriage_model_timeout_seconds == 60.0
         and connection_revision == "provider-default"
     ):
         return CAPABILITY_ANNOTATION_ANALYSIS_REVISION
+    transport = model.split(":", 1)[0] if ":" in model else "none"
     return (
-        f"{CAPABILITY_ANNOTATION_ANALYSIS_REVISION}:unverified:{backend}:{model}:"
+        f"{CAPABILITY_ANNOTATION_ANALYSIS_REVISION}:unverified:{transport}:{model}:"
         f"{connection_revision}:{settings_revision}:"
         f"timeout-{config.nbtriage_model_timeout_seconds:g}:"
         f"output-{CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS}"
@@ -165,18 +161,14 @@ def capability_annotation_analysis_revision(config: NBTriageConfig) -> str:
 
 
 def _capability_annotation_qualification(
-    config: NBTriageConfig,
     provider: str,
     model: str,
+    api_family: str,
 ) -> CapabilityAnnotationTaskQualification:
     verified_profile = False
     return CapabilityAnnotationTaskQualification(
         provider=provider,
-        api_family=(
-            OPENCODE_GO_SEMANTIC_API_FAMILY
-            if config.nbtriage_model_backend == "opencode-go-chat"
-            else str(config.nbtriage_model_backend)
-        ),
+        api_family=api_family,
         model=model,
         task=CAPABILITY_ANNOTATION_TASK,
         schema_version=CAPABILITY_ANNOTATION_SCHEMA_VERSION,

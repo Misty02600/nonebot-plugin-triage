@@ -57,8 +57,8 @@ from nonebot_plugin_triage.config import NBTriageConfig
 
 def _config() -> NBTriageConfig:
     return NBTriageConfig(
-        nbtriage_model_backend="opencode-go-chat",
-        nbtriage_model_name="deepseek-v4-flash",
+        nbtriage_model_name="openai-chat:deepseek-v4-flash",
+        nbtriage_model_base_url="https://opencode.ai/zen/go/v1",
         nbtriage_model_timeout_seconds=60,
         nbtriage_model_max_output_tokens=240,
     )
@@ -121,7 +121,7 @@ def test_bug_agent_factory_allows_unverified_model_but_still_requires_key() -> N
     assert (
         create_bug_assessment_agent_factory(
             _config(),
-            environ={"OPENCODE_API_KEY": "fixture-key"},
+            environ={"OPENAI_API_KEY": "fixture-key"},
             qualified_tasks=frozenset(),
         )
         is not None
@@ -208,14 +208,14 @@ def test_conclusive_agent_result_builds_versioned_record_command() -> None:
     assert (
         create_bug_assessment_agent_factory(
             _config(),
-            environ={"OPENCODE_API_KEY": "fixture-key"},
+            environ={"OPENAI_API_KEY": "fixture-key"},
         )
         is not None
     )
     assert (
         create_bug_assessment_agent_factory(
             _config(),
-            environ={"OPENCODE_API_KEY": "fixture-key"},
+            environ={"OPENAI_API_KEY": "fixture-key"},
             qualified_tasks=frozenset({qualification}),
         )
         is not None
@@ -287,7 +287,7 @@ def test_unverified_agent_bug_creates_formal_record_with_quality_label() -> None
 def test_unverified_bug_runtime_retains_operational_qualification() -> None:
     runtime_binding = bug_assessment_runtime._create_bug_agent_runtime_binding(
         _config(),
-        environ={"OPENCODE_API_KEY": "fixture-key"},
+        environ={"OPENAI_API_KEY": "fixture-key"},
         qualified_tasks=frozenset(),
     )
 

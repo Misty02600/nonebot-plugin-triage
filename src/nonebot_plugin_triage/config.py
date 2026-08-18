@@ -14,18 +14,13 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic.json_schema import SkipJsonSchema
 
 from nonebot_plugin_triage.config_policy import normalize_config_root
 
 ModelName = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=128),
-]
-ModelBackend = Literal[
-    "anthropic-messages",
-    "openai-responses",
-    "opencode-go-chat",
-    "pydantic-ai",
 ]
 TrialModeName = Literal["off", "observe"]
 
@@ -67,7 +62,12 @@ class NBTriageConfig(BaseModel):
         le=1_073_741_824,
     )
     nbtriage_trial_log_backup_count: int = Field(default=5, ge=1, le=100)
-    nbtriage_model_backend: ModelBackend | None = None
+    removed_model_backend: SkipJsonSchema[None] = Field(
+        default=None,
+        alias="nbtriage_model_backend",
+        exclude=True,
+        repr=False,
+    )
     nbtriage_model_name: ModelName | None = None
     nbtriage_model_base_url: str | None = None
     nbtriage_model_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
@@ -160,8 +160,13 @@ class NBTriageConfig(BaseModel):
                 "nbtriage_bug_source_backend": (
                     "Bug source reading now always uses the bounded built-in reader"
                 ),
+                "nbtriage_model_backend": (
+                    "remove it and select the transport with nbtriage_model_name=provider:model"
+                ),
             }
             removed = next((key for key in removed_settings if key in data), None)
+            if removed is None and "removed_model_backend" in data:
+                removed = "nbtriage_model_backend"
             if removed is not None:
                 raise ValueError(f"{removed} was removed; {removed_settings[removed]}")
             if "nbtriage_model_enabled" in data:
@@ -183,13 +188,15 @@ class NBTriageConfig(BaseModel):
     def validate_compatible_settings(self) -> NBTriageConfig:
         if self.nbtriage_thread_absolute_seconds < self.nbtriage_thread_idle_seconds:
             raise ValueError("thread absolute lifetime must not be shorter than idle lifetime")
-        if (self.nbtriage_model_backend is None) is not (self.nbtriage_model_name is None):
-            raise ValueError("model backend and model name must be configured together")
-        if (
-            self.nbtriage_model_base_url is not None
-            and self.nbtriage_model_backend != "pydantic-ai"
-        ):
-            raise ValueError("model base URL is only supported by the pydantic-ai backend")
+        if self.nbtriage_model_name is not None:
+            provider, separator, provider_model = self.nbtriage_model_name.partition(":")
+            if not separator or not provider.strip() or not provider_model.strip():
+                raise ValueError(
+                    "model names must use provider:model, for example "
+                    "openai-chat:custom-model or alibaba:qwen-max"
+                )
+        if self.nbtriage_model_base_url is not None and self.nbtriage_model_name is None:
+            raise ValueError("model base URL requires a model name")
         return self
 
 

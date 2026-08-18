@@ -481,7 +481,7 @@ def _create_bug_agent_runtime_binding(
     environ: Mapping[str, str] | None = None,
     qualified_tasks: frozenset[BugTaskQualification] = QUALIFIED_BUG_TASKS,
 ) -> _BugAgentRuntimeBinding | None:
-    if config.nbtriage_model_backend is None:
+    if config.nbtriage_model_name is None:
         return None
     try:
         binding = create_task_model_binding(config, environ=environ)
@@ -509,8 +509,7 @@ def _create_bug_agent_runtime_binding(
     if not verified:
         logger.info(
             "NoneBot Triage Bug assessment is using an unverified model combination; "
-            "the evaluation label will be recorded with any accepted verdict: {}/{}",
-            config.nbtriage_model_backend,
+            "the evaluation label will be recorded with any accepted verdict: {}",
             config.nbtriage_model_name,
         )
 

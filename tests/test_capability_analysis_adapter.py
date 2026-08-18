@@ -23,6 +23,8 @@ from nbtriage.capabilities import (
 from nbtriage.capability_analysis import (
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
+    SemanticConstraintKind,
+    TeachingRole,
 )
 from nonebot_plugin_triage.capability_analysis_adapter import (
     AnalysisSourcePolicy,
@@ -427,6 +429,7 @@ matcher = on_alconna("标签", handlers=[handle_tags])
                     "required": True,
                     "hidden": False,
                     "variadic": True,
+                    "variadic_flag": "+",
                     "has_default": False,
                 },
                 {
@@ -434,7 +437,8 @@ matcher = on_alconna("标签", handlers=[handle_tags])
                     "required": False,
                     "hidden": False,
                     "variadic": True,
-                    "has_default": True,
+                    "variadic_flag": "*",
+                    "has_default": False,
                 },
             ],
         ),
@@ -880,6 +884,12 @@ matcher = on_command("secure", permission=ADMIN(), handlers=[handle])
         item["kind"] == "permission" and item["symbol"] == "ADMIN" for item in payload["symbols"]
     )
     assert request.gate_candidates == ()
+    assert len(request.fixed_constraints) == 1
+    fixed = request.fixed_constraints[0]
+    assert fixed.kind is SemanticConstraintKind.ROLE
+    assert fixed.role is TeachingRole.ADMIN
+    assert fixed.statement == "仅群管理员或群主可用"
+    assert fixed.evidence_ids == (structure.evidence_id,)
 
 
 def test_unknown_registration_permission_becomes_gate_candidate(

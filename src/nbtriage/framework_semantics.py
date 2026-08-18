@@ -86,9 +86,27 @@ def uninfo_permission_profile() -> PermissionSemanticProfile:
     )
 
 
+_PUBLIC_PERMISSION_STATEMENTS = {
+    (PublicConstraintKind.ROLE, "not_administrator_or_owner"): "仅非管理员、非群主的普通成员可用",
+    (PublicConstraintKind.ROLE, "administrator_or_owner"): "仅群管理员或群主可用",
+    (PublicConstraintKind.ROLE, "owner"): "仅群主可用",
+    (PublicConstraintKind.SCENE, "private_chat"): "仅私聊可用",
+    (PublicConstraintKind.SCENE, "group_chat"): "仅群聊可用",
+    (PublicConstraintKind.SCENE, "guild_or_channel"): "仅频道或子频道场景可用",
+}
+
+
+def public_permission_statement(kind: PublicConstraintKind, operation: str) -> str:
+    try:
+        return _PUBLIC_PERMISSION_STATEMENTS[(kind, operation)]
+    except KeyError as error:
+        raise ValueError("permission semantic has no public statement") from error
+
+
 __all__ = (
     "PermissionSemantic",
     "PermissionSemanticProfile",
     "PublicConstraintKind",
+    "public_permission_statement",
     "uninfo_permission_profile",
 )

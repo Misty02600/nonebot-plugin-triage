@@ -17,6 +17,7 @@ from nonebot_plugin_triage.public_guidance import (
 from nonebot_plugin_triage.task_model_runtime import (
     TaskModelRuntimeConfigurationError,
     create_task_model_binding,
+    is_opencode_go_profile,
     unverified_evaluation_id,
 )
 
@@ -63,8 +64,8 @@ def create_opencode_go_public_guidance_client_factory(
         PROVISIONAL_PUBLIC_GUIDANCE_TASKS
     ),
 ) -> Callable[[], PublicGuidanceClient]:
-    if config.nbtriage_model_backend != "opencode-go-chat":
-        raise ValueError("OpenCode Go public guidance requires opencode-go-chat")
+    if not is_opencode_go_profile(config):
+        raise ValueError("OpenCode Go public guidance requires the OpenCode Go profile")
     return create_public_guidance_client_factory(
         config,
         environ=environ,
@@ -88,12 +89,12 @@ def create_public_guidance_client_factory(
         config,
         binding.provider,
         binding.model_name,
+        binding.api_family,
     )
     verified = qualification in qualified_tasks
     if not verified:
         logger.info(
-            "NoneBot Triage public guidance is using an unverified model combination: {}/{}",
-            config.nbtriage_model_backend,
+            "NoneBot Triage public guidance is using an unverified model combination: {}",
             config.nbtriage_model_name,
         )
 
@@ -118,20 +119,19 @@ def _public_guidance_qualification(
     config: NBTriageConfig,
     provider: str,
     model: str,
+    api_family: str,
 ) -> PublicGuidanceTaskQualification:
     verified_profile = (
-        config.nbtriage_model_backend == "opencode-go-chat"
+        is_opencode_go_profile(config)
+        and provider == "opencode-go"
+        and api_family == "chat-completions"
         and model == "deepseek-v4-flash"
         and config.nbtriage_model_max_output_tokens == PUBLIC_GUIDANCE_MAX_OUTPUT_TOKENS
         and config.nbtriage_model_timeout_seconds == 60.0
     )
     return PublicGuidanceTaskQualification(
         provider=provider,
-        api_family=(
-            "chat-completions"
-            if config.nbtriage_model_backend == "opencode-go-chat"
-            else str(config.nbtriage_model_backend)
-        ),
+        api_family=api_family,
         model=model,
         task=PUBLIC_GUIDANCE_TASK,
         schema_version=PUBLIC_GUIDANCE_SCHEMA_VERSION,
@@ -151,7 +151,7 @@ def _public_guidance_qualification(
 
 
 def create_public_guidance_service(config: NBTriageConfig) -> PublicGuidanceService:
-    if config.nbtriage_model_backend is None:
+    if config.nbtriage_model_name is None:
         return PublicGuidanceService(
             None,
             timeout_seconds=config.nbtriage_model_timeout_seconds,

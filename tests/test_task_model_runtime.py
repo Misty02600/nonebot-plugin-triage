@@ -17,7 +17,7 @@ from nonebot_plugin_triage.task_model_runtime import (
 )
 
 
-def test_pydantic_ai_backend_uses_provider_qualified_model_id(
+def test_model_id_without_backend_uses_pydantic_ai_inference(
     monkeypatch: MonkeyPatch,
 ) -> None:
     observed: list[str] = []
@@ -33,7 +33,6 @@ def test_pydantic_ai_backend_uses_provider_qualified_model_id(
     monkeypatch.setattr(task_model_runtime, "infer_model", resolve)
     binding = create_task_model_binding(
         NBTriageConfig(
-            nbtriage_model_backend="pydantic-ai",
             nbtriage_model_name="fixture:fixture-model",
         )
     )
@@ -55,7 +54,6 @@ def test_unverified_pydantic_ai_model_can_build_semantic_client(
     )
     monkeypatch.setattr(task_model_runtime, "infer_model", lambda _model_id: model)
     config = NBTriageConfig(
-        nbtriage_model_backend="pydantic-ai",
         nbtriage_model_name="fixture:fixture-model",
     )
 
@@ -64,12 +62,65 @@ def test_unverified_pydantic_ai_model_can_build_semantic_client(
     assert client is not None
 
 
+def test_opencode_go_url_selects_known_profile_without_backend() -> None:
+    config = NBTriageConfig(
+        nbtriage_model_name="openai-chat:deepseek-v4-flash",
+        nbtriage_model_base_url="https://opencode.ai/zen/go/v1",
+    )
+
+    binding = create_task_model_binding(
+        config,
+        environ={"OPENAI_API_KEY": "test-only"},
+    )
+
+    assert binding.provider == "opencode-go"
+    assert binding.model_name == "deepseek-v4-flash"
+    assert binding.api_family == "chat-completions"
+    assert binding.connection_revision == "provider-default"
+    assert binding.model_settings is not None
+    assert binding.model_settings.get("extra_body") == {"thinking": {"type": "disabled"}}
+    assert binding.model_settings.get("parallel_tool_calls") is False
+    assert binding.model_settings.get("temperature") == 0
+
+
+def test_unknown_openai_compatible_url_uses_generic_openai_chat_model(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    config = NBTriageConfig(
+        nbtriage_model_name="openai-chat:custom-model",
+        nbtriage_model_base_url="https://model.example/v1",
+    )
+
+    binding = create_task_model_binding(config)
+
+    assert isinstance(binding.model, OpenAIChatModel)
+    assert binding.provider == "openai"
+    assert binding.model_name == "custom-model"
+    assert binding.api_family == "chat-completions"
+    assert binding.connection_revision.startswith("custom-endpoint-sha256:")
+    assert str(binding.model.base_url) == "https://model.example/v1/"
+
+
+def test_openai_responses_model_id_keeps_api_family_distinct(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+
+    binding = create_task_model_binding(
+        NBTriageConfig(nbtriage_model_name="openai:shared-model-name")
+    )
+
+    assert binding.provider == "openai"
+    assert binding.model_name == "shared-model-name"
+    assert binding.api_family == "responses"
+
+
 def test_alibaba_model_accepts_deployment_configured_mainland_endpoint(
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-only-key")
     config = NBTriageConfig(
-        nbtriage_model_backend="pydantic-ai",
         nbtriage_model_name="alibaba:qwen-max",
         nbtriage_model_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     )
@@ -95,7 +146,6 @@ def test_qwen36_binding_disables_thinking_for_structured_output_tools(
 
     binding = create_task_model_binding(
         NBTriageConfig(
-            nbtriage_model_backend="pydantic-ai",
             nbtriage_model_name="alibaba:qwen3.6-flash",
             nbtriage_model_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         )
@@ -119,7 +169,6 @@ def test_alibaba_model_with_custom_endpoint_requires_standard_provider_key(
     ):
         create_task_model_binding(
             NBTriageConfig(
-                nbtriage_model_backend="pydantic-ai",
                 nbtriage_model_name="alibaba:qwen-max",
                 nbtriage_model_base_url=("https://dashscope.aliyuncs.com/compatible-mode/v1"),
             ),
@@ -128,12 +177,10 @@ def test_alibaba_model_with_custom_endpoint_requires_standard_provider_key(
 
 def test_custom_endpoint_revision_changes_without_exposing_url() -> None:
     first = NBTriageConfig(
-        nbtriage_model_backend="pydantic-ai",
         nbtriage_model_name="alibaba:qwen-max",
         nbtriage_model_base_url="https://first.example/v1",
     )
     second = NBTriageConfig(
-        nbtriage_model_backend="pydantic-ai",
         nbtriage_model_name="alibaba:qwen-max",
         nbtriage_model_base_url="https://second.example/v1",
     )
@@ -170,7 +217,6 @@ def test_custom_endpoint_fails_when_provider_does_not_support_override(
     ):
         create_task_model_binding(
             NBTriageConfig(
-                nbtriage_model_backend="pydantic-ai",
                 nbtriage_model_name="fixture:model",
                 nbtriage_model_base_url="https://model.example/v1",
             )

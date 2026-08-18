@@ -274,9 +274,36 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     assert _record_values(public_record, "usage") == ("image <query> [--limit <count>]",)
     assert _record_values(public_record, "command.arguments")[0][0]["name"] == "query"
     assert _record_values(public_record, "command.arguments")[0][1]["variadic"] is True
+    assert _record_values(public_record, "command.arguments")[0][1]["variadic_flag"] == "+"
     components = _record_values(public_record, "command.components")[0]
     assert {item["name"] for item in components} >= {"--limit", "detail"}
     assert called is False
+    command_manager.delete(command)
+
+
+def test_zero_or_more_alconna_argument_is_not_marked_required(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    command = Alconna(
+        "collect",
+        Args["items", MultiVar(str, "*")],
+        namespace=f"snapshot-{uuid4().hex}",
+    )
+    matcher = on_alconna(command)
+    matcher_cleanup.append(matcher)
+    plugin = _plugin(tmp_path, monkeypatch, {matcher})
+
+    snapshot = build_capability_snapshot(
+        plugins=[plugin],
+        explicit_public_alconna_paths={command.path},
+    )
+
+    argument = _record_values(snapshot.records[0], "command.arguments")[0][0]
+    assert argument["required"] is False
+    assert argument["variadic"] is True
+    assert argument["variadic_flag"] == "*"
     command_manager.delete(command)
 
 

@@ -18,6 +18,11 @@ from nbtriage.capabilities import (
     RecordState,
 )
 from nbtriage.capability_analysis import (
+    BaselineChangeOperation,
+    BaselineMemberChange,
+    BaselineMemberField,
+    CapabilityAnalysisBaseline,
+    CapabilityAnalysisEntryBaseline,
     CapabilityAnalysisEntryOutput,
     CapabilityAnalysisError,
     CapabilityAnalysisOutput,
@@ -41,6 +46,7 @@ from nbtriage.capability_annotations import (
     CapabilityAnnotationError,
     CapabilityAnnotationEvidenceRef,
     CapabilityTeachingAnnotation,
+    CapabilityTeachingRequirement,
     project_capability_annotation,
     validate_capability_usage_pattern,
 )
@@ -149,6 +155,7 @@ def _request(capability_id: str = "command:image") -> CapabilityAnalysisRequest:
 
 def _entry(
     *extra_claims: SemanticClaim,
+    baseline_changes: tuple[BaselineMemberChange, ...] = (),
     constraints: tuple[SemanticConstraint, ...] = (),
     entry_id: str = "root",
 ) -> CapabilityAnalysisEntryOutput:
@@ -164,6 +171,7 @@ def _entry(
             SemanticClaim(SemanticClaimKind.USAGE, "搜图 [图片]", ("evidence-handler",)),
             *extra_claims,
         ),
+        baseline_changes=baseline_changes,
         constraints=constraints,
         answer_markdown="发送图片或回复图片后使用搜图。",
         answer_evidence_ids=("evidence-handler",),
@@ -246,6 +254,107 @@ def test_annotation_preserves_usage_order_and_typed_requirements() -> None:
     assert CapabilityAnnotationCache.from_json(
         CapabilityAnnotationCache((annotation,)).to_json()
     ).annotations == (annotation,)
+
+
+def test_annotation_always_projects_fixed_permission_constraint() -> None:
+    request = replace(
+        _request(),
+        fixed_constraints=(
+            SemanticConstraint(
+                SemanticConstraintKind.ROLE,
+                "仅群管理员或群主可用",
+                ("evidence-handler",),
+                role=TeachingRole.ADMIN,
+            ),
+        ),
+    )
+
+    annotation = project_capability_annotation(
+        request,
+        _output(),
+        analysis_revision="analysis-v1",
+    )
+
+    assert annotation.entries[0].requirements == (
+        CapabilityTeachingRequirement(
+            SemanticConstraintKind.ROLE,
+            "仅群管理员或群主可用",
+            role=TeachingRole.ADMIN,
+        ),
+    )
+
+
+def test_annotation_carries_forward_omitted_baseline_members_and_adds_new_claims() -> None:
+    request = replace(
+        _request(),
+        previous_annotation=CapabilityAnalysisBaseline(
+            entries=(
+                CapabilityAnalysisEntryBaseline(
+                    "root",
+                    synonyms=("反向搜图",),
+                    supported_subjects=("图片",),
+                    input_requirements=("需要提供图片",),
+                    behavior_boundaries=("支持回复图片",),
+                ),
+            )
+        ),
+    )
+    output = _output(
+        SemanticClaim(
+            SemanticClaimKind.SYNONYM,
+            "查找图片",
+            ("evidence-handler",),
+        )
+    )
+
+    annotation = project_capability_annotation(request, output, analysis_revision="analysis-v1")
+
+    entry = annotation.entries[0]
+    assert entry.synonyms == ("反向搜图", "查找图片")
+    assert entry.supported_subjects == ("图片",)
+    assert entry.input_requirements == ("需要提供图片",)
+    assert entry.behavior_boundaries == ("支持回复图片",)
+
+
+def test_annotation_applies_explicit_baseline_remove_and_replace() -> None:
+    request = replace(
+        _request(),
+        previous_annotation=CapabilityAnalysisBaseline(
+            entries=(
+                CapabilityAnalysisEntryBaseline(
+                    "root",
+                    synonyms=("找封面",),
+                    supported_subjects=("封面",),
+                ),
+            )
+        ),
+    )
+    output = CapabilityAnalysisOutput(
+        entries=(
+            _entry(
+                baseline_changes=(
+                    BaselineMemberChange(
+                        BaselineChangeOperation.REMOVE,
+                        BaselineMemberField.SYNONYMS,
+                        "找封面",
+                        ("evidence-handler",),
+                    ),
+                    BaselineMemberChange(
+                        BaselineChangeOperation.REPLACE,
+                        BaselineMemberField.SUPPORTED_SUBJECTS,
+                        "封面",
+                        ("evidence-handler",),
+                        "短文标题",
+                    ),
+                )
+            ),
+        )
+    )
+
+    annotation = project_capability_annotation(request, output, analysis_revision="analysis-v1")
+
+    assert annotation.entries[0].synonyms == ()
+    assert annotation.entries[0].supported_subjects == ("短文标题",)
 
 
 def test_anchored_usage_must_contain_command_body_exactly_once() -> None:
@@ -430,6 +539,47 @@ def test_annotation_replaces_verified_command_body_with_alias_expression() -> No
     assert annotation.entries[0].usages == ("(禁言|(禁|口|踩)(他|她)) <用户>",)
 
 
+def test_annotation_groups_root_alias_alternation_before_usage_suffix() -> None:
+    request = replace(
+        _request(),
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "提取色彩",
+                ("提取色彩 <图片>",),
+                aliases=("图片取色",),
+            ),
+        ),
+    )
+    output = CapabilityAnalysisOutput(
+        entries=(
+            CapabilityAnalysisEntryOutput(
+                "root",
+                claims=(
+                    SemanticClaim(
+                        SemanticClaimKind.NAME,
+                        "提取色彩",
+                        ("evidence-handler",),
+                    ),
+                    SemanticClaim(
+                        SemanticClaimKind.USAGE,
+                        "提取色彩 <图片>",
+                        ("evidence-handler",),
+                    ),
+                ),
+                answer_markdown="提取图片颜色。",
+                answer_evidence_ids=("evidence-handler",),
+                display_trigger="提取色彩|图片取色",
+            ),
+        )
+    )
+
+    annotation = project_capability_annotation(request, output, analysis_revision="analysis-v1")
+
+    assert annotation.entries[0].usages == ("(提取色彩|图片取色) <图片>",)
+
+
 @pytest.mark.parametrize(
     "usage",
     ("批量 <图片...>", "批量 [图片...]", "批量 ...<图片>"),
@@ -523,7 +673,7 @@ def test_dynamic_file_evidence_persists_only_revision_bound_manifest() -> None:
 def test_runtime_rejects_missing_mandatory_annotation_transport() -> None:
     with pytest.raises(
         CapabilityAnnotationRuntimeConfigurationError,
-        match="backend and name",
+        match="model name",
     ):
         create_capability_annotation_client_factory(NBTriageConfig(), environ={})
 
@@ -532,10 +682,10 @@ def test_runtime_marks_changed_annotation_prompt_unverified_until_new_evaluation
     qualification = OPENCODE_GO_CAPABILITY_ANNOTATION_QUALIFICATION
 
     assert qualification.evaluation == CAPABILITY_ANNOTATION_EVALUATION
-    assert qualification.prompt_id == "capability-teaching-annotation-v4-prompt-v35-zh"
+    assert qualification.prompt_id == "capability-teaching-annotation-v4-prompt-v38-zh"
     assert qualification.evaluation == (
         "unverified:capability-teaching-annotation-agent-v3:"
-        "capability-teaching-annotation-v4-prompt-v35-zh"
+        "capability-teaching-annotation-v4-prompt-v38-zh"
     )
     assert qualification.verified is False
     assert frozenset() == QUALIFIED_CAPABILITY_ANNOTATION_TASKS
@@ -543,14 +693,14 @@ def test_runtime_marks_changed_annotation_prompt_unverified_until_new_evaluation
 
 def test_runtime_uses_independent_annotation_output_budget() -> None:
     config = NBTriageConfig(
-        nbtriage_model_backend="opencode-go-chat",
-        nbtriage_model_name="deepseek-v4-flash",
+        nbtriage_model_name="openai-chat:deepseek-v4-flash",
+        nbtriage_model_base_url="https://opencode.ai/zen/go/v1",
         nbtriage_model_max_output_tokens=240,
     )
 
     client = create_capability_annotation_client_factory(
         config,
-        environ={"OPENCODE_API_KEY": "test-only"},
+        environ={"OPENAI_API_KEY": "test-only"},
     )()
 
     assert vars(client)["_max_output_tokens"] == CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS == 16_384
@@ -558,12 +708,10 @@ def test_runtime_uses_independent_annotation_output_budget() -> None:
 
 def test_annotation_revision_isolated_by_custom_endpoint_without_exposing_url() -> None:
     first = NBTriageConfig(
-        nbtriage_model_backend="pydantic-ai",
         nbtriage_model_name="alibaba:qwen-max",
         nbtriage_model_base_url="https://first.example/v1",
     )
     second = NBTriageConfig(
-        nbtriage_model_backend="pydantic-ai",
         nbtriage_model_name="alibaba:qwen-max",
         nbtriage_model_base_url="https://second.example/v1",
     )
@@ -579,7 +727,6 @@ def test_annotation_revision_isolated_by_custom_endpoint_without_exposing_url() 
 def test_qwen36_annotation_revision_binds_provider_settings_and_timeout() -> None:
     revision = capability_annotation_analysis_revision(
         NBTriageConfig(
-            nbtriage_model_backend="pydantic-ai",
             nbtriage_model_name="alibaba:qwen3.6-flash",
             nbtriage_model_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
             nbtriage_model_timeout_seconds=300,

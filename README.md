@@ -129,9 +129,8 @@ uv run nb orm upgrade
 | `NBTRIAGE_KNOWLEDGE_PACK_AUTO_UPDATE` | `true` | 启动后后台检查项目维护的 stable catalog；先恢复本地 active 包，新包完整校验后才原子切换。断网、catalog / 下载 / 校验失败均继续使用旧包或降级为 no-knowledge，不阻止插件加载。设为 `false` 可关闭默认联网检查。 |
 | `NBTRIAGE_KNOWLEDGE_PACK_URL` | 未设置 | 与 SHA-256 成对固定经过发布审核的 HTTPS knowledge pack 资产，并覆盖 stable catalog；适合离线镜像或可复现实验。固定包安装仍在后台执行；URL / SHA 只配一项或格式非法时只禁用知识服务，不阻止 Bot 启动，也不会偷偷改用 stable catalog。 |
 | `NBTRIAGE_KNOWLEDGE_PACK_SHA256` | 未设置 | 与 URL 成对固定 knowledge pack 压缩包的 64 位十六进制 SHA-256；下载内容不匹配时拒绝安装。它校验制品身份，不表示制品来源或许可证已自动获准。 |
-| `NBTRIAGE_MODEL_BACKEND` | 未设置 | 选择 Triage 如何构造模型客户端：`opencode-go-chat`、`openai-responses`、`anthropic-messages` 是专用接法；`pydantic-ai` 表示交给 Pydantic AI 的官方 Provider 系统解析，此时 Provider 写在 `NBTRIAGE_MODEL_NAME` 的冒号前。未设置时插件仍能启动并提供确定性能力索引，但不会生成教学注释、执行语义分类或调用 Answer Agent。 |
-| `NBTRIAGE_MODEL_NAME` | 未设置 | 与 backend 成对选择精确模型。专用 backend 只填模型 ID，例如 `deepseek-v4-flash`；`pydantic-ai` 必须使用其通用 `provider:model`，例如百炼为 `alibaba:qwen-max`。held-out 只标记项目已经验证的精确组合，未评测模型不会因此被拒绝运行。 |
-| `NBTRIAGE_MODEL_BASE_URL` | 未设置 | 仅在 `pydantic-ai` backend 下覆盖所选 Provider 的部署端地址，例如中国大陆百炼地址。它不替代 `provider:model`，也不改变 Provider 的 ModelProfile；Provider 不支持地址覆盖时失败关闭。外部地址必须为 HTTPS，HTTP 只允许本机 loopback，且 URL 不得携带凭据、query 或 fragment。 |
+| `NBTRIAGE_MODEL_NAME` | 未设置 | 使用 Pydantic AI 的 `provider:model` 选择 Provider、API 族和精确模型，例如 `alibaba:qwen-max`；任意 OpenAI-compatible Chat 服务使用 `openai-chat:<模型 ID>`。这是唯一的 transport 选择字段。held-out 只标记项目已经验证的精确组合，未评测模型不会因此被拒绝运行。未设置时插件仍能启动并提供确定性能力索引，但不会生成教学注释、执行语义分类或调用 Answer Agent。 |
+| `NBTRIAGE_MODEL_BASE_URL` | 未设置 | 可选覆盖所选 Provider 的部署端地址，例如中国大陆百炼或自建 OpenAI-compatible Chat endpoint。它不替代 `provider:model`；已知 Provider 保留其 ModelProfile，通用兼容服务应显式选择 `openai-chat:`。Provider 构造器不支持地址覆盖时失败关闭。外部地址必须为 HTTPS，HTTP 只允许本机 loopback，且 URL 不得携带凭据、query 或 fragment。 |
 | `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 单次语义、公开能力回答或自动教学注释请求的最长等待时间；这三类请求都不做 Provider 自动重试。Bug Agent 使用独立的 120 秒任务上限。与已发布评测预算不同只会使组合显示为未验证，不会成为运行禁令。 |
 | `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 单次语义 assessment 与 Answer Agent 结构化输出的 token 上限。自动教学注释使用任务内固定的 16384 output token；Bug Agent 使用独立的 800 output token、最多 8 次请求、6 次实际证据读取和 0.50 美元单轮预算。它不限制用户输入长度；与已发布评测预算不同会使用新的未验证质量标签。 |
 | `NBTRIAGE_AGENT_TRACE_ENABLED` | `true` | 模型 transport 已配置时，把脱敏后的 Pydantic AI Agent / model / tool spans 写入本插件 LocalStore data 下的 `agent-traces.jsonl`；固定按 10 MiB、5 个备份轮转。文件只含调用结构、耗时、状态、Provider/model、token、费用、安全关联 ID，以及响应 part 类型和正文/工具参数长度等无内容形状，不含 Prompt、源码、模型原文、工具参数/结果或配置值。设为 `false` 时不解析路径、不创建文件。 |
@@ -142,32 +141,33 @@ uv run nb orm upgrade
 OpenCode Go 配置示例：
 
 ```dotenv
-NBTRIAGE_MODEL_BACKEND=opencode-go-chat
-NBTRIAGE_MODEL_NAME=deepseek-v4-flash
+OPENAI_API_KEY=<OpenCode Go API Key>
+NBTRIAGE_MODEL_NAME=openai-chat:deepseek-v4-flash
+NBTRIAGE_MODEL_BASE_URL=https://opencode.ai/zen/go/v1
 NBTRIAGE_MODEL_TIMEOUT_SECONDS=60
 NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS=240
 ```
 
-`pydantic-ai` 不是一家模型服务商，而是通用 Provider 入口。常见填写方式如下：
+`provider:model` 由 Pydantic AI 解析，不需要 Triage 为每家服务增加 backend。常见填写方式如下：
 
-| 服务 | `NBTRIAGE_MODEL_BACKEND` | `NBTRIAGE_MODEL_NAME` | 密钥环境变量 |
+| 服务 | `NBTRIAGE_MODEL_NAME` | `NBTRIAGE_MODEL_BASE_URL` | 密钥环境变量 |
 |---|---|---|---|
-| 中国大陆百炼 | `pydantic-ai` | `alibaba:<百炼模型 ID>`，另配置国内 Base URL | `DASHSCOPE_API_KEY` 或 `ALIBABA_API_KEY` |
-| 国际站 DashScope | `pydantic-ai` | `alibaba:<模型 ID>` | `DASHSCOPE_API_KEY` 或 `ALIBABA_API_KEY` |
-| Google Gemini API | `pydantic-ai` | `google-gla:<模型 ID>` | Pydantic AI 对应 Provider 的标准密钥变量 |
+| OpenCode Go | `openai-chat:<模型 ID>` | `https://opencode.ai/zen/go/v1` | `OPENAI_API_KEY` |
+| 中国大陆百炼 | `alibaba:<百炼模型 ID>` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` 或 `ALIBABA_API_KEY` |
+| 国际站 DashScope | `alibaba:<模型 ID>` | 不设置 | `DASHSCOPE_API_KEY` 或 `ALIBABA_API_KEY` |
+| Google Gemini API | `google:<模型 ID>` | 不设置 | `GOOGLE_API_KEY` 或 `GEMINI_API_KEY` |
+| 其他 OpenAI-compatible Chat 服务 | `openai-chat:<模型 ID>` | 服务商提供的 HTTPS API 根地址 | `OPENAI_API_KEY` |
 
 例如，Google Provider 可以这样填写：
 
 ```dotenv
-NBTRIAGE_MODEL_BACKEND=pydantic-ai
-NBTRIAGE_MODEL_NAME=google-gla:gemini-2.5-flash
+NBTRIAGE_MODEL_NAME=google:gemini-2.5-flash
 ```
 
 中国大陆百炼继续使用 Pydantic AI 官方 `alibaba` Provider，只覆盖部署端地址：
 
 ```dotenv
 DASHSCOPE_API_KEY=<百炼 API Key>
-NBTRIAGE_MODEL_BACKEND=pydantic-ai
 NBTRIAGE_MODEL_NAME=alibaba:qwen-max
 NBTRIAGE_MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ```
@@ -181,7 +181,8 @@ NBTRIAGE_MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 的 ModelProfile。两种地址都需要安装 `openai` Provider 依赖。Coding Plan / Token Plan 专属 Key 不适用于
 Bot 后端或自动批量生成。
 
-其他 Pydantic AI Provider 也可以在其构造器支持时使用同一 Base URL 字段。自定义地址默认标为未验证，
+其他 Pydantic AI Provider 也可以在其构造器支持时使用同一 Base URL 字段；只有兼容 Chat URL 时使用
+`openai-chat:<模型 ID>`，不需要新建项目 backend。自定义地址默认标为未验证，
 更换地址会使教学注释缓存失效；脱敏 Agent 轨迹只保存地址的 SHA-256 身份，不保存完整 URL。API Key 仍只用
 Provider 的标准环境变量配置，不能写进 Base URL 或 `NBTriageConfig`。
 
@@ -189,7 +190,9 @@ Provider 的标准环境变量配置，不能写进 Base URL 或 `NBTriageConfig
 结果用于说明已验证质量，不是运行白名单；未评测组合仍执行相同 schema、Evidence、安全和预算检查。
 
 密钥只从对应 Provider 的标准进程环境变量读取，不写入 `NBTriageConfig`；例如 OpenCode Go 使用
-`OPENCODE_API_KEY`，中国大陆百炼使用 `DASHSCOPE_API_KEY` 或 `ALIBABA_API_KEY`。语义 assessment 只发送当前单条、
+`OPENAI_API_KEY`，中国大陆百炼使用 `DASHSCOPE_API_KEY` 或 `ALIBABA_API_KEY`。
+`NBTRIAGE_MODEL_BACKEND` 已删除；配置中出现该字段会被明确拒绝，必须改成 `provider:model + 可选 Base URL`。
+语义 assessment 只发送当前单条、
 规范化并通过秘密守门的 `triage` 请求文字，不接收 Reply 或 Thread。公开能力 Answer Agent 在路由后另接收
 同一问题、本轮已经过滤为 public 的能力事实，以及有界的首轮 / 直接 Reply 可见正文；上下文不能成为能力
 事实或权限。两类请求都不接收配置、环境变量、日志、源码、运行证据、证据位置或 restricted 能力，并各自

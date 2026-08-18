@@ -17,8 +17,7 @@ def test_agent_telemetry_runtime_uses_fixed_localstore_filename(tmp_path) -> Non
 
     runtime = create_agent_telemetry_runtime(
         NBTriageConfig(
-            nbtriage_model_backend="opencode-go-chat",
-            nbtriage_model_name="deepseek-v4-flash",
+            nbtriage_model_name="openai-chat:deepseek-v4-flash",
             nbtriage_agent_trace_enabled=True,
         ),
         trace_path_resolver=resolve,
@@ -39,8 +38,7 @@ def test_agent_telemetry_runtime_does_not_resolve_path_when_disabled(tmp_path) -
 
     runtime = create_agent_telemetry_runtime(
         NBTriageConfig(
-            nbtriage_model_backend="opencode-go-chat",
-            nbtriage_model_name="deepseek-v4-flash",
+            nbtriage_model_name="openai-chat:deepseek-v4-flash",
             nbtriage_agent_trace_enabled=False,
         ),
         trace_path_resolver=fail,
@@ -51,7 +49,6 @@ def test_agent_telemetry_runtime_does_not_resolve_path_when_disabled(tmp_path) -
 
 def test_agent_telemetry_records_only_custom_endpoint_revision(tmp_path) -> None:
     config = NBTriageConfig(
-        nbtriage_model_backend="pydantic-ai",
         nbtriage_model_name="alibaba:qwen-max",
         nbtriage_model_base_url="https://PRIVATE-ENDPOINT.example/v1",
     )

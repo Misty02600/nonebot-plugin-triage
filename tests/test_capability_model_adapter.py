@@ -14,6 +14,10 @@ from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.usage import RequestUsage
 
 from nbtriage.capability_analysis import (
+    BaselineChangeOperation,
+    BaselineMemberField,
+    CapabilityAnalysisBaseline,
+    CapabilityAnalysisEntryBaseline,
     CapabilityAnalysisRequest,
     CapabilityAnalysisService,
     CapabilityEvidenceUnit,
@@ -24,6 +28,8 @@ from nbtriage.capability_analysis import (
     CapabilityInvocationTarget,
     ConfigProjection,
     SemanticClaimKind,
+    SemanticConstraint,
+    SemanticConstraintKind,
     TeachingRole,
 )
 from nbtriage.capability_model_adapter import (
@@ -159,6 +165,47 @@ def test_agent_uses_native_output_and_bounded_source_payload() -> None:
     assert info.model_request_parameters.function_tools == []
 
 
+def test_agent_payload_marks_fixed_permission_as_model_external() -> None:
+    observed: dict[str, Any] = {}
+
+    def respond(messages, _info: AgentInfo) -> ModelResponse:
+        observed["messages"] = messages
+        return _native_response()
+
+    request = replace(
+        _request(),
+        fixed_constraints=(
+            SemanticConstraint(
+                SemanticConstraintKind.ROLE,
+                "仅群管理员或群主可用",
+                ("evidence-handler",),
+                role=TeachingRole.ADMIN,
+            ),
+        ),
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+
+    asyncio.run(CapabilityAnalysisService(client).analyze(request))
+
+    messages = cast(list[ModelRequest], observed["messages"])
+    prompt = cast(UserPromptPart, messages[0].parts[0])
+    payload = json.loads(cast(str, prompt.content))
+    assert payload["fixed_constraints"] == [
+        {
+            "kind": "role",
+            "statement": "仅群管理员或群主可用",
+            "evidence_ids": ["evidence-handler"],
+            "config_reference_ids": [],
+            "role": "admin",
+            "rate_limit_policy": None,
+            "rate_limit_scope": None,
+        }
+    ]
+
+
 def test_analysis_records_last_response_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     observed: dict[str, object] = {}
 
@@ -206,12 +253,57 @@ def test_prompt_separates_alias_display_from_usage_and_places_repeat_marker_afte
 
 
 def test_prompt_preserves_supported_baseline_retrieval_fields() -> None:
-    assert "必须按 entry_id 逐字段对照旧值" in SYSTEM_INSTRUCTION
-    assert "不得把这些非空数组改成空数组" in SYSTEM_INSTRUCTION
-    assert "保留仍然成立的旧值成员" in SYSTEM_INSTRUCTION
-    assert "最终顺序可由模型外做稳定规范化" in SYSTEM_INSTRUCTION
+    assert "模型外会按 entry_id 自动带回" in SYSTEM_INSTRUCTION
+    assert "遗漏旧成员表示保持不变" in SYSTEM_INSTRUCTION
+    assert "不要输出 keep" in SYSTEM_INSTRUCTION
+    assert "baseline_changes" in SYSTEM_INSTRUCTION
+    assert "每条 remove 或 replace 都必须引用" in SYSTEM_INSTRUCTION
     assert "最终输出自检" in SYSTEM_INSTRUCTION
-    assert "最终 claims 必须仍包含它们并引用当前 Evidence" in SYSTEM_INSTRUCTION
+    assert "其余旧成员不要重复输出" in SYSTEM_INSTRUCTION
+
+
+def test_agent_accepts_explicit_baseline_member_change() -> None:
+    request = replace(
+        _request(),
+        previous_annotation=CapabilityAnalysisBaseline(
+            entries=(
+                CapabilityAnalysisEntryBaseline(
+                    "root",
+                    supported_subjects=("封面",),
+                ),
+            )
+        ),
+    )
+    output = _output()
+    entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
+    entry["baseline_changes"] = [
+        {
+            "op": "replace",
+            "field": "supported_subjects",
+            "old_value": "封面",
+            "new_value": "短文标题",
+            "evidence_ids": ["evidence-handler"],
+            "config_reference_ids": [],
+        }
+    ]
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(
+            lambda _messages, _info: ModelResponse(
+                parts=[TextPart(json.dumps(output, ensure_ascii=False))],
+                finish_reason="stop",
+            ),
+            model_name="fixture-model",
+            profile=_NATIVE_PROFILE,
+        ),
+        max_output_tokens=240,
+    )
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+
+    change = result.entries[0].baseline_changes[0]
+    assert change.operation is BaselineChangeOperation.REPLACE
+    assert change.field is BaselineMemberField.SUPPORTED_SUBJECTS
+    assert change.new_value == "短文标题"
 
 
 def test_agent_uses_profile_selected_output_tool() -> None:
@@ -444,6 +536,69 @@ def test_agent_retries_rate_limit_text_that_omits_cited_numeric_config() -> None
 
     assert calls == 2
     assert result.entries[0].constraints[0].statement == "每名用户有 30 秒冷却"
+
+
+def test_agent_retries_public_config_value_that_omits_reference() -> None:
+    calls = 0
+
+    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        output = _output(summary="最多返回 7 条新闻")
+        entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
+        summary = cast(list[dict[str, object]], entry["claims"])[1]
+        summary["config_reference_ids"] = [] if calls == 1 else ["config-limit"]
+        entry["answer_markdown"] = None
+        entry["answer_evidence_ids"] = []
+        return ModelResponse(
+            parts=[TextPart(json.dumps(output, ensure_ascii=False))],
+            finish_reason="stop",
+        )
+
+    request = replace(
+        _request(),
+        config_projections=(ConfigProjection("config-limit", "plugin_config.limit", 7),),
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+
+    assert calls == 2
+    assert result.entries[0].claims[1].config_reference_ids == ("config-limit",)
+    assert result.entries[0].answer_config_reference_ids == ("config-limit",)
+
+
+def test_agent_retries_entry_without_summary() -> None:
+    calls = 0
+
+    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        output = _output()
+        if calls == 1:
+            entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
+            entry["claims"] = [
+                claim
+                for claim in cast(list[dict[str, object]], entry["claims"])
+                if claim["kind"] != "summary"
+            ]
+        return ModelResponse(
+            parts=[TextPart(json.dumps(output, ensure_ascii=False))],
+            finish_reason="stop",
+        )
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert calls == 2
+    assert any(claim.kind is SemanticClaimKind.SUMMARY for claim in result.entries[0].claims)
 
 
 def test_invalid_answer_markdown_falls_back_to_validated_public_claims() -> None:
@@ -699,15 +854,23 @@ def test_complete_usage_retries_full_invocations_inside_alternation() -> None:
     assert provider_calls == 2
 
 
-def test_output_entry_ids_must_match_invocation_targets() -> None:
+def test_output_validation_failure_preserves_provider_usage() -> None:
+    provider_calls = 0
     output = _output()
     cast(dict[str, object], cast(list[object], output["entries"])[0])["entry_id"] = "other"
+
+    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal provider_calls
+        provider_calls += 1
+        return ModelResponse(
+            parts=[TextPart(json.dumps(output, ensure_ascii=False))],
+            usage=RequestUsage(input_tokens=100, output_tokens=10),
+            finish_reason="stop",
+        )
+
     client = PydanticAICapabilityAnalysisClient(
         FunctionModel(
-            lambda _messages, _info: ModelResponse(
-                parts=[TextPart(json.dumps(output, ensure_ascii=False))],
-                finish_reason="stop",
-            ),
+            respond,
             model_name="fixture-model",
             profile=_NATIVE_PROFILE,
         ),
@@ -719,6 +882,67 @@ def test_output_entry_ids_must_match_invocation_targets() -> None:
         match="output validation failed",
     ):
         asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert provider_calls > 1
+    assert client.last_response is not None
+    assert client.last_usage is not None
+    assert client.last_usage.requests == provider_calls
+    assert client.last_usage.input_tokens == 100 * provider_calls
+    assert client.last_usage.output_tokens == 10 * provider_calls
+
+
+def test_output_validation_failure_preserves_successful_tool_call_count() -> None:
+    provider_calls = 0
+    output = _output()
+    cast(dict[str, object], cast(list[object], output["entries"])[0])["entry_id"] = "other"
+
+    def read_dependency() -> str:
+        return "dependency evidence"
+
+    def respond(_messages, info: AgentInfo) -> ModelResponse:
+        nonlocal provider_calls
+        provider_calls += 1
+        if provider_calls == 1:
+            return ModelResponse(
+                parts=[ToolCallPart("read_dependency", {}, "call-read")],
+                usage=RequestUsage(input_tokens=100, output_tokens=10),
+                finish_reason="tool_call",
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    info.output_tools[0].name,
+                    output,
+                    f"call-output-{provider_calls}",
+                )
+            ],
+            usage=RequestUsage(input_tokens=100, output_tokens=10),
+            finish_reason="tool_call",
+        )
+
+    runtime = CapabilityAnalysisToolRuntime(
+        toolsets=(FunctionToolset(tools=[read_dependency]),),
+        evidence_units=lambda: (),
+        validate_source_context=lambda: True,
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
+        max_output_tokens=240,
+        tool_runtime_factory=lambda _request: runtime,
+    )
+
+    with pytest.raises(
+        CapabilityModelAdapterError,
+        match="output validation failed",
+    ):
+        asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert provider_calls > 2
+    assert client.last_usage is not None
+    assert client.last_usage.requests == provider_calls
+    assert client.last_usage.input_tokens == 100 * provider_calls
+    assert client.last_usage.output_tokens == 10 * provider_calls
+    assert client.last_usage.tool_calls == 1
 
 
 def test_agent_retries_evidence_reference_outside_current_request() -> None:

@@ -139,6 +139,8 @@ ADR 重新选择该合同。
   输出上限为 4,096 tokens；工具预算耗尽后会隐藏导航工具并要求立即提交结构化结果。模型输出和最终公开
   投影分别校验实现细节、Evidence 闭包与展示语法，低风险文案中的单条坏项可以丢弃，角色、场景和限流
   等安全 requirement 仍整份严格失败。
+- 已能归属当前 Matcher 的 Uninfo 稳定 Permission 事实现作为请求侧 `fixed_constraints` 进入模型上下文和
+  最终公开投影；即使模型遗漏该 constraint，公开 requirement 仍保留模型外安全下限，模型只能追加更严格约束。
 - Runtime handler 带闭包自由变量时，单 Matcher 请求不再只发送相同函数正文后猜测每个实例的行为，而是
   以 `parameterized handler requires family-level analysis` 跳过。`nonebot_plugin_memes` 实测 445 条公开
   候选中 437 条因此不再逐项调用模型；通用 catalog / family 教学条目尚未实现，不能用任意请求上限或代表

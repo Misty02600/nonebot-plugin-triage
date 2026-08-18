@@ -108,6 +108,7 @@ class AlconnaArgument:
     required: bool
     hidden: bool
     variadic: bool
+    variadic_flag: str | None
     pattern_type: str | None
     has_default: bool
 
@@ -1016,12 +1017,20 @@ def _alconna_arguments(args: object) -> tuple[AlconnaArgument, ...]:
         has_default = default is not _MISSING and not _is_tarina_empty(default)
         pattern = getattr(argument, "value", None)
         pattern_type = _qualified_type_name(pattern) if pattern is not None else None
+        variadic = _safe_type_name(pattern) in {"MultiVar", "MultiKeyWordVar"}
+        raw_variadic_flag = getattr(pattern, "flag", None) if variadic else None
+        variadic_flag = raw_variadic_flag if raw_variadic_flag in {"+", "*"} else None
         result.append(
             AlconnaArgument(
                 name=name,
-                required=not bool(getattr(argument, "optional", False)) and not has_default,
+                required=(
+                    not bool(getattr(argument, "optional", False))
+                    and not has_default
+                    and variadic_flag != "*"
+                ),
                 hidden=bool(getattr(argument, "hidden", False)),
-                variadic=_safe_type_name(pattern) in {"MultiVar", "MultiKeyWordVar"},
+                variadic=variadic,
+                variadic_flag=variadic_flag,
                 pattern_type=pattern_type,
                 has_default=has_default,
             )

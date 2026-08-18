@@ -8,6 +8,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nbtriage.capability_analysis import (
+    BaselineChangeOperation,
+    BaselineMemberField,
+    CapabilityAnalysisEntryBaseline,
     CapabilityAnalysisEntryOutput,
     CapabilityAnalysisOutput,
     CapabilityAnalysisRequest,
@@ -22,11 +25,12 @@ from nbtriage.capability_analysis import (
 )
 from nbtriage.capability_usage import (
     CapabilityUsageExpressionError,
+    group_literal_expression_for_usage,
     validate_literal_expression,
 )
 
 CAPABILITY_ANNOTATION_SCHEMA_VERSION = 6
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v4-prompt-v35-zh"
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v4-prompt-v38-zh"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v3"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
@@ -473,6 +477,22 @@ def capability_analysis_fingerprint(
             }
             for item in request.gate_candidates
         ],
+        "fixed_constraints": [
+            {
+                "kind": item.kind.value,
+                "statement": item.statement,
+                "evidence_ids": list(item.evidence_ids),
+                "config_reference_ids": list(item.config_reference_ids),
+                "role": item.role.value if item.role is not None else None,
+                "rate_limit_policy": (
+                    item.rate_limit_policy.value if item.rate_limit_policy is not None else None
+                ),
+                "rate_limit_scope": (
+                    item.rate_limit_scope.value if item.rate_limit_scope is not None else None
+                ),
+            }
+            for item in request.fixed_constraints
+        ],
         "source_context": (
             {
                 "module_name": request.source_context.module_name,
@@ -622,7 +642,7 @@ def _project_teaching_entry(
                         rate_limit_policy=item.rate_limit_policy,
                         rate_limit_scope=item.rate_limit_scope,
                     )
-                    for item in output.constraints
+                    for item in (*request.fixed_constraints, *output.constraints)
                 ),
                 key=lambda item: (
                     _REQUIREMENT_KIND_ORDER[item.kind],
@@ -645,12 +665,99 @@ def _project_teaching_entry(
         name=names[0] if names else None,
         summary=summaries[0] if summaries else None,
         usages=usages,
-        synonyms=_canonical_texts(grouped[SemanticClaimKind.SYNONYM])[:16],
-        supported_subjects=_canonical_texts(grouped[SemanticClaimKind.SUPPORTED_SUBJECT])[:8],
-        input_requirements=_canonical_texts(grouped[SemanticClaimKind.INPUT_REQUIREMENT])[:16],
-        behavior_boundaries=_canonical_texts(grouped[SemanticClaimKind.BEHAVIOR_BOUNDARY])[:16],
+        synonyms=_reconciled_baseline_members(
+            request,
+            output,
+            grouped,
+            field=BaselineMemberField.SYNONYMS,
+            claim_kind=SemanticClaimKind.SYNONYM,
+            limit=16,
+            evidence_units=evidence_units,
+        ),
+        supported_subjects=_reconciled_baseline_members(
+            request,
+            output,
+            grouped,
+            field=BaselineMemberField.SUPPORTED_SUBJECTS,
+            claim_kind=SemanticClaimKind.SUPPORTED_SUBJECT,
+            limit=8,
+            evidence_units=evidence_units,
+        ),
+        input_requirements=_reconciled_baseline_members(
+            request,
+            output,
+            grouped,
+            field=BaselineMemberField.INPUT_REQUIREMENTS,
+            claim_kind=SemanticClaimKind.INPUT_REQUIREMENT,
+            limit=16,
+            evidence_units=evidence_units,
+        ),
+        behavior_boundaries=_reconciled_baseline_members(
+            request,
+            output,
+            grouped,
+            field=BaselineMemberField.BEHAVIOR_BOUNDARIES,
+            claim_kind=SemanticClaimKind.BEHAVIOR_BOUNDARY,
+            limit=16,
+            evidence_units=evidence_units,
+        ),
         requirements=requirements,
         answer_markdown=answer_markdown,
+    )
+
+
+def _reconciled_baseline_members(
+    request: CapabilityAnalysisRequest,
+    output: CapabilityAnalysisEntryOutput,
+    grouped: dict[SemanticClaimKind, list[str]],
+    *,
+    field: BaselineMemberField,
+    claim_kind: SemanticClaimKind,
+    limit: int,
+    evidence_units: tuple[CapabilityEvidenceUnit, ...],
+) -> tuple[str, ...]:
+    baseline = _baseline_entry(request, output.entry_id)
+    values = list(getattr(baseline, field.value)) if baseline is not None else []
+    for change in (item for item in output.baseline_changes if item.field is field):
+        old_value = _validated_model_text(
+            change.old_value,
+            request=request,
+            evidence_units=evidence_units,
+        )
+        if old_value not in values:
+            raise CapabilityAnnotationError(
+                "baseline change old_value does not exist in the previous entry"
+            )
+        index = values.index(old_value)
+        if change.operation is BaselineChangeOperation.REMOVE:
+            values.pop(index)
+            continue
+        assert change.new_value is not None
+        new_value = _validated_model_text(
+            change.new_value,
+            request=request,
+            evidence_units=evidence_units,
+        )
+        if new_value in values:
+            raise CapabilityAnnotationError(
+                "baseline replacement must not duplicate an existing member"
+            )
+        values[index] = new_value
+    merged = _canonical_texts((*values, *grouped[claim_kind]))
+    if len(merged) > limit:
+        raise CapabilityAnnotationError(f"reconciled {field.value} exceeds its public member limit")
+    return merged
+
+
+def _baseline_entry(
+    request: CapabilityAnalysisRequest,
+    entry_id: str,
+) -> CapabilityAnalysisEntryBaseline | None:
+    if request.previous_annotation is None:
+        return None
+    return next(
+        (entry for entry in request.previous_annotation.entries if entry.entry_id == entry_id),
+        None,
     )
 
 
@@ -856,7 +963,8 @@ def _render_display_trigger(
     except CapabilityUsageExpressionError as error:
         raise CapabilityAnnotationError(str(error)) from error
     pattern = rf"(?<!\S){re.escape(target.command_body)}(?!\S)"
-    rendered, substitutions = re.subn(pattern, lambda _match: display_trigger, usage, count=1)
+    grouped_trigger = group_literal_expression_for_usage(display_trigger)
+    rendered, substitutions = re.subn(pattern, lambda _match: grouped_trigger, usage, count=1)
     if substitutions != 1:
         raise CapabilityAnnotationError(
             "usage must contain the deterministic command body exactly once"

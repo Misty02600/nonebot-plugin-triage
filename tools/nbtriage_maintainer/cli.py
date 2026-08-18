@@ -68,6 +68,7 @@ from tools.nbtriage_maintainer.capability_teaching import (
     analyze_capability_teaching,
 )
 from tools.nbtriage_maintainer.capability_teaching_evaluation import (
+    CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION,
     CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID,
     CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256,
     CapabilityTeachingEvaluationError,
@@ -355,7 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     capability_teaching_evaluation_parser.add_argument(
         "--fixtures",
         type=Path,
-        default=Path("evals/datasets/fixtures/capability-teaching-v9-forward-heldout.json"),
+        default=Path("evals/datasets/fixtures/capability-teaching-v11-forward-heldout.json"),
     )
     capability_teaching_evaluation_parser.add_argument("--report", type=Path, required=True)
     capability_teaching_evaluation_parser.add_argument(
@@ -1297,9 +1298,7 @@ def _run_evaluate_capability_teaching(args: argparse.Namespace) -> int:
             timeout_seconds=args.timeout_seconds,
             max_output_tokens=args.max_output_tokens,
             default_evaluation_id="capability-teaching-opencode-go-v1",
-            default_evaluation_revision=(
-                "opencode-go-capability-teaching-forward-heldout-20-20260816-v8-v34-zh-a"
-            ),
+            default_evaluation_revision=CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION,
         )
 
         def client_factory(

@@ -4,6 +4,11 @@
 |---|---|
 | 已采纳；已实现 | 2026-08-17 |
 
+> [ADR-0091](0091-use-pydantic-ai-model-ids-as-the-public-transport-selector.md) 已进一步把
+> `provider:model` 提升为新部署的公开 transport 选择器；本 ADR 中必须设置
+> `NBTRIAGE_MODEL_BACKEND=pydantic-ai` 的限制已被替代，地址安全、Provider factory、连接 revision 与
+> 未验证标签继续有效。[ADR-0092](0092-remove-legacy-model-backend-configuration.md) 随后彻底删除该旧字段。
+
 ## 背景
 
 Pydantic AI 使用 `provider:model` 识别 Provider 与模型，例如 `alibaba:qwen-max`。同一个 Provider

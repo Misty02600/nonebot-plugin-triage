@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
@@ -18,6 +19,18 @@ class SemanticClaimKind(StrEnum):
     SUPPORTED_SUBJECT = "supported_subject"
     INPUT_REQUIREMENT = "input_requirement"
     BEHAVIOR_BOUNDARY = "behavior_boundary"
+
+
+class BaselineMemberField(StrEnum):
+    SYNONYMS = "synonyms"
+    SUPPORTED_SUBJECTS = "supported_subjects"
+    INPUT_REQUIREMENTS = "input_requirements"
+    BEHAVIOR_BOUNDARIES = "behavior_boundaries"
+
+
+class BaselineChangeOperation(StrEnum):
+    REMOVE = "remove"
+    REPLACE = "replace"
 
 
 class SemanticConstraintKind(StrEnum):
@@ -137,7 +150,7 @@ class CapabilityAnalysisEntryBaseline:
 
 @dataclass(frozen=True)
 class CapabilityAnalysisBaseline:
-    """只用于减少文案漂移的上一版公开注释，不属于事实 Evidence。"""
+    """上一版已验证公开注释；只允许原样带回或经本轮 Evidence 显式变更。"""
 
     entries: tuple[CapabilityAnalysisEntryBaseline, ...] = ()
 
@@ -294,6 +307,7 @@ class CapabilityAnalysisRequest:
     source_context: CapabilitySourceContext | None = None
     config_projections: tuple[ConfigProjection, ...] = field(default=(), repr=False)
     unknown_config: tuple[UnknownConfigReference, ...] = ()
+    fixed_constraints: tuple[SemanticConstraint, ...] = ()
     previous_annotation: CapabilityAnalysisBaseline | None = field(default=None, repr=False)
     invocations: tuple[CapabilityInvocationTarget, ...] = ()
     gate_candidates: tuple[CapabilityGateCandidate, ...] = ()
@@ -353,6 +367,12 @@ class CapabilityAnalysisRequest:
             "unknown_config",
             max_items=64,
         )
+        _bounded_instances(
+            self.fixed_constraints,
+            SemanticConstraint,
+            "fixed_constraints",
+            max_items=24,
+        )
         evidence_ids = [item.evidence_id for item in self.evidence_units]
         if len(evidence_ids) != len(set(evidence_ids)):
             raise CapabilityAnalysisError("evidence units contain duplicate evidence IDs")
@@ -366,6 +386,29 @@ class CapabilityAnalysisRequest:
             raise CapabilityAnalysisError("config references must be unique")
         if set(config_ids).intersection(unknown_ids):
             raise CapabilityAnalysisError("a config reference cannot be both projected and unknown")
+        if len(self.fixed_constraints) != len(set(self.fixed_constraints)):
+            raise CapabilityAnalysisError("fixed constraints must be unique")
+        fixed_evidence = {
+            evidence_id
+            for constraint in self.fixed_constraints
+            for evidence_id in constraint.evidence_ids
+        }
+        unavailable_fixed_evidence = fixed_evidence.difference(evidence_ids)
+        if unavailable_fixed_evidence:
+            raise CapabilityAnalysisError(
+                "fixed constraints reference unavailable request evidence IDs"
+            )
+        fixed_config = {
+            reference_id
+            for constraint in self.fixed_constraints
+            for reference_id in constraint.config_reference_ids
+        }
+        if fixed_config.difference(config_ids):
+            raise CapabilityAnalysisError(
+                "fixed constraints reference unavailable projected config reference IDs"
+            )
+        if any(constraint.gate_candidate_ids for constraint in self.fixed_constraints):
+            raise CapabilityAnalysisError("fixed constraints must not reference gate candidates")
 
 
 @dataclass(frozen=True)
@@ -381,6 +424,38 @@ class SemanticClaim:
         _bounded_text(self.statement, "claim statement", max_length=1_000)
         _evidence_ids(self.evidence_ids, "claim evidence_ids")
         _config_reference_ids(self.config_reference_ids, "claim config_reference_ids")
+
+
+@dataclass(frozen=True)
+class BaselineMemberChange:
+    """对上一版公开成员执行的显式、可审计变更。"""
+
+    operation: BaselineChangeOperation
+    field: BaselineMemberField
+    old_value: str
+    evidence_ids: tuple[str, ...]
+    new_value: str | None = None
+    config_reference_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.operation, BaselineChangeOperation):
+            raise CapabilityAnalysisError("baseline change operation is invalid")
+        if not isinstance(self.field, BaselineMemberField):
+            raise CapabilityAnalysisError("baseline change field is invalid")
+        _bounded_text(self.old_value, "baseline change old_value", max_length=1_000)
+        _evidence_ids(self.evidence_ids, "baseline change evidence_ids")
+        _config_reference_ids(
+            self.config_reference_ids,
+            "baseline change config_reference_ids",
+        )
+        if self.operation is BaselineChangeOperation.REPLACE:
+            if self.new_value is None:
+                raise CapabilityAnalysisError("replace baseline change requires new_value")
+            _bounded_text(self.new_value, "baseline change new_value", max_length=1_000)
+            if self.new_value == self.old_value:
+                raise CapabilityAnalysisError("replace baseline change must change the value")
+        elif self.new_value is not None:
+            raise CapabilityAnalysisError("remove baseline change must not define new_value")
 
 
 @dataclass(frozen=True)
@@ -437,10 +512,17 @@ class CapabilityAnalysisEntryOutput:
     answer_evidence_ids: tuple[str, ...] = ()
     answer_config_reference_ids: tuple[str, ...] = ()
     display_trigger: str | None = None
+    baseline_changes: tuple[BaselineMemberChange, ...] = ()
 
     def __post_init__(self) -> None:
         _bounded_text(self.entry_id, "analysis entry_id", max_length=128)
         _bounded_instances(self.claims, SemanticClaim, "claims", max_items=64)
+        _bounded_instances(
+            self.baseline_changes,
+            BaselineMemberChange,
+            "baseline_changes",
+            max_items=64,
+        )
         _bounded_instances(
             self.constraints,
             SemanticConstraint,
@@ -563,6 +645,12 @@ def validate_capability_analysis_output(
     )
     referenced.update(
         evidence_id
+        for entry in output.entries
+        for change in entry.baseline_changes
+        for evidence_id in change.evidence_ids
+    )
+    referenced.update(
+        evidence_id
         for resolution in output.gate_resolutions
         for evidence_id in resolution.evidence_ids
     )
@@ -585,6 +673,12 @@ def validate_capability_analysis_output(
     )
     referenced_config.update(
         reference_id
+        for entry in output.entries
+        for change in entry.baseline_changes
+        for reference_id in change.config_reference_ids
+    )
+    referenced_config.update(
+        reference_id
         for resolution in output.gate_resolutions
         for reference_id in resolution.config_reference_ids
     )
@@ -594,7 +688,166 @@ def validate_capability_analysis_output(
             "analysis output references unavailable projected config reference IDs: "
             f"{sorted(unavailable_config)}"
         )
+    _validate_projected_config_value_references(request, output)
+    _validate_baseline_changes(request, output)
     _validate_gate_resolutions(request, output)
+    for entry in output.entries:
+        if sum(claim.kind is SemanticClaimKind.SUMMARY for claim in entry.claims) != 1:
+            raise CapabilityAnalysisError(
+                "enabled teaching entry requires exactly one summary claim"
+            )
+
+
+_BASELINE_CLAIM_FIELDS = {
+    SemanticClaimKind.SYNONYM: BaselineMemberField.SYNONYMS,
+    SemanticClaimKind.SUPPORTED_SUBJECT: BaselineMemberField.SUPPORTED_SUBJECTS,
+    SemanticClaimKind.INPUT_REQUIREMENT: BaselineMemberField.INPUT_REQUIREMENTS,
+    SemanticClaimKind.BEHAVIOR_BOUNDARY: BaselineMemberField.BEHAVIOR_BOUNDARIES,
+}
+_BASELINE_MEMBER_LIMITS = {
+    BaselineMemberField.SYNONYMS: 16,
+    BaselineMemberField.SUPPORTED_SUBJECTS: 8,
+    BaselineMemberField.INPUT_REQUIREMENTS: 16,
+    BaselineMemberField.BEHAVIOR_BOUNDARIES: 16,
+}
+
+
+def _validate_baseline_changes(
+    request: CapabilityAnalysisRequest,
+    output: CapabilityAnalysisOutput,
+) -> None:
+    baseline_by_id = (
+        {entry.entry_id: entry for entry in request.previous_annotation.entries}
+        if request.previous_annotation is not None
+        else {}
+    )
+    for entry in output.entries:
+        baseline = baseline_by_id.get(entry.entry_id)
+        if baseline is None and entry.baseline_changes:
+            raise CapabilityAnalysisError(
+                "baseline changes require an exact previous entry_id match"
+            )
+        members = {
+            field: list(getattr(baseline, field.value)) if baseline is not None else []
+            for field in BaselineMemberField
+        }
+        changed_targets: set[tuple[BaselineMemberField, str]] = set()
+        for change in entry.baseline_changes:
+            target = (change.field, change.old_value)
+            if target in changed_targets:
+                raise CapabilityAnalysisError("baseline member must not be changed more than once")
+            changed_targets.add(target)
+            values = members[change.field]
+            if change.old_value not in values:
+                raise CapabilityAnalysisError(
+                    "baseline change old_value does not exist in the previous entry"
+                )
+            index = values.index(change.old_value)
+            if change.operation is BaselineChangeOperation.REMOVE:
+                values.pop(index)
+                continue
+            assert change.new_value is not None
+            if change.new_value in values:
+                raise CapabilityAnalysisError(
+                    "baseline replacement must not duplicate an existing member"
+                )
+            values[index] = change.new_value
+        for claim in entry.claims:
+            field = _BASELINE_CLAIM_FIELDS.get(claim.kind)
+            if field is None:
+                continue
+            if (field, claim.statement) in changed_targets:
+                raise CapabilityAnalysisError(
+                    "a removed or replaced baseline value must not be reintroduced "
+                    "by a current claim"
+                )
+            if claim.statement not in members[field]:
+                members[field].append(claim.statement)
+        for field, values in members.items():
+            if len(values) > _BASELINE_MEMBER_LIMITS[field]:
+                raise CapabilityAnalysisError(
+                    f"reconciled {field.value} exceeds its public member limit"
+                )
+
+
+def _validate_projected_config_value_references(
+    request: CapabilityAnalysisRequest,
+    output: CapabilityAnalysisOutput,
+) -> None:
+    references_by_literal: dict[str, set[str]] = {}
+    for projection in request.config_projections:
+        for literal in _projected_config_literals(projection.value):
+            references_by_literal.setdefault(literal, set()).add(projection.reference_id)
+    unique_references = {
+        literal: next(iter(reference_ids))
+        for literal, reference_ids in references_by_literal.items()
+        if len(reference_ids) == 1
+    }
+    for entry in output.entries:
+        for item in (*entry.claims, *entry.constraints):
+            _validate_text_config_value_references(
+                item.statement,
+                item.config_reference_ids,
+                unique_references,
+            )
+        if entry.answer_markdown is not None:
+            _validate_text_config_value_references(
+                entry.answer_markdown,
+                entry.answer_config_reference_ids,
+                unique_references,
+            )
+
+
+def _projected_config_literals(value: object) -> tuple[str, ...]:
+    if isinstance(value, bool) or value is None:
+        return ()
+    if isinstance(value, int):
+        return (str(value),)
+    if isinstance(value, float):
+        literals = [str(value)]
+        if value.is_integer():
+            literals.append(str(int(value)))
+        return tuple(dict.fromkeys(literals))
+    if isinstance(value, str) and value:
+        return (value,)
+    return ()
+
+
+def _validate_text_config_value_references(
+    statement: str,
+    config_reference_ids: tuple[str, ...],
+    unique_references: dict[str, str],
+) -> None:
+    referenced = set(config_reference_ids)
+    for literal, reference_id in unique_references.items():
+        if reference_id in referenced or not _contains_config_literal(statement, literal):
+            continue
+        raise CapabilityAnalysisError(
+            "public text uses a projected config value without its config reference ID: "
+            f"{reference_id}"
+        )
+
+
+def _contains_config_literal(statement: str, literal: str) -> bool:
+    if not literal:
+        return False
+    if all(character in "+-.0123456789" for character in literal):
+        return (
+            re.search(
+                rf"(?<![A-Za-z0-9_.-]){re.escape(literal)}(?![A-Za-z0-9_.-])",
+                statement,
+            )
+            is not None
+        )
+    if literal.isascii() and (literal[0].isalnum() or literal[0] == "_"):
+        return (
+            re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(literal)}(?![A-Za-z0-9_])",
+                statement,
+            )
+            is not None
+        )
+    return literal in statement
 
 
 def _validate_gate_resolutions(
@@ -767,6 +1020,9 @@ def _validate_config_value(value: object, *, depth: int = 0) -> None:
 
 
 __all__ = (
+    "BaselineChangeOperation",
+    "BaselineMemberChange",
+    "BaselineMemberField",
     "CapabilityAnalysisBaseline",
     "CapabilityAnalysisClient",
     "CapabilityAnalysisEntryBaseline",

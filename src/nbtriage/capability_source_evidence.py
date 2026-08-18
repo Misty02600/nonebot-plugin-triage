@@ -5,14 +5,23 @@ import json
 import os
 import re
 from ast import literal_eval
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 
 from ast_grep_py import SgNode, SgRoot
 
-from nbtriage.capability_analysis import TeachingRole
-from nbtriage.framework_semantics import PermissionSemanticProfile, PublicConstraintKind
+from nbtriage.capability_analysis import (
+    SemanticConstraint,
+    SemanticConstraintKind,
+    TeachingRole,
+)
+from nbtriage.framework_semantics import (
+    PermissionSemanticProfile,
+    PublicConstraintKind,
+    public_permission_statement,
+)
 
 _MODULE_PATTERN = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$", re.ASCII)
 _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -205,6 +214,38 @@ class CapabilitySourceEvidencePack:
     @property
     def is_partial(self) -> bool:
         return bool(self.partial_errors)
+
+
+def fixed_permission_constraints(
+    facts: Iterable[PermissionConstraintFact],
+    *,
+    evidence_id: str,
+) -> tuple[SemanticConstraint, ...]:
+    """把版本限定、已识别的 Permission 事实投影为模型不可移除的公开约束。"""
+
+    constraints = {
+        SemanticConstraint(
+            kind=(
+                SemanticConstraintKind.ROLE
+                if fact.kind is PublicConstraintKind.ROLE
+                else SemanticConstraintKind.SCENE
+            ),
+            statement=public_permission_statement(fact.kind, fact.operation),
+            evidence_ids=(evidence_id,),
+            role=fact.teaching_role,
+        )
+        for fact in facts
+    }
+    return tuple(
+        sorted(
+            constraints,
+            key=lambda item: (
+                item.kind.value,
+                item.role.value if item.role is not None else "",
+                item.statement,
+            ),
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -1600,4 +1641,5 @@ __all__ = (
     "StructuralSymbolFact",
     "StructuralSymbolKind",
     "build_capability_source_evidence",
+    "fixed_permission_constraints",
 )

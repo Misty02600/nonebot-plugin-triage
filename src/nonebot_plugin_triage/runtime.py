@@ -47,17 +47,15 @@ from nonebot_plugin_triage.knowledge_pack_runtime import (
     register_knowledge_pack,
 )
 from nonebot_plugin_triage.live_reports import LiveReportService
-from nonebot_plugin_triage.model_runtime import (
-    ModelRuntimeConfigurationError,
-    NBTriageModelService,
-    create_model_service,
-)
 from nonebot_plugin_triage.nonebot_runtime import NoneBotRuntimeObserver
 from nonebot_plugin_triage.public_guidance import PublicGuidanceServiceLike
 from nonebot_plugin_triage.semantic_assessment import (
     SemanticAssessmentService,
     SemanticAssessmentServiceLike,
     create_semantic_assessment_service,
+)
+from nonebot_plugin_triage.task_model_runtime import (
+    is_opencode_go_profile,
 )
 from nonebot_plugin_triage.thread_references import (
     SupportThreadReferenceBridge,
@@ -75,11 +73,13 @@ _PROVIDER_CREDENTIAL_ENVIRONMENTS: dict[str, tuple[str, ...]] = {
     "anthropic": ("ANTHROPIC_API_KEY",),
     "cohere": ("CO_API_KEY",),
     "deepseek": ("DEEPSEEK_API_KEY",),
-    "google-gla": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     "groq": ("GROQ_API_KEY",),
     "mistral": ("MISTRAL_API_KEY",),
     "openai": ("OPENAI_API_KEY",),
+    "openai-chat": ("OPENAI_API_KEY",),
+    "openai-responses": ("OPENAI_API_KEY",),
     "openrouter": ("OPENROUTER_API_KEY",),
+    "google": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
 }
 
 
@@ -99,10 +99,10 @@ def _create_capability_annotation_client_factory(
     config: NBTriageConfig,
     tool_provider: CapabilityTeachingToolProvider,
 ) -> Callable[[], CapabilityAnalysisClient] | None:
-    if config.nbtriage_model_backend is None:
+    if config.nbtriage_model_name is None:
         logger.info(
             "NoneBot Triage 教学注释未启用：reason=model_not_configured；"
-            "未配置模型后端和模型名称，确定性能力索引仍会正常运行"
+            "未配置模型名称，确定性能力索引仍会正常运行"
         )
         return None
     try:
@@ -115,20 +115,18 @@ def _create_capability_annotation_client_factory(
         expected_environments = _expected_provider_credential_environments(config)
         if reason == "provider_credentials_unavailable" and expected_environments:
             logger.warning(
-                "NoneBot Triage 教学注释未启用：backend={}, model={}, reason={}, "
+                "NoneBot Triage 教学注释未启用：model={}, reason={}, "
                 "expected_env={}；当前 Bot 进程未获得 Provider 凭据，"
                 "请确认环境变量已传入启动 Bot 的进程；确定性能力索引仍会正常运行",
-                config.nbtriage_model_backend,
                 config.nbtriage_model_name,
                 reason,
                 "|".join(expected_environments),
             )
         else:
             logger.warning(
-                "NoneBot Triage 教学注释未启用：backend={}, model={}, reason={}；"
+                "NoneBot Triage 教学注释未启用：model={}, reason={}；"
                 "请检查模型名称、Provider 依赖和运行环境；"
                 "确定性能力索引仍会正常运行",
-                config.nbtriage_model_backend,
                 config.nbtriage_model_name,
                 reason,
             )
@@ -148,8 +146,6 @@ def _capability_annotation_initialization_failure_reason(
     if any(isinstance(item, ImportError) for item in chain):
         return "provider_dependency_unavailable"
     messages = " ".join(str(item).casefold() for item in chain)
-    if "unsupported model backend" in messages:
-        return "model_backend_unsupported"
     if "must use provider:model" in messages or "does not support a base url" in messages:
         return "model_configuration_invalid"
     if "api key" in messages or "credentials" in messages:
@@ -160,14 +156,9 @@ def _capability_annotation_initialization_failure_reason(
 def _expected_provider_credential_environments(
     config: NBTriageConfig,
 ) -> tuple[str, ...]:
-    backend = config.nbtriage_model_backend
-    if backend == "opencode-go-chat":
-        return ("OPENCODE_API_KEY",)
-    if backend == "openai-responses":
+    if is_opencode_go_profile(config):
         return ("OPENAI_API_KEY",)
-    if backend == "anthropic-messages":
-        return ("ANTHROPIC_API_KEY",)
-    if backend != "pydantic-ai" or config.nbtriage_model_name is None:
+    if config.nbtriage_model_name is None:
         return ()
     provider, separator, _model = config.nbtriage_model_name.partition(":")
     if not separator:
@@ -221,7 +212,6 @@ class NBTriagePluginRuntime:
     query_service: IncidentQueryService
     incidents: LiveIncidentBuffer
     trials: LiveTrialService
-    model_service: NBTriageModelService | None
     semantic_assessment_service: SemanticAssessmentServiceLike
     public_guidance_service: PublicGuidanceServiceLike
     capability_shadow: CapabilityShadowService | None
@@ -232,9 +222,6 @@ class NBTriagePluginRuntime:
 def create_plugin_runtime(
     config: NBTriageConfig,
     *,
-    model_service_factory: Callable[
-        [NBTriageConfig], NBTriageModelService | None
-    ] = create_model_service,
     semantic_assessment_service_factory: Callable[
         [NBTriageConfig], SemanticAssessmentServiceLike
     ] = _create_semantic_assessment_service,
@@ -298,15 +285,6 @@ def create_plugin_runtime(
         trial_service=trial_service,
     )
     query_service = IncidentQueryService(incident_buffer)
-    try:
-        model_service = model_service_factory(config)
-    except ModelRuntimeConfigurationError as error:
-        logger.warning(
-            "NoneBot Triage B1 model service is unavailable; model-enhanced "
-            "features will degrade independently ({})",
-            type(error).__name__,
-        )
-        model_service = None
     semantic_assessment_service = semantic_assessment_service_factory(config)
     public_guidance_service = public_guidance_service_factory(config)
     config_value_policy = ConfigValuePolicy.from_keys(config.nbtriage_restricted_config)
@@ -367,7 +345,6 @@ def create_plugin_runtime(
         query_service=query_service,
         incidents=incident_buffer,
         trials=trial_service,
-        model_service=model_service,
         semantic_assessment_service=semantic_assessment_service,
         public_guidance_service=public_guidance_service,
         capability_shadow=capability_shadow,

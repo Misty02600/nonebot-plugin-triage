@@ -7,6 +7,11 @@ from typing import Any, cast
 import pytest
 
 from nbtriage.capability_analysis import (
+    BaselineChangeOperation,
+    BaselineMemberChange,
+    BaselineMemberField,
+    CapabilityAnalysisBaseline,
+    CapabilityAnalysisEntryBaseline,
     CapabilityAnalysisEntryOutput,
     CapabilityAnalysisError,
     CapabilityAnalysisOutput,
@@ -28,6 +33,7 @@ from nbtriage.capability_analysis import (
     SemanticClaimKind,
     SemanticConstraint,
     SemanticConstraintKind,
+    TeachingRole,
     UnknownConfigReference,
 )
 
@@ -127,6 +133,21 @@ def test_request_rejects_duplicate_and_ambiguous_references() -> None:
             capability=_request().capability,
             evidence_units=(_request().evidence_units[0], _request().evidence_units[0]),
             invocations=_request().invocations,
+        )
+
+
+def test_request_rejects_fixed_constraint_without_request_evidence() -> None:
+    with pytest.raises(CapabilityAnalysisError, match="fixed constraints reference unavailable"):
+        replace(
+            _request(),
+            fixed_constraints=(
+                SemanticConstraint(
+                    SemanticConstraintKind.ROLE,
+                    "仅群管理员或群主可用",
+                    ("ev-missing",),
+                    role=TeachingRole.ADMIN,
+                ),
+            ),
         )
     with pytest.raises(CapabilityAnalysisError, match="both projected and unknown"):
         CapabilityAnalysisRequest(
@@ -352,6 +373,182 @@ def test_service_rejects_evidence_ids_outside_request() -> None:
 
     with pytest.raises(CapabilityAnalysisError, match="unavailable evidence IDs"):
         asyncio.run(service.analyze(_request()))
+
+
+def test_service_accepts_explicit_change_to_exact_baseline_member() -> None:
+    request = replace(
+        _request(),
+        previous_annotation=CapabilityAnalysisBaseline(
+            entries=(
+                CapabilityAnalysisEntryBaseline(
+                    "root",
+                    supported_subjects=("封面",),
+                ),
+            )
+        ),
+    )
+    output = replace(
+        _output(),
+        entries=(
+            replace(
+                _output().entries[0],
+                baseline_changes=(
+                    BaselineMemberChange(
+                        BaselineChangeOperation.REPLACE,
+                        BaselineMemberField.SUPPORTED_SUBJECTS,
+                        "封面",
+                        ("ev-handler",),
+                        "短文标题",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    result = asyncio.run(
+        CapabilityAnalysisService(FakeCapabilityAnalysisClient(output)).analyze(request)
+    )
+
+    assert result == output
+
+
+def test_service_rejects_change_without_exact_baseline_member() -> None:
+    request = replace(
+        _request(),
+        previous_annotation=CapabilityAnalysisBaseline(
+            entries=(CapabilityAnalysisEntryBaseline("root", synonyms=("找图",)),)
+        ),
+    )
+    output = replace(
+        _output(),
+        entries=(
+            replace(
+                _output().entries[0],
+                baseline_changes=(
+                    BaselineMemberChange(
+                        BaselineChangeOperation.REMOVE,
+                        BaselineMemberField.SYNONYMS,
+                        "找封面",
+                        ("ev-handler",),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(CapabilityAnalysisError, match="old_value does not exist"):
+        asyncio.run(
+            CapabilityAnalysisService(FakeCapabilityAnalysisClient(output)).analyze(request)
+        )
+
+
+def test_service_rejects_removed_baseline_member_reintroduced_as_current_claim() -> None:
+    request = replace(
+        _request(),
+        previous_annotation=CapabilityAnalysisBaseline(
+            entries=(CapabilityAnalysisEntryBaseline("root", synonyms=("找封面",)),)
+        ),
+    )
+    output = replace(
+        _output(),
+        entries=(
+            replace(
+                _output().entries[0],
+                claims=(
+                    *_output().entries[0].claims,
+                    SemanticClaim(
+                        SemanticClaimKind.SYNONYM,
+                        "找封面",
+                        ("ev-handler",),
+                    ),
+                ),
+                baseline_changes=(
+                    BaselineMemberChange(
+                        BaselineChangeOperation.REMOVE,
+                        BaselineMemberField.SYNONYMS,
+                        "找封面",
+                        ("ev-handler",),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(CapabilityAnalysisError, match="must not be reintroduced"):
+        asyncio.run(
+            CapabilityAnalysisService(FakeCapabilityAnalysisClient(output)).analyze(request)
+        )
+
+
+@pytest.mark.parametrize("target", ["claim", "constraint", "answer"])
+def test_service_requires_config_reference_when_public_text_uses_projected_value(
+    target: str,
+) -> None:
+    base_entry = _output().entries[0]
+    claim = SemanticClaim(
+        SemanticClaimKind.SUMMARY,
+        "最多返回 60 条结果" if target == "claim" else "查找二次元图片来源",
+        ("ev-handler",),
+    )
+    constraint = SemanticConstraint(
+        SemanticConstraintKind.INPUT,
+        "最多处理 60 个候选" if target == "constraint" else "需要回复一张图片",
+        ("ev-handler",),
+    )
+    output = replace(
+        _output(),
+        entries=(
+            replace(
+                base_entry,
+                claims=(claim,),
+                constraints=(constraint,),
+                answer_markdown="最多展示 60 条结果" if target == "answer" else None,
+                answer_evidence_ids=("ev-handler",) if target == "answer" else (),
+            ),
+        ),
+    )
+
+    with pytest.raises(CapabilityAnalysisError, match="without its config reference ID"):
+        asyncio.run(
+            CapabilityAnalysisService(FakeCapabilityAnalysisClient(output)).analyze(_request())
+        )
+
+
+def test_service_accepts_projected_value_with_same_field_config_reference() -> None:
+    output = replace(
+        _output(),
+        entries=(
+            replace(
+                _output().entries[0],
+                claims=(
+                    SemanticClaim(
+                        SemanticClaimKind.SUMMARY,
+                        "最多返回 60 条结果",
+                        ("ev-handler",),
+                        ("cfg-limit",),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    result = asyncio.run(
+        CapabilityAnalysisService(FakeCapabilityAnalysisClient(output)).analyze(_request())
+    )
+
+    assert result == output
+
+
+def test_service_requires_exactly_one_summary_claim() -> None:
+    output = replace(
+        _output(),
+        entries=(replace(_output().entries[0], claims=()),),
+    )
+
+    with pytest.raises(CapabilityAnalysisError, match="exactly one summary"):
+        asyncio.run(
+            CapabilityAnalysisService(FakeCapabilityAnalysisClient(output)).analyze(_request())
+        )
 
 
 def test_service_rejects_config_reference_ids_outside_request() -> None:

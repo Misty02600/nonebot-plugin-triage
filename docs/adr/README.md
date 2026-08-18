@@ -12,7 +12,7 @@
 | [ADR-0008](0008-pydantic-ai-controlled-model-adaptation.md) | 已采纳；语义 assessment 实现由 ADR-0044、Provider extra 所有权由 ADR-0047、部署端地址由 ADR-0090 部分替代 | 采用 Pydantic AI 的 Model / Provider / Profile 与 Direct Request 作为受控 B1 多模型 API 适配层 |
 | [ADR-0009](0009-use-async-model-boundary.md) | 已采纳 | 模型调用核心采用异步协议，同步 CLI 只在进程边缘桥接 |
 | [ADR-0010](0010-use-bounded-evidence-seeking-agent-loop.md) | 已采纳 | 用单 Agent、typed tools、有界循环、HITL 与 trajectory Gate 验证 Agent 能力 |
-| [ADR-0011](0011-expose-disabled-qualified-model-configuration.md) | 部分被 ADR-0037、ADR-0086、ADR-0090 替代 | 保留无配置密钥和单步客户端；产品启用开关由 ADR-0037 删除，评测不再是运行许可，部署端地址由 ADR-0090 接续 |
+| [ADR-0011](0011-expose-disabled-qualified-model-configuration.md) | 模型配置与旧 service 由 ADR-0092 替代；产品启用开关、评测许可和部署地址分别由 ADR-0037、ADR-0086、ADR-0090 接续 | 保留“密钥不进入插件配置”的边界；旧 backend 字段和 `NBTriageModelService` 已删除 |
 | [ADR-0012](0012-use-pydantic-ai-deferred-tools-behind-domain-runtime.md) | 已采纳 | 用领域 runtime 掌握循环与授权，只借用 Pydantic AI Deferred Tools 做单步多 Provider 适配 |
 | [ADR-0013](0013-use-mandatory-output-tool-for-opencode-go-b1.md) | 未采纳 | 不把一次 OpenCode Go 测试升级为 B1 输出契约或产品网关决定 |
 | [ADR-0014](0014-use-observation-first-production-trials.md) | 部分被替代 | 先用零模型、脱敏、可反馈的观察型生产 trial 建立真实评测闭环 |
@@ -63,7 +63,7 @@
 | [ADR-0060](0060-use-scope-thread-and-post-route-conversation-context.md) | 部分被 ADR-0061 替代 | 用稳定作用域承接一次显式补充，Semantic 只看当前文字；Reply 邻近聊天读取由 ADR-0061 改为最新窗口 |
 | [ADR-0061](0061-read-latest-bounded-conversation-window-for-bug-assessment.md) | 部分被 ADR-0064、ADR-0065、ADR-0066 替代 | Bug Agent 一次读取当前会话最新有界窗口；ADR-0065 进一步规定无原生历史 Provider 时不暴露工具，ADR-0066 重新界定自动服务教学注释的第一层合同地位 |
 | [ADR-0062](0062-structure-capability-teaching-usages-requirements-and-interactions.md) | 部分被 ADR-0069、ADR-0080 替代 | 结构化字段继续服务帮助展示；Answer 详细知识改由独立自由 Markdown，interaction 与 `{command}` 已删除，多 entry 合同由 ADR-0080 接续 |
-| [ADR-0063](0063-keep-plugin-startup-independent-from-model-enhancements.md) | 已采纳；资格门部分被 ADR-0086 替代 | 未配置或技术不可用的模型增强不得阻断插件导入；未评测组合本身不再触发降级 |
+| [ADR-0063](0063-keep-plugin-startup-independent-from-model-enhancements.md) | 已采纳；资格门由 ADR-0086、旧 backend 部署示例由 ADR-0092 替代 | 未配置或技术不可用的模型增强不得阻断插件导入；未评测组合本身不再触发降级 |
 | [ADR-0064](0064-refine-bug-conversation-evidence-and-verdict-contract.md) | 部分被 ADR-0065、ADR-0066 替代；Prompt v8 精确资格已通过 | 把最新聊天窗口收窄到 30 条，保留窗口外精确 Reply；ADR-0066 重新界定自动服务教学注释的第一层合同地位 |
 | [ADR-0065](0065-only-expose-conversation-history-for-supported-platforms.md) | 已采纳；已实现 | 只在 Adapter 有真实会话历史 Provider 时向 Bug Agent 暴露聊天工具；不再用本地滚动窗口模拟跨平台历史 |
 | [ADR-0066](0066-use-active-teaching-contract-as-bug-precheck.md) | 已采纳；首个保守纵切已实现 | 只让当前公开主动能力进入教学合同域；subject / observation readiness 与精确 Reply 用法纠正已接线，更广参数 / 角色 / 场景检查和教学回答 revision 绑定仍待实现 |
@@ -91,3 +91,5 @@
 | [ADR-0088](0088-bound-capability-annotation-concurrency-by-plugin.md) | 已采纳；已实现 | 教学注释按插件有限并发、插件内顺序生成；复用全局模型 timeout，只新增插件并发上限 |
 | [ADR-0089](0089-persist-redacted-pydantic-ai-agent-traces.md) | 已采纳；连接身份由 ADR-0090 补充 | 用 Pydantic AI 原生 OpenTelemetry spans 记录无正文 Agent 调用轨迹，并轮转写入 LocalStore data |
 | [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) | 已采纳；已实现 | 保留标准 `provider:model` 与 ModelProfile，并允许部署者为支持该参数的 Pydantic AI Provider 配置受限 Base URL |
+| [ADR-0091](0091-use-pydantic-ai-model-ids-as-the-public-transport-selector.md) | 已采纳；兼容迁移部分由 ADR-0092 替代 | 直接以 Pydantic AI `provider:model` 选择 transport；Base URL 连接兼容服务 |
+| [ADR-0092](0092-remove-legacy-model-backend-configuration.md) | 已采纳；已实现 | 删除旧 backend 字段、专用 runtime 分支和 OpenCode 密钥别名；旧配置明确失败并迁移到唯一的 `provider:model` 入口 |

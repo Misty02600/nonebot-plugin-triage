@@ -153,16 +153,17 @@ def _marketplace_subprocess_environment(*, configured_model: bool) -> dict[str, 
     for key in (
         "NBTRIAGE_MODEL_BACKEND",
         "NBTRIAGE_MODEL_NAME",
+        "NBTRIAGE_MODEL_BASE_URL",
         "NBTRIAGE_MODEL_TIMEOUT_SECONDS",
         "NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS",
-        "OPENCODE_API_KEY",
+        "OPENAI_API_KEY",
     ):
         environment.pop(key, None)
     if configured_model:
         environment.update(
             {
-                "NBTRIAGE_MODEL_BACKEND": "opencode-go-chat",
-                "NBTRIAGE_MODEL_NAME": "deepseek-v4-flash",
+                "NBTRIAGE_MODEL_NAME": "openai-chat:deepseek-v4-flash",
+                "NBTRIAGE_MODEL_BASE_URL": "https://opencode.ai/zen/go/v1",
                 "NBTRIAGE_MODEL_TIMEOUT_SECONDS": "60",
                 "NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS": "240",
             }
@@ -185,7 +186,7 @@ assert plugin is not None
 from nonebot_plugin_triage import handlers
 
 assert handlers.plugin_runtime.capability_shadow is not None
-assert handlers.plugin_runtime.model_service is None
+assert not hasattr(handlers.plugin_runtime, "model_service")
 """
 
     result = subprocess.run(
@@ -201,11 +202,42 @@ assert handlers.plugin_runtime.model_service is None
     assert result.returncode == 0, result.stderr
 
 
+def test_nonebot_plugin_rejects_removed_model_backend_environment(tmp_path: Path) -> None:
+    environment = _marketplace_subprocess_environment(configured_model=False)
+    environment["NBTRIAGE_MODEL_BACKEND"] = "pydantic-ai"
+    script = """
+import nonebot
+
+nonebot.init(driver="~none")
+plugin = nonebot.load_plugin("nonebot_plugin_triage")
+assert plugin is not None
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "nbtriage_model_backend" in output.casefold()
+    assert "provider:model" in output
+
+
 def test_nonebot_plugin_loads_with_alconna_cross_platform_metadata() -> None:
     project_root = Path(__file__).parents[2]
     script = """
 import nonebot
-nonebot.init(driver="~none", superusers={"200"})
+nonebot.init(
+    _env_file=(".nonebot-triage-pytest.env",),
+    driver="~none",
+    superusers={"200"},
+)
 plugin = nonebot.load_plugin("nonebot_plugin_triage")
 assert plugin is not None
 
@@ -320,6 +352,7 @@ import nonebot
 import asyncio
 from types import SimpleNamespace
 nonebot.init(
+    _env_file=(".nonebot-triage-pytest.env",),
     driver="~none",
     nbtriage_command="support",
 )

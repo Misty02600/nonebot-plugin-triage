@@ -22,6 +22,7 @@ from nonebot_plugin_triage.semantic_assessment import SupportSemanticAssessmentC
 from nonebot_plugin_triage.task_model_runtime import (
     TaskModelRuntimeConfigurationError,
     create_task_model_binding,
+    is_opencode_go_profile,
     unverified_evaluation_id,
 )
 
@@ -90,8 +91,8 @@ def create_opencode_go_semantic_client_factory(
     environ: Mapping[str, str] | None = None,
     qualified_tasks: frozenset[SemanticTaskQualification] = QUALIFIED_SEMANTIC_TASKS,
 ) -> Callable[[], SupportSemanticAssessmentClient]:
-    if config.nbtriage_model_backend != "opencode-go-chat":
-        raise SemanticRuntimeConfigurationError("backend is not opencode-go-chat")
+    if not is_opencode_go_profile(config):
+        raise SemanticRuntimeConfigurationError("model is not the OpenCode Go profile")
     return create_semantic_client_factory(
         config,
         environ=environ,
@@ -128,8 +129,7 @@ def create_semantic_client_factory(
     verified = verified_qualification is not None
     if not verified:
         logger.info(
-            "NoneBot Triage semantic assessment is using an unverified model combination: {}/{}",
-            config.nbtriage_model_backend,
+            "NoneBot Triage semantic assessment is using an unverified model combination: {}",
             config.nbtriage_model_name,
         )
 

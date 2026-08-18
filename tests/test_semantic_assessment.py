@@ -73,8 +73,8 @@ def test_unavailable_semantic_transport_assembles_without_calling_model(
     )
     service = create_semantic_assessment_service(
         NBTriageConfig(
-            nbtriage_model_backend="opencode-go-chat",
-            nbtriage_model_name="deepseek-v4-flash",
+            nbtriage_model_name="openai-chat:deepseek-v4-flash",
+            nbtriage_model_base_url="https://opencode.ai/zen/go/v1",
         )
     )
 

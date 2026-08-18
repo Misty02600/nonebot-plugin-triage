@@ -6,6 +6,7 @@ from nbtriage.capability_usage import (
     CapabilityUsageExpressionError,
     deterministic_literal_expression,
     expand_literal_expression,
+    group_literal_expression_for_usage,
     validate_literal_expression,
 )
 
@@ -50,3 +51,11 @@ def test_deterministic_alias_fallback_keeps_every_safe_literal() -> None:
         "(取消全体禁言|关闭全体禁言)"
     )
     assert deterministic_literal_expression(("普通", "带|符号")) is None
+
+
+def test_root_alternation_is_grouped_before_embedding_in_usage() -> None:
+    assert group_literal_expression_for_usage("提取色彩|图片取色") == "(提取色彩|图片取色)"
+    assert (
+        group_literal_expression_for_usage("(取消|关闭)(全体|全员)禁言")
+        == "(取消|关闭)(全体|全员)禁言"
+    )

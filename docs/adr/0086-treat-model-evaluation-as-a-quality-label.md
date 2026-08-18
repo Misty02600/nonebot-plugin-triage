@@ -6,6 +6,9 @@
 
 > [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) 已补充部署端连接身份：部署者可
 > 为标准 Pydantic AI Provider 配置受限 Base URL；该连接默认未验证，且不能改变 Provider / ModelProfile。
+> [ADR-0091](0091-use-pydantic-ai-model-ids-as-the-public-transport-selector.md) 又把 `provider:model` 定为
+> 公开 transport 选择器；[ADR-0092](0092-remove-legacy-model-backend-configuration.md) 随后删除旧 backend
+> 迁移兼容。
 
 ## 背景
 

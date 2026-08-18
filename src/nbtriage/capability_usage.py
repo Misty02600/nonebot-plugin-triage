@@ -130,9 +130,23 @@ def deterministic_literal_expression(literals: Sequence[str]) -> str | None:
     return result
 
 
+def group_literal_expression_for_usage(value: str) -> str:
+    """为嵌入完整 usage 的根级别名备选补上分组括号。"""
+    depth = 0
+    for character in value:
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+        elif character == "|" and depth == 0:
+            return f"({value})"
+    return value
+
+
 __all__ = (
     "CapabilityUsageExpressionError",
     "deterministic_literal_expression",
     "expand_literal_expression",
+    "group_literal_expression_for_usage",
     "validate_literal_expression",
 )

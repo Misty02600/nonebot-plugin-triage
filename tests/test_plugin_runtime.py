@@ -48,7 +48,7 @@ def test_unconfigured_teaching_model_logs_explicit_disabled_reason(
     assert logger.infos == [
         (
             "NoneBot Triage 教学注释未启用：reason=model_not_configured；"
-            "未配置模型后端和模型名称，确定性能力索引仍会正常运行",
+            "未配置模型名称，确定性能力索引仍会正常运行",
             (),
         )
     ]
@@ -72,7 +72,6 @@ def test_missing_provider_key_logs_expected_environment_without_secret(
         fail_factory,
     )
     config = NBTriageConfig(
-        nbtriage_model_backend="pydantic-ai",
         nbtriage_model_name="alibaba:qwen3.6-flash",
     )
 
@@ -84,11 +83,10 @@ def test_missing_provider_key_logs_expected_environment_without_secret(
     assert factory is None
     assert logger.warnings == [
         (
-            "NoneBot Triage 教学注释未启用：backend={}, model={}, reason={}, "
+            "NoneBot Triage 教学注释未启用：model={}, reason={}, "
             "expected_env={}；当前 Bot 进程未获得 Provider 凭据，"
             "请确认环境变量已传入启动 Bot 的进程；确定性能力索引仍会正常运行",
             (
-                "pydantic-ai",
                 "alibaba:qwen3.6-flash",
                 "provider_credentials_unavailable",
                 "ALIBABA_API_KEY|DASHSCOPE_API_KEY",

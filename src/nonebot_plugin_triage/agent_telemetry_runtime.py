@@ -30,7 +30,7 @@ def create_agent_telemetry_runtime(
     *,
     trace_path_resolver: Callable[[str], Path] = _resolve_agent_trace_path,
 ) -> AgentTelemetryRuntime | None:
-    if not config.nbtriage_agent_trace_enabled or config.nbtriage_model_backend is None:
+    if not config.nbtriage_agent_trace_enabled or config.nbtriage_model_name is None:
         disable_agent_telemetry()
         return None
     try:

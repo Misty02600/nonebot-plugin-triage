@@ -32,6 +32,7 @@ from nbtriage.capability_source_evidence import (
     SourceSpan,
     StructuralSymbolKind,
     build_capability_source_evidence,
+    fixed_permission_constraints,
 )
 from nbtriage.framework_semantics import (
     PermissionSemanticProfile,
@@ -224,6 +225,9 @@ def build_capability_analysis_request(
         source_pack,
         handler_sources,
     )
+    registration_sources = {
+        item.source for item in _selected_registrations(record, source_pack, handler_sources)
+    }
     evidence_units: list[CapabilityEvidenceUnit] = [
         _runtime_fact_evidence(record),
         structure_evidence,
@@ -282,6 +286,14 @@ def build_capability_analysis_request(
         evidence_units=tuple(evidence_units),
         config_projections=projections,
         unknown_config=unknown,
+        fixed_constraints=fixed_permission_constraints(
+            (
+                item
+                for item in source_pack.permission_constraints
+                if item.owner_source in registration_sources
+            ),
+            evidence_id=structure_evidence.evidence_id,
+        ),
         invocations=invocations,
         gate_candidates=_gate_candidates(
             record,
@@ -704,7 +716,14 @@ def _render_arguments(
         name = _public_slot_name(argument.get("name"))
         required = argument.get("required")
         variadic = argument.get("variadic")
+        variadic_flag = argument.get("variadic_flag")
         if name is None or not isinstance(required, bool) or not isinstance(variadic, bool):
+            return None
+        if variadic_flag not in {None, "+", "*"}:
+            return None
+        if variadic_flag is not None and not variadic:
+            return None
+        if variadic_flag == "*" and required:
             return None
         slot = f"<{name}>" if required else f"[{name}]"
         result.append(f"{slot}..." if variadic else slot)

@@ -10,6 +10,10 @@ from pydantic_ai.models import Model, infer_model
 from pydantic_ai.providers import Provider, infer_provider_class
 from pydantic_ai.settings import ModelSettings
 
+from nbtriage.opencode_go_contracts import (
+    OPENCODE_GO_BASE_URL,
+    OPENCODE_GO_SEMANTIC_MODELS,
+)
 from nbtriage.task_model_settings import task_model_settings
 from nonebot_plugin_triage.config import NBTriageConfig
 
@@ -37,10 +41,10 @@ def create_task_model_binding(
     """按公开 transport 配置构造一个 Pydantic AI 模型，并保留实际身份。
 
     Args:
-        config: 已校验的插件配置。``pydantic-ai`` backend 要求模型名使用
-            Pydantic AI 的 ``provider:model`` 形式。
-        environ: 仅供固定 transport 和测试读取 API Key；通用 Pydantic AI
-            provider 仍使用其官方环境变量解析。
+        config: 已校验的插件配置，直接使用 Pydantic AI 的
+            ``provider:model`` 模型 ID。
+        environ: 仅供已知连接预设和测试读取 API Key；通用 Pydantic AI
+            Provider 仍使用其官方环境变量解析。
 
     Returns:
         绑定实际 Pydantic AI Model、Provider 身份和模型设置的运行对象。
@@ -49,18 +53,17 @@ def create_task_model_binding(
         TaskModelRuntimeConfigurationError: 配置不完整、依赖或密钥缺失，或
             Pydantic AI 无法解析模型 ID。
     """
-    backend = config.nbtriage_model_backend
     configured_model = config.nbtriage_model_name
-    if backend is None or configured_model is None:
-        raise TaskModelRuntimeConfigurationError("model backend and name must be configured")
+    if configured_model is None:
+        raise TaskModelRuntimeConfigurationError("model name must be configured")
     environment = os.environ if environ is None else environ
 
     try:
-        if backend == "opencode-go-chat":
-            api_key = environment.get("OPENCODE_API_KEY", "")
+        if is_opencode_go_profile(config):
+            api_key = environment.get("OPENAI_API_KEY", "")
             if not api_key.strip():
                 raise TaskModelRuntimeConfigurationError(
-                    "OPENCODE_API_KEY is required for opencode-go-chat"
+                    "OPENAI_API_KEY is required for the OpenCode Go profile"
                 )
             from nbtriage.opencode_go_semantic_adapter import (
                 create_opencode_go_chat_model,
@@ -69,7 +72,7 @@ def create_task_model_binding(
 
             model = create_opencode_go_chat_model(
                 api_key=api_key,
-                model=configured_model,
+                model=configured_model.split(":", 1)[1],
                 timeout_seconds=config.nbtriage_model_timeout_seconds,
             )
             return _binding(
@@ -78,85 +81,27 @@ def create_task_model_binding(
                 model_settings=opencode_go_model_settings(),
             )
 
-        if backend == "openai-responses":
-            api_key = environment.get("OPENAI_API_KEY", "")
-            if not api_key.strip():
-                raise TaskModelRuntimeConfigurationError(
-                    "OPENAI_API_KEY is required for openai-responses"
-                )
-            from openai import AsyncOpenAI
-            from pydantic_ai.models.openai import (
-                OpenAIResponsesModel,
-                OpenAIResponsesModelSettings,
-            )
-            from pydantic_ai.providers.openai import OpenAIProvider
-
-            model = OpenAIResponsesModel(
+        if config.nbtriage_model_base_url is None:
+            model = infer_model(configured_model)
+        else:
+            model = infer_model(
                 configured_model,
-                provider=OpenAIProvider(
-                    openai_client=AsyncOpenAI(
-                        api_key=api_key,
-                        timeout=config.nbtriage_model_timeout_seconds,
-                        max_retries=0,
-                    )
-                ),
+                provider_factory=_base_url_provider_factory(config.nbtriage_model_base_url),
             )
-            return _binding(
-                model,
-                api_family="responses",
-                model_settings=OpenAIResponsesModelSettings(openai_store=False),
-            )
-
-        if backend == "anthropic-messages":
-            api_key = environment.get("ANTHROPIC_API_KEY", "")
-            if not api_key.strip():
-                raise TaskModelRuntimeConfigurationError(
-                    "ANTHROPIC_API_KEY is required for anthropic-messages"
-                )
-            from anthropic import AsyncAnthropic
-            from pydantic_ai.models.anthropic import AnthropicModel
-            from pydantic_ai.providers.anthropic import AnthropicProvider
-
-            model = AnthropicModel(
-                configured_model,
-                provider=AnthropicProvider(
-                    anthropic_client=AsyncAnthropic(
-                        api_key=api_key,
-                        timeout=config.nbtriage_model_timeout_seconds,
-                        max_retries=0,
-                    )
-                ),
-            )
-            return _binding(model, api_family="messages")
-
-        if backend == "pydantic-ai":
-            if ":" not in configured_model:
-                raise TaskModelRuntimeConfigurationError(
-                    "pydantic-ai model names must use provider:model, for example alibaba:qwen-max"
-                )
-            if config.nbtriage_model_base_url is None:
-                model = infer_model(configured_model)
-            else:
-                model = infer_model(
-                    configured_model,
-                    provider_factory=_base_url_provider_factory(config.nbtriage_model_base_url),
-                )
-            model_settings, settings_revision = task_model_settings(model)
-            return _binding(
-                model,
-                api_family="pydantic-ai",
-                model_settings=model_settings,
-                connection_revision=model_connection_revision(config),
-                settings_revision=settings_revision,
-            )
+        model_settings, settings_revision = task_model_settings(model)
+        return _binding(
+            model,
+            api_family=_pydantic_ai_api_family(configured_model),
+            model_settings=model_settings,
+            connection_revision=model_connection_revision(config),
+            settings_revision=settings_revision,
+        )
     except TaskModelRuntimeConfigurationError:
         raise
     except (ImportError, RuntimeError, TypeError, ValueError) as error:
         raise TaskModelRuntimeConfigurationError(
             f"model transport could not be initialized ({type(error).__name__})"
         ) from error
-
-    raise TaskModelRuntimeConfigurationError(f"unsupported model backend: {backend}")
 
 
 def _binding(
@@ -192,7 +137,20 @@ def _base_url_provider_factory(base_url: str) -> Callable[[str], Provider[Any]]:
     return create_provider
 
 
+def _pydantic_ai_api_family(model_id: str) -> str:
+    provider_name = model_id.split(":", 1)[0]
+    if provider_name == "openai-chat":
+        return "chat-completions"
+    if provider_name in {"openai", "openai-responses"}:
+        return "responses"
+    if provider_name == "anthropic":
+        return "messages"
+    return "pydantic-ai"
+
+
 def model_connection_revision(config: NBTriageConfig) -> str:
+    if is_opencode_go_profile(config):
+        return "provider-default"
     base_url = config.nbtriage_model_base_url
     if base_url is None:
         return "provider-default"
@@ -204,10 +162,23 @@ def unverified_evaluation_id(*, task: str, prompt_id: str) -> str:
     return f"unverified:{task}:{prompt_id}"
 
 
+def is_opencode_go_profile(config: NBTriageConfig) -> bool:
+    """判断配置是否精确命中项目已验证的 OpenCode Go 连接预设。"""
+    model_name = config.nbtriage_model_name
+    if model_name is None:
+        return False
+    return (
+        config.nbtriage_model_base_url == OPENCODE_GO_BASE_URL
+        and model_name.startswith("openai-chat:")
+        and model_name.split(":", 1)[1] in OPENCODE_GO_SEMANTIC_MODELS
+    )
+
+
 __all__ = (
     "TaskModelBinding",
     "TaskModelRuntimeConfigurationError",
     "create_task_model_binding",
+    "is_opencode_go_profile",
     "model_connection_revision",
     "unverified_evaluation_id",
 )

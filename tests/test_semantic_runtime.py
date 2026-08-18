@@ -14,8 +14,8 @@ from nonebot_plugin_triage.semantic_runtime import (
 
 def _config(model: str = "deepseek-v4-flash") -> NBTriageConfig:
     return NBTriageConfig(
-        nbtriage_model_backend="opencode-go-chat",
-        nbtriage_model_name=model,
+        nbtriage_model_name=f"openai-chat:{model}",
+        nbtriage_model_base_url="https://opencode.ai/zen/go/v1",
         nbtriage_model_timeout_seconds=60,
         nbtriage_model_max_output_tokens=240,
     )
@@ -56,15 +56,15 @@ def test_qwen36_semantic_qualification_binds_endpoint_settings_and_runtime_limit
 def test_unverified_semantic_combination_remains_runnable() -> None:
     factory = create_opencode_go_semantic_client_factory(
         _config(),
-        environ={"OPENCODE_API_KEY": "test-only"},
+        environ={"OPENAI_API_KEY": "test-only"},
         qualified_tasks=frozenset(),
     )
 
     assert callable(factory)
 
 
-def test_semantic_factory_requires_opencode_key_without_exposing_it() -> None:
-    with pytest.raises(SemanticRuntimeConfigurationError, match="OPENCODE_API_KEY"):
+def test_semantic_factory_requires_compatible_key_without_exposing_it() -> None:
+    with pytest.raises(SemanticRuntimeConfigurationError, match="OPENAI_API_KEY"):
         create_opencode_go_semantic_client_factory(
             _config(),
             environ={},
@@ -90,7 +90,7 @@ def test_nonstandard_semantic_runtime_profile_is_unverified_but_runnable(
     del message
     factory = create_opencode_go_semantic_client_factory(
         NBTriageConfig.model_validate(payload),
-        environ={"OPENCODE_API_KEY": "fixture-key"},
+        environ={"OPENAI_API_KEY": "fixture-key"},
         qualified_tasks=frozenset({OPENCODE_GO_SEMANTIC_QUALIFICATION}),
     )
 

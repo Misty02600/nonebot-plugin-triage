@@ -27,7 +27,12 @@ from nbtriage.capability_analysis import (
     CapabilityInvocationTarget,
     CapabilitySourceContext,
     ConfigProjection,
+    RateLimitPolicy,
+    RateLimitScope,
+    SemanticClaimKind,
     SemanticConstraint,
+    SemanticConstraintKind,
+    TeachingRole,
     UnknownConfigReference,
 )
 from nbtriage.capability_annotations import (
@@ -47,6 +52,7 @@ from nbtriage.capability_model_adapter import (
 from nbtriage.capability_source_evidence import (
     CapabilitySourceEvidencePack,
     build_capability_source_evidence,
+    fixed_permission_constraints,
 )
 from nbtriage.framework_semantics import uninfo_permission_profile
 from nbtriage.model_usage import provider_response_identity
@@ -54,7 +60,7 @@ from nbtriage.opencode_go_semantic_adapter import normalized_opencode_go_cost_mi
 
 CAPABILITY_TEACHING_EVALUATION_ID = "capability-teaching-opencode-go-v1"
 CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION = (
-    "opencode-go-capability-teaching-forward-heldout-20-20260816-v8-v34-zh-a"
+    "capability-teaching-forward-heldout-20-20260818-v11-v38-zh-a"
 )
 CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SET_ID = (
     "capability-teaching-v8-forward-heldout-20-20260816-a-v34-zh"
@@ -63,10 +69,10 @@ CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SHA256 = (
     "9b4a6a21aed98efcf12a5094defe18aed4ec1f713c32b350464997a87d3aabf2"
 )
 CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID = (
-    "capability-teaching-v9-forward-heldout-20-20260817-a-v35-zh"
+    "capability-teaching-v11-forward-heldout-20-20260818-a-v38-zh"
 )
 CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256 = (
-    "a1efdc82b9a4449df901ac35326b71f40966fe0f0fd3a07e2a27ede9cc38628c"
+    "e7380865424ce6102a726f0ae4bfa538fb81038835b31d64d3e6ac8a910d7d65"
 )
 CAPABILITY_TEACHING_CONSUMED_V1_FIXTURE_SHA256 = (
     "783f8daabcaf5587f942a0463ce9237726d77c875344760354ce52d08c5df76f"
@@ -74,6 +80,15 @@ CAPABILITY_TEACHING_CONSUMED_V1_FIXTURE_SHA256 = (
 _QUALIFIED_PROVIDER = "opencode-go"
 _QUALIFIED_MODEL = "deepseek-v4-flash"
 _OPTION_PATTERN = re.compile(r"(?<![\w-])--?[A-Za-z][A-Za-z0-9_-]*")
+_FIXTURE_SCHEMA_VERSIONS = frozenset({3, 4})
+_FINAL_MEMBER_FIELDS = frozenset(
+    {
+        "synonyms",
+        "supported_subjects",
+        "input_requirements",
+        "behavior_boundaries",
+    }
+)
 
 
 class CapabilityTeachingEvaluationError(RuntimeError):
@@ -456,6 +471,7 @@ async def evaluate_capability_teaching(
     )
     report = {
         "schema_version": 1,
+        "fixture_schema_version": payload["schema_version"],
         "mode": "diagnostic" if diagnostic_mode else "qualification",
         "evaluation_id": evaluation_id,
         "evaluation_revision": evaluation_revision,
@@ -532,33 +548,43 @@ def _score_case(
     annotation: CapabilityTeachingAnnotation | None,
     tool_call_count: int,
 ) -> dict[str, bool]:
+    candidate_claim_key = (
+        "required_candidate_claim_kinds"
+        if "required_candidate_claim_kinds" in expected
+        else "required_claim_kinds"
+    )
+    checks = {
+        "projection_valid": False,
+        "knowledge_enabled": False,
+        candidate_claim_key: False,
+        "required_constraints": False,
+        "forbidden_constraint_kinds_absent": False,
+        "entry_ids": False,
+        "usage_contract": False,
+        "unexpected_options_absent": False,
+        "required_public_text": False,
+        "forbidden_public_text_absent": False,
+        "baseline_preserved": False,
+        "baseline_members_preserved": False,
+        "minimum_tool_calls": False,
+        "dynamic_evidence_cited": False,
+        "required_config_cited": False,
+    }
+    if "required_final_members" in expected:
+        checks["required_final_members"] = False
     if output is None or annotation is None:
-        return {
-            "projection_valid": False,
-            "knowledge_enabled": False,
-            "required_claim_kinds": False,
-            "required_constraints": False,
-            "forbidden_constraint_kinds_absent": False,
-            "entry_ids": False,
-            "usage_contract": False,
-            "unexpected_options_absent": False,
-            "required_public_text": False,
-            "forbidden_public_text_absent": False,
-            "baseline_preserved": False,
-            "baseline_members_preserved": False,
-            "minimum_tool_calls": False,
-            "dynamic_evidence_cited": False,
-            "required_config_cited": False,
-        }
+        return checks
     expected_enabled = expected.get("knowledge_enabled")
     if type(expected_enabled) is not bool:
         raise CapabilityTeachingEvaluationError("expected knowledge_enabled must be boolean")
     output_claims = tuple(item for entry in output.entries for item in entry.claims)
     claims = {item.kind.value for item in output_claims}
-    required_claims = set(
-        _string_list(expected.get("required_claim_kinds", []), "required_claim_kinds")
+    required_claims = set(_string_list(expected.get(candidate_claim_key, []), candidate_claim_key))
+    required_final_members = _final_member_contract(expected.get("required_final_members", {}))
+    constraints = (
+        *request.fixed_constraints,
+        *(item for entry in output.entries for item in entry.constraints),
     )
-    constraints = tuple(item for entry in output.entries for item in entry.constraints)
     required_constraints = _dict_list(
         expected.get("required_constraints", []),
         "required_constraints",
@@ -635,16 +661,21 @@ def _score_case(
         for entry in output.entries
         for reference_id in entry.answer_config_reference_ids
     )
+    referenced_config.update(
+        reference_id
+        for constraint in request.fixed_constraints
+        for reference_id in constraint.config_reference_ids
+    )
     required_config = set(
         _string_list(
             expected.get("required_config_reference_ids", []),
             "required_config_reference_ids",
         )
     )
-    return {
+    checks = {
         "projection_valid": True,
         "knowledge_enabled": annotation.knowledge_enabled is expected_enabled,
-        "required_claim_kinds": required_claims.issubset(claims),
+        candidate_claim_key: required_claims.issubset(claims),
         "required_constraints": all(
             any(_constraint_matches(item, candidate) for candidate in constraints)
             for item in required_constraints
@@ -668,6 +699,30 @@ def _score_case(
         "dynamic_evidence_cited": (not dynamic_citation_required or bool(output.evidence_units)),
         "required_config_cited": required_config.issubset(referenced_config),
     }
+    if "required_final_members" in expected:
+        checks["required_final_members"] = _final_members_present(
+            annotation,
+            required_final_members,
+        )
+    return checks
+
+
+def _final_members_present(
+    annotation: CapabilityTeachingAnnotation,
+    required: dict[str, dict[str, list[str]]],
+) -> bool:
+    entries = {entry.entry_id: entry for entry in annotation.entries}
+    for entry_id, fields in required.items():
+        entry = entries.get(entry_id)
+        if entry is None:
+            return False
+        for field, required_values in fields.items():
+            actual_values = getattr(entry, field, None)
+            if not isinstance(actual_values, tuple) or not set(required_values).issubset(
+                actual_values
+            ):
+                return False
+    return True
 
 
 def _constraint_matches(
@@ -817,6 +872,17 @@ def _candidate_payload(output: CapabilityAnalysisOutput | None) -> dict[str, obj
                     }
                     for item in entry.constraints
                 ],
+                "baseline_changes": [
+                    {
+                        "op": item.operation.value,
+                        "field": item.field.value,
+                        "old_value": item.old_value,
+                        "new_value": item.new_value,
+                        "evidence_ids": list(item.evidence_ids),
+                        "config_reference_ids": list(item.config_reference_ids),
+                    }
+                    for item in entry.baseline_changes
+                ],
                 "answer_markdown": entry.answer_markdown,
                 "answer_evidence_ids": list(entry.answer_evidence_ids),
                 "answer_config_reference_ids": list(entry.answer_config_reference_ids),
@@ -878,6 +944,10 @@ def _parse_request(raw: dict[str, object]) -> CapabilityAnalysisRequest:
             )
             for item in _dict_list(raw.get("unknown_config", []), "unknown_config")
         ),
+        fixed_constraints=tuple(
+            _parse_fixed_constraint(item)
+            for item in _dict_list(raw.get("fixed_constraints", []), "fixed_constraints")
+        ),
         previous_annotation=_parse_baseline(previous),
         invocations=tuple(
             CapabilityInvocationTarget(
@@ -907,6 +977,27 @@ def _parse_request(raw: dict[str, object]) -> CapabilityAnalysisRequest:
     )
 
 
+def _parse_fixed_constraint(raw: dict[str, object]) -> SemanticConstraint:
+    role = raw.get("role")
+    rate_limit_policy = raw.get("rate_limit_policy")
+    rate_limit_scope = raw.get("rate_limit_scope")
+    return SemanticConstraint(
+        kind=SemanticConstraintKind(_required_text(raw, "kind")),
+        statement=_required_text(raw, "statement"),
+        evidence_ids=tuple(_string_list(raw.get("evidence_ids"), "evidence_ids")),
+        config_reference_ids=tuple(
+            _string_list(raw.get("config_reference_ids", []), "config_reference_ids")
+        ),
+        role=TeachingRole(role) if isinstance(role, str) else None,
+        rate_limit_policy=(
+            RateLimitPolicy(rate_limit_policy) if isinstance(rate_limit_policy, str) else None
+        ),
+        rate_limit_scope=(
+            RateLimitScope(rate_limit_scope) if isinstance(rate_limit_scope, str) else None
+        ),
+    )
+
+
 def _prepare_case(fixtures_path: Path, raw_case: dict[str, object]) -> _PreparedCase:
     request = _parse_request(_required_dict(raw_case, "request"))
     raw_source = raw_case.get("source_case")
@@ -928,13 +1019,30 @@ def _prepare_case(fixtures_path: Path, raw_case: dict[str, object]) -> _Prepared
         pack,
         _required_dict(raw_source, "expected_extraction"),
     )
-    evidence_units = [*request.evidence_units, _source_structure_unit(pack)]
+    structure_evidence = _source_structure_unit(pack)
+    evidence_units = [*request.evidence_units, structure_evidence]
     for relative in _string_list(raw_source.get("include_files", []), "include_files"):
         evidence_units.append(_source_file_unit(source_root, relative))
     if len({item.evidence_id for item in evidence_units}) != len(evidence_units):
         raise CapabilityTeachingEvaluationError("source case contains duplicate Evidence IDs")
     if sum(len(item.content) for item in evidence_units) > 32_000:
         raise CapabilityTeachingEvaluationError("source case exceeds the Evidence text budget")
+    command_bodies = tuple(
+        item.command_body for item in request.invocations if item.command_body is not None
+    )
+    registration_sources = {
+        registration.source
+        for registration in pack.registrations
+        if any(
+            body == entry or body.startswith(f"{entry} ")
+            for entry in registration.entries
+            for body in command_bodies
+        )
+    }
+    extracted_fixed_constraints = fixed_permission_constraints(
+        (item for item in pack.permission_constraints if item.owner_source in registration_sources),
+        evidence_id=structure_evidence.evidence_id,
+    )
     prepared_request = replace(
         request,
         source_context=CapabilitySourceContext(
@@ -942,6 +1050,9 @@ def _prepare_case(fixtures_path: Path, raw_case: dict[str, object]) -> _Prepared
             plugin_source_revision=pack.source_revision,
         ),
         evidence_units=tuple(evidence_units),
+        fixed_constraints=tuple(
+            dict.fromkeys((*request.fixed_constraints, *extracted_fixed_constraints))
+        ),
     )
     return _PreparedCase(
         raw=raw_case,
@@ -1173,8 +1284,9 @@ def _validate_fixture(payload: object) -> list[dict[str, object]]:
     if not isinstance(payload, dict):
         raise CapabilityTeachingEvaluationError("fixture must be an object")
     cases = payload.get("cases")
+    fixture_schema_version = payload.get("schema_version")
     if (
-        payload.get("schema_version") != 3
+        fixture_schema_version not in _FIXTURE_SCHEMA_VERSIONS
         or payload.get("capability_schema_version") != CAPABILITY_ANNOTATION_SCHEMA_VERSION
         or payload.get("synthetic_only") is not True
         or payload.get("contains_real_user_data") is not False
@@ -1186,7 +1298,74 @@ def _validate_fixture(payload: object) -> list[dict[str, object]]:
         or any(not isinstance(item, dict) for item in cases)
     ):
         raise CapabilityTeachingEvaluationError("invalid capability teaching fixture contract")
+    for raw_case in cases:
+        _validate_expected_scoring_contract(
+            _required_dict(raw_case, "expected"),
+            fixture_schema_version=cast(int, fixture_schema_version),
+        )
     return cases
+
+
+def _validate_expected_scoring_contract(
+    expected: dict[str, object],
+    *,
+    fixture_schema_version: int,
+) -> None:
+    if fixture_schema_version == 3:
+        if "required_claim_kinds" not in expected or any(
+            key in expected for key in ("required_candidate_claim_kinds", "required_final_members")
+        ):
+            raise CapabilityTeachingEvaluationError(
+                "fixture schema v3 requires legacy required_claim_kinds"
+            )
+        required_claims = _string_list(
+            expected["required_claim_kinds"],
+            "required_claim_kinds",
+        )
+    else:
+        if (
+            "required_claim_kinds" in expected
+            or "required_candidate_claim_kinds" not in expected
+            or "required_final_members" not in expected
+        ):
+            raise CapabilityTeachingEvaluationError(
+                "fixture schema v4 requires candidate and final scoring contracts"
+            )
+        required_claims = _string_list(
+            expected["required_candidate_claim_kinds"],
+            "required_candidate_claim_kinds",
+        )
+        _final_member_contract(expected["required_final_members"])
+    valid_claim_kinds = {kind.value for kind in SemanticClaimKind}
+    if not set(required_claims).issubset(valid_claim_kinds):
+        raise CapabilityTeachingEvaluationError("required candidate claim kind is invalid")
+
+
+def _final_member_contract(value: object) -> dict[str, dict[str, list[str]]]:
+    if not isinstance(value, dict):
+        raise CapabilityTeachingEvaluationError("required_final_members must be an object")
+    parsed: dict[str, dict[str, list[str]]] = {}
+    for entry_id, raw_fields in value.items():
+        if not isinstance(entry_id, str) or not entry_id:
+            raise CapabilityTeachingEvaluationError(
+                "required_final_members entry ID must be non-empty"
+            )
+        if not isinstance(raw_fields, dict) or not raw_fields:
+            raise CapabilityTeachingEvaluationError(
+                "required_final_members entry must define at least one field"
+            )
+        fields: dict[str, list[str]] = {}
+        for field, raw_values in raw_fields.items():
+            if field not in _FINAL_MEMBER_FIELDS:
+                raise CapabilityTeachingEvaluationError("required_final_members field is invalid")
+            values = _string_list(raw_values, f"required_final_members.{entry_id}.{field}")
+            if not values or len(values) != len(set(values)):
+                raise CapabilityTeachingEvaluationError(
+                    "required_final_members values must be non-empty and unique"
+                )
+            fields[field] = values
+        parsed[entry_id] = fields
+    return parsed
 
 
 def _expected_qualification_contract() -> dict[str, object]:

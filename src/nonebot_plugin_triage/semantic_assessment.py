@@ -92,7 +92,7 @@ def create_unavailable_semantic_assessment_service(
 def create_semantic_assessment_service(
     config: NBTriageConfig,
 ) -> SemanticAssessmentService:
-    if config.nbtriage_model_backend is None:
+    if config.nbtriage_model_name is None:
         return create_unavailable_semantic_assessment_service(
             timeout_seconds=config.nbtriage_model_timeout_seconds
         )
