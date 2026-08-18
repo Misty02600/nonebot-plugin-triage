@@ -1293,6 +1293,7 @@ def _resolve_analysis_targets(
     parsed_modules: dict[str, _ParsedModule],
 ) -> tuple[_ResolvedAnalysisTarget, ...]:
     resolved: list[_ResolvedAnalysisTarget] = []
+    resolved_source_spans: set[tuple[str | None, int, int, str]] = set()
     for target in targets:
         parsed = parsed_modules.get(target.module)
         if parsed is None:
@@ -1311,6 +1312,10 @@ def _resolve_analysis_targets(
         source = _function_source_span(parsed, function)
         if content is None or source is None or len(content) > _MAX_FUNCTION_CHARS:
             continue
+        source_span_key = (source.locator, source.line, source.end_line, source.digest)
+        if source_span_key in resolved_source_spans:
+            continue
+        resolved_source_spans.add(source_span_key)
         resolved.append(
             _ResolvedAnalysisTarget(
                 reference=target,

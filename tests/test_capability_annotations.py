@@ -802,6 +802,47 @@ async def test_runtime_snapshot_is_public_availability_gate(
 
 
 @pytest.mark.asyncio
+async def test_prepare_error_skips_only_the_invalid_teaching_unit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        if record.capability_id == "command:invalid":
+            raise CapabilityAnalysisError("evidence units contain duplicate evidence IDs")
+        return _request(record.capability_id)
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=lambda: FakeCapabilityAnalysisClient(_output()),
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+
+    status = await service.refresh(
+        CapabilitySnapshot.create(
+            (
+                _record("command:invalid", Disclosure.PUBLIC),
+                _record("command:valid", Disclosure.PUBLIC),
+            )
+        )
+    )
+
+    assert status.eligible_count == 1
+    assert status.skipped_count == 1
+    assert status.generated_count == 1
+    assert service.get("command:invalid") is None
+    assert service.get("command:valid") is not None
+
+
+@pytest.mark.asyncio
 async def test_annotations_run_plugins_concurrently_and_units_within_plugin_sequentially(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -975,6 +1016,23 @@ async def test_failed_teaching_unit_log_has_safe_location_and_reason(
     assert status.failed_count == 1
     assert status.generated_count == 0
     assert logger.infos[0] == (
+        "NoneBot Triage 教学注释准备开始：refresh_id={}, snapshot_records={}, cached={}, scope={}",
+        (
+            "0123456789abcdef0123456789abcdef",
+            1,
+            0,
+            "all",
+        ),
+    )
+    assert logger.infos[1] == (
+        "NoneBot Triage 教学注释准备完成：refresh_id={}, eligible={}, skipped={}",
+        (
+            "0123456789abcdef0123456789abcdef",
+            1,
+            0,
+        ),
+    )
+    assert logger.infos[2] == (
         "NoneBot Triage 教学注释刷新开始：refresh_id={}, eligible={}, cached={}, "
         "pending={}, plugin_groups={}, max_plugin_concurrency={}, scope={}",
         (

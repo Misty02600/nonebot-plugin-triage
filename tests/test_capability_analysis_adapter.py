@@ -283,6 +283,72 @@ async def handle_search():
     assert request.unknown_config == ()
 
 
+def test_deduplicates_helper_source_with_multiple_config_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+from pydantic import BaseModel
+
+class Config(BaseModel):
+    notify_group: bool = True
+    notify_user: bool = False
+
+plugin_config = Config()
+
+async def _send_notify():
+    if plugin_config.notify_group:
+        return "group"
+    if plugin_config.notify_user:
+        return "user"
+    return None
+
+async def handle():
+    return await _send_notify()
+""",
+    )
+
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle", 16)],
+            config_references=[
+                _config_reference(
+                    module,
+                    field="notify_group",
+                    key="NOTIFY_GROUP",
+                    function="_send_notify",
+                    line=10,
+                    helper_depth=1,
+                ),
+                _config_reference(
+                    module,
+                    field="notify_user",
+                    key="NOTIFY_USER",
+                    function="_send_notify",
+                    line=12,
+                    helper_depth=1,
+                ),
+            ],
+        ),
+        ConfigValuePolicy(),
+    )
+
+    function_units = tuple(
+        unit for unit in request.evidence_units if unit.source_kind == "python_function"
+    )
+    assert len(function_units) == 2
+    assert len({unit.evidence_id for unit in request.evidence_units}) == len(request.evidence_units)
+    assert sum(unit.content.startswith("async def _send_notify") for unit in function_units) == 1
+    assert {item.source_symbol for item in request.config_projections} == {
+        f"{module.__name__}:plugin_config.notify_group",
+        f"{module.__name__}:plugin_config.notify_user",
+    }
+
+
 def test_alconna_subcommands_become_separate_invocation_targets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

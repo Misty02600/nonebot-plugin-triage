@@ -162,12 +162,26 @@ class CapabilityAnnotationService:
             refresh_id = uuid4().hex
             cache = await asyncio.to_thread(_read_cache, self._resolved_path())
             cached = {item.capability_id: item for item in cache.annotations}
+            logger.info(
+                "NoneBot Triage 教学注释准备开始：refresh_id={}, snapshot_records={}, "
+                "cached={}, scope={}",
+                refresh_id,
+                len(snapshot.records),
+                len(cached),
+                plugin_module or "all",
+            )
             prepared, skipped = await asyncio.to_thread(
                 self._prepare,
                 snapshot,
                 cached,
                 frozenset({plugin_module}) if force and plugin_module is not None else frozenset(),
                 force_all=force and plugin_module is None,
+            )
+            logger.info(
+                "NoneBot Triage 教学注释准备完成：refresh_id={}, eligible={}, skipped={}",
+                refresh_id,
+                len(prepared),
+                skipped,
             )
             known_plugins = {item.plugin_module for item in prepared}
             if plugin_module is not None and plugin_module not in known_plugins:
@@ -435,7 +449,11 @@ class CapabilityAnnotationService:
                     request,
                     analysis_revision=self._analysis_revision,
                 )
-            except (CapabilityAnalysisAdapterError, CapabilityAnnotationError):
+            except (
+                CapabilityAnalysisAdapterError,
+                CapabilityAnalysisError,
+                CapabilityAnnotationError,
+            ):
                 skipped += 1
                 continue
             module_name = (
