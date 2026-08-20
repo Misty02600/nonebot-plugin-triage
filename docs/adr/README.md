@@ -62,14 +62,14 @@
 | [ADR-0059](0059-share-read-only-evidence-access-across-agent-flows.md) | 已采纳；共享领域工具已实现并接入教学 Agent | 共享只读 FileSystem、Jedi 转到定义、路径拒绝与内存配置值证据边界，并移除项目自有 Griffe reader；Bug 复用仍待后续接线 |
 | [ADR-0060](0060-use-scope-thread-and-post-route-conversation-context.md) | 部分被 ADR-0061 替代 | 用稳定作用域承接一次显式补充，Semantic 只看当前文字；Reply 邻近聊天读取由 ADR-0061 改为最新窗口 |
 | [ADR-0061](0061-read-latest-bounded-conversation-window-for-bug-assessment.md) | 部分被 ADR-0064、ADR-0065、ADR-0066 替代 | Bug Agent 一次读取当前会话最新有界窗口；ADR-0065 进一步规定无原生历史 Provider 时不暴露工具，ADR-0066 重新界定自动服务教学注释的第一层合同地位 |
-| [ADR-0062](0062-structure-capability-teaching-usages-requirements-and-interactions.md) | 部分被 ADR-0069、ADR-0080 替代 | 结构化字段继续服务帮助展示；Answer 详细知识改由独立自由 Markdown，interaction 与 `{command}` 已删除，多 entry 合同由 ADR-0080 接续 |
+| [ADR-0062](0062-structure-capability-teaching-usages-requirements-and-interactions.md) | 公开字段与 requirement kind 已被 ADR-0094 替代 | Runtime /模型事实所有权、结构化限流和不按符号名猜门禁的原则继续有效 |
 | [ADR-0063](0063-keep-plugin-startup-independent-from-model-enhancements.md) | 已采纳；资格门由 ADR-0086、旧 backend 部署示例由 ADR-0092 替代 | 未配置或技术不可用的模型增强不得阻断插件导入；未评测组合本身不再触发降级 |
 | [ADR-0064](0064-refine-bug-conversation-evidence-and-verdict-contract.md) | 部分被 ADR-0065、ADR-0066 替代；Prompt v8 精确资格已通过 | 把最新聊天窗口收窄到 30 条，保留窗口外精确 Reply；ADR-0066 重新界定自动服务教学注释的第一层合同地位 |
 | [ADR-0065](0065-only-expose-conversation-history-for-supported-platforms.md) | 已采纳；已实现 | 只在 Adapter 有真实会话历史 Provider 时向 Bug Agent 暴露聊天工具；不再用本地滚动窗口模拟跨平台历史 |
 | [ADR-0066](0066-use-active-teaching-contract-as-bug-precheck.md) | 已采纳；首个保守纵切已实现 | 只让当前公开主动能力进入教学合同域；subject / observation readiness 与精确 Reply 用法纠正已接线，更广参数 / 角色 / 场景检查和教学回答 revision 绑定仍待实现 |
 | [ADR-0067](0067-refresh-knowledge-pack-from-stable-catalog-at-startup.md) | 已采纳；已实现 | 启动后后台检查 stable catalog，校验新包后原子切换；所有更新失败均保留旧包或降级且不阻断插件加载 |
 | [ADR-0068](0068-treat-qualified-agent-bug-verdicts-as-operational-decisions.md) | 模型资格限制被 ADR-0086 替代；深度 unknown 持久化由 ADR-0078 暂缓 | 经模型外 reconciler 接受的 Agent Bug 是正式 verdict，人工负责事后复核与改判 |
-| [ADR-0069](0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md) | 已采纳；首个纵切已实现，源码级 Provider held-out 未通过 | 分离 Migut Help 展示与 Answer Markdown，让 Answer 同时消费两种公开投影，并让静态分析只界定证据范围 |
+| [ADR-0069](0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md) | Answer Markdown 决定已被 ADR-0094 替代 | Help 与 Answer 仍是两个展示适配器；Answer Markdown 改为由结构化公开字段确定性渲染 |
 | [ADR-0070](0070-separate-bug-reports-occurrences-and-problems.md) | 已采纳；Bug 领域与 ORM 纵切已实现，unknown 持久化暂缓 | 用薄 Report、具体 Occurrence 和长期 Problem 分离提交次数、实际发生次数与问题生命周期，并记录 Sentry Event → Issue 参考 |
 | [ADR-0071](0071-group-bug-problems-with-versioned-evidence-fingerprints.md) | 已采纳；Bug 指纹与保守聚合已实现，unknown 回执暂缓 | 用模型外版本化 Evidence 指纹聚合同根因，禁止文本自动合并，并固定 Bug 的“已记录 / 已关联”回执 |
 | [ADR-0072](0072-use-opaque-problem-ids-and-minimal-maintainer-lifecycle.md) | 已采纳；Bug 编号与维护生命周期已实现，merge / alias 与 unknown 编号暂缓 | 向普通用户显示中性短问题编号，固定 Bug 事务回执，并定义最小维护动作 |
@@ -80,16 +80,19 @@
 | [ADR-0077](0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md) | 已采纳；已实现，待真实 Provider held-out | 重生成时把上一版机器生成公开文字作为非证据编辑基线，当前 Evidence 保持唯一事实所有权 |
 | [ADR-0078](0078-defer-persisting-unknown-bug-assessments.md) | 已采纳；unknown 固定终局与不落库边界已实现 | 在可记录性合同确定前不持久化任何 unknown，缺关键知识时失败关闭且不声称已记录 |
 | [ADR-0079](0079-list-pending-problems-with-triage-query.md) | 已采纳；待处理列表与命令树已实现 | 用无编号的 `triage 报错查询` 列出全部未解决 Bug Problem |
-| [ADR-0080](0080-model-capability-teaching-as-multiple-public-entries.md) | 已采纳；领域与投影纵切已实现，v34 / v8 Gate 已冻结通过 | 一次能力分析可产生多个固定 entry，删除 `{command}` 与 interaction，并把 Alconna 子命令投影为独立帮助条目 |
-| [ADR-0081](0081-close-unknown-teaching-gates-and-freeze-parser-owned-usages.md) | 部分被 ADR-0082、ADR-0083 替代；parser canonical usage 与有限枚举决定继续有效 | Runtime parser 已确认的用法由模型外冻结，并以四个为通用有限枚举边界；未知门禁的补证生命周期由 ADR-0083 接续 |
-| [ADR-0082](0082-group-parameterized-matchers-only-by-runtime-handler-code-identity.md) | 已采纳；v4 正式 held-out 未通过，v26 开发回归已补齐已知机制 | 参数化 Matcher 只按 Runtime Handler 精确代码身份聚合；不再由 AST 猜外层工厂或构造成员摘要 |
+| [ADR-0080](0080-model-capability-teaching-as-multiple-public-entries.md) | 已采纳；公开字段由 ADR-0094 收敛 | 一次能力分析仍可产生多个固定 entry，Alconna 叶子仍投影为独立帮助条目 |
+| [ADR-0081](0081-close-unknown-teaching-gates-and-freeze-parser-owned-usages.md) | 部分被 ADR-0082、ADR-0083、ADR-0095 替代 | Runtime parser 已确认的用法仍由模型外冻结；四项枚举边界改由 ADR-0095 的 `≤3 / 4–6 / ≥7` 展示规则接续，未知门禁生命周期由 ADR-0083 接续 |
+| [ADR-0082](0082-group-parameterized-matchers-only-by-runtime-handler-code-identity.md) | 已采纳；成员输入边界由 ADR-0095 细化 | 参数化 Matcher 仍只按 Runtime Handler 精确代码身份形成 family 候选；ADR-0095 重新投影当前 Runtime 成员调用事实，但不恢复 AST 工厂猜测 |
 | [ADR-0083](0083-resolve-unknown-teaching-gates-before-closing-public-knowledge.md) | 已采纳；已实现，待新 Provider Gate | AST 只登记疑似门禁；Agent 以实际定义、框架或运行配置解释为约束、无约束或仍未知，只有仍未知才关闭公开知识 |
 | [ADR-0084](0084-install-pydantic-ai-control-plane-by-default-and-keep-providers-and-adapters-optional.md) | 已采纳；已实现 | 默认安装 Pydantic AI 控制层、Harness 与 Jedi，Provider SDK 和 NoneBot Adapter 仍由部署按需安装 |
 | [ADR-0085](0085-remove-serena-bug-source-backend.md) | 已采纳；已实现 | 删除 Serena MCP extra、Bug-only 后端与配置，Bug 固定使用内置有界文本源码读取 |
 | [ADR-0086](0086-treat-model-evaluation-as-a-quality-label.md) | 已采纳；部署端地址由 ADR-0090 补充 | held-out 只提供公开质量标签；未评测模型和自定义连接可在相同安全合同下运行 |
 | [ADR-0087](0087-validate-and-factor-runtime-command-aliases-for-teaching-usages.md) | 已采纳；已实现，待新模型评测 | Runtime 拥有别名真值，模型只生成可展开验证的紧凑触发表达式；失败一次重试后确定性回退 |
-| [ADR-0088](0088-bound-capability-annotation-concurrency-by-plugin.md) | 已采纳；已实现 | 教学注释按插件有限并发、插件内顺序生成；复用全局模型 timeout，只新增插件并发上限 |
-| [ADR-0089](0089-persist-redacted-pydantic-ai-agent-traces.md) | 已采纳；连接身份由 ADR-0090 补充 | 用 Pydantic AI 原生 OpenTelemetry spans 记录无正文 Agent 调用轨迹，并轮转写入 LocalStore data |
+| [ADR-0088](0088-bound-capability-annotation-concurrency-by-plugin.md) | 已采纳；第 4 项部分被 ADR-0093 替代 | 教学注释继续按插件有限并发、插件内顺序生成；全局锁与发布 pointer 保留，缓存分片和单元部分发布由 ADR-0093 接续 |
+| [ADR-0089](0089-persist-redacted-pydantic-ai-agent-traces.md) | 已采纳；ADR-0094 增加仅限官方合成评测的 opt-in 诊断例外 | 生产默认仍只保存无正文轨迹；评测诊断不保存初始 Prompt、密钥或真实私有源码 |
 | [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) | 已采纳；已实现 | 保留标准 `provider:model` 与 ModelProfile，并允许部署者为支持该参数的 Pydantic AI Provider 配置受限 Base URL |
 | [ADR-0091](0091-use-pydantic-ai-model-ids-as-the-public-transport-selector.md) | 已采纳；兼容迁移部分由 ADR-0092 替代 | 直接以 Pydantic AI `provider:model` 选择 transport；Base URL 连接兼容服务 |
 | [ADR-0092](0092-remove-legacy-model-backend-configuration.md) | 已采纳；已实现 | 删除旧 backend 字段、专用 runtime 分支和 OpenCode 密钥别名；旧配置明确失败并迁移到唯一的 `provider:model` 入口 |
+| [ADR-0093](0093-shard-capability-annotation-cache-by-plugin.md) | 已采纳 | 教学注释按插件 JSON 分片、文件内按 teaching unit 保存 `last_good / last_attempt`，以内存 staging 和全局原子 pointer 支持单元部分发布 |
+| [ADR-0094](0094-simplify-the-public-capability-teaching-contract.md) | 已采纳；family 展示部分被 ADR-0095 替代 | 公开 entry 收敛为 name / summary / usages / search terms / behavior boundaries / requirements，requirement 只保留 role / scene / access / rate limit |
+| [ADR-0095](0095-preserve-family-member-invocations-and-compress-only-display.md) | 已采纳 | family 请求保留全部 Runtime 成员调用事实，参数异构不再关闭共同知识；固定备选改用 `≤3 / 4–6 / ≥7` 展示边界，查询按 family 去重并为精确成员补完整 usage |

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
+
+MAX_EXPLICIT_USAGE_ALTERNATIVES = 3
+MAX_SUMMARY_USAGE_ALTERNATIVES = 6
+_CONCEPT_SLOT_RE = re.compile(r"^<[^<>\[\]()|{}]{1,20}>$")
 
 
 class CapabilityUsageExpressionError(ValueError):
@@ -130,6 +135,35 @@ def deterministic_literal_expression(literals: Sequence[str]) -> str | None:
     return result
 
 
+def deterministic_usage_selector(
+    literals: Sequence[str],
+    *,
+    concept_name: str = "指令",
+) -> str | None:
+    """按统一展示边界生成固定值枚举或概念槽位。"""
+    unique = tuple(dict.fromkeys(literals))
+    if not unique:
+        return None
+    if len(unique) <= MAX_EXPLICIT_USAGE_ALTERNATIVES:
+        return deterministic_literal_expression(unique)
+    candidate = f"<{concept_name}>"
+    return candidate if _CONCEPT_SLOT_RE.fullmatch(candidate) else None
+
+
+def validate_usage_selector(value: str, expected_literals: Sequence[str]) -> str:
+    """验证三项以内精确枚举、超过三项使用单一概念槽。"""
+    expected = tuple(dict.fromkeys(expected_literals))
+    if not expected or len(expected) != len(expected_literals):
+        raise CapabilityUsageExpressionError("Runtime 命令集合无效")
+    if len(expected) <= MAX_EXPLICIT_USAGE_ALTERNATIVES:
+        return validate_literal_expression(value, expected)
+    if not isinstance(value, str) or _CONCEPT_SLOT_RE.fullmatch(value) is None:
+        raise CapabilityUsageExpressionError(
+            "超过三个固定值时必须使用一个简短必填概念槽位，例如 <指令>"
+        )
+    return value
+
+
 def group_literal_expression_for_usage(value: str) -> str:
     """为嵌入完整 usage 的根级别名备选补上分组括号。"""
     depth = 0
@@ -144,9 +178,13 @@ def group_literal_expression_for_usage(value: str) -> str:
 
 
 __all__ = (
+    "MAX_EXPLICIT_USAGE_ALTERNATIVES",
+    "MAX_SUMMARY_USAGE_ALTERNATIVES",
     "CapabilityUsageExpressionError",
     "deterministic_literal_expression",
+    "deterministic_usage_selector",
     "expand_literal_expression",
     "group_literal_expression_for_usage",
     "validate_literal_expression",
+    "validate_usage_selector",
 )

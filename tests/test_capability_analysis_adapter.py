@@ -26,12 +26,20 @@ from nbtriage.capability_analysis import (
     SemanticConstraintKind,
     TeachingRole,
 )
+from nbtriage.capability_source_evidence import build_capability_source_evidence
+from nbtriage.readonly_tools import (
+    DefinitionNavigator,
+    GoToDefinitionRequest,
+    GoToDefinitionResult,
+)
 from nonebot_plugin_triage.capability_analysis_adapter import (
     AnalysisSourcePolicy,
     CapabilityAnalysisAdapterError,
+    CapabilitySourceSliceCache,
     build_capability_analysis_request,
     build_parameterized_family_analysis_request,
     parameterized_handler_code_identity,
+    plugin_source_revision_matches,
 )
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
 
@@ -65,6 +73,7 @@ def _record(
     command_aliases: list[str] | None = None,
     command_arguments: list[dict[str, object]] | None = None,
     command_components: list[dict[str, object]] | None = None,
+    opaque_gate_kinds: tuple[str, ...] = (),
 ) -> CapabilityRecord:
     plugin_evidence_id = "evidence:plugin"
     matcher_evidence_id = "evidence:matcher"
@@ -127,6 +136,30 @@ def _record(
                 (matcher_evidence_id,),
             )
         )
+    constraints = (
+        [
+            Constraint(
+                constraint_id="constraint:superuser",
+                kind="permission",
+                operation="superuser",
+                evaluability=ConstraintEvaluability.STRUCTURED,
+                evidence_ids=(matcher_evidence_id,),
+            )
+        ]
+        if superuser_only
+        else []
+    )
+    constraints.extend(
+        Constraint(
+            constraint_id=f"constraint:opaque:{kind}:{index}",
+            kind=kind,
+            operation="opaque_function",
+            evaluability=ConstraintEvaluability.OPAQUE,
+            payload={"observed": f"{kind}:opaque:function"},
+            evidence_ids=(matcher_evidence_id,),
+        )
+        for index, kind in enumerate(opaque_gate_kinds)
+    )
     return CapabilityRecord(
         capability_id=capability_id,
         owner=owner or module_name,
@@ -134,17 +167,7 @@ def _record(
         disclosure=disclosure,
         state=RecordState.CANDIDATE,
         claims=tuple(claims),
-        constraints=(
-            Constraint(
-                constraint_id="constraint:superuser",
-                kind="permission",
-                operation="superuser",
-                evaluability=ConstraintEvaluability.STRUCTURED,
-                evidence_ids=(matcher_evidence_id,),
-            ),
-        )
-        if superuser_only
-        else (),
+        constraints=tuple(constraints),
         evidence_refs=(
             EvidenceRef(
                 evidence_id=plugin_evidence_id,
@@ -167,6 +190,56 @@ def _source_revision(module: ModuleType) -> str:
     assert isinstance(source_path, str)
     content = Path(source_path).read_text(encoding="utf-8")
     return f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
+
+
+def test_plugin_source_revision_recheck_detects_package_inventory_and_content_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_name = f"analysis_package_{uuid4().hex}"
+    package_dir = tmp_path / package_name
+    package_dir.mkdir()
+    root_path = package_dir / "__init__.py"
+    helper_path = package_dir / "helper.py"
+    root_path.write_text("from .helper import value\n", encoding="utf-8")
+    original_helper = "value = 1\n"
+    helper_path.write_text(original_helper, encoding="utf-8")
+    package = ModuleType(package_name)
+    package.__file__ = str(root_path)
+    package.__path__ = [str(package_dir)]  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, package_name, package)
+    expected = build_capability_source_evidence(
+        package_name,
+        package_dir,
+    ).source_revision
+
+    assert plugin_source_revision_matches(package_name, expected)
+
+    helper_path.write_text("value = 2\n", encoding="utf-8")
+    assert not plugin_source_revision_matches(package_name, expected)
+
+    helper_path.write_text(original_helper, encoding="utf-8")
+    assert plugin_source_revision_matches(package_name, expected)
+
+    added_path = package_dir / "added.py"
+    added_path.write_text("added = True\n", encoding="utf-8")
+    assert not plugin_source_revision_matches(package_name, expected)
+
+    added_path.unlink()
+    assert plugin_source_revision_matches(package_name, expected)
+
+    helper_path.unlink()
+    assert not plugin_source_revision_matches(package_name, expected)
+
+
+def test_plugin_source_revision_recheck_rejects_unverifiable_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = f"analysis_plugin_{uuid4().hex}"
+    monkeypatch.setitem(sys.modules, module_name, ModuleType(module_name))
+
+    with pytest.raises(CapabilityAnalysisAdapterError, match="no readable Python source"):
+        plugin_source_revision_matches(module_name, "0" * 64)
 
 
 def _config_reference(
@@ -347,6 +420,523 @@ async def handle():
         f"{module.__name__}:plugin_config.notify_group",
         f"{module.__name__}:plugin_config.notify_user",
     }
+
+
+def test_initial_source_slices_expand_helpers_breadth_first_to_depth_three(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def depth_four():
+    return "four"
+
+def depth_three():
+    return depth_four()
+
+def depth_two():
+    return depth_three()
+
+def depth_one():
+    return depth_two()
+
+async def handle():
+    return depth_one()
+""",
+    )
+
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle", 13)],
+            config_references=[],
+        ),
+        ConfigValuePolicy(),
+    )
+
+    functions = tuple(
+        item.content.splitlines()[0]
+        for item in request.evidence_units
+        if item.source_kind == "python_function"
+    )
+    assert functions == (
+        "async def handle():",
+        "def depth_one():",
+        "def depth_two():",
+        "def depth_three():",
+    )
+    assert all("depth_four" not in item for item in functions)
+
+
+def test_source_slice_cache_reuses_navigation_and_invalidates_on_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / f"analysis_plugin_{uuid4().hex}.py"
+    module_name = source_path.stem
+    first_source = "def helper():\n    return 1\n\nasync def handle():\n    return helper()\n"
+    source_path.write_text(first_source, encoding="utf-8")
+    module = ModuleType(module_name)
+    module.__file__ = str(source_path)
+    exec(compile(first_source, str(source_path), "exec"), module.__dict__)
+    monkeypatch.setitem(sys.modules, module_name, module)
+    cache = CapabilitySourceSliceCache()
+    navigation_calls = 0
+    navigate = DefinitionNavigator.go_to_definition
+
+    def count_navigation(
+        self: DefinitionNavigator,
+        request: GoToDefinitionRequest,
+    ) -> GoToDefinitionResult:
+        nonlocal navigation_calls
+        navigation_calls += 1
+        return navigate(self, request)
+
+    monkeypatch.setattr(DefinitionNavigator, "go_to_definition", count_navigation)
+    first_record = _record(
+        module_name,
+        handlers=[_handler_reference(module, "handle", 4)],
+        config_references=[],
+    )
+    first = build_capability_analysis_request(
+        first_record,
+        ConfigValuePolicy(),
+        source_slice_cache=cache,
+    )
+    first_call_count = navigation_calls
+    second = build_capability_analysis_request(
+        first_record,
+        ConfigValuePolicy(),
+        source_slice_cache=cache,
+    )
+
+    assert first.evidence_units == second.evidence_units
+    assert first_call_count > 0
+    assert navigation_calls == first_call_count
+
+    second_source = first_source.replace("return 1", "return 2")
+    source_path.write_text(second_source, encoding="utf-8")
+    exec(compile(second_source, str(source_path), "exec"), module.__dict__)
+    changed_record = _record(
+        module_name,
+        handlers=[_handler_reference(module, "handle", 4)],
+        config_references=[],
+    )
+    build_capability_analysis_request(
+        changed_record,
+        ConfigValuePolicy(),
+        source_slice_cache=cache,
+    )
+
+    assert navigation_calls > first_call_count
+
+
+def test_parameterized_family_uses_the_same_bounded_source_slice_collector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def render(value):
+    return str(value)
+
+def create_handler(command):
+    async def handler():
+        return render(command)
+    return handler
+
+first = create_handler("摸摸")
+second = create_handler("亲亲")
+""",
+    )
+    reference = _handler_reference(module, "first", 5)
+    reference["closure_freevars"] = ["command"]
+    records = (
+        _record(
+            module.__name__,
+            capability_id="command:touch",
+            handlers=[reference],
+            config_references=[],
+            command_header="摸摸",
+        ),
+        _record(
+            module.__name__,
+            capability_id="command:kiss",
+            handlers=[reference],
+            config_references=[],
+            command_header="亲亲",
+        ),
+    )
+
+    request = build_parameterized_family_analysis_request(records, ConfigValuePolicy())
+
+    functions = tuple(
+        item.content.splitlines()[0]
+        for item in request.evidence_units
+        if item.source_kind == "python_function"
+    )
+    assert functions == ("async def handler():", "def render(value):")
+    member_evidence = next(
+        item for item in request.evidence_units if item.source_kind == "runtime_family_members"
+    )
+    assert "摸摸" in member_evidence.content
+    assert "亲亲" in member_evidence.content
+    assert [member.capability_id for member in request.family_members] == [
+        "command:kiss",
+        "command:touch",
+    ]
+
+
+def test_parameterized_family_projects_one_shared_custom_permission_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def on_command(*args, **kwargs):
+    return object()
+
+def custom_permission():
+    return True
+
+def create_handler(command):
+    async def handler():
+        return command
+    return handler
+
+first = create_handler("摸摸")
+second = create_handler("亲亲")
+first_matcher = on_command("摸摸", permission=custom_permission(), handlers=[first])
+second_matcher = on_command("亲亲", permission=custom_permission(), handlers=[second])
+""",
+    )
+    first_reference = _handler_reference(module, "first", 8)
+    first_reference["closure_freevars"] = ["command"]
+    second_reference = _handler_reference(module, "second", 8)
+    second_reference["closure_freevars"] = ["command"]
+    records = (
+        _record(
+            module.__name__,
+            capability_id="command:touch",
+            handlers=[first_reference],
+            config_references=[],
+            command_header="摸摸",
+            opaque_gate_kinds=("permission",),
+        ),
+        _record(
+            module.__name__,
+            capability_id="command:kiss",
+            handlers=[second_reference],
+            config_references=[],
+            command_header="亲亲",
+            opaque_gate_kinds=("permission",),
+        ),
+    )
+
+    request = build_parameterized_family_analysis_request(records, ConfigValuePolicy())
+
+    assert len(request.gate_candidates) == 1
+    assert request.gate_candidates[0].kind.value == "permission"
+    assert request.gate_candidates[0].entry_ids == ("family",)
+    assert any(
+        item.source_kind == "python_function"
+        and item.content.startswith("def custom_permission():")
+        for item in request.evidence_units
+    )
+    member_evidence = next(
+        item for item in request.evidence_units if item.source_kind == "runtime_family_members"
+    )
+    assert "摸摸" in member_evidence.content
+    assert "亲亲" in member_evidence.content
+
+
+def test_parameterized_family_projects_one_shared_fixed_permission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uninfo = ModuleType("nonebot_plugin_uninfo")
+    uninfo.ADMIN = lambda: object()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, uninfo.__name__, uninfo)
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+from nonebot_plugin_uninfo import ADMIN
+
+def on_command(*args, **kwargs):
+    return object()
+
+def create_handler(command):
+    async def handler():
+        return command
+    return handler
+
+first = create_handler("摸摸")
+second = create_handler("亲亲")
+first_matcher = on_command("摸摸", permission=ADMIN(), handlers=[first])
+second_matcher = on_command("亲亲", permission=ADMIN(), handlers=[second])
+""",
+    )
+    first_reference = _handler_reference(module, "first", 7)
+    first_reference["closure_freevars"] = ["command"]
+    second_reference = _handler_reference(module, "second", 7)
+    second_reference["closure_freevars"] = ["command"]
+    records = (
+        _record(
+            module.__name__,
+            capability_id="command:touch",
+            handlers=[first_reference],
+            config_references=[],
+            command_header="摸摸",
+            opaque_gate_kinds=("permission",),
+        ),
+        _record(
+            module.__name__,
+            capability_id="command:kiss",
+            handlers=[second_reference],
+            config_references=[],
+            command_header="亲亲",
+            opaque_gate_kinds=("permission",),
+        ),
+    )
+
+    request = build_parameterized_family_analysis_request(records, ConfigValuePolicy())
+
+    assert request.gate_candidates == ()
+    assert len(request.fixed_constraints) == 1
+    assert request.fixed_constraints[0].role is TeachingRole.ADMIN
+    assert request.fixed_constraints[0].statement == "仅群管理员或群主可用"
+    member_evidence = next(
+        item for item in request.evidence_units if item.source_kind == "runtime_family_members"
+    )
+    assert "摸摸" in member_evidence.content
+    assert "亲亲" in member_evidence.content
+
+
+def test_parameterized_family_projects_shared_to_me_into_usage_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def on_command(*args, **kwargs):
+    return object()
+
+def to_me():
+    return object()
+
+def create_handler(command):
+    async def handler():
+        return command
+    return handler
+
+first = create_handler("摸摸")
+second = create_handler("亲亲")
+first_matcher = on_command("摸摸", rule=to_me(), handlers=[first])
+second_matcher = on_command("亲亲", rule=to_me(), handlers=[second])
+""",
+    )
+    first_reference = _handler_reference(module, "first", 8)
+    first_reference["closure_freevars"] = ["command"]
+    second_reference = _handler_reference(module, "second", 8)
+    second_reference["closure_freevars"] = ["command"]
+    records = tuple(
+        _record(
+            module.__name__,
+            capability_id=capability_id,
+            handlers=[reference],
+            config_references=[],
+            command_header=header,
+            opaque_gate_kinds=("rule",),
+        )
+        for capability_id, reference, header in (
+            ("command:touch", first_reference, "摸摸"),
+            ("command:kiss", second_reference, "亲亲"),
+        )
+    )
+
+    request = build_parameterized_family_analysis_request(records, ConfigValuePolicy())
+
+    assert request.gate_candidates == ()
+    assert request.fixed_constraints == ()
+    assert request.invocations[0].requires_mention is True
+
+
+@pytest.mark.parametrize(
+    "second_gate",
+    ("permission=second_permission(), ", ""),
+    ids=("different_permissions", "missing_permission"),
+)
+def test_parameterized_family_rejects_non_uniform_custom_gates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    second_gate: str,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        f"""\
+def on_command(*args, **kwargs):
+    return object()
+
+def first_permission():
+    return True
+
+def second_permission():
+    return True
+
+def create_handler(command):
+    async def handler():
+        return command
+    return handler
+
+first = create_handler("摸摸")
+second = create_handler("亲亲")
+first_matcher = on_command("摸摸", permission=first_permission(), handlers=[first])
+second_matcher = on_command("亲亲", {second_gate}handlers=[second])
+""",
+    )
+    first_reference = _handler_reference(module, "first", 11)
+    first_reference["closure_freevars"] = ["command"]
+    second_reference = _handler_reference(module, "second", 11)
+    second_reference["closure_freevars"] = ["command"]
+    records = (
+        _record(
+            module.__name__,
+            capability_id="command:touch",
+            handlers=[first_reference],
+            config_references=[],
+            command_header="摸摸",
+            opaque_gate_kinds=("permission",),
+        ),
+        _record(
+            module.__name__,
+            capability_id="command:kiss",
+            handlers=[second_reference],
+            config_references=[],
+            command_header="亲亲",
+            opaque_gate_kinds=(("permission",) if second_gate else ()),
+        ),
+    )
+
+    with pytest.raises(
+        CapabilityAnalysisAdapterError,
+        match="non-uniform registration gates",
+    ):
+        build_parameterized_family_analysis_request(records, ConfigValuePolicy())
+
+
+def test_parameterized_family_rejects_different_gate_expression_structure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def on_command(*args, **kwargs):
+    return object()
+
+def first_permission():
+    return True
+
+def second_permission():
+    return True
+
+def create_handler(command):
+    async def handler():
+        return command
+    return handler
+
+first = create_handler("摸摸")
+second = create_handler("亲亲")
+first_matcher = on_command(
+    "摸摸",
+    permission=first_permission() & second_permission(),
+    handlers=[first],
+)
+second_matcher = on_command(
+    "亲亲",
+    permission=first_permission() | second_permission(),
+    handlers=[second],
+)
+""",
+    )
+    first_reference = _handler_reference(module, "first", 11)
+    first_reference["closure_freevars"] = ["command"]
+    second_reference = _handler_reference(module, "second", 11)
+    second_reference["closure_freevars"] = ["command"]
+    records = tuple(
+        _record(
+            module.__name__,
+            capability_id=capability_id,
+            handlers=[reference],
+            config_references=[],
+            command_header=header,
+            opaque_gate_kinds=("permission",),
+        )
+        for capability_id, reference, header in (
+            ("command:touch", first_reference, "摸摸"),
+            ("command:kiss", second_reference, "亲亲"),
+        )
+    )
+
+    with pytest.raises(
+        CapabilityAnalysisAdapterError,
+        match="non-uniform registration gates",
+    ):
+        build_parameterized_family_analysis_request(records, ConfigValuePolicy())
+
+
+def test_parameterized_family_rejects_runtime_gate_without_source_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def create_handler(command):
+    async def handler():
+        return command
+    return handler
+
+first = create_handler("摸摸")
+second = create_handler("亲亲")
+""",
+    )
+    first_reference = _handler_reference(module, "first", 2)
+    first_reference["closure_freevars"] = ["command"]
+    second_reference = _handler_reference(module, "second", 2)
+    second_reference["closure_freevars"] = ["command"]
+    records = tuple(
+        _record(
+            module.__name__,
+            capability_id=capability_id,
+            handlers=[reference],
+            config_references=[],
+            command_header=header,
+            opaque_gate_kinds=("permission",),
+        )
+        for capability_id, reference, header in (
+            ("command:touch", first_reference, "摸摸"),
+            ("command:kiss", second_reference, "亲亲"),
+        )
+    )
+
+    with pytest.raises(
+        CapabilityAnalysisAdapterError,
+        match="runtime gates lack source evidence",
+    ):
+        build_parameterized_family_analysis_request(records, ConfigValuePolicy())
 
 
 def test_alconna_subcommands_become_separate_invocation_targets(
@@ -734,7 +1324,100 @@ second = create_handler("亲亲")
     assert request.invocations[0].mode.value == "complete"
     handler = next(item for item in request.evidence_units if item.source_kind == "python_function")
     assert handler.content.startswith("async def handler():")
-    assert all(item.source_kind != "runtime_family_members" for item in request.evidence_units)
+    assert len(request.family_members) == 2
+    assert any(item.source_kind == "runtime_family_members" for item in request.evidence_units)
+
+
+def test_parameterized_family_keeps_different_member_argument_shapes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def create_handler(command):
+    async def handler():
+        return command
+    return handler
+
+first = create_handler("摸摸")
+second = create_handler("文字图")
+""",
+    )
+    reference = _handler_reference(module, "first", 2)
+    reference["closure_freevars"] = ["command"]
+    records = (
+        _record(
+            module.__name__,
+            capability_id="command:touch",
+            handlers=[reference],
+            config_references=[],
+            command_header="摸摸",
+            command_arguments=[
+                {
+                    "name": "图片",
+                    "required": True,
+                    "hidden": False,
+                    "variadic": False,
+                    "has_default": False,
+                }
+            ],
+        ),
+        _record(
+            module.__name__,
+            capability_id="command:text-image",
+            handlers=[reference],
+            config_references=[],
+            command_header="文字图",
+            command_arguments=[
+                {
+                    "name": "文字",
+                    "required": False,
+                    "hidden": False,
+                    "variadic": True,
+                    "variadic_flag": "*",
+                    "has_default": False,
+                }
+            ],
+        ),
+    )
+
+    request = build_parameterized_family_analysis_request(records, ConfigValuePolicy())
+
+    usages = {
+        member.capability_id: member.invocations[0].canonical_usages
+        for member in request.family_members
+    }
+    assert usages == {
+        "command:text-image": ("文字图 [文字]...",),
+        "command:touch": ("摸摸 <图片>",),
+    }
+    member_payloads = {
+        member["capability_id"]: member
+        for evidence in request.evidence_units
+        if evidence.source_kind == "runtime_family_members"
+        for member in json.loads(evidence.content)["members"]
+    }
+    assert (
+        next(
+            claim["value"]
+            for claim in member_payloads["command:touch"]["claims"]
+            if claim["field"] == "command.arguments"
+        )[0]["name"]
+        == "图片"
+    )
+    assert (
+        next(
+            claim["value"]
+            for claim in member_payloads["command:text-image"]["claims"]
+            if claim["field"] == "command.arguments"
+        )[0]["variadic_flag"]
+        == "*"
+    )
+    assert request.invocations == (
+        CapabilityInvocationTarget("family", CapabilityInvocationMode.COMPLETE),
+    )
 
 
 def test_parameterized_handlers_in_same_outer_function_are_not_grouped(
@@ -996,6 +1679,147 @@ matcher = on_command("secure", permission=custom_permission(), handlers=[handle]
         item for item in request.evidence_units if item.source_kind == "matcher_source_structure"
     )
     assert candidate.evidence_ids == (structure.evidence_id,)
+    assert any(
+        item.source_kind == "python_function"
+        and item.content.startswith("def custom_permission():")
+        for item in request.evidence_units
+    )
+
+
+def test_unknown_registration_rule_definition_becomes_initial_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def on_command(*args, **kwargs):
+    return object()
+
+def custom_rule():
+    return True
+
+async def handle():
+    return True
+
+matcher = on_command(
+    "secure",
+    rule=custom_rule(),
+    handlers=[handle],
+)
+""",
+    )
+
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle", 7)],
+            config_references=[],
+            command_header="secure",
+        ),
+        ConfigValuePolicy(),
+    )
+
+    assert len(request.gate_candidates) == 1
+    assert request.gate_candidates[0].kind.value == "rule"
+    assert any(
+        item.source_kind == "python_function" and item.content.startswith("def custom_rule():")
+        for item in request.evidence_units
+    )
+
+
+def test_unknown_gate_definition_resolves_from_local_plugin_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_name = f"analysis_package_{uuid4().hex}"
+    package_dir = tmp_path / package_name
+    package_dir.mkdir()
+    gate_source = "def custom_permission():\n    return True\n"
+    gate_path = package_dir / "gates.py"
+    gate_path.write_text(gate_source, encoding="utf-8")
+    gate_module = ModuleType(f"{package_name}.gates")
+    gate_module.__file__ = str(gate_path)
+    gate_module.__package__ = package_name
+    exec(compile(gate_source, str(gate_path), "exec"), gate_module.__dict__)
+    monkeypatch.setitem(sys.modules, gate_module.__name__, gate_module)
+
+    package_source = """\
+from .gates import custom_permission
+
+def on_command(*args, **kwargs):
+    return object()
+
+async def handle():
+    return True
+
+matcher = on_command("secure", permission=custom_permission(), handlers=[handle])
+"""
+    package_path = package_dir / "__init__.py"
+    package_path.write_text(package_source, encoding="utf-8")
+    package = ModuleType(package_name)
+    package.__file__ = str(package_path)
+    package.__package__ = package_name
+    package.__path__ = [str(package_dir)]  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, package_name, package)
+    exec(compile(package_source, str(package_path), "exec"), package.__dict__)
+
+    request = build_capability_analysis_request(
+        _record(
+            package_name,
+            handlers=[_handler_reference(package, "handle", 6)],
+            config_references=[],
+            command_header="secure",
+        ),
+        ConfigValuePolicy(),
+    )
+
+    assert any(
+        item.source_kind == "python_function"
+        and item.content.startswith("def custom_permission():")
+        and "gates.py" in (item.locator or "")
+        for item in request.evidence_units
+    )
+
+
+def test_source_change_during_slice_collection_rejects_mixed_revision_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = """\
+def helper():
+    return 1
+
+async def handle():
+    return helper()
+"""
+    module = _loaded_module(tmp_path, monkeypatch, source)
+    source_path = Path(module.__dict__["__file__"])
+    import nonebot_plugin_triage.capability_analysis_adapter as adapter_module
+
+    resolve_targets = adapter_module._resolve_analysis_targets
+    changed = False
+
+    def mutate_after_resolving(*args: object, **kwargs: object):
+        nonlocal changed
+        resolved = resolve_targets(*args, **kwargs)  # type: ignore[arg-type]
+        if not changed:
+            source_path.write_text(source.replace("return 1", "return 2"), encoding="utf-8")
+            changed = True
+        return resolved
+
+    monkeypatch.setattr(adapter_module, "_resolve_analysis_targets", mutate_after_resolving)
+
+    with pytest.raises(CapabilityAnalysisAdapterError, match="plugin source changed"):
+        build_capability_analysis_request(
+            _record(
+                module.__name__,
+                handlers=[_handler_reference(module, "handle", 4)],
+                config_references=[],
+            ),
+            ConfigValuePolicy(),
+        )
 
 
 def test_restricted_missing_and_opaque_values_become_hashed_unknown_references(

@@ -20,8 +20,6 @@ from nbtriage.capability_analysis import (
     FakeCapabilityAnalysisClient,
     SemanticClaim,
     SemanticClaimKind,
-    SemanticConstraint,
-    SemanticConstraintKind,
 )
 from nonebot_plugin_triage.capability_analysis_adapter import (
     build_capability_analysis_request,
@@ -120,10 +118,8 @@ async def handle_search():
                         statement="可按指令查找图片来源。",
                         evidence_ids=(evidence_id,),
                     ),
-                ),
-                constraints=(
-                    SemanticConstraint(
-                        kind=SemanticConstraintKind.OTHER,
+                    SemanticClaim(
+                        kind=SemanticClaimKind.BEHAVIOR_BOUNDARY,
                         statement="每次最多返回四个候选。",
                         evidence_ids=(evidence_id,),
                         config_reference_ids=(config_reference_id,),

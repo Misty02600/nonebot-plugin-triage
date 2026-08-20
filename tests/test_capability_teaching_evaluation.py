@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import sys
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
@@ -11,11 +13,17 @@ import pytest
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.usage import RunUsage
 from tools.nbtriage_maintainer.capability_teaching_evaluation import (
+    CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION,
     CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID,
     CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256,
     CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SHA256,
     CapabilityTeachingEvaluationError,
     _candidate_payload,
+    _expected_qualification_contract,
+    _fixture_bundle_sha256,
+    _prepare_case,
+    _validate_expected_request_contract,
+    _validate_fixture,
     evaluate_capability_teaching,
 )
 from tools.nbtriage_maintainer.cli import main
@@ -27,8 +35,13 @@ from nbtriage.capability_analysis import (
     CapabilityAnalysisEntryOutput,
     CapabilityAnalysisOutput,
     CapabilityAnalysisRequest,
+    CapabilityEvidenceUnit,
+    CapabilityGateResolution,
+    CapabilityGateResolutionKind,
     SemanticClaim,
     SemanticClaimKind,
+    SemanticConstraint,
+    SemanticConstraintKind,
 )
 from nbtriage.capability_model_adapter import (
     CapabilityAnalysisToolRuntimeFactory,
@@ -46,8 +59,9 @@ _CURRENT_FIXTURE = (
     / "evals"
     / "datasets"
     / "fixtures"
-    / "capability-teaching-v11-forward-heldout.json"
+    / "capability-teaching-v13-forward-heldout.json"
 )
+_FROZEN_V12_FIXTURE = _CURRENT_FIXTURE.with_name("capability-teaching-v12-forward-heldout.json")
 _FROZEN_V10_FIXTURE = (
     Path(__file__).resolve().parents[1]
     / "evals"
@@ -307,35 +321,54 @@ def test_frozen_v10_fixture_is_not_eligible_after_current_prompt_change() -> Non
     assert report["pricing_profile"] == {"profile_id": "test-price"}
 
 
-def test_current_v11_fixture_bundle_matches_current_contract() -> None:
-    report = asyncio.run(
-        evaluate_capability_teaching(
-            _CURRENT_FIXTURE,
-            client_factory=_disabled_client_factory,
-            provider="alibaba",
-            model="qwen3.6-flash",
-            declared_budget_usd=1,
-            api_family="pydantic-ai",
-            connection_revision="custom-endpoint-sha256:test",
-            settings_revision="alibaba-qwen3.6-non-thinking-v2",
-            timeout_seconds=300,
-            max_output_tokens=16_384,
-            evaluation_id="capability-teaching-alibaba-qwen36-v1",
-            evaluation_revision="qwen36-capability-heldout-v11-v38-a",
-            official_fixture_set_id=CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID,
-            official_fixture_sha256=CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256,
-            usage_cost_usd=lambda _usage: Decimal("0.0001"),
-            pricing_profile={"profile_id": "test-price"},
+def test_frozen_v12_fixture_is_rejected_after_schema7_contract_change() -> None:
+    with pytest.raises(CapabilityTeachingEvaluationError, match="contract_exact"):
+        asyncio.run(
+            evaluate_capability_teaching(
+                _FROZEN_V12_FIXTURE,
+                client_factory=_disabled_client_factory,
+                provider="opencode-go",
+                model="deepseek-v4-flash",
+                declared_budget_usd=1,
+                api_family="chat-completions",
+                connection_revision="provider-default",
+                settings_revision="provider-default",
+                timeout_seconds=300,
+                max_output_tokens=16_384,
+                evaluation_id="capability-teaching-opencode-go-v1",
+                evaluation_revision=CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION,
+                official_fixture_set_id=CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID,
+                official_fixture_sha256=CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256,
+                usage_cost_usd=lambda _usage: Decimal("0.0001"),
+                pricing_profile={"profile_id": "test-price"},
+                enforce_qualification_preflight=True,
+            )
         )
-    )
 
-    assert report["fixture_set_id"] == CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID
-    assert report["fixture_sha256"] == CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256
-    assert report["summary"]["case_count"] == 20
-    assert report["summary"]["source_case_count"] == 12
-    assert report["summary"]["source_extraction_valid_rate"] == 1.0
-    assert report["quality_gate"]["qualification_checks"]["fixture_set_id"] is True
-    assert report["quality_gate"]["qualification_checks"]["fixture_sha256"] is True
+
+def test_frozen_v13_fixture_bundle_remains_valid_historical_data() -> None:
+    fixture_raw = _CURRENT_FIXTURE.read_bytes()
+    payload = json.loads(fixture_raw)
+    cases = _validate_fixture(payload)
+    prepared = tuple(_prepare_case(_CURRENT_FIXTURE, case) for case in cases)
+
+    for case, prepared_case in zip(cases, prepared, strict=True):
+        _validate_expected_request_contract(case["expected"], prepared_case.request)
+
+    assert payload["fixture_set_id"] == CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID
+    assert payload["qualification_contract"] != _expected_qualification_contract()
+    assert payload["qualification_contract"]["prompt_id"] == (
+        "capability-teaching-annotation-v5-prompt-v39-zh"
+    )
+    assert payload["qualification_contract"]["request_revision"] == (
+        "capability-teaching-request-v3"
+    )
+    assert (
+        _fixture_bundle_sha256(_CURRENT_FIXTURE, fixture_raw, cases)
+        == CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256
+    )
+    assert len(cases) == 20
+    assert sum(item.input_kind == "adapter_source" for item in prepared) == 12
 
 
 def test_v34_development_bundle_prepares_as_historical_regression_data() -> None:
@@ -477,6 +510,56 @@ def test_selected_cases_are_always_non_qualifying_diagnostics() -> None:
     assert [row["case_id"] for row in report["rows"]] == [case_id]
 
 
+def test_formal_evaluation_rejects_unqualified_target_before_client_creation(
+    tmp_path: Path,
+) -> None:
+    client_factory_calls = 0
+
+    def client_factory(
+        _tool_runtime_factory: CapabilityAnalysisToolRuntimeFactory | None,
+    ) -> _StaticClient:
+        nonlocal client_factory_calls
+        client_factory_calls += 1
+        return _StaticClient(CapabilityAnalysisOutput(knowledge_enabled=False))
+
+    partial_report = tmp_path / "formal.partial.json"
+    with pytest.raises(CapabilityTeachingEvaluationError) as caught:
+        asyncio.run(
+            evaluate_capability_teaching(
+                _CURRENT_FIXTURE,
+                client_factory=client_factory,
+                provider="wrong-provider",
+                model="wrong-model",
+                declared_budget_usd=1,
+                api_family="wrong-api-family",
+                connection_revision="wrong-connection",
+                settings_revision="wrong-settings",
+                timeout_seconds=299,
+                max_output_tokens=16_383,
+                official_fixture_set_id="wrong-fixture",
+                official_fixture_sha256="0" * 64,
+                partial_report_path=partial_report,
+                enforce_qualification_preflight=True,
+            )
+        )
+
+    message = str(caught.value)
+    for failed_check in (
+        "fixture_set_id",
+        "fixture_sha256",
+        "target_provider",
+        "target_model",
+        "target_api_family",
+        "target_connection_revision",
+        "target_settings_revision",
+        "target_timeout_seconds",
+        "target_max_output_tokens",
+    ):
+        assert failed_check in message
+    assert client_factory_calls == 0
+    assert not partial_report.exists()
+
+
 def test_source_permission_is_scored_when_model_omits_fixed_constraint() -> None:
     case_id = "ct8-s03-admin-ban-review-source"
     output = CapabilityAnalysisOutput(
@@ -496,8 +579,6 @@ def test_source_permission_is_scored_when_model_omits_fixed_constraint() -> None
                         ("ev:ct8:s03",),
                     ),
                 ),
-                answer_markdown="使用“审查封禁 <用户>”审查指定用户。",
-                answer_evidence_ids=("ev:ct8:s03",),
             ),
         ),
     )
@@ -590,8 +671,6 @@ def test_semantic_scorer_accepts_supported_projected_output(tmp_path: Path) -> N
                         ("ev:weather",),
                     ),
                 ),
-                answer_markdown="查询指定城市的天气；省略城市时使用当前会话所在地区。",
-                answer_evidence_ids=("ev:weather",),
             ),
         ),
     )
@@ -713,7 +792,7 @@ def _baseline_patch_output() -> CapabilityAnalysisOutput:
                         ("ev:travel",),
                     ),
                     SemanticClaim(
-                        SemanticClaimKind.SUPPORTED_SUBJECT,
+                        SemanticClaimKind.SEARCH_TERM,
                         "景点",
                         ("ev:travel",),
                     ),
@@ -726,19 +805,17 @@ def _baseline_patch_output() -> CapabilityAnalysisOutput:
                 baseline_changes=(
                     BaselineMemberChange(
                         operation=BaselineChangeOperation.REMOVE,
-                        field=BaselineMemberField.SYNONYMS,
+                        field=BaselineMemberField.SEARCH_TERMS,
                         old_value="订酒店",
                         evidence_ids=("ev:travel",),
                     ),
                     BaselineMemberChange(
                         operation=BaselineChangeOperation.REMOVE,
-                        field=BaselineMemberField.SUPPORTED_SUBJECTS,
+                        field=BaselineMemberField.SEARCH_TERMS,
                         old_value="酒店",
                         evidence_ids=("ev:travel",),
                     ),
                 ),
-                answer_markdown="根据可选城市推荐公开景点，结果只包含景点信息。",
-                answer_evidence_ids=("ev:travel",),
             ),
         )
     )
@@ -766,7 +843,7 @@ def test_schema_v4_scores_candidate_patch_and_final_annotation_separately(
     row = report["rows"][0]
     candidate_claims = row["candidate"]["entries"][0]["claims"]
     assert all(item["kind"] != "input_requirement" for item in candidate_claims)
-    assert row["actual"]["entries"][0]["input_requirements"] == ["城市可以省略"]
+    assert "城市可以省略" in row["actual"]["entries"][0]["behavior_boundaries"]
     assert row["checks"]["required_candidate_claim_kinds"] is True
     assert row["checks"]["required_final_members"] is True
     assert row["passed"] is True
@@ -807,6 +884,278 @@ def test_schema_v4_rejects_legacy_candidate_contract(tmp_path: Path) -> None:
     with pytest.raises(
         CapabilityTeachingEvaluationError,
         match="schema v4 requires candidate and final scoring contracts",
+    ):
+        asyncio.run(
+            evaluate_capability_teaching(
+                fixture,
+                client_factory=_disabled_client_factory,
+                provider="opencode-go",
+                model="deepseek-v4-flash",
+                declared_budget_usd=1,
+            )
+        )
+
+
+def test_invalid_output_capture_rejects_nonofficial_fixture_before_client(
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(_baseline_patch_contract_fixture(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    client_calls = 0
+
+    def client_factory(_tools: object) -> _StaticClient:
+        nonlocal client_calls
+        client_calls += 1
+        return _StaticClient(_baseline_patch_output())
+
+    with pytest.raises(
+        CapabilityTeachingEvaluationError,
+        match="exact official synthetic fixture bundle",
+    ):
+        asyncio.run(
+            evaluate_capability_teaching(
+                fixture,
+                client_factory=client_factory,
+                provider="opencode-go",
+                model="deepseek-v4-flash",
+                declared_budget_usd=1,
+                diagnostic_output_path=tmp_path / "invalid-output.json",
+            )
+        )
+
+    assert client_calls == 0
+    assert not (tmp_path / "invalid-output.json").exists()
+
+
+def test_schema_v4_scores_candidate_constraint_cap_and_gate_outcome(
+    tmp_path: Path,
+) -> None:
+    payload = _baseline_patch_contract_fixture()
+    request = payload["cases"][0]["request"]
+    request["gate_candidates"] = [
+        {
+            "candidate_id": "gate:test",
+            "kind": "permission",
+            "entry_ids": ["root"],
+            "evidence_ids": ["ev:travel"],
+        }
+    ]
+    request["fixed_constraints"] = [
+        {
+            "kind": "access",
+            "statement": "需授权",
+            "evidence_ids": ["ev:travel"],
+        }
+    ]
+    expected = payload["cases"][0]["expected"]
+    expected["maximum_candidate_constraint_count"] = 0
+    expected["required_gate_resolution_outcomes"] = {"gate:test": "no_constraint"}
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    gate_definition = CapabilityEvidenceUnit(
+        evidence_id="ev:gate-definition",
+        source_kind="approved_source_file",
+        content="def public_gate(): return True",
+        revision="fixture:gate-definition:1",
+    )
+    output = replace(
+        _baseline_patch_output(),
+        evidence_units=(gate_definition,),
+        gate_resolutions=(
+            CapabilityGateResolution(
+                candidate_id="gate:test",
+                outcome=CapabilityGateResolutionKind.NO_CONSTRAINT,
+                evidence_ids=("ev:travel", "ev:gate-definition"),
+            ),
+        ),
+    )
+
+    report = asyncio.run(
+        evaluate_capability_teaching(
+            fixture,
+            client_factory=lambda _tools: _StaticClient(output),
+            provider="opencode-go",
+            model="deepseek-v4-flash",
+            declared_budget_usd=1,
+        )
+    )
+
+    checks = report["rows"][0]["checks"]
+    assert checks["maximum_candidate_constraint_count"] is True
+    assert checks["required_gate_resolution_outcomes"] is True
+    assert report["rows"][0]["passed"] is True
+
+
+def test_schema_v4_candidate_constraint_cap_detects_model_constraints(
+    tmp_path: Path,
+) -> None:
+    payload = _baseline_patch_contract_fixture()
+    payload["cases"][0]["expected"]["maximum_candidate_constraint_count"] = 0
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    entry = replace(
+        _baseline_patch_output().entries[0],
+        constraints=(
+            SemanticConstraint(
+                kind=SemanticConstraintKind.ACCESS,
+                statement="需授权",
+                evidence_ids=("ev:travel",),
+            ),
+        ),
+    )
+
+    report = asyncio.run(
+        evaluate_capability_teaching(
+            fixture,
+            client_factory=lambda _tools: _StaticClient(CapabilityAnalysisOutput(entries=(entry,))),
+            provider="opencode-go",
+            model="deepseek-v4-flash",
+            declared_budget_usd=1,
+        )
+    )
+
+    assert report["rows"][0]["checks"]["maximum_candidate_constraint_count"] is False
+    assert report["rows"][0]["passed"] is False
+
+
+def test_schema_v4_rejects_unknown_gate_outcome_candidate_before_client(
+    tmp_path: Path,
+) -> None:
+    payload = _baseline_patch_contract_fixture()
+    payload["cases"][0]["expected"]["required_gate_resolution_outcomes"] = {
+        "gate:missing": "unresolved"
+    }
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    client_factory_calls = 0
+
+    def client_factory(
+        _tool_runtime_factory: CapabilityAnalysisToolRuntimeFactory | None,
+    ) -> _StaticClient:
+        nonlocal client_factory_calls
+        client_factory_calls += 1
+        return _StaticClient(_baseline_patch_output())
+
+    with pytest.raises(
+        CapabilityTeachingEvaluationError,
+        match="references unavailable candidates: gate:missing",
+    ):
+        asyncio.run(
+            evaluate_capability_teaching(
+                fixture,
+                client_factory=client_factory,
+                provider="opencode-go",
+                model="deepseek-v4-flash",
+                declared_budget_usd=1,
+            )
+        )
+
+    assert client_factory_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "entry_ids",
+            ["wrong-entry"],
+            "expected entry IDs do not match adapter request invocations",
+        ),
+        (
+            "required_config_reference_ids",
+            ["config:missing"],
+            "required config references are unavailable: config:missing",
+        ),
+    ],
+)
+def test_schema_v4_rejects_request_identity_drift_before_client(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    payload = _baseline_patch_contract_fixture()
+    payload["cases"][0]["expected"][field] = value
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    client_factory_calls = 0
+
+    def client_factory(
+        _tool_runtime_factory: CapabilityAnalysisToolRuntimeFactory | None,
+    ) -> _StaticClient:
+        nonlocal client_factory_calls
+        client_factory_calls += 1
+        return _StaticClient(_baseline_patch_output())
+
+    with pytest.raises(CapabilityTeachingEvaluationError, match=message):
+        asyncio.run(
+            evaluate_capability_teaching(
+                fixture,
+                client_factory=client_factory,
+                provider="opencode-go",
+                model="deepseek-v4-flash",
+                declared_budget_usd=1,
+            )
+        )
+
+    assert client_factory_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "maximum_candidate_constraint_count",
+            True,
+            "maximum_candidate_constraint_count must be a nonnegative integer",
+        ),
+        (
+            "required_gate_resolution_outcomes",
+            [],
+            "required_gate_resolution_outcomes must be an object",
+        ),
+        (
+            "required_gate_resolution_outcomes",
+            {"gate:test": "maybe"},
+            "required gate resolution outcome is invalid",
+        ),
+    ],
+)
+def test_schema_v4_rejects_invalid_oracle_contract_before_client(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    payload = _baseline_patch_contract_fixture()
+    payload["cases"][0]["expected"][field] = value
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(CapabilityTeachingEvaluationError, match=message):
+        asyncio.run(
+            evaluate_capability_teaching(
+                fixture,
+                client_factory=_disabled_client_factory,
+                provider="opencode-go",
+                model="deepseek-v4-flash",
+                declared_budget_usd=1,
+            )
+        )
+
+
+def test_schema_v4_rejects_unknown_expected_scoring_field(tmp_path: Path) -> None:
+    payload = _baseline_patch_contract_fixture()
+    payload["cases"][0]["expected"]["required_gate_resolution_outcome"] = {}
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(
+        CapabilityTeachingEvaluationError,
+        match="unknown expected scoring fields: required_gate_resolution_outcome",
     ):
         asyncio.run(
             evaluate_capability_teaching(
@@ -903,18 +1252,16 @@ def test_baseline_exact_change_is_reported_but_does_not_fail_semantics(
                         ("ev:recipe",),
                     ),
                     SemanticClaim(
-                        SemanticClaimKind.SYNONYM,
+                        SemanticClaimKind.SEARCH_TERM,
                         "查菜谱",
                         ("ev:recipe",),
                     ),
                     SemanticClaim(
-                        SemanticClaimKind.SYNONYM,
+                        SemanticClaimKind.SEARCH_TERM,
                         "做菜",
                         ("ev:recipe",),
                     ),
                 ),
-                answer_markdown="发送菜谱即可查询家常菜做法。",
-                answer_evidence_ids=("ev:recipe",),
             ),
         ),
     )
@@ -1042,8 +1389,6 @@ async def handle_weather():
                         ("ev:source-weather-runtime",),
                     ),
                 ),
-                answer_markdown="查询指定城市的天气。",
-                answer_evidence_ids=("ev:source-weather-runtime",),
             ),
         ),
     )
@@ -1062,6 +1407,218 @@ async def handle_weather():
     assert report["summary"]["source_extraction_valid_rate"] == 1.0
     assert report["rows"][0]["input_kind"] == "source"
     assert report["rows"][0]["source_audit"]["registration_count"] == 1
+
+
+def test_adapter_case_builds_request_without_executing_fixture_source(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "sources" / "ordinary"
+    source_root.mkdir(parents=True)
+    (source_root / "__init__.py").write_text("", encoding="utf-8")
+    (source_root / "plugin.py").write_text(
+        """\
+from nonebot_plugin_uninfo import OWNER
+
+from .service import render
+
+def on_command(*args, **kwargs):
+    return object()
+
+plugin_config = object()
+matcher = on_command("海报", permission=OWNER())
+
+@matcher.handle()
+async def handle():
+    return render(plugin_config.cooldown)
+
+raise RuntimeError("fixture source must never execute")
+""",
+        encoding="utf-8",
+    )
+    (source_root / "service.py").write_text(
+        """\
+def render(cooldown):
+    return f"{cooldown}"
+
+raise RuntimeError("fixture source must never execute")
+""",
+        encoding="utf-8",
+    )
+    raw_case: dict[str, object] = {
+        "case_id": "adapter-ordinary",
+        "adapter_case": {
+            "source_root": "sources/ordinary",
+            "family": False,
+            "configs": [
+                {
+                    "module": "plugin",
+                    "binding": "plugin_config",
+                    "fields": {"cooldown": {"key": "POSTER_COOLDOWN", "value": 23}},
+                }
+            ],
+            "records": [
+                {
+                    "capability_id": "command:poster",
+                    "owner": "fixture.poster",
+                    "kind": "command",
+                    "handlers": [{"module": "plugin", "qualname": "handle"}],
+                    "claims": {
+                        "command.header": "海报",
+                        "command.arguments": [
+                            {
+                                "name": "主题",
+                                "required": True,
+                                "hidden": False,
+                                "variadic": False,
+                                "variadic_flag": None,
+                                "has_default": False,
+                            }
+                        ],
+                    },
+                    "config_references": [
+                        {
+                            "module": "plugin",
+                            "qualname": "handle",
+                            "binding": "plugin_config",
+                            "field": "cooldown",
+                            "helper_depth": 0,
+                        }
+                    ],
+                }
+            ],
+            "request_audit": {
+                "required_python_functions": [
+                    {"module": "plugin", "qualname": "handle"},
+                    {"module": "service", "qualname": "render"},
+                ],
+                "required_fixed_constraints": [
+                    {"kind": "role", "role": "owner", "statement": "仅群主可用"}
+                ],
+                "required_usages": ["海报 <主题>"],
+            },
+        },
+    }
+    fixture = tmp_path / "fixture.json"
+
+    prepared = _prepare_case(fixture, raw_case)
+
+    assert prepared.input_kind == "adapter_source"
+    assert prepared.request.config_projections[0].value == 23
+    assert prepared.source_audit is not None
+    module_name = cast(str, prepared.source_audit["module_name"])
+    assert module_name not in sys.modules
+    assert f"{module_name}.plugin" not in sys.modules
+
+    fixture_raw = json.dumps({"cases": [raw_case]}, ensure_ascii=False).encode()
+    first_sha = _fixture_bundle_sha256(fixture, fixture_raw, [raw_case])
+    (source_root / "service.py").write_text(
+        """\
+def render(cooldown):
+    return f"wait:{cooldown}"
+
+raise RuntimeError("fixture source must never execute")
+""",
+        encoding="utf-8",
+    )
+    second_sha = _fixture_bundle_sha256(fixture, fixture_raw, [raw_case])
+
+    assert first_sha != second_sha
+
+
+def test_adapter_case_builds_parameterized_family_with_shared_gate(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "sources" / "family"
+    source_root.mkdir(parents=True)
+    (source_root / "__init__.py").write_text("", encoding="utf-8")
+    (source_root / "plugin.py").write_text(
+        """\
+def on_command(*args, **kwargs):
+    return object()
+
+def custom_permission():
+    return True
+
+def render(command):
+    return command
+
+def create_handler(command):
+    async def handler():
+        return render(command)
+    return handler
+
+first = create_handler("摸摸")
+second = create_handler("亲亲")
+first_matcher = on_command("摸摸", permission=custom_permission(), handlers=[first])
+second_matcher = on_command("亲亲", permission=custom_permission(), handlers=[second])
+
+raise RuntimeError("fixture source must never execute")
+""",
+        encoding="utf-8",
+    )
+    opaque_permission = {
+        "kind": "permission",
+        "operation": "opaque_function",
+        "evaluability": "opaque",
+        "payload": {"observed": "permission:opaque:function"},
+    }
+    raw_case: dict[str, object] = {
+        "case_id": "adapter-family",
+        "adapter_case": {
+            "source_root": "sources/family",
+            "family": True,
+            "records": [
+                {
+                    "capability_id": "command:touch",
+                    "owner": "fixture.family",
+                    "handlers": [
+                        {
+                            "module": "plugin",
+                            "qualname": "create_handler.<locals>.handler",
+                            "closure_freevars": ["command"],
+                        }
+                    ],
+                    "claims": {"command.header": "摸摸"},
+                    "constraints": [opaque_permission],
+                },
+                {
+                    "capability_id": "command:kiss",
+                    "owner": "fixture.family",
+                    "handlers": [
+                        {
+                            "module": "plugin",
+                            "qualname": "create_handler.<locals>.handler",
+                            "closure_freevars": ["command"],
+                        }
+                    ],
+                    "claims": {"command.header": "亲亲"},
+                    "constraints": [opaque_permission],
+                },
+            ],
+            "request_audit": {
+                "required_python_functions": [
+                    {
+                        "module": "plugin",
+                        "qualname": "create_handler.<locals>.handler",
+                    },
+                    {"module": "plugin", "qualname": "custom_permission"},
+                    {"module": "plugin", "qualname": "render"},
+                ],
+                "required_gate_kinds": ["permission"],
+                "gate_candidate_count": 1,
+                "fixed_constraint_count": 0,
+            },
+        },
+    }
+
+    prepared = _prepare_case(tmp_path / "fixture.json", raw_case)
+
+    assert prepared.input_kind == "adapter_source"
+    assert prepared.request.capability.kind == "command_family"
+    assert prepared.request.gate_candidates[0].entry_ids == ("family",)
+    assert prepared.source_audit is not None
+    module_name = cast(str, prepared.source_audit["module_name"])
+    assert module_name not in sys.modules
 
 
 def test_cli_requires_explicit_paid_run_confirmation(tmp_path: Path) -> None:
@@ -1086,6 +1643,7 @@ def test_cli_writes_capability_teaching_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     report_path = tmp_path / "report.json"
+    captured: dict[str, object] = {}
     expected: dict[str, Any] = {
         "summary": {
             "case_count": 1,
@@ -1097,7 +1655,9 @@ def test_cli_writes_capability_teaching_report(
         "rows": [],
     }
 
-    async def fake_evaluate(*_args: object, **_kwargs: object) -> dict[str, Any]:
+    async def fake_evaluate(fixtures_path: Path, **kwargs: object) -> dict[str, Any]:
+        captured["fixtures_path"] = fixtures_path
+        captured.update(kwargs)
         return expected
 
     monkeypatch.setenv("OPENCODE_API_KEY", "test-only-not-a-secret")
@@ -1119,3 +1679,11 @@ def test_cli_writes_capability_teaching_report(
 
     assert exit_code == 0
     assert json.loads(report_path.read_text(encoding="utf-8")) == expected
+    assert captured["fixtures_path"] == Path(
+        "evals/datasets/fixtures/capability-teaching-v13-forward-heldout.json"
+    )
+    assert captured["timeout_seconds"] == 300.0
+    assert captured["max_output_tokens"] == 16_384
+    assert captured["official_fixture_set_id"] == CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID
+    assert captured["official_fixture_sha256"] == CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256
+    assert captured["enforce_qualification_preflight"] is True

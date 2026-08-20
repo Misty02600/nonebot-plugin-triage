@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,13 +43,13 @@ from nbtriage.capability_analysis import (
     TeachingRole,
 )
 from nbtriage.capability_annotations import (
-    CapabilityAnnotationCache,
     CapabilityAnnotationError,
     CapabilityAnnotationEvidenceRef,
     CapabilityTeachingAnnotation,
     CapabilityTeachingRequirement,
     capability_analysis_fingerprint,
     project_capability_annotation,
+    validate_capability_public_statement,
     validate_capability_usage_pattern,
 )
 from nbtriage.capability_model_adapter import (
@@ -56,7 +57,11 @@ from nbtriage.capability_model_adapter import (
     CapabilityModelAdapterReason,
 )
 from nonebot_plugin_triage.capability_analysis_adapter import (
+    CapabilityAnalysisAdapterError,
     ParameterizedHandlerCodeIdentity,
+)
+from nonebot_plugin_triage.capability_annotation_cache import (
+    CapabilityAnnotationPluginCache,
 )
 from nonebot_plugin_triage.capability_annotation_runtime import (
     CAPABILITY_ANNOTATION_EVALUATION,
@@ -67,9 +72,18 @@ from nonebot_plugin_triage.capability_annotation_runtime import (
     capability_annotation_analysis_revision,
     create_capability_annotation_client_factory,
 )
-from nonebot_plugin_triage.capability_annotations import CapabilityAnnotationService
+from nonebot_plugin_triage.capability_annotations import (
+    CapabilityAnnotationRefreshStatus,
+    CapabilityAnnotationService,
+    CapabilityTeachingUnitReason,
+    CapabilityTeachingUnitStage,
+    CapabilityTeachingUnitState,
+)
+from nonebot_plugin_triage.capability_teaching_outputs import CapabilityTeachingOutputWriter
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
+
+_PUBLISHED_GENERATION = "f" * 64
 
 
 class _RecordingLogger:
@@ -135,6 +149,7 @@ class _PluginConcurrencyClient:
 def _request(capability_id: str = "command:image") -> CapabilityAnalysisRequest:
     return CapabilityAnalysisRequest(
         capability=CapabilityIdentity(capability_id, "plugin.image", "command"),
+        source_context=CapabilitySourceContext("plugin.image", "0" * 64),
         evidence_units=(
             CapabilityEvidenceUnit(
                 "evidence-handler",
@@ -152,6 +167,14 @@ def _request(capability_id: str = "command:image") -> CapabilityAnalysisRequest:
             ),
         ),
     )
+
+
+async def _commit_refresh(
+    service: CapabilityAnnotationService,
+    status: CapabilityAnnotationRefreshStatus,
+) -> None:
+    assert status.publishable
+    await service.commit_pending(status.refresh_id, _PUBLISHED_GENERATION)
 
 
 def _entry(
@@ -174,8 +197,6 @@ def _entry(
         ),
         baseline_changes=baseline_changes,
         constraints=constraints,
-        answer_markdown="发送图片或回复图片后使用搜图。",
-        answer_evidence_ids=("evidence-handler",),
     )
 
 
@@ -195,12 +216,12 @@ def _record(capability_id: str, disclosure: Disclosure) -> CapabilityRecord:
     )
 
 
-def test_public_annotation_cache_contains_entries_without_source_or_locator() -> None:
+def test_public_annotation_contains_entries_without_source_or_locator() -> None:
     annotation = project_capability_annotation(
         _request(),
         _output(
             SemanticClaim(
-                SemanticClaimKind.INPUT_REQUIREMENT,
+                SemanticClaimKind.BEHAVIOR_BOUNDARY,
                 "可以发送图片或回复图片。",
                 ("evidence-handler",),
             )
@@ -208,12 +229,48 @@ def test_public_annotation_cache_contains_entries_without_source_or_locator() ->
         analysis_revision="analysis-v1",
     )
 
-    document = CapabilityAnnotationCache((annotation,)).to_json()
+    document = json.dumps(annotation.to_dict(), ensure_ascii=False)
 
-    assert CapabilityAnnotationCache.from_json(document).annotations == (annotation,)
+    assert CapabilityTeachingAnnotation.from_dict(json.loads(document)) == annotation
     assert annotation.entries[0].usages == ("搜图 [图片]",)
     assert "SENTINEL_SOURCE" not in document
     assert "plugin.image:search" not in document
+
+
+def test_projection_rejects_more_than_three_usages_in_one_matcher() -> None:
+    usages = tuple(
+        SemanticClaim(
+            SemanticClaimKind.USAGE,
+            f"搜图 {value}",
+            ("evidence-handler",),
+        )
+        for value in ("红", "蓝", "绿", "黄")
+    )
+
+    with pytest.raises(CapabilityAnnotationError, match="at most three usages"):
+        project_capability_annotation(
+            _request(),
+            CapabilityAnalysisOutput(entries=(_entry(*usages),)),
+            analysis_revision="analysis-v1",
+        )
+
+
+def test_schema7_rejects_schema6_entry_fields_without_migration() -> None:
+    annotation = project_capability_annotation(
+        _request(),
+        _output(),
+        analysis_revision="analysis-v1",
+    )
+    payload = annotation.to_dict()
+    payload["schema_version"] = 6
+    entry = payload["entries"][0]
+    entry["synonyms"] = []
+    entry["supported_subjects"] = []
+    entry["input_requirements"] = []
+    entry["answer_markdown"] = None
+
+    with pytest.raises(CapabilityAnnotationError):
+        CapabilityTeachingAnnotation.from_dict(payload)
 
 
 def test_annotation_preserves_usage_order_and_typed_requirements() -> None:
@@ -252,9 +309,7 @@ def test_annotation_preserves_usage_order_and_typed_requirements() -> None:
         next(item for item in entry.requirements if item.kind is SemanticConstraintKind.ROLE).role
         is TeachingRole.CUSTOM
     )
-    assert CapabilityAnnotationCache.from_json(
-        CapabilityAnnotationCache((annotation,)).to_json()
-    ).annotations == (annotation,)
+    assert CapabilityTeachingAnnotation.from_dict(annotation.to_dict()) == annotation
 
 
 def test_annotation_always_projects_fixed_permission_constraint() -> None:
@@ -292,17 +347,15 @@ def test_annotation_carries_forward_omitted_baseline_members_and_adds_new_claims
             entries=(
                 CapabilityAnalysisEntryBaseline(
                     "root",
-                    synonyms=("反向搜图",),
-                    supported_subjects=("图片",),
-                    input_requirements=("需要提供图片",),
-                    behavior_boundaries=("支持回复图片",),
+                    search_terms=("反向搜图", "图片"),
+                    behavior_boundaries=("需要提供图片", "支持回复图片"),
                 ),
             )
         ),
     )
     output = _output(
         SemanticClaim(
-            SemanticClaimKind.SYNONYM,
+            SemanticClaimKind.SEARCH_TERM,
             "查找图片",
             ("evidence-handler",),
         )
@@ -311,10 +364,8 @@ def test_annotation_carries_forward_omitted_baseline_members_and_adds_new_claims
     annotation = project_capability_annotation(request, output, analysis_revision="analysis-v1")
 
     entry = annotation.entries[0]
-    assert entry.synonyms == ("反向搜图", "查找图片")
-    assert entry.supported_subjects == ("图片",)
-    assert entry.input_requirements == ("需要提供图片",)
-    assert entry.behavior_boundaries == ("支持回复图片",)
+    assert entry.search_terms == ("反向搜图", "图片", "查找图片")
+    assert entry.behavior_boundaries == ("支持回复图片", "需要提供图片")
 
 
 def test_annotation_applies_explicit_baseline_remove_and_replace() -> None:
@@ -324,8 +375,7 @@ def test_annotation_applies_explicit_baseline_remove_and_replace() -> None:
             entries=(
                 CapabilityAnalysisEntryBaseline(
                     "root",
-                    synonyms=("找封面",),
-                    supported_subjects=("封面",),
+                    search_terms=("找封面", "封面"),
                 ),
             )
         ),
@@ -336,13 +386,13 @@ def test_annotation_applies_explicit_baseline_remove_and_replace() -> None:
                 baseline_changes=(
                     BaselineMemberChange(
                         BaselineChangeOperation.REMOVE,
-                        BaselineMemberField.SYNONYMS,
+                        BaselineMemberField.SEARCH_TERMS,
                         "找封面",
                         ("evidence-handler",),
                     ),
                     BaselineMemberChange(
                         BaselineChangeOperation.REPLACE,
-                        BaselineMemberField.SUPPORTED_SUBJECTS,
+                        BaselineMemberField.SEARCH_TERMS,
                         "封面",
                         ("evidence-handler",),
                         "短文标题",
@@ -354,8 +404,7 @@ def test_annotation_applies_explicit_baseline_remove_and_replace() -> None:
 
     annotation = project_capability_annotation(request, output, analysis_revision="analysis-v1")
 
-    assert annotation.entries[0].synonyms == ()
-    assert annotation.entries[0].supported_subjects == ("短文标题",)
+    assert annotation.entries[0].search_terms == ("短文标题",)
 
 
 def test_anchored_usage_must_contain_command_body_exactly_once() -> None:
@@ -376,8 +425,6 @@ def test_anchored_usage_must_contain_command_body_exactly_once() -> None:
                             ("evidence-handler",),
                         ),
                     ),
-                    answer_markdown="搜索图片。",
-                    answer_evidence_ids=("evidence-handler",),
                 ),
             )
         )
@@ -409,8 +456,6 @@ def test_parser_owned_canonical_usage_cannot_be_rewritten() -> None:
                         ("evidence-handler",),
                     ),
                 ),
-                answer_markdown="添加一个订阅主题。",
-                answer_evidence_ids=("evidence-handler",),
             ),
         )
     )
@@ -457,13 +502,21 @@ def test_complete_usage_requires_bounded_member_selector() -> None:
                     "family",
                     claims=(
                         SemanticClaim(
+                            SemanticClaimKind.NAME,
+                            "图片滤镜",
+                            ("evidence-handler",),
+                        ),
+                        SemanticClaim(
+                            SemanticClaimKind.SUMMARY,
+                            "使用选定的滤镜处理图片。",
+                            ("evidence-handler",),
+                        ),
+                        SemanticClaim(
                             SemanticClaimKind.USAGE,
                             usage,
                             ("evidence-handler",),
                         ),
                     ),
-                    answer_markdown="选择一种表情模板制作图片。",
-                    answer_evidence_ids=("evidence-handler",),
                 ),
             )
         )
@@ -482,13 +535,16 @@ def test_complete_usage_requires_bounded_member_selector() -> None:
                         ("evidence-handler",),
                     ),
                     SemanticClaim(
+                        SemanticClaimKind.SUMMARY,
+                        "使用选定的滤镜处理图片。",
+                        ("evidence-handler",),
+                    ),
+                    SemanticClaim(
                         SemanticClaimKind.USAGE,
-                        "(复古|锐化|黑白|素描) [图片]",
+                        "(复古|锐化|黑白) [图片]",
                         ("evidence-handler",),
                     ),
                 ),
-                answer_markdown="选择一种滤镜处理图片。",
-                answer_evidence_ids=("evidence-handler",),
             ),
         )
     )
@@ -496,7 +552,7 @@ def test_complete_usage_requires_bounded_member_selector() -> None:
         request,
         valid,
         analysis_revision="analysis-v1",
-    ).entries[0].usages == ("(复古|锐化|黑白|素描) [图片]",)
+    ).entries[0].usages == ("(复古|锐化|黑白) [图片]",)
 
 
 def test_annotation_replaces_verified_command_body_with_alias_expression() -> None:
@@ -523,21 +579,24 @@ def test_annotation_replaces_verified_command_body_with_alias_expression() -> No
                         ("evidence-handler",),
                     ),
                     SemanticClaim(
+                        SemanticClaimKind.SUMMARY,
+                        "禁止指定用户发言。",
+                        ("evidence-handler",),
+                    ),
+                    SemanticClaim(
                         SemanticClaimKind.USAGE,
                         "禁言 <用户>",
                         ("evidence-handler",),
                     ),
                 ),
-                answer_markdown="禁言指定用户。",
-                answer_evidence_ids=("evidence-handler",),
-                display_trigger="(禁言|(禁|口|踩)(他|她))",
+                display_trigger="<指令>",
             ),
         )
     )
 
     annotation = project_capability_annotation(request, output, analysis_revision="analysis-v1")
 
-    assert annotation.entries[0].usages == ("(禁言|(禁|口|踩)(他|她)) <用户>",)
+    assert annotation.entries[0].usages == ("<指令> <用户>",)
 
 
 def test_annotation_groups_root_alias_alternation_before_usage_suffix() -> None:
@@ -564,13 +623,16 @@ def test_annotation_groups_root_alias_alternation_before_usage_suffix() -> None:
                         ("evidence-handler",),
                     ),
                     SemanticClaim(
+                        SemanticClaimKind.SUMMARY,
+                        "提取图片中的主要颜色。",
+                        ("evidence-handler",),
+                    ),
+                    SemanticClaim(
                         SemanticClaimKind.USAGE,
                         "提取色彩 <图片>",
                         ("evidence-handler",),
                     ),
                 ),
-                answer_markdown="提取图片颜色。",
-                answer_evidence_ids=("evidence-handler",),
                 display_trigger="提取色彩|图片取色",
             ),
         )
@@ -595,6 +657,10 @@ def test_usage_repetition_accepts_required_and_optional_slots() -> None:
     assert validate_capability_usage_pattern("批量 [图片]...") == "批量 [图片]..."
 
 
+def test_public_text_allows_plain_at_mentions_without_treating_them_as_message_segments() -> None:
+    assert validate_capability_public_statement("可以 @用户 提醒对方") == "可以 @用户 提醒对方"
+
+
 def test_multiple_invocation_entries_are_projected_separately() -> None:
     request = CapabilityAnalysisRequest(
         capability=_request().capability,
@@ -611,26 +677,32 @@ def test_multiple_invocation_entries_are_projected_separately() -> None:
                 claims=(
                     SemanticClaim(SemanticClaimKind.NAME, "搜索仓库", ("evidence-handler",)),
                     SemanticClaim(
+                        SemanticClaimKind.SUMMARY,
+                        "按关键词搜索仓库。",
+                        ("evidence-handler",),
+                    ),
+                    SemanticClaim(
                         SemanticClaimKind.USAGE,
                         "仓库 搜索 <关键词> [--limit <数量>]",
                         ("evidence-handler",),
                     ),
                 ),
-                answer_markdown="按关键词搜索仓库。",
-                answer_evidence_ids=("evidence-handler",),
             ),
             CapabilityAnalysisEntryOutput(
                 "detail",
                 claims=(
                     SemanticClaim(SemanticClaimKind.NAME, "仓库详情", ("evidence-handler",)),
                     SemanticClaim(
+                        SemanticClaimKind.SUMMARY,
+                        "查看指定仓库的详情。",
+                        ("evidence-handler",),
+                    ),
+                    SemanticClaim(
                         SemanticClaimKind.USAGE,
                         "仓库 详情 <编号>",
                         ("evidence-handler",),
                     ),
                 ),
-                answer_markdown="按编号查看仓库。",
-                answer_evidence_ids=("evidence-handler",),
             ),
         )
     )
@@ -658,7 +730,7 @@ def test_dynamic_file_evidence_persists_only_revision_bound_manifest() -> None:
     )
 
     annotation = project_capability_annotation(_request(), output, analysis_revision="analysis-v1")
-    document = CapabilityAnnotationCache((annotation,)).to_json()
+    document = json.dumps(annotation.to_dict(), ensure_ascii=False)
 
     assert annotation.evidence_manifest == (
         CapabilityAnnotationEvidenceRef(
@@ -683,10 +755,11 @@ def test_runtime_marks_changed_annotation_prompt_unverified_until_new_evaluation
     qualification = OPENCODE_GO_CAPABILITY_ANNOTATION_QUALIFICATION
 
     assert qualification.evaluation == CAPABILITY_ANNOTATION_EVALUATION
-    assert qualification.prompt_id == "capability-teaching-annotation-v4-prompt-v38-zh"
+    assert qualification.prompt_id == "capability-teaching-annotation-v5-prompt-v40-zh"
+    assert qualification.request_revision == "capability-teaching-request-v4"
     assert qualification.evaluation == (
-        "unverified:capability-teaching-annotation-agent-v3:"
-        "capability-teaching-annotation-v4-prompt-v38-zh"
+        "unverified:capability-teaching-annotation-agent-v4:"
+        "capability-teaching-annotation-v5-prompt-v40-zh"
     )
     assert qualification.verified is False
     assert frozenset() == QUALIFIED_CAPABILITY_ANNOTATION_TASKS
@@ -824,6 +897,7 @@ async def test_runtime_snapshot_is_public_availability_gate(
     )
 
     status = await service.refresh(snapshot)
+    await _commit_refresh(service, status)
 
     assert status.generated_count == 1
     assert analyzed == ["command:image"]
@@ -868,6 +942,7 @@ async def test_prepare_error_skips_only_the_invalid_teaching_unit(
             )
         )
     )
+    await _commit_refresh(service, status)
 
     assert status.eligible_count == 1
     assert status.skipped_count == 1
@@ -875,6 +950,1343 @@ async def test_prepare_error_skips_only_the_invalid_teaching_unit(
     assert service.get("command:invalid") is None
     assert service.get("command:valid") is not None
     assert logger.infos[1][1][-1] == '{"request_validation": 1}'
+
+
+@pytest.mark.asyncio
+async def test_partial_refresh_activates_success_and_next_round_retries_only_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: dict[str, int] = {}
+    failing = {"command:failed"}
+
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return _request(record.capability_id)
+
+    class SelectiveClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            capability_id = request.capability.capability_id
+            attempts[capability_id] = attempts.get(capability_id, 0) + 1
+            if capability_id in failing:
+                raise CapabilityModelAdapterError(
+                    "private budget detail",
+                    reason_code=CapabilityModelAdapterReason.BUDGET,
+                )
+            return _output()
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=SelectiveClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    snapshot = CapabilitySnapshot.create(
+        (
+            _record("command:failed", Disclosure.PUBLIC),
+            _record("command:success", Disclosure.PUBLIC),
+        )
+    )
+
+    first = await service.refresh(snapshot)
+    await _commit_refresh(service, first)
+
+    assert first.generated_count == 1
+    assert first.failed_count == 1
+    assert service.get("command:success") is not None
+    assert service.get("command:failed") is None
+    assert {item.unit_id: item.state for item in first.units} == {
+        "command:failed": CapabilityTeachingUnitState.FAILED,
+        "command:success": CapabilityTeachingUnitState.GENERATED,
+    }
+    assert attempts == {"command:failed": 1, "command:success": 1}
+
+    failing.clear()
+    second = await service.refresh(snapshot)
+    await _commit_refresh(service, second)
+
+    assert second.cached_count == 1
+    assert second.generated_count == 1
+    assert second.failed_count == 0
+    assert service.get("command:failed") is not None
+    assert service.get("command:success") is not None
+    assert attempts == {"command:failed": 2, "command:success": 1}
+    assert {item.unit_id: item.state for item in second.units} == {
+        "command:failed": CapabilityTeachingUnitState.GENERATED,
+        "command:success": CapabilityTeachingUnitState.CACHED,
+    }
+
+
+@pytest.mark.asyncio
+async def test_source_change_closes_only_its_plugin_and_discards_old_and_new_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_changed = False
+    calls: list[str] = []
+
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "1" * 64),
+        )
+
+    class SourceChangingClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            capability_id = request.capability.capability_id
+            calls.append(capability_id)
+            if source_changed and capability_id == "command:a-2":
+                raise CapabilityModelAdapterError(
+                    "private source path",
+                    reason_code=CapabilityModelAdapterReason.SOURCE_CHANGED,
+                )
+            return _output()
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=SourceChangingClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+        max_plugin_concurrency=2,
+    )
+    records = tuple(
+        replace(_record(capability_id, Disclosure.PUBLIC), owner=owner)
+        for owner, capability_id in (
+            ("plugin.a", "command:a-1"),
+            ("plugin.a", "command:a-2"),
+            ("plugin.a", "command:a-3"),
+            ("plugin.b", "command:b-1"),
+        )
+    )
+    snapshot = CapabilitySnapshot.create(records)
+    first = await service.refresh(snapshot)
+    await _commit_refresh(service, first)
+    assert first.generated_count == 4
+    assert all(service.get(item.capability_id) is not None for item in records)
+
+    calls.clear()
+    source_changed = True
+    second = await service.refresh(snapshot, force=True)
+    await _commit_refresh(service, second)
+
+    assert "command:a-3" not in calls
+    assert "command:b-1" in calls
+    assert second.publishable is True
+    assert second.global_failure_reason is None
+    assert second.generated_count == 1
+    assert second.cached_count == 0
+    assert service.get("command:a-1") is None
+    assert service.get("command:a-2") is None
+    assert service.get("command:a-3") is None
+    assert service.get("command:b-1") is not None
+    units = {item.unit_id: item for item in second.units}
+    assert units["command:a-1"].state is CapabilityTeachingUnitState.STALE
+    assert units["command:a-2"].state is CapabilityTeachingUnitState.FAILED
+    assert units["command:a-3"].state is CapabilityTeachingUnitState.STALE
+    assert units["command:b-1"].state is CapabilityTeachingUnitState.GENERATED
+    assert all(
+        units[unit_id].reason is CapabilityTeachingUnitReason.SOURCE_CHANGED
+        for unit_id in ("command:a-1", "command:a-2", "command:a-3")
+    )
+    assert units["command:a-2"].attempts == 1
+    assert units["command:a-3"].attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_force_refresh_counts_generated_units_without_double_counting_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        lambda record, _policy, **_kwargs: _request(record.capability_id),
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=lambda: FakeCapabilityAnalysisClient(_output()),
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    snapshot = CapabilitySnapshot.create((_record("command:image", Disclosure.PUBLIC),))
+    first = await service.refresh(snapshot)
+    await _commit_refresh(service, first)
+
+    status = await service.refresh(snapshot, force=True)
+    await _commit_refresh(service, status)
+
+    assert status.generated_count == 1
+    assert status.cached_count == 0
+    assert status.units[0].state is CapabilityTeachingUnitState.GENERATED
+
+
+@pytest.mark.asyncio
+async def test_transient_failure_retries_once_but_budget_does_not(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    class RetryClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            nonlocal calls
+            del request
+            calls += 1
+            if calls == 1:
+                raise CapabilityModelAdapterError(
+                    "private transport detail",
+                    reason_code=CapabilityModelAdapterReason.TRANSPORT,
+                )
+            return _output()
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        lambda record, _policy, **_kwargs: _request(record.capability_id),
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=RetryClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+
+    status = await service.refresh(
+        CapabilitySnapshot.create((_record("command:image", Disclosure.PUBLIC),))
+    )
+
+    assert calls == 2
+    assert status.generated_count == 1
+    assert status.units[0].attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_provider_identity_failure_stops_remaining_units_globally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class IdentityFailureClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            calls.append(request.capability.capability_id)
+            raise CapabilityModelAdapterError(
+                "private provider detail",
+                reason_code=CapabilityModelAdapterReason.PROVIDER_IDENTITY,
+            )
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        lambda record, _policy, **_kwargs: _request(record.capability_id),
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=IdentityFailureClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+
+    status = await service.refresh(
+        CapabilitySnapshot.create(
+            (
+                _record("command:first", Disclosure.PUBLIC),
+                _record("command:second", Disclosure.PUBLIC),
+            )
+        )
+    )
+
+    assert calls == ["command:first"]
+    assert status.global_failure_reason == "provider_identity"
+    assert status.publishable is False
+    assert {item.unit_id: item.state for item in status.units} == {
+        "command:first": CapabilityTeachingUnitState.FAILED,
+        "command:second": CapabilityTeachingUnitState.STALE,
+    }
+    assert next(item for item in status.units if item.unit_id == "command:first").reason is (
+        CapabilityTeachingUnitReason.PROVIDER_IDENTITY
+    )
+    assert next(item for item in status.units if item.unit_id == "command:second").stage is (
+        CapabilityTeachingUnitStage.NOT_ATTEMPTED
+    )
+
+
+@pytest.mark.asyncio
+async def test_common_plugin_source_failure_closes_plugin_before_other_units(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built: list[str] = []
+
+    def fail_shared_source(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        built.append(record.capability_id)
+        raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        fail_shared_source,
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=lambda: FakeCapabilityAnalysisClient(_output()),
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+
+    status = await service.refresh(
+        CapabilitySnapshot.create(
+            (
+                _record("command:first", Disclosure.PUBLIC),
+                _record("command:second", Disclosure.PUBLIC),
+            )
+        )
+    )
+
+    assert built == ["command:first"]
+    assert status.skipped_count == 2
+    assert all(item.state is CapabilityTeachingUnitState.SKIPPED for item in status.units)
+    assert all(item.reason is CapabilityTeachingUnitReason.SOURCE_ADAPTER for item in status.units)
+
+
+@pytest.mark.asyncio
+async def test_late_common_source_failure_discards_previously_prepared_plugin_units(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built: list[str] = []
+    analyzed = False
+
+    def build_then_fail(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        built.append(record.capability_id)
+        if record.capability_id == "command:second":
+            raise CapabilityAnalysisAdapterError(
+                "plugin source changed during analysis preparation"
+            )
+        return _request(record.capability_id)
+
+    def client_factory() -> FakeCapabilityAnalysisClient:
+        nonlocal analyzed
+        analyzed = True
+        return FakeCapabilityAnalysisClient(_output())
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_then_fail,
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=client_factory,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+
+    status = await service.refresh(
+        CapabilitySnapshot.create(
+            (
+                _record("command:first", Disclosure.PUBLIC),
+                _record("command:second", Disclosure.PUBLIC),
+            )
+        )
+    )
+
+    assert built == ["command:first", "command:second"]
+    assert analyzed is False
+    assert status.eligible_count == 0
+    assert status.skipped_count == 2
+    assert all(item.state is CapabilityTeachingUnitState.SKIPPED for item in status.units)
+    assert service.get("command:first") is None
+
+
+@pytest.mark.asyncio
+async def test_corrupt_plugin_cache_rebuilds_only_that_plugin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "2" * 64),
+        )
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    cache_directory = tmp_path / "annotations"
+    records = tuple(
+        replace(_record(capability_id, Disclosure.PUBLIC), owner=owner)
+        for owner, capability_id in (
+            ("plugin.a", "command:a"),
+            ("plugin.b", "command:b"),
+        )
+    )
+    snapshot = CapabilitySnapshot.create(records)
+    first_service = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=lambda: FakeCapabilityAnalysisClient(_output()),
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    first = await first_service.refresh(snapshot)
+    await _commit_refresh(first_service, first)
+    (cache_directory / "plugin.a.json").write_text("{not-json", encoding="utf-8")
+    calls: list[str] = []
+
+    class RecordingClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            calls.append(request.capability.capability_id)
+            return _output()
+
+    service = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=RecordingClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+        published_generation_resolver=lambda: _PUBLISHED_GENERATION,
+    )
+
+    status = await service.refresh(snapshot)
+    await _commit_refresh(service, status)
+
+    assert status.publishable is True
+    assert status.generated_count == 1
+    assert status.cached_count == 1
+    assert calls == ["command:a"]
+    assert service.get("command:a") is not None
+    assert service.get("command:b") is not None
+
+
+@pytest.mark.asyncio
+async def test_casefold_colliding_plugin_files_fail_closed_without_blocking_others(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "2" * 64),
+        )
+
+    calls: list[str] = []
+
+    class RecordingClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            calls.append(request.capability.capability_id)
+            return _output()
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    cache_directory = tmp_path / "annotations"
+    service = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=RecordingClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    records = tuple(
+        replace(_record(capability_id, Disclosure.PUBLIC), owner=owner)
+        for owner, capability_id in (
+            ("Plugin.foo", "command:upper"),
+            ("plugin.foo", "command:lower"),
+            ("plugin.normal", "command:normal"),
+        )
+    )
+
+    status = await service.refresh(CapabilitySnapshot.create(records))
+    await _commit_refresh(service, status)
+
+    assert calls == ["command:normal"]
+    assert {item.unit_id: item.state for item in status.units} == {
+        "command:lower": CapabilityTeachingUnitState.SKIPPED,
+        "command:normal": CapabilityTeachingUnitState.GENERATED,
+        "command:upper": CapabilityTeachingUnitState.SKIPPED,
+    }
+    assert not (cache_directory / "Plugin.foo.json").exists()
+    assert not (cache_directory / "plugin.foo.json").exists()
+    assert (cache_directory / "plugin.normal.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_casefold_collision_includes_plugin_skipped_during_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        if record.owner == "plugin.foo":
+            raise CapabilityAnalysisAdapterError("handler source is unavailable")
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "2" * 64),
+        )
+
+    calls: list[str] = []
+
+    class RecordingClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            calls.append(request.capability.capability_id)
+            return _output()
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    cache_directory = tmp_path / "annotations"
+    service = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=RecordingClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    records = tuple(
+        replace(_record(capability_id, Disclosure.PUBLIC), owner=owner)
+        for owner, capability_id in (
+            ("Plugin.foo", "command:upper"),
+            ("plugin.foo", "command:lower"),
+            ("plugin.normal", "command:normal"),
+        )
+    )
+    snapshot = CapabilitySnapshot.create(records)
+
+    status = await service.refresh(snapshot)
+    publication = CapabilityTeachingOutputWriter(tmp_path / "teaching").publish(
+        snapshot,
+        service.get_pending,
+        status,
+    )
+    await service.commit_pending(status.refresh_id, publication.generation)
+
+    assert calls == ["command:normal"]
+    assert {item.unit_id: item.state for item in status.units} == {
+        "command:lower": CapabilityTeachingUnitState.SKIPPED,
+        "command:normal": CapabilityTeachingUnitState.GENERATED,
+        "command:upper": CapabilityTeachingUnitState.SKIPPED,
+    }
+    assert {path.name for path in publication.paths} == {
+        "plugin.normal.yml",
+        "plugin.normal.md",
+    }
+    assert service.get("command:upper") is None
+    assert service.get("command:lower") is None
+    assert service.get("command:normal") is not None
+    assert not (cache_directory / "Plugin.foo.json").exists()
+    assert not (cache_directory / "plugin.foo.json").exists()
+    assert (cache_directory / "plugin.normal.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_generated_annotation_stays_pending_until_output_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "1" * 64),
+        )
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    cache_directory = tmp_path / "annotations"
+    service = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=lambda: FakeCapabilityAnalysisClient(_output()),
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    snapshot = CapabilitySnapshot.create(
+        (
+            replace(
+                _record("command:pending", Disclosure.PUBLIC),
+                owner="plugin.module",
+            ),
+        )
+    )
+
+    status = await service.refresh(snapshot)
+
+    assert status.publishable is True
+    assert service.get("command:pending") is None
+    assert service.get_pending("command:pending") is not None
+    assert not (cache_directory / "plugin.module.json").exists()
+
+    await service.commit_pending(status.refresh_id, _PUBLISHED_GENERATION)
+
+    assert service.get("command:pending") is not None
+    assert service.get_pending("command:pending") is None
+    assert (cache_directory / "plugin.module.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_published_active_view_wins_when_its_plugin_shard_lags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nonebot_plugin_triage.capability_annotations as capability_annotations_module
+
+    include_search_term = False
+    requests: list[CapabilityAnalysisRequest] = []
+    fail_cache_write = False
+
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "1" * 64),
+        )
+
+    class RecordingClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            requests.append(request)
+            if include_search_term:
+                return _output(
+                    SemanticClaim(
+                        SemanticClaimKind.SEARCH_TERM,
+                        "新的别名",
+                        ("evidence-handler",),
+                    )
+                )
+            return _output()
+
+    original_write = capability_annotations_module.write_capability_annotation_plugin_cache
+
+    def write_cache(directory: Path, cache: CapabilityAnnotationPluginCache) -> Path:
+        if fail_cache_write:
+            raise OSError("simulated cache lag")
+        return original_write(directory, cache)
+
+    monkeypatch.setattr(
+        capability_annotations_module,
+        "build_capability_analysis_request",
+        build_request,
+    )
+    monkeypatch.setattr(
+        capability_annotations_module,
+        "write_capability_annotation_plugin_cache",
+        write_cache,
+    )
+    cache_directory = tmp_path / "annotations"
+    service = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=RecordingClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    snapshot = CapabilitySnapshot.create(
+        (
+            replace(
+                _record("command:image", Disclosure.PUBLIC),
+                owner="plugin.module",
+            ),
+        )
+    )
+    first = await service.refresh(snapshot)
+    await _commit_refresh(service, first)
+    shard = cache_directory / "plugin.module.json"
+    old_shard = shard.read_bytes()
+
+    include_search_term = True
+    fail_cache_write = True
+    requests.clear()
+    second = await service.refresh(snapshot, force=True)
+    await _commit_refresh(service, second)
+
+    active = service.get("command:image")
+    assert active is not None
+    assert active.entries[0].search_terms == ("新的别名",)
+    assert shard.read_bytes() == old_shard
+
+    requests.clear()
+    third = await service.refresh(snapshot)
+    pending = service.get_pending("command:image")
+    assert requests == []
+    assert pending is not None
+    assert pending.entries[0].search_terms == ("新的别名",)
+    await service.discard_pending(third.refresh_id)
+
+    fail_cache_write = False
+    requests.clear()
+    fourth = await service.refresh(snapshot, force=True)
+
+    assert len(requests) == 1
+    baseline = requests[0].previous_annotation
+    assert baseline is not None
+    assert baseline.entries[0].search_terms == ("新的别名",)
+    await _commit_refresh(service, fourth)
+
+
+@pytest.mark.asyncio
+async def test_restart_does_not_reuse_shard_from_older_published_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nonebot_plugin_triage.capability_annotations as capability_annotations_module
+
+    include_search_term = False
+    requests: list[CapabilityAnalysisRequest] = []
+    fail_cache_write = False
+
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "1" * 64),
+        )
+
+    class RecordingClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            requests.append(request)
+            if include_search_term:
+                return CapabilityAnalysisOutput(
+                    entries=(
+                        replace(
+                            _entry(
+                                SemanticClaim(
+                                    SemanticClaimKind.SEARCH_TERM,
+                                    "第二版别名",
+                                    ("evidence-handler",),
+                                )
+                            ),
+                            claims=(
+                                SemanticClaim(
+                                    SemanticClaimKind.NAME,
+                                    "图片搜索",
+                                    ("evidence-handler",),
+                                ),
+                                SemanticClaim(
+                                    SemanticClaimKind.SUMMARY,
+                                    "第二版图片搜索说明。",
+                                    ("evidence-handler",),
+                                ),
+                                SemanticClaim(
+                                    SemanticClaimKind.USAGE,
+                                    "搜图 [图片]",
+                                    ("evidence-handler",),
+                                ),
+                                SemanticClaim(
+                                    SemanticClaimKind.SEARCH_TERM,
+                                    "第二版别名",
+                                    ("evidence-handler",),
+                                ),
+                            ),
+                        ),
+                    )
+                )
+            return _output()
+
+    original_write = capability_annotations_module.write_capability_annotation_plugin_cache
+
+    def write_cache(directory: Path, cache: CapabilityAnnotationPluginCache) -> Path:
+        if fail_cache_write:
+            raise OSError("simulated cache lag")
+        return original_write(directory, cache)
+
+    monkeypatch.setattr(
+        capability_annotations_module,
+        "build_capability_analysis_request",
+        build_request,
+    )
+    monkeypatch.setattr(
+        capability_annotations_module,
+        "write_capability_annotation_plugin_cache",
+        write_cache,
+    )
+    cache_directory = tmp_path / "annotations"
+    writer = CapabilityTeachingOutputWriter(tmp_path / "teaching")
+    record = replace(
+        _record("command:image", Disclosure.PUBLIC),
+        owner="plugin.module",
+    )
+    record = replace(
+        record,
+        claims=(
+            *record.claims,
+            Claim("plugin.module_name", "plugin.module", ClaimBasis.OBSERVED),
+        ),
+    )
+    snapshot = CapabilitySnapshot.create((record,))
+    service = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=RecordingClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+        published_generation_resolver=writer.current_generation,
+    )
+
+    first = await service.refresh(snapshot)
+    first_publication = writer.publish(snapshot, service.get_pending, first)
+    await service.commit_pending(first.refresh_id, first_publication.generation)
+    shard = cache_directory / "plugin.module.json"
+    first_cache = CapabilityAnnotationPluginCache.from_json(shard.read_text(encoding="utf-8"))
+    assert first_cache.published_generation == first_publication.generation
+
+    include_search_term = True
+    fail_cache_write = True
+    second = await service.refresh(snapshot, force=True)
+    second_pending = service.get_pending("command:image")
+    assert second_pending is not None
+    assert second_pending.entries[0].summary == "第二版图片搜索说明。"
+    second_publication = writer.publish(snapshot, service.get_pending, second)
+    assert second_publication.generation != first_publication.generation
+    await service.commit_pending(second.refresh_id, second_publication.generation)
+    lagging_cache = CapabilityAnnotationPluginCache.from_json(shard.read_text(encoding="utf-8"))
+    assert lagging_cache.published_generation == first_publication.generation
+    assert writer.current_generation() == second_publication.generation
+
+    fail_cache_write = False
+    requests.clear()
+    restarted = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=RecordingClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+        published_generation_resolver=writer.current_generation,
+    )
+    recovered = await restarted.refresh(snapshot)
+
+    assert len(requests) == 1
+    assert requests[0].previous_annotation is not None
+    pending = restarted.get_pending("command:image")
+    assert pending is not None
+    assert pending.entries[0].search_terms == ("第二版别名",)
+    recovered_publication = writer.publish(snapshot, restarted.get_pending, recovered)
+    assert recovered_publication.generation == second_publication.generation
+    await restarted.commit_pending(recovered.refresh_id, recovered_publication.generation)
+    repaired_cache = CapabilityAnnotationPluginCache.from_json(shard.read_text(encoding="utf-8"))
+    assert repaired_cache.published_generation == second_publication.generation
+
+
+@pytest.mark.asyncio
+async def test_plugin_source_revision_change_regenerates_that_whole_plugin_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revisions = {
+        "plugin.a": "1" * 64,
+        "plugin.b": "1" * 64,
+    }
+
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, revisions[record.owner]),
+        )
+
+    calls: list[str] = []
+
+    class RecordingClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            calls.append(request.capability.capability_id)
+            return _output()
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations",
+        client_factory=RecordingClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    records = tuple(
+        replace(_record(capability_id, Disclosure.PUBLIC), owner=owner)
+        for owner, capability_id in (
+            ("plugin.a", "command:a-1"),
+            ("plugin.a", "command:a-2"),
+            ("plugin.b", "command:b-1"),
+        )
+    )
+    snapshot = CapabilitySnapshot.create(records)
+    first = await service.refresh(snapshot)
+    await _commit_refresh(service, first)
+    assert calls == ["command:a-1", "command:a-2", "command:b-1"]
+
+    calls.clear()
+    revisions["plugin.a"] = "2" * 64
+    second = await service.refresh(snapshot)
+
+    assert calls == ["command:a-1", "command:a-2"]
+    assert {item.unit_id: item.state for item in second.units} == {
+        "command:a-1": CapabilityTeachingUnitState.GENERATED,
+        "command:a-2": CapabilityTeachingUnitState.GENERATED,
+        "command:b-1": CapabilityTeachingUnitState.CACHED,
+    }
+
+    await _commit_refresh(service, second)
+
+    assert all(service.get(record.capability_id) is not None for record in records)
+
+
+@pytest.mark.asyncio
+async def test_final_source_recheck_discards_one_plugin_without_overwriting_its_shard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    drifting_plugins: set[str] = set()
+
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "3" * 64),
+        )
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    cache_directory = tmp_path / "annotations"
+    service = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=lambda: FakeCapabilityAnalysisClient(_output()),
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+        source_revision_validator=lambda module_name, _revision: (
+            module_name not in drifting_plugins
+        ),
+    )
+    records = tuple(
+        replace(_record(capability_id, Disclosure.PUBLIC), owner=owner)
+        for owner, capability_id in (
+            ("plugin.a", "command:a-1"),
+            ("plugin.a", "command:a-2"),
+            ("plugin.b", "command:b-1"),
+        )
+    )
+    snapshot = CapabilitySnapshot.create(records)
+    first = await service.refresh(snapshot)
+    await _commit_refresh(service, first)
+    plugin_a_cache = cache_directory / "plugin.a.json"
+    original_plugin_a_cache = plugin_a_cache.read_bytes()
+
+    drifting_plugins.add("plugin.a")
+    second = await service.refresh(snapshot, force=True)
+
+    units = {item.unit_id: item for item in second.units}
+    assert second.publishable is True
+    assert units["command:a-1"].state is CapabilityTeachingUnitState.STALE
+    assert units["command:a-2"].state is CapabilityTeachingUnitState.STALE
+    assert units["command:b-1"].state is CapabilityTeachingUnitState.GENERATED
+    assert service.get_pending("command:a-1") is None
+    assert service.get_pending("command:a-2") is None
+    assert service.get_pending("command:b-1") is not None
+
+    await _commit_refresh(service, second)
+
+    assert service.get("command:a-1") is None
+    assert service.get("command:a-2") is None
+    assert service.get("command:b-1") is not None
+    assert plugin_a_cache.read_bytes() == original_plugin_a_cache
+
+
+@pytest.mark.asyncio
+async def test_final_evidence_recheck_discards_only_changed_unit_and_retries_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    changed_evidence: set[str] = set()
+    calls: list[str] = []
+    validation_results: list[tuple[str, bool]] = []
+    change_during_analysis = False
+
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "5" * 64),
+        )
+
+    def validate_evidence(
+        request: CapabilityAnalysisRequest,
+        _manifest: tuple[CapabilityAnnotationEvidenceRef, ...],
+    ) -> bool:
+        capability_id = request.capability.capability_id
+        result = capability_id not in changed_evidence
+        validation_results.append((capability_id, result))
+        return result
+
+    class EvidenceChangingClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            capability_id = request.capability.capability_id
+            calls.append(capability_id)
+            if change_during_analysis and capability_id == "command:a":
+                changed_evidence.add(capability_id)
+            return CapabilityAnalysisOutput(
+                entries=_output().entries,
+                evidence_units=(
+                    CapabilityEvidenceUnit(
+                        "evidence:file:dependency",
+                        "approved_file_excerpt",
+                        "def acquire():\n    return check()\n",
+                        f"sha256:{'6' * 64}",
+                        f"python_purelib/{request.capability.owner}/dependency.py",
+                    ),
+                ),
+            )
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations",
+        client_factory=EvidenceChangingClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+        evidence_validator=validate_evidence,
+    )
+    records = tuple(
+        replace(_record(capability_id, Disclosure.PUBLIC), owner=owner)
+        for owner, capability_id in (
+            ("plugin.a", "command:a"),
+            ("plugin.b", "command:b"),
+        )
+    )
+    snapshot = CapabilitySnapshot.create(records)
+    first = await service.refresh(snapshot)
+    await _commit_refresh(service, first)
+
+    calls.clear()
+    validation_results.clear()
+    change_during_analysis = True
+    second = await service.refresh(snapshot, force=True)
+
+    a_results = [
+        result for capability_id, result in validation_results if capability_id == "command:a"
+    ]
+    units = {item.unit_id: item for item in second.units}
+    assert any(a_results)
+    assert a_results[-1] is False
+    assert second.publishable is True
+    assert second.generated_count == 1
+    assert second.failed_count == 1
+    assert units["command:a"].state is CapabilityTeachingUnitState.FAILED
+    assert units["command:a"].reason is CapabilityTeachingUnitReason.EVIDENCE_CHANGED
+    assert units["command:b"].state is CapabilityTeachingUnitState.GENERATED
+    assert service.get_pending("command:a") is None
+    assert service.get_pending("command:b") is not None
+    await _commit_refresh(service, second)
+
+    calls.clear()
+    changed_evidence.clear()
+    change_during_analysis = False
+    third = await service.refresh(snapshot)
+
+    assert calls == ["command:a"]
+    assert {item.unit_id: item.state for item in third.units} == {
+        "command:a": CapabilityTeachingUnitState.GENERATED,
+        "command:b": CapabilityTeachingUnitState.CACHED,
+    }
+
+
+@pytest.mark.parametrize(
+    "reason_code",
+    (
+        CapabilityModelAdapterReason.PROVIDER_IDENTITY,
+        CapabilityModelAdapterReason.SCHEMA,
+    ),
+)
+@pytest.mark.asyncio
+async def test_global_model_contract_failure_does_not_publish_earlier_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reason_code: CapabilityModelAdapterReason,
+) -> None:
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "4" * 64),
+        )
+
+    class StopAfterSuccessClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            if request.capability.capability_id == "command:b-stop":
+                raise CapabilityModelAdapterError(
+                    "private global contract detail",
+                    reason_code=reason_code,
+                )
+            return _output()
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    cache_directory = tmp_path / "annotations"
+    service = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=StopAfterSuccessClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    snapshot = CapabilitySnapshot.create(
+        tuple(
+            replace(_record(capability_id, Disclosure.PUBLIC), owner="plugin.contract")
+            for capability_id in ("command:a-success", "command:b-stop")
+        )
+    )
+
+    status = await service.refresh(snapshot)
+
+    assert status.publishable is False
+    assert status.global_failure_reason == reason_code.value
+    assert service.get("command:a-success") is None
+    assert service.get_pending("command:a-success") is None
+    assert not (cache_directory / "plugin.contract.json").exists()
+    with pytest.raises(RuntimeError, match="not publishable"):
+        await service.commit_pending(status.refresh_id, _PUBLISHED_GENERATION)
+    await service.discard_pending(status.refresh_id)
+    payload = json.loads((cache_directory / "plugin.contract.json").read_text(encoding="utf-8"))
+    assert payload["published_generation"] is None
+    assert set(payload["units"]) == {"command:b-stop"}
+    assert payload["units"]["command:b-stop"]["last_good"] is None
+    assert payload["units"]["command:b-stop"]["last_attempt"]["state"] == "failed"
+    assert payload["units"]["command:b-stop"]["last_attempt"]["reason"] == reason_code.value
+
+
+@pytest.mark.asyncio
+async def test_discarded_global_failure_is_retried_without_hiding_last_good(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    phase = "initial"
+    calls: list[str] = []
+
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "5" * 64),
+        )
+
+    class PhaseClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            calls.append(request.capability.capability_id)
+            if phase == "failure" and request.capability.capability_id == "command:a-fail":
+                raise CapabilityModelAdapterError(
+                    "private provider detail",
+                    reason_code=CapabilityModelAdapterReason.PROVIDER_IDENTITY,
+                )
+            return _output()
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    cache_directory = tmp_path / "annotations"
+    records = tuple(
+        replace(_record(capability_id, Disclosure.PUBLIC), owner="plugin.retry")
+        for capability_id in ("command:a-fail", "command:b-cached")
+    )
+    snapshot = CapabilitySnapshot.create(records)
+    service = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=PhaseClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    first = await service.refresh(snapshot)
+    await _commit_refresh(service, first)
+
+    phase = "failure"
+    calls.clear()
+    failed = await service.refresh(snapshot, force=True)
+    assert failed.publishable is False
+    assert calls == ["command:a-fail"]
+    await service.discard_pending(failed.refresh_id)
+    assert service.get("command:a-fail") is not None
+    assert service.get("command:b-cached") is not None
+
+    phase = "recovery"
+    calls.clear()
+    restarted = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=PhaseClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+        published_generation_resolver=lambda: _PUBLISHED_GENERATION,
+    )
+    recovered = await restarted.refresh(snapshot)
+
+    assert calls == ["command:a-fail"]
+    assert {item.unit_id: item.state for item in recovered.units} == {
+        "command:a-fail": CapabilityTeachingUnitState.GENERATED,
+        "command:b-cached": CapabilityTeachingUnitState.CACHED,
+    }
+    await _commit_refresh(restarted, recovered)
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "publishable"),
+    (
+        (CapabilityModelAdapterReason.BUDGET, True),
+        (CapabilityModelAdapterReason.PROVIDER_IDENTITY, False),
+    ),
+)
+@pytest.mark.asyncio
+async def test_disabled_last_good_remains_disabled_when_regeneration_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reason_code: CapabilityModelAdapterReason,
+    publishable: bool,
+) -> None:
+    failing = False
+
+    class DisabledThenFailingClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            del request
+            if failing:
+                raise CapabilityModelAdapterError(
+                    "private failure detail",
+                    reason_code=reason_code,
+                )
+            return CapabilityAnalysisOutput(knowledge_enabled=False)
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        lambda record, _policy, **_kwargs: _request(record.capability_id),
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations",
+        client_factory=DisabledThenFailingClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    snapshot = CapabilitySnapshot.create((_record("command:image", Disclosure.PUBLIC),))
+    first = await service.refresh(snapshot)
+    await _commit_refresh(service, first)
+
+    failing = True
+    status = await service.refresh(snapshot, force=True)
+
+    assert status.publishable is publishable
+    assert status.active_count == 0
+    assert status.cached_count == 0
+    assert status.disabled_count == 1
+    assert status.units[0].state is CapabilityTeachingUnitState.DISABLED
+    assert status.units[0].reason is not None
+    assert status.units[0].reason.value == reason_code.value
+    assert service.get("command:image") is None
+    if publishable:
+        await _commit_refresh(service, status)
+    else:
+        await service.discard_pending(status.refresh_id)
 
 
 @pytest.mark.asyncio
@@ -890,7 +2302,7 @@ async def test_annotations_run_plugins_concurrently_and_units_within_plugin_sequ
         return replace(
             _request(record.capability_id),
             capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
-            source_context=CapabilitySourceContext(record.owner, "sha256:source"),
+            source_context=CapabilitySourceContext(record.owner, "1" * 64),
         )
 
     monkeypatch.setattr(
@@ -1016,7 +2428,7 @@ async def test_failed_teaching_unit_log_has_safe_location_and_reason(
     private_text = "SECRET model output C:\\private\\plugin.py api_key=value"
     request = replace(
         _request(),
-        source_context=CapabilitySourceContext("plugin.image", "sha256:source"),
+        source_context=CapabilitySourceContext("plugin.image", "1" * 64),
     )
     monkeypatch.setattr(
         capability_annotations_module,
@@ -1030,7 +2442,7 @@ async def test_failed_teaching_unit_log_has_safe_location_and_reason(
         "uuid4",
         lambda: SimpleNamespace(hex="0123456789abcdef0123456789abcdef"),
     )
-    clock = iter((10.0, 20.0, 20.125))
+    clock = iter((10.0, 20.0, 30.0, 40.0, 40.125))
     monkeypatch.setattr(capability_annotations_module, "perf_counter", lambda: next(clock))
     service = CapabilityAnnotationService(
         tmp_path / "annotations.json",
@@ -1051,11 +2463,10 @@ async def test_failed_teaching_unit_log_has_safe_location_and_reason(
     assert status.failed_count == 1
     assert status.generated_count == 0
     assert logger.infos[0] == (
-        "NoneBot Triage 教学注释准备开始：refresh_id={}, snapshot_records={}, cached={}, scope={}",
+        "NoneBot Triage 教学注释准备开始：refresh_id={}, snapshot_records={}, scope={}",
         (
             "0123456789abcdef0123456789abcdef",
             1,
-            0,
             "all",
         ),
     )
@@ -1121,6 +2532,7 @@ async def test_disabled_parameterized_family_is_counted_separately(
         "nonebot_plugin_triage.capability_annotations.build_parameterized_family_analysis_request",
         lambda _records, _policy, **_kwargs: CapabilityAnalysisRequest(
             capability=CapabilityIdentity("family:image", "plugin.image", "command_family"),
+            source_context=CapabilitySourceContext("plugin.image", "3" * 64),
             evidence_units=_request().evidence_units,
             invocations=(
                 CapabilityInvocationTarget(

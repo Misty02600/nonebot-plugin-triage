@@ -333,8 +333,14 @@ def _annotation_description(annotation: CapabilityTeachingEntry) -> str:
     clauses.extend(
         item.text
         for item in annotation.requirements
+        if item.kind is SemanticConstraintKind.ROLE and item.role is TeachingRole.CUSTOM
+    )
+    if any(item.kind is SemanticConstraintKind.ACCESS for item in annotation.requirements):
+        clauses.append("需授权")
+    clauses.extend(
+        item.text
+        for item in annotation.requirements
         if item.kind is SemanticConstraintKind.RATE_LIMIT
-        or (item.kind is SemanticConstraintKind.ROLE and item.role is TeachingRole.CUSTOM)
     )
     return _join_clauses(tuple(clauses), max_length=400)
 
@@ -350,10 +356,9 @@ def _required_role(annotation: CapabilityTeachingEntry) -> TeachingRole | None:
     if TeachingRole.CUSTOM in roles:
         return TeachingRole.CUSTOM
     rank = {
-        TeachingRole.ALL: 0,
-        TeachingRole.ADMIN: 1,
-        TeachingRole.OWNER: 2,
-        TeachingRole.SUPERUSER: 3,
+        TeachingRole.ADMIN: 0,
+        TeachingRole.OWNER: 1,
+        TeachingRole.SUPERUSER: 2,
     }
     return min(roles, key=rank.__getitem__)
 

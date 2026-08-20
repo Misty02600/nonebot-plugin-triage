@@ -6,7 +6,7 @@ import sqlite3
 from collections.abc import Callable, Collection
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -33,9 +33,17 @@ from nbtriage.capabilities import (
     SourceRevision,
     search_capability_index,
 )
+from nbtriage.capability_annotations import (
+    CapabilityTeachingAnnotation,
+    CapabilityTeachingEntry,
+)
 from nbtriage.capability_deployment import (
     CapabilityDeployment,
     build_capability_deployment,
+)
+from nonebot_plugin_triage.capability_annotations import (
+    CapabilityAnnotationRefreshStatus,
+    CapabilityAnnotationService,
 )
 from nonebot_plugin_triage.capability_shadow import (
     CapabilityShadowService,
@@ -45,6 +53,10 @@ from nonebot_plugin_triage.capability_shadow import (
     format_maintainer_capability_guidance,
     format_public_capability_guidance,
     register_capability_shadow,
+)
+from nonebot_plugin_triage.capability_teaching_outputs import (
+    CapabilityTeachingOutputError,
+    CapabilityTeachingOutputWriter,
 )
 
 
@@ -240,6 +252,63 @@ async def test_startup_callback_schedules_refresh_without_waiting_for_scan(
     await asyncio.wait_for(started.wait(), timeout=1)
     release.set()
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_manual_nonpublishable_teaching_refresh_preserves_last_good_view(
+    tmp_path: Path,
+) -> None:
+    class ExistingAnnotationView:
+        def __init__(self) -> None:
+            self.active = True
+
+        async def refresh(
+            self,
+            _snapshot: CapabilitySnapshot,
+            *,
+            plugin_module: str | None = None,
+            force: bool = False,
+        ) -> CapabilityAnnotationRefreshStatus:
+            assert plugin_module is None
+            assert force is True
+            return CapabilityAnnotationRefreshStatus(
+                refresh_id="refresh-failed",
+                global_failure_reason="provider_identity",
+            )
+
+        def get(self, _capability_id: str):
+            return object() if self.active else None
+
+        def get_pending(self, _capability_id: str):
+            return None
+
+        async def discard_pending(self, refresh_id: str | None) -> None:
+            assert refresh_id == "refresh-failed"
+
+        async def commit_pending(
+            self,
+            _refresh_id: str | None,
+            _published_generation: str,
+        ) -> None:
+            raise AssertionError("non-publishable refresh must not be committed")
+
+    class RejectingWriter:
+        def publish(self, *_args: object, **_kwargs: object) -> object:
+            raise CapabilityTeachingOutputError("teaching refresh is not publishable")
+
+    annotations = ExistingAnnotationView()
+    service = _service(
+        tmp_path / "capabilities.sqlite3",
+        snapshot_builder=lambda **_: _snapshot("command:image"),
+        annotation_service=cast(CapabilityAnnotationService, annotations),
+        teaching_output_writer=cast(CapabilityTeachingOutputWriter, RejectingWriter()),
+    )
+
+    with pytest.raises(CapabilityTeachingOutputError, match="not publishable"):
+        await service.refresh_teaching()
+
+    assert annotations.active is True
+    assert annotations.get("command:image") is not None
 
 
 def test_refresh_forwards_current_public_declarations_and_indexes_snapshot(
@@ -939,6 +1008,212 @@ def test_public_guidance_request_projects_matching_plugin_metadata_usage() -> No
     assert "MUST_NOT_APPEAR" not in request.model_dump_json()
 
 
+def test_public_guidance_combines_exact_matcher_with_shared_family_knowledge() -> None:
+    records = tuple(
+        CapabilityRecord(
+            capability_id=capability_id,
+            owner="meme-plugin",
+            kind="command",
+            disclosure=Disclosure.PUBLIC,
+            state=RecordState.VERIFIED,
+            platform_scope=PlatformScope.all(),
+            claims=(
+                Claim("command.header", header, ClaimBasis.OBSERVED),
+                Claim(
+                    "command.arguments",
+                    [
+                        {
+                            "name": "图片",
+                            "required": True,
+                            "hidden": False,
+                            "variadic": False,
+                            "has_default": False,
+                        }
+                    ],
+                    ClaimBasis.OBSERVED,
+                ),
+            ),
+        )
+        for capability_id, header in (
+            ("command:touch", "摸摸"),
+            ("command:kiss", "亲亲"),
+        )
+    )
+    family = CapabilityTeachingAnnotation(
+        capability_id="family:meme",
+        request_fingerprint="1" * 64,
+        entries=(
+            CapabilityTeachingEntry(
+                entry_id="family",
+                name="图片互动",
+                summary="使用图片互动模板生成图片。",
+                usages=("(摸摸|亲亲) [图片]",),
+            ),
+        ),
+    )
+
+    request = build_public_guidance_request(
+        "摸摸怎么用？",
+        PublicCapabilitySearch(
+            hits=tuple(
+                CapabilitySearchHit(record=record, score=100.0 - index)
+                for index, record in enumerate(records)
+            ),
+            partial=False,
+            annotations=(family, family),
+            annotation_capability_ids=tuple(record.capability_id for record in records),
+            exact_member_capability_ids=("command:touch", "command:kiss"),
+        ),
+    )
+
+    assert request is not None
+    usages = [fact.text for fact in request.facts if fact.field.value == "usage"]
+    assert usages == ["摸摸 <图片>", "亲亲 <图片>"]
+
+
+@pytest.mark.parametrize(("member_count", "expected_count"), [(3, 3), (4, 1)])
+def test_runtime_family_enumeration_stops_after_three_members(
+    member_count: int,
+    expected_count: int,
+) -> None:
+    import nonebot_plugin_triage.capability_shadow as capability_shadow_module
+
+    records = tuple(
+        CapabilityRecord(
+            capability_id=f"command:member-{index}",
+            owner="meme-plugin",
+            kind="command",
+            disclosure=Disclosure.PUBLIC,
+            state=RecordState.VERIFIED,
+            platform_scope=PlatformScope.all(),
+            claims=(Claim("command.header", f"操作{index}", ClaimBasis.OBSERVED),),
+        )
+        for index in range(member_count)
+    )
+    family = CapabilityTeachingAnnotation(
+        capability_id="family:meme",
+        request_fingerprint="2" * 64,
+        entries=(
+            CapabilityTeachingEntry(
+                entry_id="family",
+                name="图片操作",
+                summary="使用已注册的图片操作生成结果。",
+                usages=("<操作> [图片]",),
+            ),
+        ),
+    )
+
+    hits = capability_shadow_module._expand_small_annotation_family(
+        [CapabilitySearchHit(record=records[0], score=100.0)],
+        records,
+        lambda _capability_id: family,
+        adapter_type=object,
+        limit=5,
+    )
+
+    assert len(hits) == expected_count
+
+
+def test_family_search_candidates_are_deduplicated_without_merging_plugins() -> None:
+    import nonebot_plugin_triage.capability_shadow as capability_shadow_module
+
+    records = tuple(
+        CapabilityRecord(
+            capability_id=capability_id,
+            owner=owner,
+            kind="command",
+            disclosure=Disclosure.PUBLIC,
+            state=RecordState.VERIFIED,
+            platform_scope=PlatformScope.all(),
+            claims=(Claim("command.header", header, ClaimBasis.OBSERVED),),
+        )
+        for capability_id, owner, header in (
+            ("command:a-touch", "plugin-a", "摸摸"),
+            ("command:a-kiss", "plugin-a", "亲亲"),
+            ("command:b-sticker", "plugin-b", "表情搜索"),
+        )
+    )
+    family_a = CapabilityTeachingAnnotation(
+        capability_id="family:a",
+        request_fingerprint="a" * 64,
+        entries=(
+            CapabilityTeachingEntry(
+                "family", name="表情操作", summary="图片互动", usages=("<表情操作> [图片|文字]...",)
+            ),
+        ),
+    )
+    family_b = CapabilityTeachingAnnotation(
+        capability_id="family:b",
+        request_fingerprint="b" * 64,
+        entries=(
+            CapabilityTeachingEntry(
+                "family", name="表情搜索", summary="搜索表情", usages=("表情搜索 <关键词>",)
+            ),
+        ),
+    )
+    annotations = {
+        "command:a-touch": family_a,
+        "command:a-kiss": family_a,
+        "command:b-sticker": family_b,
+    }
+
+    collapsed = capability_shadow_module._collapse_annotation_families(
+        [
+            CapabilitySearchHit(record=records[0], score=10.0),
+            CapabilitySearchHit(record=records[1], score=9.0),
+            CapabilitySearchHit(record=records[2], score=8.0),
+        ],
+        annotations.get,
+    )
+
+    assert [item.record.capability_id for item in collapsed] == [
+        "command:a-touch",
+        "command:b-sticker",
+    ]
+    assert capability_shadow_module._query_exactly_selects_member("摸摸怎么用", records[0])
+    assert not capability_shadow_module._query_exactly_selects_member("有哪些表情", records[0])
+
+
+@pytest.mark.parametrize("query", ["表情操作", "图片或文字"])
+def test_family_name_and_summary_can_recall_one_runtime_member(query: str) -> None:
+    import nonebot_plugin_triage.capability_shadow as capability_shadow_module
+
+    records = tuple(
+        CapabilityRecord(
+            capability_id=f"command:member-{index}",
+            owner="meme-plugin",
+            kind="command",
+            disclosure=Disclosure.PUBLIC,
+            state=RecordState.VERIFIED,
+            platform_scope=PlatformScope.all(),
+            claims=(Claim("command.header", header, ClaimBasis.OBSERVED),),
+        )
+        for index, header in enumerate(("摸摸", "亲亲"))
+    )
+    family = CapabilityTeachingAnnotation(
+        capability_id="family:meme",
+        request_fingerprint="c" * 64,
+        entries=(
+            CapabilityTeachingEntry(
+                "family",
+                name="表情操作",
+                summary="使用图片或文字生成互动表情。",
+                usages=("<表情操作> [图片|文字]...",),
+            ),
+        ),
+    )
+
+    augmented = capability_shadow_module._augment_hits_with_annotation_terms(
+        [],
+        records,
+        query,
+        lambda _capability_id: family,
+        limit=5,
+    )
+
+    assert [item.record.capability_id for item in augmented] == ["command:member-0"]
+
+
 @pytest.mark.parametrize(
     "basis",
     [ClaimBasis.DECLARED, ClaimBasis.DOCUMENTED, ClaimBasis.INFERRED],
@@ -1236,7 +1511,6 @@ async def test_public_search_returns_safely_projectable_trigger(tmp_path: Path) 
     ("factory_basis", "entries"),
     [
         (ClaimBasis.INFERRED, ["提醒"]),
-        (ClaimBasis.OBSERVED, ["@everyone"]),
         (ClaimBasis.OBSERVED, ["第一行\n第二行"]),
         (ClaimBasis.OBSERVED, ["x" * 97]),
         (ClaimBasis.OBSERVED, [str(index) for index in range(17)]),
@@ -1268,6 +1542,30 @@ def test_public_guidance_rejects_untrusted_or_lossy_trigger_projection(
         )
         == ""
     )
+
+
+def test_public_guidance_preserves_plain_at_trigger() -> None:
+    record = CapabilityRecord(
+        capability_id="message:plain-at-trigger",
+        owner="listener-plugin",
+        kind="message",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim("trigger.factory", "on_keyword", ClaimBasis.OBSERVED),
+            Claim("trigger.entries", ["@everyone"], ClaimBasis.OBSERVED),
+        ),
+    )
+
+    message = format_public_capability_guidance(
+        PublicCapabilitySearch(
+            hits=(CapabilitySearchHit(record=record, score=100.0),),
+            partial=False,
+        )
+    )
+
+    assert "关键词：@everyone" in message
 
 
 @pytest.mark.asyncio
@@ -1392,7 +1690,7 @@ def test_maintainer_guidance_marks_analysis_issues_and_opaque_constraints() -> N
     assert "--purge" not in message
 
 
-def test_maintainer_guidance_neutralizes_mentions_and_control_characters() -> None:
+def test_maintainer_guidance_preserves_plain_at_text_and_removes_control_characters() -> None:
     record = CapabilityRecord(
         capability_id="command:unsafe-text",
         owner="＠plugin\u202eowner",
@@ -1413,11 +1711,10 @@ def test_maintainer_guidance_neutralizes_mentions_and_control_characters() -> No
         )
     )
 
-    assert "@" not in message
     assert "\u202e" not in message
-    assert "＠everyone" in message
-    assert "＠here" in message
-    assert "索引记录的候选用法：搜图 ＠everyone" in message
+    assert "@everyone" in message
+    assert "@here" in message
+    assert "索引记录的候选用法：搜图 @everyone" in message
 
 
 def test_maintainer_guidance_prefers_stronger_field_evidence() -> None:

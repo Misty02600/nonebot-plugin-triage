@@ -59,8 +59,10 @@ async def test_shadow_guidance_uses_answer_agent_output(monkeypatch: pytest.Monk
                         name="搜图",
                         summary="根据图片查找相似内容。",
                         usages=("[回复图片] 搜图",),
-                        input_requirements=("回复一张图片后发送搜图。",),
-                        behavior_boundaries=("没有图片时不会开始搜索。",),
+                        behavior_boundaries=(
+                            "回复一张图片后发送搜图。",
+                            "没有图片时不会开始搜索。",
+                        ),
                     ),
                 ),
             ),

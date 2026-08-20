@@ -983,7 +983,10 @@ async def handle_refresh_help(plugin_module: Match[str]) -> None:
         UniMessage.text(
             f"帮助刷新完成：{scope}；新生成 {result.generated_count}，"
             f"复用 {result.cached_count}，关闭 {result.disabled_count}，"
-            f"跳过 {result.skipped_count}；参数化能力族 {result.family_eligible_count}，"
+            f"失败 {result.failed_count}，跳过 {result.skipped_count}，"
+            f"过期 {result.stale_count}；教学信息 {result.active_count}/"
+            f"{result.unit_count} 可用；"
+            f"参数化能力族 {result.family_eligible_count}，"
             f"其中关闭 {result.family_disabled_count}，失败 {result.family_failed_count}。"
         )
     )

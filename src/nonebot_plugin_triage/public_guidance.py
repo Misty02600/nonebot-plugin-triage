@@ -63,8 +63,6 @@ class PublicGuidanceService:
             allowed_fact_ids = {fact.fact_id for fact in canonical.facts}
             if not set(answer.cited_fact_ids).issubset(allowed_fact_ids):
                 return _failed(PublicGuidanceExecutionStatus.INVALID_OUTPUT)
-            if "@" in answer.answer:
-                answer = answer.model_copy(update={"answer": answer.answer.replace("@", "＠")})
             return PublicGuidanceOutcome(PublicGuidanceExecutionStatus.COMPLETED, answer)
         except PublicGuidanceContractError:
             return _failed(PublicGuidanceExecutionStatus.INVALID_OUTPUT)

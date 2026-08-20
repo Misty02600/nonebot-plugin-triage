@@ -65,6 +65,21 @@ def test_public_guidance_service_returns_grounded_answer() -> None:
     assert client.requests == [_request()]
 
 
+def test_public_guidance_service_preserves_plain_at_text() -> None:
+    answer = PublicGuidanceAnswer(
+        schema_version=PUBLIC_GUIDANCE_SCHEMA_VERSION,
+        answer="如果要提醒 @审核员，可以直接这样写。",
+        cited_fact_ids=("f2",),
+    )
+
+    outcome = asyncio.run(
+        PublicGuidanceService(lambda: _Client(answer), timeout_seconds=1).answer(_request())
+    )
+
+    assert outcome.execution_status is PublicGuidanceExecutionStatus.COMPLETED
+    assert outcome.answer == answer
+
+
 def test_public_guidance_service_rejects_unknown_citation() -> None:
     client = _Client(
         PublicGuidanceAnswer(

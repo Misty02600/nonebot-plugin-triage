@@ -6,6 +6,7 @@ import json
 import keyword
 import sys
 import textwrap
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
@@ -16,6 +17,7 @@ from nbtriage.capabilities import CapabilityRecord, ClaimBasis, Disclosure
 from nbtriage.capability_analysis import (
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
+    CapabilityFamilyMember,
     CapabilityGateCandidate,
     CapabilityGateKind,
     CapabilityIdentity,
@@ -23,13 +25,16 @@ from nbtriage.capability_analysis import (
     CapabilityInvocationTarget,
     CapabilitySourceContext,
     ConfigProjection,
+    SemanticConstraint,
     UnknownConfigReference,
 )
 from nbtriage.capability_source_evidence import (
     CapabilitySourceEvidenceError,
     CapabilitySourceEvidencePack,
+    PermissionConstraintFact,
     RegistrationAnchor,
     SourceSpan,
+    StructuralSymbolFact,
     StructuralSymbolKind,
     build_capability_source_evidence,
     fixed_permission_constraints,
@@ -37,6 +42,17 @@ from nbtriage.capability_source_evidence import (
 from nbtriage.framework_semantics import (
     PermissionSemanticProfile,
     uninfo_permission_profile,
+)
+from nbtriage.readonly_tools import (
+    DefinitionLocation,
+    DefinitionNavigator,
+    GoToDefinitionRequest,
+    PythonNavigationError,
+    PythonNavigationProfile,
+    ReadOnlyRoot,
+    ReadOnlyTaskProfile,
+    ReadOnlyToolsError,
+    teaching_read_only_policy,
 )
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
 from nonebot_plugin_triage.runtime_config_evidence import (
@@ -53,11 +69,20 @@ _MAX_CONFIG_REFERENCES = 64
 _MAX_FILE_CHARS = 1_000_000
 _MAX_AST_NODES = 50_000
 _MAX_FUNCTION_CHARS = 8_000
-_MAX_TOTAL_EVIDENCE_CHARS = 32_000
+_MAX_INITIAL_SOURCE_CHARS = 32_000
+_MAX_SOURCE_SLICE_DEPTH = 3
 
 
 class CapabilityAnalysisAdapterError(ValueError):
     pass
+
+
+class CapabilitySourceSliceCache:
+    """复用由源码 revision 与函数定义身份绑定的确定性切片结果。"""
+
+    def __init__(self) -> None:
+        self._functions: dict[_SourceSliceCacheKey, _FunctionSlice] = {}
+        self._definitions: dict[_CallSite, DefinitionLocation | None] = {}
 
 
 class AnalysisSourcePolicy(StrEnum):
@@ -97,6 +122,54 @@ class _ResolvedAnalysisTarget:
     content: str
     source: SourceSpan
     handler_identity: HandlerCodeIdentity | None
+
+
+@dataclass(frozen=True)
+class _CallSite:
+    relative_path: str
+    line: int
+    column: int
+    source_revision: str
+    terminal_name: str | None
+
+
+@dataclass(frozen=True)
+class _FunctionSlice:
+    relative_path: str
+    name: str
+    full_name: str | None
+    line: int
+    content: str
+    source_revision: str
+    calls: tuple[_CallSite, ...]
+
+    @property
+    def identity(self) -> tuple[str, int]:
+        return self.relative_path, self.line
+
+
+@dataclass(frozen=True)
+class _SourceSliceCacheKey:
+    relative_path: str
+    line: int
+    column: int
+    name: str
+    source_revision: str
+
+
+@dataclass(frozen=True)
+class _SourceSliceNavigation:
+    navigator: DefinitionNavigator
+    root: ReadOnlyRoot
+
+
+@dataclass(frozen=True)
+class _FamilyGateProjection:
+    registrations: tuple[RegistrationAnchor, ...] = ()
+    gate_symbols: tuple[StructuralSymbolFact, ...] = ()
+    fixed_facts: tuple[PermissionConstraintFact, ...] = ()
+    evidence: CapabilityEvidenceUnit | None = None
+    requires_mention: bool = False
 
 
 @dataclass(frozen=True)
@@ -149,12 +222,54 @@ class ParameterizedHandlerCodeIdentity(HandlerCodeIdentity):
         return f"family:{digest}"
 
 
+def plugin_source_revision_matches(
+    module_name: str,
+    expected_plugin_source_revision: str,
+) -> bool:
+    """重新扫描已加载插件源码并核对完整源码 revision。
+
+    本函数不复用分析阶段的 Evidence Pack 缓存，因此新增、删除或修改的 Python
+    源文件都会进入本次核对。无法取得完整源码清单时拒绝给出匹配结论。
+
+    Args:
+        module_name: 已加载插件的根模块名。
+        expected_plugin_source_revision: 分析请求绑定的插件源码 SHA-256 revision。
+
+    Returns:
+        当前完整源码 revision 是否仍与预期一致。
+
+    Raises:
+        CapabilityAnalysisAdapterError: 输入无效，或当前源码无法被完整、可靠地扫描。
+    """
+    if not isinstance(module_name, str) or not module_name:
+        raise CapabilityAnalysisAdapterError("module_name must be a loaded plugin module")
+    if not (
+        isinstance(expected_plugin_source_revision, str)
+        and len(expected_plugin_source_revision) == 64
+        and all(character in "0123456789abcdef" for character in expected_plugin_source_revision)
+    ):
+        raise CapabilityAnalysisAdapterError(
+            "expected_plugin_source_revision must be a lowercase SHA-256 digest"
+        )
+
+    source_pack = _source_evidence_pack(
+        module_name,
+        _plugin_source_root(module_name),
+        cache=None,
+        permission_semantic_profiles=_permission_semantic_profiles(),
+    )
+    if not _source_inventory_complete(source_pack.partial_errors):
+        raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
+    return source_pack.source_revision == expected_plugin_source_revision
+
+
 def build_capability_analysis_request(
     record: CapabilityRecord,
     policy: ConfigValuePolicy,
     *,
     source_policy: AnalysisSourcePolicy = AnalysisSourcePolicy.STANDARD,
     source_pack_cache: dict[str, CapabilitySourceEvidencePack] | None = None,
+    source_slice_cache: CapabilitySourceSliceCache | None = None,
     permission_semantic_profiles: tuple[PermissionSemanticProfile, ...] | None = None,
 ) -> CapabilityAnalysisRequest:
     """从运行时能力记录装配确定性 Evidence Pack 与工具准入上下文。
@@ -168,6 +283,7 @@ def build_capability_analysis_request(
         policy: 部署者配置的配置值限制策略。
         source_policy: 源码准入策略；只有维护者明确授权的本地诊断才能读取受限能力源码。
         source_pack_cache: 同一插件多条能力共享的进程内源码结构缓存。
+        source_slice_cache: 按源码 revision 与函数定义身份复用的进程内切片缓存。
         permission_semantic_profiles: Triage 维护的稳定便捷权限语义；省略时使用内置语义表。
 
     Returns:
@@ -225,18 +341,24 @@ def build_capability_analysis_request(
         source_pack,
         handler_sources,
     )
-    registration_sources = {
-        item.source for item in _selected_registrations(record, source_pack, handler_sources)
-    }
+    selected_registrations = _selected_registrations(record, source_pack, handler_sources)
+    registration_sources = {item.source for item in selected_registrations}
+    gate_symbols = _unresolved_gate_symbols(
+        source_pack,
+        selected_registrations,
+        invocations,
+    )
+    gate_names = frozenset(item.symbol.rpartition(".")[2] for item in gate_symbols)
     evidence_units: list[CapabilityEvidenceUnit] = [
         _runtime_fact_evidence(record),
         structure_evidence,
     ]
     accepted_targets: set[tuple[str, str]] = set()
-    total_chars = sum(len(item.content) for item in evidence_units)
+    accepted_resolved_targets: list[_ResolvedAnalysisTarget] = []
+    source_chars = 0
 
     for target in resolved_targets:
-        if total_chars + len(target.content) > _MAX_TOTAL_EVIDENCE_CHARS:
+        if source_chars + len(target.content) > _MAX_INITIAL_SOURCE_CHARS:
             if target.handler_identity is not None:
                 raise CapabilityAnalysisAdapterError(
                     "capability has no readable bounded handler evidence"
@@ -260,11 +382,29 @@ def build_capability_analysis_request(
                 locator=locator,
             )
         )
-        total_chars += len(target.content)
+        source_chars += len(target.content)
         accepted_targets.add((reference.module, reference.function))
+        accepted_resolved_targets.append(target)
 
     if not accepted_targets:
         raise CapabilityAnalysisAdapterError("capability has no readable bounded handler evidence")
+
+    _append_bounded_source_slices(
+        evidence_units,
+        analysis_unit_id=record.capability_id,
+        module_root=module_root,
+        source_root=source_root,
+        parsed_modules=parsed_modules,
+        seeds=tuple(accepted_resolved_targets),
+        gate_registrations=selected_registrations,
+        gate_names=gate_names,
+        priority_names=gate_names | _source_symbol_names(source_pack, handler_sources),
+        source_file_revisions={
+            item.source.locator: item.source.digest for item in source_pack.files
+        },
+        source_chars=source_chars,
+        cache=source_slice_cache,
+    )
 
     projections, unknown = _project_referenced_config(
         config_references,
@@ -296,9 +436,8 @@ def build_capability_analysis_request(
         ),
         invocations=invocations,
         gate_candidates=_gate_candidates(
-            record,
-            source_pack,
-            handler_sources,
+            selected_registrations,
+            gate_symbols,
             invocations,
             structure_evidence,
         ),
@@ -339,6 +478,7 @@ def build_parameterized_family_analysis_request(
     policy: ConfigValuePolicy,
     *,
     source_pack_cache: dict[str, CapabilitySourceEvidencePack] | None = None,
+    source_slice_cache: CapabilitySourceSliceCache | None = None,
     permission_semantic_profiles: tuple[PermissionSemanticProfile, ...] | None = None,
 ) -> CapabilityAnalysisRequest:
     """把执行同一段闭包 Handler 代码的公开 Runtime Matcher 合并分析。"""
@@ -382,29 +522,34 @@ def build_parameterized_family_analysis_request(
     if handler is None:
         raise CapabilityAnalysisAdapterError("parameterized handler source is ambiguous")
     content = _function_source(parsed.source, handler)
-    if content is None or len(content) > _MAX_FUNCTION_CHARS:
+    handler_source = _function_source_span(parsed, handler)
+    if content is None or handler_source is None or len(content) > _MAX_FUNCTION_CHARS:
         raise CapabilityAnalysisAdapterError("parameterized handler source is unavailable")
 
-    evidence_units = [
-        CapabilityEvidenceUnit(
-            evidence_id=_evidence_id(
-                identity.analysis_unit_id,
-                identity.module,
-                identity.qualname,
-            ),
-            source_kind="python_function",
-            content=content,
-            revision=identity.source_revision,
-            locator=_module_locator(
-                identity.module,
-                identity.qualname,
-                identity.firstlineno,
-            ),
-        )
-    ]
+    gate_projection = _family_gate_projection(
+        records,
+        source_pack,
+        (handler_source,),
+    )
+    family_members, member_evidence = _family_member_invocations(
+        records,
+        source_pack,
+        (handler_source,),
+    )
+    family_invocations = (
+        CapabilityInvocationTarget(
+            entry_id="family",
+            mode=CapabilityInvocationMode.COMPLETE,
+            requires_mention=gate_projection.requires_mention,
+        ),
+    )
+    evidence_units: list[CapabilityEvidenceUnit] = []
     declared = _declared_teaching_evidence(representative, identity.analysis_unit_id)
     if declared is not None:
-        evidence_units.insert(0, declared)
+        evidence_units.append(declared)
+    if gate_projection.evidence is not None:
+        evidence_units.append(gate_projection.evidence)
+    evidence_units.extend(member_evidence)
 
     config_references = tuple(
         {
@@ -414,20 +559,96 @@ def build_parameterized_family_analysis_request(
         }.values()
     )
     parsed_modules: dict[str, _ParsedModule] = {identity.module: parsed}
+    handler_reference = next(
+        (
+            reference
+            for reference in _handler_references(representative)
+            if reference.qualname == identity.qualname
+            and reference.code_firstlineno == identity.firstlineno
+            and reference.source_revision == identity.source_revision
+        ),
+        None,
+    )
+    if handler_reference is None:
+        raise CapabilityAnalysisAdapterError("parameterized handler source is unavailable")
+    resolved_handler = _ResolvedAnalysisTarget(
+        reference=handler_reference,
+        content=content,
+        source=handler_source,
+        handler_identity=identity,
+    )
+    config_targets = _analysis_targets(identity.module_root, (), config_references)
+    resolved_config_targets = _resolve_analysis_targets(
+        config_targets,
+        module_root=identity.module_root,
+        source_root=source_root,
+        parsed_modules=parsed_modules,
+    )
+    resolved_targets = (resolved_handler, *resolved_config_targets)
     accepted_targets: set[tuple[str, str]] = set()
-    for reference in config_references:
-        target_module = parsed_modules.get(reference.module)
-        if target_module is None:
-            target_module = _load_parsed_module(
-                reference.module,
-                identity.module_root,
-                source_root,
+    accepted_resolved_targets: list[_ResolvedAnalysisTarget] = []
+    accepted_source_spans: set[tuple[str, int, int, str]] = set()
+    source_chars = 0
+    for target in resolved_targets:
+        source_key = (
+            target.source.locator,
+            target.source.line,
+            target.source.end_line,
+            target.source.digest,
+        )
+        if source_key in accepted_source_spans:
+            continue
+        if source_chars + len(target.content) > _MAX_INITIAL_SOURCE_CHARS:
+            if target.handler_identity is not None:
+                raise CapabilityAnalysisAdapterError("parameterized handler source is unavailable")
+            break
+        reference = target.reference
+        symbol = reference.qualname or reference.function
+        source_position = reference.code_firstlineno or target.source.line
+        evidence_units.append(
+            CapabilityEvidenceUnit(
+                evidence_id=_evidence_id(
+                    identity.analysis_unit_id,
+                    reference.module,
+                    f"{symbol}@{source_position}",
+                ),
+                source_kind="python_function",
+                content=target.content,
+                revision=reference.source_revision,
+                locator=_module_locator(reference.module, symbol, source_position),
             )
-            if target_module is None:
-                continue
-            parsed_modules[reference.module] = target_module
-        if target_module.revision == reference.source_revision:
-            accepted_targets.add((reference.module, reference.function))
+        )
+        accepted_source_spans.add(source_key)
+        accepted_resolved_targets.append(target)
+        accepted_targets.add((reference.module, reference.function))
+        source_chars += len(target.content)
+
+    source_file_revisions = {item.source.locator: item.source.digest for item in source_pack.files}
+    gate_names = frozenset(item.symbol.rpartition(".")[2] for item in gate_projection.gate_symbols)
+    active_source_slice_cache = source_slice_cache or CapabilitySourceSliceCache()
+    _validate_common_family_gate_definitions(
+        module_root=identity.module_root,
+        source_root=source_root,
+        parsed_modules=parsed_modules,
+        registrations=gate_projection.registrations,
+        gate_names=gate_names,
+        source_file_revisions=source_file_revisions,
+        cache=active_source_slice_cache,
+    )
+    _append_bounded_source_slices(
+        evidence_units,
+        analysis_unit_id=identity.analysis_unit_id,
+        module_root=identity.module_root,
+        source_root=source_root,
+        parsed_modules=parsed_modules,
+        seeds=tuple(accepted_resolved_targets),
+        gate_registrations=gate_projection.registrations,
+        gate_names=gate_names,
+        priority_names=gate_names | _source_symbol_names(source_pack, (handler_source,)),
+        source_file_revisions=source_file_revisions,
+        source_chars=source_chars,
+        cache=active_source_slice_cache,
+    )
     projections, unknown = _project_referenced_config(
         config_references,
         accepted_targets=accepted_targets,
@@ -448,12 +669,428 @@ def build_parameterized_family_analysis_request(
         evidence_units=tuple(evidence_units),
         config_projections=projections,
         unknown_config=unknown,
-        invocations=(
-            CapabilityInvocationTarget(
-                entry_id="family",
-                mode=CapabilityInvocationMode.COMPLETE,
+        fixed_constraints=_family_fixed_constraints(gate_projection),
+        invocations=family_invocations,
+        family_members=family_members,
+        gate_candidates=_family_gate_candidates(gate_projection, family_invocations),
+    )
+
+
+def _family_member_invocations(
+    records: tuple[CapabilityRecord, ...],
+    pack: CapabilitySourceEvidencePack,
+    handler_sources: tuple[SourceSpan, ...],
+) -> tuple[tuple[CapabilityFamilyMember, ...], tuple[CapabilityEvidenceUnit, ...]]:
+    projected: list[tuple[str, tuple[CapabilityInvocationTarget, ...], dict[str, object]]] = []
+    for record in sorted(records, key=lambda item: item.capability_id):
+        invocations = _invocation_targets(record, pack, handler_sources)
+        payload = {
+            "capability_id": record.capability_id,
+            "invocations": [_invocation_payload(item) for item in invocations],
+            "claims": _runtime_fact_claims(record),
+            "constraints": [
+                {
+                    "kind": item.kind,
+                    "operation": item.operation,
+                    "evaluability": item.evaluability.value,
+                    "payload": item.payload,
+                }
+                for item in record.constraints
+            ],
+        }
+        projected.append((record.capability_id, invocations, payload))
+
+    chunks: list[list[tuple[str, tuple[CapabilityInvocationTarget, ...], dict[str, object]]]] = []
+    current: list[tuple[str, tuple[CapabilityInvocationTarget, ...], dict[str, object]]] = []
+    for item in projected:
+        candidate = [*current, item]
+        try:
+            _bounded_evidence_json(
+                {
+                    "scope": "current_runtime_family_members",
+                    "members": [row[2] for row in candidate],
+                },
+                "parameterized family member facts",
+            )
+        except CapabilityAnalysisAdapterError:
+            if not current:
+                raise
+            chunks.append(current)
+            current = [item]
+            _bounded_evidence_json(
+                {"scope": "current_runtime_family_members", "members": [item[2]]},
+                "parameterized family member facts",
+            )
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+
+    evidence_units: list[CapabilityEvidenceUnit] = []
+    evidence_by_member: dict[str, str] = {}
+    for chunk in chunks:
+        content = _bounded_evidence_json(
+            {"scope": "current_runtime_family_members", "members": [item[2] for item in chunk]},
+            "parameterized family member facts",
+        )
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        evidence_id = f"evidence:family-members:{digest}"
+        evidence_units.append(
+            CapabilityEvidenceUnit(
+                evidence_id=evidence_id,
+                source_kind="runtime_family_members",
+                content=content,
+                revision=f"sha256:{digest}",
+            )
+        )
+        evidence_by_member.update((item[0], evidence_id) for item in chunk)
+
+    members = tuple(
+        CapabilityFamilyMember(
+            capability_id=capability_id,
+            invocations=invocations,
+            evidence_ids=(evidence_by_member[capability_id],),
+        )
+        for capability_id, invocations, _payload in projected
+    )
+    return members, tuple(evidence_units)
+
+
+def _invocation_payload(item: CapabilityInvocationTarget) -> dict[str, object]:
+    return {
+        "entry_id": item.entry_id,
+        "mode": item.mode.value,
+        "command_body": item.command_body,
+        "canonical_usages": list(item.canonical_usages),
+        "aliases": list(item.aliases),
+        "requires_mention": item.requires_mention,
+    }
+
+
+def _family_gate_projection(
+    records: tuple[CapabilityRecord, ...],
+    pack: CapabilitySourceEvidencePack,
+    handler_sources: tuple[SourceSpan, ...],
+) -> _FamilyGateProjection:
+    """只把每个 family 成员都具备的同一注册级 gate 投影为共同合同。"""
+    family_invocations = (CapabilityInvocationTarget("family", CapabilityInvocationMode.COMPLETE),)
+    member_contracts: list[
+        tuple[
+            tuple[tuple[str, str, str | None], ...],
+            tuple[tuple[str, str], ...],
+            tuple[tuple[str, str], ...],
+            bool,
+        ]
+    ] = []
+    runtime_contracts: list[tuple[tuple[str, str, str, str], ...]] = []
+    member_registrations: list[RegistrationAnchor] = []
+    member_symbols: list[tuple[StructuralSymbolFact, ...]] = []
+    member_facts: list[tuple[PermissionConstraintFact, ...]] = []
+
+    for record in records:
+        registrations = _selected_family_registrations(record, pack, handler_sources)
+        opaque_gate_fields = {
+            field_name
+            for registration in registrations
+            for field_name in registration.opaque_fields
+            if field_name in {"permission", "rule"}
+        }
+        if opaque_gate_fields:
+            raise CapabilityAnalysisAdapterError(
+                "parameterized family registration gates are opaque"
+            )
+        registration_sources = {item.source for item in registrations}
+        facts = tuple(
+            item
+            for item in pack.permission_constraints
+            if item.owner_source in registration_sources
+        )
+        selected_gate_symbols = tuple(
+            item for item in pack.symbols if item.owner_source in registration_sources
+        )
+        requires_mention = any(
+            item.kind is StructuralSymbolKind.RULE and item.symbol.rpartition(".")[2] == "to_me"
+            for item in selected_gate_symbols
+        )
+        symbols = tuple(
+            item
+            for item in _unresolved_gate_symbols(
+                pack,
+                registrations,
+                family_invocations,
+            )
+            if not (
+                requires_mention
+                and item.kind is StructuralSymbolKind.RULE
+                and item.symbol.rpartition(".")[2] == "to_me"
+            )
+        )
+        fixed_contract = tuple(
+            sorted(
+                {
+                    (
+                        item.kind.value,
+                        item.operation,
+                        item.teaching_role.value if item.teaching_role is not None else None,
+                    )
+                    for item in facts
+                },
+                key=lambda item: (item[0], item[1], item[2] or ""),
+            )
+        )
+        symbol_contract = tuple(sorted({(item.kind.value, item.symbol) for item in symbols}))
+        expression_contract = tuple(
+            sorted({(item.kind.value, item.source.digest) for item in selected_gate_symbols})
+        )
+        runtime_contract = _runtime_family_gate_contract(record)
+        runtime_kinds = {item[0] for item in runtime_contract}
+        source_kinds = {StructuralSymbolKind.PERMISSION.value for _item in fixed_contract} | {
+            item[0] for item in symbol_contract
+        }
+        if requires_mention:
+            source_kinds.add(StructuralSymbolKind.RULE.value)
+        # Runtime 可能看不到最终没有产生 checker 的源码 gate；这种 source-only gate
+        # 仍需交给模型结合定义闭合。反向缺证据则不能安全发布 family。
+        if runtime_kinds.difference(source_kinds):
+            raise CapabilityAnalysisAdapterError(
+                "parameterized family runtime gates lack source evidence"
+            )
+        member_contracts.append(
+            (fixed_contract, symbol_contract, expression_contract, requires_mention)
+        )
+        runtime_contracts.append(runtime_contract)
+        member_registrations.extend(registrations)
+        member_symbols.append(symbols)
+        member_facts.append(facts)
+
+    if len(set(member_contracts)) != 1 or len(set(runtime_contracts)) != 1:
+        raise CapabilityAnalysisAdapterError(
+            "parameterized family has non-uniform registration gates"
+        )
+    fixed_contract, symbol_contract, expression_contract, requires_mention = member_contracts[0]
+    runtime_contract = runtime_contracts[0]
+    if not fixed_contract and not symbol_contract and not requires_mention:
+        if runtime_contract:
+            raise CapabilityAnalysisAdapterError(
+                "parameterized family registration gates lack source evidence"
+            )
+        return _FamilyGateProjection()
+
+    registrations = tuple(
+        {
+            (
+                item.source.locator,
+                item.source.line,
+                item.source.end_line,
+                item.source.digest,
+            ): item
+            for item in member_registrations
+        }[key]
+        for key in sorted(
+            {
+                (
+                    item.source.locator,
+                    item.source.line,
+                    item.source.end_line,
+                    item.source.digest,
+                )
+                for item in member_registrations
+            }
+        )
+    )
+    representative_symbols = tuple(
+        {(item.kind.value, item.symbol): item for item in member_symbols[0]}[key]
+        for key in sorted({(item.kind.value, item.symbol) for item in member_symbols[0]})
+    )
+    representative_facts = tuple(
+        {
+            (
+                item.kind.value,
+                item.operation,
+                item.teaching_role.value if item.teaching_role is not None else None,
+            ): item
+            for item in member_facts[0]
+        }[key]
+        for key in sorted(
+            {
+                (
+                    item.kind.value,
+                    item.operation,
+                    item.teaching_role.value if item.teaching_role is not None else None,
+                )
+                for item in member_facts[0]
+            },
+            key=lambda item: (item[0], item[1], item[2] or ""),
+        )
+    )
+    payload = {
+        "scope": "all_family_members",
+        "fixed_permission_constraints": [
+            {
+                "kind": item.kind.value,
+                "operation": item.operation,
+                "teaching_role": (
+                    item.teaching_role.value if item.teaching_role is not None else None
+                ),
+            }
+            for item in representative_facts
+        ],
+        "gate_symbols": [
+            {"kind": item.kind.value, "symbol": item.symbol} for item in representative_symbols
+        ],
+        "gate_expression_shapes": [
+            {"kind": kind, "digest": digest} for kind, digest in expression_contract
+        ],
+        "requires_mention": requires_mention,
+        "runtime_gate_contract": [
+            {
+                "kind": kind,
+                "operation": operation,
+                "evaluability": evaluability,
+            }
+            for kind, operation, evaluability, _payload in runtime_contract
+        ],
+    }
+    content = _bounded_evidence_json(payload, "parameterized family gate contract")
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    evidence = CapabilityEvidenceUnit(
+        evidence_id=f"evidence:family-gate:{digest}",
+        source_kind="matcher_family_gate_structure",
+        content=content,
+        revision=f"sha256:{pack.generation}",
+    )
+    return _FamilyGateProjection(
+        registrations=registrations,
+        gate_symbols=representative_symbols,
+        fixed_facts=representative_facts,
+        evidence=evidence,
+        requires_mention=requires_mention,
+    )
+
+
+def _runtime_family_gate_contract(
+    record: CapabilityRecord,
+) -> tuple[tuple[str, str, str, str], ...]:
+    normalized: set[tuple[str, str, str, str]] = set()
+    for constraint in record.constraints:
+        kind = constraint.kind
+        if kind == "permission_updater":
+            kind = StructuralSymbolKind.PERMISSION.value
+        if kind not in {
+            StructuralSymbolKind.PERMISSION.value,
+            StructuralSymbolKind.RULE.value,
+        }:
+            continue
+        normalized.add(
+            (
+                kind,
+                constraint.operation,
+                constraint.evaluability.value,
+                _canonical_json_sort_key(constraint.payload),
+            )
+        )
+    return tuple(sorted(normalized))
+
+
+def _family_gate_candidates(
+    projection: _FamilyGateProjection,
+    invocations: tuple[CapabilityInvocationTarget, ...],
+) -> tuple[CapabilityGateCandidate, ...]:
+    if projection.evidence is None:
+        return ()
+    entry_ids = tuple(item.entry_id for item in invocations)
+    candidates = {
+        (item.kind.value, item.symbol): _gate_candidate(
+            (
+                CapabilityGateKind.PERMISSION
+                if item.kind is StructuralSymbolKind.PERMISSION
+                else CapabilityGateKind.RULE
             ),
-        ),
+            "family",
+            item.symbol,
+            entry_ids,
+            projection.evidence.evidence_id,
+        )
+        for item in projection.gate_symbols
+    }
+    return tuple(candidates[key] for key in sorted(candidates))
+
+
+def _family_fixed_constraints(
+    projection: _FamilyGateProjection,
+) -> tuple[SemanticConstraint, ...]:
+    if projection.evidence is None:
+        return ()
+    return fixed_permission_constraints(
+        projection.fixed_facts,
+        evidence_id=projection.evidence.evidence_id,
+    )
+
+
+def _selected_family_registrations(
+    record: CapabilityRecord,
+    pack: CapabilitySourceEvidencePack,
+    handler_sources: tuple[SourceSpan, ...],
+) -> tuple[RegistrationAnchor, ...]:
+    source_file_revisions = {item.source.locator: item.source.digest for item in pack.files}
+    matcher_evidence = tuple(item for item in record.evidence_refs if item.kind == "matcher_source")
+    for evidence in matcher_evidence:
+        matching_revisions = {
+            revision
+            for locator, revision in source_file_revisions.items()
+            if _source_locators_match(evidence.locator, locator)
+        }
+        if (
+            evidence.content_hash is not None
+            and len(matching_revisions) == 1
+            and evidence.content_hash not in matching_revisions
+        ):
+            raise CapabilityAnalysisAdapterError(
+                "plugin source changed during analysis preparation"
+            )
+    source_locations = {
+        (item.locator.replace("\\", "/"), line)
+        for item in matcher_evidence
+        for line in (item.payload.get("line"),)
+        if isinstance(line, int) and not isinstance(line, bool) and line > 0
+    }
+    located = tuple(
+        item
+        for item in pack.registrations
+        if any(
+            line == item.source.line and _source_locators_match(locator, item.source.locator)
+            for locator, line in source_locations
+        )
+    )
+    if len(located) == 1:
+        return located
+    if len(located) > 1:
+        raise CapabilityAnalysisAdapterError(
+            "parameterized family Matcher registration source is ambiguous"
+        )
+
+    observed_entries = _observed_registration_entries(record)
+    entry_matches = tuple(
+        item
+        for item in pack.registrations
+        if observed_entries.intersection((*item.entries, *item.aliases))
+    )
+    if len(entry_matches) == 1:
+        return entry_matches
+    if len(entry_matches) > 1:
+        raise CapabilityAnalysisAdapterError(
+            "parameterized family Matcher registration source is ambiguous"
+        )
+    return _selected_registrations(record, pack, handler_sources)
+
+
+def _source_locators_match(left: str, right: str) -> bool:
+    normalized_left = left.replace("\\", "/").strip("/")
+    normalized_right = right.replace("\\", "/").strip("/")
+    return (
+        normalized_left == normalized_right
+        or normalized_left.endswith(f"/{normalized_right}")
+        or normalized_right.endswith(f"/{normalized_left}")
     )
 
 
@@ -547,6 +1184,73 @@ def _invocation_targets(
     )
 
 
+def deterministic_record_usages(
+    record: CapabilityRecord,
+    *,
+    requires_mention: bool = False,
+) -> tuple[str, ...]:
+    """从当前 Runtime record 中投影可直接展示的精确调用形式。"""
+    if not isinstance(record, CapabilityRecord):
+        raise CapabilityAnalysisAdapterError("record must be a CapabilityRecord")
+    if not isinstance(requires_mention, bool):
+        raise CapabilityAnalysisAdapterError("requires_mention must be a boolean")
+    headers = {
+        claim.value
+        for field in ("invocation.header", "command.header")
+        for claim in record.claims
+        if claim.field == field
+        and claim.basis is ClaimBasis.OBSERVED
+        and isinstance(claim.value, str)
+        and claim.value.strip()
+    }
+    if len(headers) != 1:
+        return ()
+    header = next(iter(headers))
+    arguments = tuple(
+        claim.value
+        for claim in record.claims
+        if claim.field == "command.arguments"
+        and claim.basis is ClaimBasis.OBSERVED
+        and isinstance(claim.value, list)
+    )
+    components = tuple(
+        claim.value
+        for claim in record.claims
+        if claim.field == "command.components"
+        and claim.basis is ClaimBasis.OBSERVED
+        and isinstance(claim.value, list)
+    )
+    if len(arguments) > 1 or len(components) > 1:
+        return ()
+    command_arguments = arguments[0] if arguments else []
+    command_components = components[0] if components else []
+    leaves = _subcommand_leaves(command_components)
+    if not leaves:
+        usage = _structured_usage(
+            header,
+            command_arguments,
+            _option_components(command_components),
+        )
+        if usage is None:
+            if command_arguments or _option_components(command_components):
+                return ()
+            usage = header
+        return (f"@bot {usage}" if requires_mention else usage,)
+
+    result: list[str] = []
+    for path, component in leaves:
+        command_body = " ".join((header, *path))
+        component_arguments = component.get("arguments", [])
+        options = _option_components(component.get("components", []))
+        usage = _structured_usage(command_body, component_arguments, options)
+        if usage is None:
+            if component_arguments or options:
+                return ()
+            usage = command_body
+        result.append(f"@bot {usage}" if requires_mention else usage)
+    return tuple(result)
+
+
 def _requires_mention(
     pack: CapabilitySourceEvidencePack,
     registrations: tuple[RegistrationAnchor, ...],
@@ -561,56 +1265,24 @@ def _requires_mention(
 
 
 def _gate_candidates(
-    record: CapabilityRecord,
-    pack: CapabilitySourceEvidencePack,
-    handler_sources: tuple[SourceSpan, ...],
+    registrations: tuple[RegistrationAnchor, ...],
+    gate_symbols: tuple[StructuralSymbolFact, ...],
     invocations: tuple[CapabilityInvocationTarget, ...],
     structure_evidence: CapabilityEvidenceUnit,
 ) -> tuple[CapabilityGateCandidate, ...]:
-    registrations = _selected_registrations(record, pack, handler_sources)
-    registration_sources = {item.source for item in registrations}
-    known_permissions = {
-        (item.owner, item.symbol)
-        for item in pack.permission_constraints
-        if item.owner_source in registration_sources
-    }
-    selected_symbols = tuple(
-        item for item in pack.symbols if item.owner_source in registration_sources
-    )
-    maximal_symbols = {
-        (item.owner, item.kind, item.symbol)
-        for item in selected_symbols
-        if not any(
-            other.owner == item.owner
-            and other.kind is item.kind
-            and other.symbol.startswith(f"{item.symbol}.")
-            for other in selected_symbols
-        )
-    }
     entry_ids = tuple(item.entry_id for item in invocations)
     candidates: list[CapabilityGateCandidate] = []
-    for owner, kind, symbol in sorted(
-        maximal_symbols,
-        key=lambda item: (item[0], item[1].value, item[2]),
-    ):
-        if kind is StructuralSymbolKind.PERMISSION and (owner, symbol) in known_permissions:
-            continue
-        if (
-            kind is StructuralSymbolKind.RULE
-            and symbol.rpartition(".")[2] == "to_me"
-            and all(item.requires_mention for item in invocations)
-        ):
-            continue
+    for item in gate_symbols:
         gate_kind = (
             CapabilityGateKind.PERMISSION
-            if kind is StructuralSymbolKind.PERMISSION
+            if item.kind is StructuralSymbolKind.PERMISSION
             else CapabilityGateKind.RULE
         )
         candidates.append(
             _gate_candidate(
                 gate_kind,
-                owner,
-                symbol,
+                item.owner,
+                item.symbol,
                 entry_ids,
                 structure_evidence.evidence_id,
             )
@@ -634,6 +1306,49 @@ def _gate_candidates(
             )
     unique = {item.candidate_id: item for item in candidates}
     return tuple(unique[key] for key in sorted(unique))
+
+
+def _unresolved_gate_symbols(
+    pack: CapabilitySourceEvidencePack,
+    registrations: tuple[RegistrationAnchor, ...],
+    invocations: tuple[CapabilityInvocationTarget, ...],
+) -> tuple[StructuralSymbolFact, ...]:
+    registration_sources = {item.source for item in registrations}
+    known_permissions = {
+        (item.owner, item.symbol)
+        for item in pack.permission_constraints
+        if item.owner_source in registration_sources
+    }
+    selected_symbols = tuple(
+        item for item in pack.symbols if item.owner_source in registration_sources
+    )
+    maximal_symbols = tuple(
+        item
+        for item in selected_symbols
+        if not any(
+            other.owner == item.owner
+            and other.kind is item.kind
+            and other.symbol.startswith(f"{item.symbol}.")
+            for other in selected_symbols
+        )
+    )
+    unresolved = {
+        (item.owner, item.kind, item.symbol): item
+        for item in maximal_symbols
+        if not (
+            item.kind is StructuralSymbolKind.PERMISSION
+            and (item.owner, item.symbol) in known_permissions
+        )
+        and not (
+            item.kind is StructuralSymbolKind.RULE
+            and item.symbol.rpartition(".")[2] == "to_me"
+            and all(invocation.requires_mention for invocation in invocations)
+        )
+    }
+    return tuple(
+        unresolved[key]
+        for key in sorted(unresolved, key=lambda item: (item[0], item[1].value, item[2]))
+    )
 
 
 def _gate_candidate(
@@ -731,7 +1446,7 @@ def _render_arguments(
 
 
 def _render_options(options: list[object]) -> tuple[str, ...] | None:
-    if len(options) > 4:
+    if len(options) > 3:
         return ("[可选参数]",)
     result: list[str] = []
     for option in options:
@@ -752,8 +1467,8 @@ def _render_options(options: list[object]) -> tuple[str, ...] | None:
         rendered_arguments = _render_arguments(option_arguments)
         if rendered_arguments is None:
             return None
-        if len(names) > 4:
-            option_head = "选项"
+        if len(names) > 3:
+            option_head = "<选项>"
         elif len(names) == 1:
             option_head = names[0]
         elif rendered_arguments:
@@ -800,6 +1515,35 @@ def _permission_semantic_profiles() -> tuple[PermissionSemanticProfile, ...]:
 
 
 def _runtime_fact_evidence(record: CapabilityRecord) -> CapabilityEvidenceUnit:
+    claims = _runtime_fact_claims(record)
+    constraints = [
+        {
+            "kind": item.kind,
+            "operation": item.operation,
+            "evaluability": item.evaluability.value,
+            "payload": item.payload,
+        }
+        for item in record.constraints
+    ]
+    payload = {
+        "claims": claims,
+        "constraints": sorted(constraints, key=_canonical_json_sort_key),
+        "platform_scope": record.platform_scope.to_dict(),
+        "state": record.state.value,
+        "disclosure": record.disclosure.value,
+    }
+    content = _bounded_evidence_json(payload, "runtime capability facts")
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return CapabilityEvidenceUnit(
+        evidence_id=f"evidence:runtime:{digest}",
+        source_kind="runtime_capability_facts",
+        content=content,
+        revision=f"sha256:{digest}",
+    )
+
+
+def _runtime_fact_claims(record: CapabilityRecord) -> list[dict[str, object]]:
+    """保留 Runtime 已确认的通用调用事实，供普通单元与 family 共用。"""
     allowed_fields = {
         "invocation.header",
         "command.path",
@@ -819,7 +1563,7 @@ def _runtime_fact_evidence(record: CapabilityRecord) -> CapabilityEvidenceUnit:
         "example",
         "matcher.type",
     }
-    claims = [
+    claims: list[dict[str, object]] = [
         {
             "field": claim.field,
             "value": claim.value,
@@ -828,30 +1572,7 @@ def _runtime_fact_evidence(record: CapabilityRecord) -> CapabilityEvidenceUnit:
         for claim in record.claims
         if claim.field in allowed_fields
     ]
-    constraints = [
-        {
-            "kind": item.kind,
-            "operation": item.operation,
-            "evaluability": item.evaluability.value,
-            "payload": item.payload,
-        }
-        for item in record.constraints
-    ]
-    payload = {
-        "claims": sorted(claims, key=_canonical_json_sort_key),
-        "constraints": sorted(constraints, key=_canonical_json_sort_key),
-        "platform_scope": record.platform_scope.to_dict(),
-        "state": record.state.value,
-        "disclosure": record.disclosure.value,
-    }
-    content = _bounded_evidence_json(payload, "runtime capability facts")
-    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    return CapabilityEvidenceUnit(
-        evidence_id=f"evidence:runtime:{digest}",
-        source_kind="runtime_capability_facts",
-        content=content,
-        revision=f"sha256:{digest}",
-    )
+    return sorted(claims, key=_canonical_json_sort_key)
 
 
 def _canonical_json_sort_key(value: object) -> str:
@@ -918,6 +1639,31 @@ def _selected_registrations(
         item for item in pack.handlers if _source_location_key(item.source) in handler_source_keys
     )
     handler_names = {item.name for item in selected_handlers}
+    observed_entries = _observed_registration_entries(record)
+    matcher_names = {name for item in selected_handlers for name in item.matcher_names}
+    entry_candidates = tuple(
+        item
+        for item in pack.registrations
+        if not item.entries or bool(set(item.entries).intersection(observed_entries))
+    )
+    precise = tuple(
+        item
+        for item in entry_candidates
+        if item.matcher_name is not None and item.matcher_name in matcher_names
+    )
+    if len(precise) == 1:
+        return precise
+    if len(precise) > 1:
+        raise CapabilityAnalysisAdapterError("Matcher registration source is ambiguous")
+    fallback = tuple(
+        item for item in entry_candidates if set(item.handlers).intersection(handler_names)
+    )
+    if len(fallback) > 1:
+        raise CapabilityAnalysisAdapterError("Matcher registration source is ambiguous")
+    return fallback
+
+
+def _observed_registration_entries(record: CapabilityRecord) -> set[str]:
     observed_entries = {
         value
         for field in (
@@ -942,27 +1688,7 @@ def _selected_registrations(
         for value in tuple(observed_entries)
         for separator in separators
     )
-    matcher_names = {name for item in selected_handlers for name in item.matcher_names}
-    entry_candidates = tuple(
-        item
-        for item in pack.registrations
-        if not item.entries or bool(set(item.entries).intersection(observed_entries))
-    )
-    precise = tuple(
-        item
-        for item in entry_candidates
-        if item.matcher_name is not None and item.matcher_name in matcher_names
-    )
-    if len(precise) == 1:
-        return precise
-    if len(precise) > 1:
-        raise CapabilityAnalysisAdapterError("Matcher registration source is ambiguous")
-    fallback = tuple(
-        item for item in entry_candidates if set(item.handlers).intersection(handler_names)
-    )
-    if len(fallback) > 1:
-        raise CapabilityAnalysisAdapterError("Matcher registration source is ambiguous")
-    return fallback
+    return observed_entries
 
 
 def _bounded_evidence_json(payload: object, label: str) -> str:
@@ -986,6 +1712,7 @@ def _source_inventory_complete(errors: tuple[str, ...]) -> bool:
     incomplete_prefixes = (
         "byte_limit_exceeded",
         "directory_limit_exceeded",
+        "directory_unreadable:",
         "entry_unreadable:",
         "file_limit_exceeded",
         "file_too_large:",
@@ -1331,6 +2058,615 @@ def _resolve_analysis_targets(
     return tuple(resolved)
 
 
+def _append_bounded_source_slices(
+    evidence_units: list[CapabilityEvidenceUnit],
+    *,
+    analysis_unit_id: str,
+    module_root: str,
+    source_root: tuple[Path, bool],
+    parsed_modules: Mapping[str, _ParsedModule],
+    seeds: tuple[_ResolvedAnalysisTarget, ...],
+    gate_registrations: tuple[RegistrationAnchor, ...],
+    gate_names: frozenset[str],
+    priority_names: frozenset[str],
+    source_file_revisions: Mapping[str, str],
+    source_chars: int,
+    cache: CapabilitySourceSliceCache | None,
+) -> None:
+    """按 BFS 追加批准插件根内、唯一可定位的函数定义切片。"""
+    if source_chars >= _MAX_INITIAL_SOURCE_CHARS or not seeds:
+        return
+    try:
+        navigation = _source_slice_navigation(module_root, source_root)
+    except (OSError, PythonNavigationError, ReadOnlyToolsError):
+        return
+    active_cache = cache or CapabilitySourceSliceCache()
+    queued: deque[tuple[_FunctionSlice, int]] = deque()
+    known: set[tuple[str, int]] = set()
+    for target in seeds:
+        parsed = parsed_modules.get(target.reference.module)
+        if parsed is None:
+            continue
+        function = _select_reference_function(parsed, target.reference)
+        if function is None:
+            continue
+        seed = _cached_function_slice(
+            active_cache,
+            navigation,
+            parsed,
+            function,
+            full_name=target.reference.qualname,
+        )
+        if seed is None or seed.identity in known:
+            continue
+        known.add(seed.identity)
+        queued.append((seed, 0 if target.handler_identity is not None else 1))
+
+    for call in _registration_gate_call_sites(
+        navigation,
+        module_root,
+        source_root,
+        parsed_modules,
+        gate_registrations,
+        gate_names,
+        source_file_revisions,
+    ):
+        definition = _cached_call_definition(active_cache, navigation, call)
+        if definition is None:
+            continue
+        resolved = _cached_definition_slice(active_cache, navigation, definition)
+        if resolved is None or resolved.identity in known:
+            continue
+        known.add(resolved.identity)
+        if source_chars + len(resolved.content) > _MAX_INITIAL_SOURCE_CHARS:
+            return
+        symbol = resolved.full_name or resolved.name
+        evidence_units.append(
+            CapabilityEvidenceUnit(
+                evidence_id=_evidence_id(
+                    analysis_unit_id,
+                    resolved.relative_path,
+                    f"{symbol}@{resolved.line}",
+                ),
+                source_kind="python_function",
+                content=resolved.content,
+                revision=f"sha256:{resolved.source_revision}",
+                locator=f"{resolved.relative_path}:{symbol}:{resolved.line}",
+            )
+        )
+        source_chars += len(resolved.content)
+        queued.append((resolved, 0))
+
+    while queued:
+        current, depth = queued.popleft()
+        if depth >= _MAX_SOURCE_SLICE_DEPTH:
+            continue
+        for call in sorted(
+            current.calls,
+            key=lambda item: (
+                item.terminal_name not in priority_names,
+                item.line,
+                item.column,
+                item.terminal_name or "",
+            ),
+        ):
+            definition = _cached_call_definition(active_cache, navigation, call)
+            if definition is None:
+                continue
+            resolved = _cached_definition_slice(active_cache, navigation, definition)
+            if resolved is None or resolved.identity in known:
+                continue
+            known.add(resolved.identity)
+            if source_chars + len(resolved.content) > _MAX_INITIAL_SOURCE_CHARS:
+                return
+            symbol = resolved.full_name or resolved.name
+            evidence_units.append(
+                CapabilityEvidenceUnit(
+                    evidence_id=_evidence_id(
+                        analysis_unit_id,
+                        resolved.relative_path,
+                        f"{symbol}@{resolved.line}",
+                    ),
+                    source_kind="python_function",
+                    content=resolved.content,
+                    revision=f"sha256:{resolved.source_revision}",
+                    locator=f"{resolved.relative_path}:{symbol}:{resolved.line}",
+                )
+            )
+            source_chars += len(resolved.content)
+            queued.append((resolved, depth + 1))
+
+
+def _validate_common_family_gate_definitions(
+    *,
+    module_root: str,
+    source_root: tuple[Path, bool],
+    parsed_modules: Mapping[str, _ParsedModule],
+    registrations: tuple[RegistrationAnchor, ...],
+    gate_names: frozenset[str],
+    source_file_revisions: Mapping[str, str],
+    cache: CapabilitySourceSliceCache,
+) -> None:
+    if not gate_names:
+        return
+    try:
+        navigation = _source_slice_navigation(module_root, source_root)
+    except (OSError, PythonNavigationError, ReadOnlyToolsError) as error:
+        raise CapabilityAnalysisAdapterError(
+            "parameterized family gate definitions are unavailable"
+        ) from error
+
+    definitions_by_name: dict[str, set[tuple[str, int, int, str]]] = {
+        name: set() for name in gate_names
+    }
+    for registration in registrations:
+        calls = _registration_gate_call_sites(
+            navigation,
+            module_root,
+            source_root,
+            parsed_modules,
+            (registration,),
+            gate_names,
+            source_file_revisions,
+        )
+        calls_by_name = {
+            name: tuple(item for item in calls if item.terminal_name == name) for name in gate_names
+        }
+        if any(not items for items in calls_by_name.values()):
+            raise CapabilityAnalysisAdapterError(
+                "parameterized family gate definitions are unavailable"
+            )
+        for name, named_calls in calls_by_name.items():
+            for call in named_calls:
+                definition = _cached_call_definition(cache, navigation, call)
+                if definition is None:
+                    raise CapabilityAnalysisAdapterError(
+                        "parameterized family gate definitions are unavailable"
+                    )
+                definitions_by_name[name].add(
+                    (
+                        definition.relative_path,
+                        definition.line,
+                        definition.column,
+                        definition.source_revision,
+                    )
+                )
+    if any(len(definitions) != 1 for definitions in definitions_by_name.values()):
+        raise CapabilityAnalysisAdapterError(
+            "parameterized family has non-uniform gate definitions"
+        )
+
+
+def _registration_gate_call_sites(
+    navigation: _SourceSliceNavigation,
+    module_root: str,
+    source_root: tuple[Path, bool],
+    parsed_modules: Mapping[str, _ParsedModule],
+    registrations: tuple[RegistrationAnchor, ...],
+    gate_names: frozenset[str],
+    source_file_revisions: Mapping[str, str],
+) -> tuple[_CallSite, ...]:
+    if not registrations or not gate_names:
+        return ()
+    available_modules = list(parsed_modules.values())
+    required_locators = {item.source.locator for item in registrations}
+    known_module_names = {item.module.__name__ for item in available_modules}
+    for module_name in sorted(sys.modules):
+        if len(available_modules) >= _MAX_MODULES:
+            break
+        if module_name in known_module_names or not _module_belongs_to_plugin(
+            module_name, module_root
+        ):
+            continue
+        parsed = _load_parsed_module(module_name, module_root, source_root)
+        if parsed is None or parsed.locator not in required_locators:
+            continue
+        available_modules.append(parsed)
+        known_module_names.add(module_name)
+
+    parsed_by_locator: dict[str, list[_ParsedModule]] = {}
+    for parsed in available_modules:
+        parsed_by_locator.setdefault(parsed.locator, []).append(parsed)
+
+    calls: dict[tuple[str, int, int], _CallSite] = {}
+    for registration in registrations:
+        candidates = parsed_by_locator.get(registration.source.locator, [])
+        if len(candidates) != 1:
+            continue
+        parsed = candidates[0]
+        path = _resolved_python_file(parsed.module)
+        if path is None:
+            continue
+        try:
+            relative_path = path.relative_to(navigation.root.path).as_posix()
+            raw = path.read_bytes()
+        except (OSError, ValueError):
+            continue
+        revision = hashlib.sha256(raw).hexdigest()
+        if (
+            _normalized_source_revision(raw) != parsed.revision
+            or source_file_revisions.get(parsed.locator) != revision
+        ):
+            raise CapabilityAnalysisAdapterError(
+                "plugin source changed during analysis preparation"
+            )
+        try:
+            current_source = raw.decode("utf-8")
+            current_tree = ast.parse(current_source)
+        except (UnicodeError, SyntaxError, ValueError, RecursionError):
+            continue
+        registration_calls = tuple(
+            node
+            for node in ast.walk(current_tree)
+            if isinstance(node, ast.Call)
+            and node.lineno == registration.source.line
+            and (node.end_lineno or node.lineno) == registration.source.end_line
+            and _call_terminal_name(node) == registration.factory
+            and _ast_source_digest(current_source, node) == registration.source.digest
+        )
+        if len(registration_calls) != 1:
+            continue
+        for keyword_argument in registration_calls[0].keywords:
+            if keyword_argument.arg not in {"permission", "rule"}:
+                continue
+            for node in ast.walk(keyword_argument.value):
+                target: ast.Name | ast.Attribute | None = None
+                if isinstance(node, ast.Call):
+                    target = node.func if isinstance(node.func, ast.Name | ast.Attribute) else None
+                elif isinstance(node, ast.Name | ast.Attribute):
+                    target = node
+                if target is None:
+                    continue
+                terminal_name = _expression_terminal_name(target)
+                if terminal_name not in gate_names:
+                    continue
+                call = _navigation_call_site(
+                    relative_path,
+                    current_source,
+                    revision,
+                    target,
+                )
+                if call is not None:
+                    calls.setdefault((call.relative_path, call.line, call.column), call)
+    return tuple(calls[key] for key in sorted(calls))
+
+
+def _call_terminal_name(node: ast.Call) -> str | None:
+    return _expression_terminal_name(node.func)
+
+
+def _expression_terminal_name(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _ast_source_digest(source: str, node: ast.AST) -> str | None:
+    segment = ast.get_source_segment(source, node)
+    if segment is None:
+        return None
+    return hashlib.sha256(segment.encode("utf-8")).hexdigest()
+
+
+def _normalized_source_revision(raw: bytes) -> str | None:
+    try:
+        source = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    normalized = source.replace("\r\n", "\n").replace("\r", "\n")
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def _navigation_call_site(
+    relative_path: str,
+    source: str,
+    source_revision: str,
+    target: ast.Name | ast.Attribute,
+) -> _CallSite | None:
+    terminal_name = _expression_terminal_name(target)
+    if terminal_name is None:
+        return None
+    byte_column = target.col_offset
+    if isinstance(target, ast.Attribute):
+        if target.end_col_offset is None:
+            return None
+        byte_column = target.end_col_offset - len(target.attr.encode("utf-8"))
+    column = _character_column(source, target.lineno, byte_column)
+    if column is None:
+        return None
+    if len(terminal_name) > 1:
+        column += 1
+    return _CallSite(
+        relative_path,
+        target.lineno,
+        column,
+        source_revision,
+        terminal_name,
+    )
+
+
+def _cached_call_definition(
+    cache: CapabilitySourceSliceCache,
+    navigation: _SourceSliceNavigation,
+    call: _CallSite,
+) -> DefinitionLocation | None:
+    if call in cache._definitions:
+        return cache._definitions[call]
+    try:
+        result = navigation.navigator.go_to_definition(
+            GoToDefinitionRequest(
+                root_name=navigation.root.name,
+                relative_path=call.relative_path,
+                line=call.line,
+                column=call.column,
+                source_revision=call.source_revision,
+            )
+        )
+    except PythonNavigationError:
+        cache._definitions[call] = None
+        return None
+    unique_definitions = {
+        (item.relative_path, item.line, item.column): item
+        for item in result.definitions
+        if item.root_name == navigation.root.name and item.kind == "function"
+    }
+    definition = next(iter(unique_definitions.values())) if len(unique_definitions) == 1 else None
+    cache._definitions[call] = definition
+    return definition
+
+
+def _source_slice_navigation(
+    module_root: str,
+    source_root: tuple[Path, bool],
+) -> _SourceSliceNavigation:
+    path, is_package = source_root
+    navigation_root = path.parent
+    if is_package:
+        package = path.name
+        allowed_patterns = (
+            f"{package}/__init__.py",
+            f"{package}/*.py",
+            f"{package}/**/*.py",
+        )
+    else:
+        allowed_patterns = (path.name,)
+    root = ReadOnlyRoot(
+        "plugin_source",
+        navigation_root,
+        allowed_patterns=allowed_patterns,
+    )
+    access = ReadOnlyTaskProfile(
+        task_id=f"capability.source_slices.{hashlib.sha256(module_root.encode()).hexdigest()[:16]}",
+        roots=(root,),
+        policy=teaching_read_only_policy(),
+    )
+    navigator = DefinitionNavigator(
+        PythonNavigationProfile(
+            access=access,
+            project_root_name=root.name,
+            source_root_names=(root.name,),
+        )
+    )
+    return _SourceSliceNavigation(navigator, root)
+
+
+def _cached_function_slice(
+    cache: CapabilitySourceSliceCache,
+    navigation: _SourceSliceNavigation,
+    parsed: _ParsedModule,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    full_name: str | None,
+) -> _FunctionSlice | None:
+    path = _resolved_python_file(parsed.module)
+    if path is None:
+        return None
+    try:
+        relative_path = path.relative_to(navigation.root.path).as_posix()
+    except ValueError:
+        return None
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    revision = hashlib.sha256(raw).hexdigest()
+    if _normalized_source_revision(raw) != parsed.revision:
+        raise CapabilityAnalysisAdapterError("plugin source changed during analysis preparation")
+    key = _SourceSliceCacheKey(
+        relative_path,
+        function.lineno,
+        function.col_offset,
+        function.name,
+        revision,
+    )
+    if cached := cache._functions.get(key):
+        return cached
+    result = _function_slice_from_ast(
+        relative_path,
+        parsed.source,
+        function,
+        source_revision=revision,
+        full_name=full_name,
+    )
+    if result is not None:
+        _store_source_slice(cache, key, result)
+    return result
+
+
+def _cached_definition_slice(
+    cache: CapabilitySourceSliceCache,
+    navigation: _SourceSliceNavigation,
+    definition: DefinitionLocation,
+) -> _FunctionSlice | None:
+    relative_path = definition.relative_path
+    line = definition.line
+    column = definition.column
+    name = definition.name
+    revision = definition.source_revision
+    full_name = definition.full_name
+    key = _SourceSliceCacheKey(relative_path, line, column, name, revision)
+    if cached := cache._functions.get(key):
+        return cached
+    path = navigation.root.path.joinpath(*relative_path.split("/"))
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if hashlib.sha256(raw).hexdigest() != revision:
+        raise CapabilityAnalysisAdapterError("plugin source changed during analysis preparation")
+    try:
+        source = raw.decode("utf-8")
+        tree = ast.parse(source)
+    except (UnicodeError, SyntaxError, ValueError, RecursionError):
+        return None
+    if sum(1 for _ in ast.walk(tree)) > _MAX_AST_NODES:
+        return None
+    candidates = tuple(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.name == name
+        and node.lineno == line
+    )
+    if len(candidates) != 1:
+        return None
+    result = _function_slice_from_ast(
+        relative_path,
+        source,
+        candidates[0],
+        source_revision=revision,
+        full_name=full_name,
+    )
+    if result is not None:
+        _store_source_slice(cache, key, result)
+    return result
+
+
+def _store_source_slice(
+    cache: CapabilitySourceSliceCache,
+    key: _SourceSliceCacheKey,
+    value: _FunctionSlice,
+) -> None:
+    stale = tuple(
+        item
+        for item in cache._functions
+        if item.relative_path == key.relative_path
+        and item.line == key.line
+        and item.column == key.column
+        and item.name == key.name
+        and item.source_revision != key.source_revision
+    )
+    for item in stale:
+        cache._functions.pop(item, None)
+    cache._functions[key] = value
+
+
+def _function_slice_from_ast(
+    relative_path: str,
+    source: str,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    source_revision: str,
+    full_name: str | None,
+) -> _FunctionSlice | None:
+    content = _function_source(source, function)
+    if content is None or len(content) > _MAX_FUNCTION_CHARS:
+        return None
+    calls = _function_call_sites(relative_path, source, source_revision, function)
+    return _FunctionSlice(
+        relative_path=relative_path,
+        name=function.name,
+        full_name=full_name,
+        line=function.lineno,
+        content=content,
+        source_revision=source_revision,
+        calls=calls,
+    )
+
+
+def _function_call_sites(
+    relative_path: str,
+    source: str,
+    source_revision: str,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[_CallSite, ...]:
+    calls: dict[tuple[int, int], _CallSite] = {}
+
+    class CallVisitor(ast.NodeVisitor):
+        def visit_Call(self, node: ast.Call) -> None:
+            target = node.func
+            terminal_name: str | None = None
+            byte_column: int | None = None
+            if isinstance(target, ast.Name):
+                terminal_name = target.id
+                byte_column = target.col_offset
+            elif isinstance(target, ast.Attribute):
+                terminal_name = target.attr
+                if target.end_col_offset is not None:
+                    byte_column = target.end_col_offset - len(target.attr.encode("utf-8"))
+            if byte_column is not None:
+                column = _character_column(source, target.lineno, byte_column)
+                if column is not None:
+                    if terminal_name is not None and len(terminal_name) > 1:
+                        column += 1
+                    calls.setdefault(
+                        (target.lineno, column),
+                        _CallSite(
+                            relative_path,
+                            target.lineno,
+                            column,
+                            source_revision,
+                            terminal_name,
+                        ),
+                    )
+            self.generic_visit(node)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+    visitor = CallVisitor()
+    for statement in function.body:
+        visitor.visit(statement)
+    return tuple(calls[key] for key in sorted(calls))
+
+
+def _character_column(source: str, line: int, byte_column: int) -> int | None:
+    lines = source.splitlines()
+    if line < 1 or line > len(lines) or byte_column < 0:
+        return None
+    encoded = lines[line - 1].encode("utf-8")
+    if byte_column > len(encoded):
+        return None
+    try:
+        return len(encoded[:byte_column].decode("utf-8"))
+    except UnicodeDecodeError:
+        return None
+
+
+def _source_symbol_names(
+    pack: CapabilitySourceEvidencePack,
+    owner_sources: tuple[SourceSpan, ...],
+) -> frozenset[str]:
+    owner_keys = {_source_location_key(item) for item in owner_sources}
+    return frozenset(
+        item.symbol.rpartition(".")[2]
+        for item in pack.symbols
+        if _source_location_key(item.owner_source) in owner_keys
+    )
+
+
 def _plugin_source_root(module_root: str) -> tuple[Path, bool]:
     module = sys.modules.get(module_root)
     if not isinstance(module, ModuleType):
@@ -1613,9 +2949,12 @@ def _evidence_id(capability_id: str, module: str, function: str) -> str:
 __all__ = (
     "AnalysisSourcePolicy",
     "CapabilityAnalysisAdapterError",
+    "CapabilitySourceSliceCache",
     "HandlerCodeIdentity",
     "ParameterizedHandlerCodeIdentity",
     "build_capability_analysis_request",
     "build_parameterized_family_analysis_request",
+    "deterministic_record_usages",
     "parameterized_handler_code_identity",
+    "plugin_source_revision_matches",
 )

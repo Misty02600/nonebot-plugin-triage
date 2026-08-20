@@ -48,7 +48,6 @@ _SAFE_ATTRIBUTE_KEYS: Final[frozenset[str]] = frozenset(
         "gen_ai.usage.output_tokens",
         "model_name",
         "operation.cost",
-        "nbtriage.response.answer_markdown_chars",
         "nbtriage.response.claim_count",
         "nbtriage.response.constraint_count",
         "nbtriage.response.entry_count",
@@ -342,7 +341,6 @@ def _structured_output_shape(payloads: Sequence[Mapping[str, Any]]) -> dict[str,
 
     claim_count = 0
     constraint_count = 0
-    answer_markdown_chars: list[int] = []
     for entry in entries:
         claims = entry.get("claims")
         if isinstance(claims, list):
@@ -350,12 +348,8 @@ def _structured_output_shape(payloads: Sequence[Mapping[str, Any]]) -> dict[str,
         constraints = entry.get("constraints")
         if isinstance(constraints, list):
             constraint_count += len(constraints)
-        answer_markdown = entry.get("answer_markdown")
-        if isinstance(answer_markdown, str):
-            answer_markdown_chars.append(len(answer_markdown))
 
     return {
-        "nbtriage.response.answer_markdown_chars": answer_markdown_chars,
         "nbtriage.response.claim_count": claim_count,
         "nbtriage.response.constraint_count": constraint_count,
         "nbtriage.response.entry_count": len(entries),

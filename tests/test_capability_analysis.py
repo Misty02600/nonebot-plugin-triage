@@ -101,10 +101,8 @@ def _output(*, evidence_id: str = "ev-handler") -> CapabilityAnalysisOutput:
                         statement="查找二次元图片来源",
                         evidence_ids=(evidence_id,),
                     ),
-                ),
-                constraints=(
-                    SemanticConstraint(
-                        kind=SemanticConstraintKind.INPUT,
+                    SemanticClaim(
+                        kind=SemanticClaimKind.BEHAVIOR_BOUNDARY,
                         statement="需要回复一张图片",
                         evidence_ids=(evidence_id, "ev-readme"),
                         config_reference_ids=("cfg-enabled",),
@@ -382,7 +380,7 @@ def test_service_accepts_explicit_change_to_exact_baseline_member() -> None:
             entries=(
                 CapabilityAnalysisEntryBaseline(
                     "root",
-                    supported_subjects=("封面",),
+                    search_terms=("封面",),
                 ),
             )
         ),
@@ -395,7 +393,7 @@ def test_service_accepts_explicit_change_to_exact_baseline_member() -> None:
                 baseline_changes=(
                     BaselineMemberChange(
                         BaselineChangeOperation.REPLACE,
-                        BaselineMemberField.SUPPORTED_SUBJECTS,
+                        BaselineMemberField.SEARCH_TERMS,
                         "封面",
                         ("ev-handler",),
                         "短文标题",
@@ -416,7 +414,7 @@ def test_service_rejects_change_without_exact_baseline_member() -> None:
     request = replace(
         _request(),
         previous_annotation=CapabilityAnalysisBaseline(
-            entries=(CapabilityAnalysisEntryBaseline("root", synonyms=("找图",)),)
+            entries=(CapabilityAnalysisEntryBaseline("root", search_terms=("找图",)),)
         ),
     )
     output = replace(
@@ -427,7 +425,7 @@ def test_service_rejects_change_without_exact_baseline_member() -> None:
                 baseline_changes=(
                     BaselineMemberChange(
                         BaselineChangeOperation.REMOVE,
-                        BaselineMemberField.SYNONYMS,
+                        BaselineMemberField.SEARCH_TERMS,
                         "找封面",
                         ("ev-handler",),
                     ),
@@ -446,7 +444,7 @@ def test_service_rejects_removed_baseline_member_reintroduced_as_current_claim()
     request = replace(
         _request(),
         previous_annotation=CapabilityAnalysisBaseline(
-            entries=(CapabilityAnalysisEntryBaseline("root", synonyms=("找封面",)),)
+            entries=(CapabilityAnalysisEntryBaseline("root", search_terms=("找封面",)),)
         ),
     )
     output = replace(
@@ -457,7 +455,7 @@ def test_service_rejects_removed_baseline_member_reintroduced_as_current_claim()
                 claims=(
                     *_output().entries[0].claims,
                     SemanticClaim(
-                        SemanticClaimKind.SYNONYM,
+                        SemanticClaimKind.SEARCH_TERM,
                         "找封面",
                         ("ev-handler",),
                     ),
@@ -465,7 +463,7 @@ def test_service_rejects_removed_baseline_member_reintroduced_as_current_claim()
                 baseline_changes=(
                     BaselineMemberChange(
                         BaselineChangeOperation.REMOVE,
-                        BaselineMemberField.SYNONYMS,
+                        BaselineMemberField.SEARCH_TERMS,
                         "找封面",
                         ("ev-handler",),
                     ),
@@ -480,7 +478,7 @@ def test_service_rejects_removed_baseline_member_reintroduced_as_current_claim()
         )
 
 
-@pytest.mark.parametrize("target", ["claim", "constraint", "answer"])
+@pytest.mark.parametrize("target", ["claim", "constraint"])
 def test_service_requires_config_reference_when_public_text_uses_projected_value(
     target: str,
 ) -> None:
@@ -491,9 +489,11 @@ def test_service_requires_config_reference_when_public_text_uses_projected_value
         ("ev-handler",),
     )
     constraint = SemanticConstraint(
-        SemanticConstraintKind.INPUT,
-        "最多处理 60 个候选" if target == "constraint" else "需要回复一张图片",
+        SemanticConstraintKind.RATE_LIMIT,
+        "每个用户每 60 秒可调用一次" if target == "constraint" else "每个用户存在调用间隔",
         ("ev-handler",),
+        rate_limit_policy=RateLimitPolicy.COOLDOWN,
+        rate_limit_scope=RateLimitScope.USER,
     )
     output = replace(
         _output(),
@@ -502,8 +502,6 @@ def test_service_requires_config_reference_when_public_text_uses_projected_value
                 base_entry,
                 claims=(claim,),
                 constraints=(constraint,),
-                answer_markdown="最多展示 60 条结果" if target == "answer" else None,
-                answer_evidence_ids=("ev-handler",) if target == "answer" else (),
             ),
         ),
     )
@@ -582,8 +580,8 @@ def test_service_rejects_unknown_config_reference_as_semantic_support() -> None:
                 "root",
                 constraints=(
                     SemanticConstraint(
-                        kind=SemanticConstraintKind.FEATURE_STATE,
-                        statement="无法确认动态配置状态",
+                        kind=SemanticConstraintKind.ACCESS,
+                        statement="需授权",
                         evidence_ids=("ev-handler",),
                         config_reference_ids=("cfg-dynamic-scope",),
                     ),

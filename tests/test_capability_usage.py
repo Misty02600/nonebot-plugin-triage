@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import pytest
 
+from nbtriage.capability_annotations import validate_capability_usage_pattern
 from nbtriage.capability_usage import (
     CapabilityUsageExpressionError,
     deterministic_literal_expression,
+    deterministic_usage_selector,
     expand_literal_expression,
     group_literal_expression_for_usage,
     validate_literal_expression,
+    validate_usage_selector,
 )
 
 
@@ -58,4 +61,24 @@ def test_root_alternation_is_grouped_before_embedding_in_usage() -> None:
     assert (
         group_literal_expression_for_usage("(取消|关闭)(全体|全员)禁言")
         == "(取消|关闭)(全体|全员)禁言"
+    )
+
+
+def test_public_selector_lists_at_most_three_fixed_values() -> None:
+    three = ("摸摸", "亲亲", "贴贴")
+    four = (*three, "白底")
+
+    exact = deterministic_usage_selector(three)
+    assert exact is not None
+    assert set(expand_literal_expression(exact)) == set(three)
+    assert deterministic_usage_selector(four, concept_name="模板") == "<模板>"
+    assert validate_usage_selector("<模板>", four) == "<模板>"
+    with pytest.raises(CapabilityUsageExpressionError):
+        validate_usage_selector("(摸摸|亲亲|贴贴|白底)", four)
+
+
+def test_family_usage_accepts_repeating_image_or_text_inputs() -> None:
+    assert (
+        validate_capability_usage_pattern("<表情操作> [图片|文字]...")
+        == "<表情操作> [图片|文字]..."
     )

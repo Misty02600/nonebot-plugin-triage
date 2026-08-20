@@ -85,7 +85,6 @@ def test_response_shape_records_lengths_without_content(tmp_path) -> None:
                                 {
                                     "claims": [{"statement": "PRIVATE_CLAIM"}],
                                     "constraints": [{"statement": "PRIVATE_CONSTRAINT"}],
-                                    "answer_markdown": "PRIVATE_MARKDOWN",
                                 }
                             ],
                         },
@@ -109,7 +108,6 @@ def test_response_shape_records_lengths_without_content(tmp_path) -> None:
         "PRIVATE_THINKING",
         "PRIVATE_CLAIM",
         "PRIVATE_CONSTRAINT",
-        "PRIVATE_MARKDOWN",
     ):
         assert private_value not in content
     record = json.loads(content)
@@ -120,7 +118,6 @@ def test_response_shape_records_lengths_without_content(tmp_path) -> None:
         "nbtriage.task": "capability_annotation",
     }
     assert record["attributes"] == {
-        "nbtriage.response.answer_markdown_chars": [len("PRIVATE_MARKDOWN")],
         "nbtriage.response.claim_count": 1,
         "nbtriage.response.constraint_count": 1,
         "nbtriage.response.entry_count": 1,

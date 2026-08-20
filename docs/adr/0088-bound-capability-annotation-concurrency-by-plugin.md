@@ -1,8 +1,13 @@
 # ADR-0088：按插件限制教学注释并发并保持插件内顺序
 
+> 后续关系：[ADR-0093](0093-shard-capability-annotation-cache-by-plugin.md) 部分替代本 ADR 决策第 4 项中
+> “任一单元失败都不激活半套 Answer 视图”的整轮失败边界，并把成功缓存具体化为按插件 JSON、文件内按
+> teaching unit 保存。插件间有限并发、插件内顺序、全局 refresh lock、缓存写入锁、Runtime 准入和全局
+> `current.json` 原子 pointer 继续有效。
+
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；已实现 | 2026-08-17 |
+| 已采纳；第 4 项部分被 ADR-0093 替代 | 2026-08-17 |
 
 ## 背景
 
@@ -55,3 +60,4 @@
 - [ADR-0058：用确定性证据与有界源码导航生成教学注释](0058-use-deterministic-evidence-and-bounded-navigation-for-teaching-annotations.md)
 - [ADR-0069：分离帮助展示与 Answer 知识，并让静态分析只界定证据范围](0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md)
 - [ADR-0077：把上一版机器生成教学内容作为非证据的最小改写基线](0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md)
+- [ADR-0093：按插件分片教学注释缓存并按单元部分发布](0093-shard-capability-annotation-cache-by-plugin.md)

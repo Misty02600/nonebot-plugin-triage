@@ -41,6 +41,10 @@ from nbtriage.public_guidance import (
     PublicGuidanceFactField,
     PublicGuidanceRequest,
 )
+from nonebot_plugin_triage.capability_analysis_adapter import (
+    deterministic_record_usages,
+    plugin_source_revision_matches,
+)
 from nonebot_plugin_triage.capability_annotations import (
     CapabilityAnnotationEvidenceValidator,
     CapabilityAnnotationService,
@@ -57,7 +61,7 @@ from nonebot_plugin_triage.support_intake import (
 )
 
 _CAPABILITY_SHADOW_FILENAME = "capability-shadow.sqlite3"
-_CAPABILITY_ANNOTATION_FILENAME = "capability-annotations.json"
+_CAPABILITY_ANNOTATION_DIRECTORY = "capability-annotations"
 
 
 def _resolve_capability_shadow_cache_file(filename: str) -> Path:
@@ -134,6 +138,8 @@ class PublicCapabilitySearch:
     partial: bool | None
     stale: bool = False
     annotations: tuple[CapabilityTeachingAnnotation, ...] = ()
+    annotation_capability_ids: tuple[str, ...] = ()
+    exact_member_capability_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -146,6 +152,10 @@ class CapabilityTeachingRefreshResult:
     family_disabled_count: int
     family_failed_count: int
     skipped_count: int
+    failed_count: int
+    stale_count: int
+    active_count: int
+    unit_count: int
     files: tuple[Path, ...]
 
 
@@ -284,6 +294,17 @@ class CapabilityShadowService:
                     self._annotation_service.get,
                     limit=limit,
                 )
+                hits = _collapse_annotation_families(
+                    hits,
+                    self._annotation_service.get,
+                )
+                hits = _expand_small_annotation_family(
+                    hits,
+                    public_records,
+                    self._annotation_service.get,
+                    adapter_type=adapter_type,
+                    limit=limit,
+                )
         except CapabilityIndexError as error:
             logger.warning(
                 "NoneBot Triage public capability search failed ({})",
@@ -294,17 +315,26 @@ class CapabilityShadowService:
             hit for hit in hits if _record_is_publicly_servable(hit.record, adapter_type)
         )
         annotations = ()
+        annotation_capability_ids = ()
         if self._annotation_service is not None:
-            annotations = tuple(
-                annotation
+            bound_annotations = tuple(
+                (hit.record.capability_id, annotation)
                 for hit in safe_hits
                 if (annotation := self._annotation_service.get(hit.record.capability_id))
                 is not None
             )
+            annotation_capability_ids = tuple(item[0] for item in bound_annotations)
+            annotations = tuple(item[1] for item in bound_annotations)
         return PublicCapabilitySearch(
             safe_hits,
             partial=self._status.partial,
             annotations=annotations,
+            annotation_capability_ids=annotation_capability_ids,
+            exact_member_capability_ids=tuple(
+                hit.record.capability_id
+                for hit in safe_hits
+                if _query_exactly_selects_member(query, hit.record)
+            ),
         )
 
     def refresh_deployment(self) -> CapabilityShadowStatus:
@@ -423,7 +453,7 @@ class CapabilityShadowService:
         self,
         plugin_module: str | None = None,
     ) -> CapabilityTeachingRefreshResult:
-        """由已鉴权维护命令强制重分析教学内容，并保留失败前活动 generation。"""
+        """由已鉴权维护命令强制重分析，并原子发布可信的完整或 partial generation。"""
         if self._annotation_service is None or self._teaching_output_writer is None:
             raise RuntimeError("capability teaching model is unavailable")
         async with self._teaching_refresh_lock:
@@ -436,17 +466,24 @@ class CapabilityShadowService:
                 plugin_module=plugin_module,
                 force=True,
             )
-            if status.failed_count:
-                raise RuntimeError("one or more capability teaching analyses failed")
             try:
-                paths = await asyncio.to_thread(
-                    self._teaching_output_writer.refresh,
+                publication = await asyncio.to_thread(
+                    self._teaching_output_writer.publish,
                     snapshot,
-                    self._annotation_service.get,
+                    self._annotation_service.get_pending,
+                    status,
                 )
-            except Exception:
-                self._annotation_service.deactivate()
+            except CapabilityTeachingOutputError:
+                await self._annotation_service.discard_pending(status.refresh_id)
                 raise
+            except Exception:
+                await self._annotation_service.discard_pending(status.refresh_id)
+                raise
+            await self._annotation_service.commit_pending(
+                status.refresh_id,
+                publication.generation,
+            )
+            paths = publication.paths
             logger.info(
                 "NoneBot Triage 教学知识已手动刷新：plugin={}, "
                 "generated={}, cached={}, skipped={}, files={}",
@@ -465,6 +502,10 @@ class CapabilityShadowService:
                 family_disabled_count=status.family_disabled_count,
                 family_failed_count=status.family_failed_count,
                 skipped_count=status.skipped_count,
+                failed_count=status.failed_count,
+                stale_count=status.stale_count,
+                active_count=status.active_count,
+                unit_count=len(status.units),
                 files=paths,
             )
 
@@ -479,36 +520,48 @@ class CapabilityShadowService:
                 type(error).__name__,
             )
             return
-        if status.failed_count:
-            logger.warning(
-                "NoneBot Triage 未切换教学知识输出：存在分析失败；failed={}",
-                status.failed_count,
-            )
-            return
         if self._teaching_output_writer is not None:
             try:
-                paths = await asyncio.to_thread(
-                    self._teaching_output_writer.refresh,
+                publication = await asyncio.to_thread(
+                    self._teaching_output_writer.publish,
                     snapshot,
-                    self._annotation_service.get,
+                    self._annotation_service.get_pending,
+                    status,
                 )
             except CapabilityTeachingOutputError:
-                self._annotation_service.deactivate()
-                logger.warning(
-                    "NoneBot Triage 未切换教学知识输出：reason=empty_output；"
-                    "本轮没有生成任何 Help 或 Answer 文件，上一版仍然有效"
-                )
+                await self._annotation_service.discard_pending(status.refresh_id)
+                if not status.publishable:
+                    logger.warning(
+                        "NoneBot Triage 未切换教学知识输出：global_reason={}",
+                        status.global_failure_reason or "unknown",
+                    )
+                else:
+                    logger.warning(
+                        "NoneBot Triage 未切换教学知识输出：reason=output_validation；"
+                        "本轮 generation 未通过发布校验，上一版仍然有效"
+                    )
             except Exception as error:
-                self._annotation_service.deactivate()
+                await self._annotation_service.discard_pending(status.refresh_id)
                 logger.warning(
-                    "NoneBot Triage 教学知识输出刷新失败；已停用本轮模型 Answer 视图，"
-                    "上一版文件仍然有效：error_type={}",
+                    "NoneBot Triage 教学知识输出刷新失败；本轮候选未激活，"
+                    "上一版仍然有效：error_type={}",
                     type(error).__name__,
                 )
             else:
+                await self._annotation_service.commit_pending(
+                    status.refresh_id,
+                    publication.generation,
+                )
+                paths = publication.paths
                 logger.info(
-                    "NoneBot Triage 教学知识输出刷新完成：files={}",
+                    "NoneBot Triage 教学知识输出刷新完成：files={}, active={}, "
+                    "eligible={}, failed={}, skipped={}, stale={}",
                     len(paths),
+                    status.active_count,
+                    len(status.units),
+                    status.failed_count,
+                    status.skipped_count,
+                    status.stale_count,
                 )
 
     def _resolve_path_safely(self) -> bool:
@@ -560,15 +613,17 @@ def register_capability_shadow(
     if annotation_client_factory is not None:
         if config_policy is None or annotation_analysis_revision is None:
             raise ValueError("capability annotations require config policy and analysis revision")
+        teaching_output_writer = CapabilityTeachingOutputWriter(teaching_output_directory_resolver)
         annotation_service = CapabilityAnnotationService(
-            lambda: cache_file_resolver(_CAPABILITY_ANNOTATION_FILENAME),
+            lambda: cache_file_resolver(_CAPABILITY_ANNOTATION_DIRECTORY),
             client_factory=annotation_client_factory,
             config_policy=config_policy,
             analysis_revision=annotation_analysis_revision,
             evidence_validator=annotation_evidence_validator,
+            source_revision_validator=plugin_source_revision_matches,
+            published_generation_resolver=teaching_output_writer.current_generation,
             max_plugin_concurrency=annotation_max_concurrency,
         )
-        teaching_output_writer = CapabilityTeachingOutputWriter(teaching_output_directory_resolver)
     service = CapabilityShadowService(
         lambda: cache_file_resolver(_CAPABILITY_SHADOW_FILENAME),
         annotation_service=annotation_service,
@@ -707,7 +762,7 @@ def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
     if not safe_hits:
         return ""
     primary = safe_hits[0].record
-    annotations = {item.capability_id: item for item in result.annotations}
+    annotations = _annotations_by_capability(result)
     annotation = annotations.get(primary.capability_id)
     header = _public_capability_label(primary)
     if header is None:
@@ -720,9 +775,15 @@ def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
         lines.append(description)
     usage = _public_claim_text(primary.claims, "usage", limit=240)
     rendered_usages: tuple[str, ...] = ()
+    exact_member = primary.capability_id in result.exact_member_capability_ids
+    if usage is None and exact_member:
+        rendered_usages = deterministic_record_usages(
+            primary,
+            requires_mention=_annotation_requires_mention(annotation),
+        )
     if usage:
         lines.append(f"用法：{usage}")
-    elif annotation is not None:
+    elif annotation is not None and not rendered_usages:
         rendered_usages = tuple(usage for entry in annotation.entries for usage in entry.usages)
     if not usage and annotation is not None and rendered_usages:
         lines.append(f"用法：{' / '.join(rendered_usages)}")
@@ -756,7 +817,7 @@ def build_public_guidance_request(
     safe_hits = tuple(
         hit for hit in result.hits if _record_is_publicly_servable_without_adapter(hit.record)
     )
-    annotations = {item.capability_id: item for item in result.annotations}
+    annotations = _annotations_by_capability(result)
     facts: list[PublicGuidanceFact] = []
     for hit in safe_hits[:5]:
         record = hit.record
@@ -802,11 +863,21 @@ def build_public_guidance_request(
                 text=cleaned,
                 basis=PublicGuidanceFactBasis.DECLARED,
             )
+        annotation = annotations.get(record.capability_id)
+        exact_member = record.capability_id in result.exact_member_capability_ids
         _append_annotation_guidance_facts(
             facts,
             capability=label,
-            invocation=_observed_invocation_header(record.claims) or label,
-            annotation=annotations.get(record.capability_id),
+            invocations=(
+                deterministic_record_usages(
+                    record,
+                    requires_mention=_annotation_requires_mention(annotation),
+                )
+                if exact_member
+                else ()
+            ),
+            annotation=annotation,
+            exact_member=exact_member,
         )
     normalized_question = _safe_text(question, limit=2_000)
     if not normalized_question or not facts:
@@ -823,12 +894,22 @@ def _append_annotation_guidance_facts(
     facts: list[PublicGuidanceFact],
     *,
     capability: str,
-    invocation: str,
+    invocations: tuple[str, ...],
     annotation: CapabilityTeachingAnnotation | None,
+    exact_member: bool,
 ) -> None:
     """把公开教学注释收窄为当前 Answer Agent 已支持的事实字段。"""
     if annotation is None:
         return
+    if exact_member:
+        for invocation in invocations:
+            _append_public_guidance_fact(
+                facts,
+                capability=capability,
+                field=PublicGuidanceFactField.USAGE,
+                text=invocation,
+                basis=PublicGuidanceFactBasis.OBSERVED,
+            )
     for entry in annotation.entries:
         entry_capability = entry.name or capability
         if entry.summary:
@@ -839,18 +920,17 @@ def _append_annotation_guidance_facts(
                 text=entry.summary,
                 basis=PublicGuidanceFactBasis.DECLARED,
             )
-        for usage in entry.usages:
-            _append_public_guidance_fact(
-                facts,
-                capability=entry_capability,
-                field=PublicGuidanceFactField.USAGE,
-                text=usage,
-                basis=PublicGuidanceFactBasis.DECLARED,
-            )
+        if not exact_member:
+            for usage in entry.usages:
+                _append_public_guidance_fact(
+                    facts,
+                    capability=entry_capability,
+                    field=PublicGuidanceFactField.USAGE,
+                    text=usage,
+                    basis=PublicGuidanceFactBasis.DECLARED,
+                )
         for text in (
-            *entry.synonyms,
-            *entry.supported_subjects,
-            *entry.input_requirements,
+            *entry.search_terms,
             *entry.behavior_boundaries,
             *(item.text for item in entry.requirements),
         ):
@@ -861,34 +941,6 @@ def _append_annotation_guidance_facts(
                 text=text,
                 basis=PublicGuidanceFactBasis.DECLARED,
             )
-        if entry.answer_markdown:
-            for text in _answer_markdown_facts(entry.answer_markdown):
-                _append_public_guidance_fact(
-                    facts,
-                    capability=entry_capability,
-                    field=PublicGuidanceFactField.DESCRIPTION,
-                    text=text,
-                    basis=PublicGuidanceFactBasis.DECLARED,
-                )
-
-
-def _answer_markdown_facts(document: str) -> tuple[str, ...]:
-    result: list[str] = []
-    for raw_line in document.splitlines():
-        line = raw_line.strip()
-        while line.startswith("#"):
-            line = line[1:].lstrip()
-        if line.startswith(("- ", "* ")):
-            line = line[2:].strip()
-        line = " ".join(line.split())
-        if not line:
-            continue
-        while line:
-            result.append(line[:400])
-            line = line[400:]
-        if len(result) >= 16:
-            break
-    return tuple(dict.fromkeys(result))
 
 
 def _append_public_guidance_fact(
@@ -927,11 +979,19 @@ def _annotation_guidance(
             text
             for entry in annotation.entries
             for text in (
-                *entry.input_requirements,
                 *entry.behavior_boundaries,
                 *(item.text for item in entry.requirements),
             )
         )
+    )
+
+
+def _annotation_requires_mention(
+    annotation: CapabilityTeachingAnnotation | None,
+) -> bool:
+    return bool(
+        annotation is not None
+        and any("@bot" in usage.split() for entry in annotation.entries for usage in entry.usages)
     )
 
 
@@ -943,22 +1003,27 @@ def _augment_hits_with_annotation_terms(
     *,
     limit: int,
 ) -> list[CapabilitySearchHit]:
-    """用注释同义词和主题补召回，不替代 runtime 公开能力门禁。"""
+    """用公开搜索词补召回，不替代 runtime 公开能力门禁。"""
     normalized_query = " ".join(query.casefold().split())
     if not normalized_query:
         return hits
     accepted = {hit.record.capability_id for hit in hits}
+    accepted_units = {
+        annotation.capability_id
+        for hit in hits
+        if (annotation := annotation_lookup(hit.record.capability_id)) is not None
+    }
     augmented = list(hits)
     for record in records:
         if record.capability_id in accepted:
             continue
         annotation = annotation_lookup(record.capability_id)
-        if annotation is None:
+        if annotation is None or annotation.capability_id in accepted_units:
             continue
         terms = tuple(
             term
             for entry in annotation.entries
-            for term in (*entry.synonyms, *entry.supported_subjects)
+            for term in (entry.name, entry.summary, *entry.search_terms)
         )
         if not any(
             (term_normalized := " ".join(term.casefold().split()))
@@ -968,9 +1033,68 @@ def _augment_hits_with_annotation_terms(
             continue
         augmented.append(CapabilitySearchHit(record=record, score=0.0))
         accepted.add(record.capability_id)
+        accepted_units.add(annotation.capability_id)
         if len(augmented) >= limit:
             break
     return augmented[:limit]
+
+
+def _collapse_annotation_families(
+    hits: list[CapabilitySearchHit],
+    annotation_lookup: Callable[[str], CapabilityTeachingAnnotation | None],
+) -> list[CapabilitySearchHit]:
+    """让同一个 family 在检索阶段只占一个候选，保留排名最高的具体成员。"""
+    accepted_units: set[str] = set()
+    collapsed: list[CapabilitySearchHit] = []
+    for hit in hits:
+        annotation = annotation_lookup(hit.record.capability_id)
+        unit_id = annotation.capability_id if annotation is not None else hit.record.capability_id
+        if unit_id in accepted_units:
+            continue
+        accepted_units.add(unit_id)
+        collapsed.append(hit)
+    return collapsed
+
+
+def _expand_small_annotation_family(
+    hits: list[CapabilitySearchHit],
+    records: tuple[CapabilityRecord, ...],
+    annotation_lookup: Callable[[str], CapabilityTeachingAnnotation | None],
+    *,
+    adapter_type: type[object],
+    limit: int,
+) -> list[CapabilitySearchHit]:
+    """只在当前 Runtime family 不超过三个成员时补齐精确 Matcher。"""
+    if not hits or limit <= len(hits):
+        return hits[:limit]
+    primary_annotation = annotation_lookup(hits[0].record.capability_id)
+    if primary_annotation is None:
+        return hits[:limit]
+    members = tuple(
+        record
+        for record in records
+        if _record_is_publicly_servable(record, adapter_type)
+        and (annotation := annotation_lookup(record.capability_id)) is not None
+        and annotation.capability_id == primary_annotation.capability_id
+    )
+    if len(members) <= 1 or len(members) > 3:
+        return hits[:limit]
+    accepted = {item.record.capability_id for item in hits}
+    expanded = list(hits)
+    expanded.extend(
+        CapabilitySearchHit(record=record, score=0.0)
+        for record in members
+        if record.capability_id not in accepted
+    )
+    return expanded[:limit]
+
+
+def _annotations_by_capability(
+    result: PublicCapabilitySearch,
+) -> dict[str, CapabilityTeachingAnnotation]:
+    if len(result.annotation_capability_ids) == len(result.annotations):
+        return dict(zip(result.annotation_capability_ids, result.annotations, strict=True))
+    return {item.capability_id: item for item in result.annotations}
 
 
 def _public_plugin_metadata(claims: tuple[Claim, ...]) -> dict[str, object]:
@@ -1046,6 +1170,25 @@ def _observed_invocation_header(claims: tuple[Claim, ...]) -> str | None:
         if cleaned is not None and len(cleaned) <= 64:
             candidates.add(cleaned)
     return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def _query_exactly_selects_member(query: str, record: CapabilityRecord) -> bool:
+    normalized_query = unicodedata.normalize("NFKC", query).casefold()
+    if not normalized_query.strip():
+        return False
+    candidates: set[str] = set()
+    for claim in record.claims:
+        if claim.basis is not ClaimBasis.OBSERVED:
+            continue
+        if claim.field in {"invocation.header", "command.header"} and isinstance(claim.value, str):
+            candidates.add(claim.value)
+        elif claim.field == "command.aliases" and isinstance(claim.value, list):
+            candidates.update(item for item in claim.value if isinstance(item, str))
+    return any(
+        len(normalized := unicodedata.normalize("NFKC", candidate).strip().casefold()) >= 2
+        and normalized in normalized_query
+        for candidate in candidates
+    )
 
 
 def _public_capability_label(record: CapabilityRecord) -> str | None:
@@ -1130,7 +1273,7 @@ def _observed_trigger_entries(claims: tuple[Claim, ...]) -> tuple[str, ...]:
 
 
 def _safe_trigger_text(value: str) -> str | None:
-    if not value or len(value) > 96 or "@" in value:
+    if not value or len(value) > 96:
         return None
     if any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in value):
         return None
@@ -1168,7 +1311,7 @@ def _safe_text(value: str, *, limit: int) -> str:
         for character in value
         if unicodedata.category(character) not in {"Cc", "Cf", "Cs"}
     )
-    return " ".join(visible.split()).replace("@", "＠")[:limit]
+    return " ".join(visible.split())[:limit]
 
 
 def _disclosure_label(disclosure: Disclosure) -> str:

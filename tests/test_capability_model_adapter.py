@@ -21,6 +21,7 @@ from nbtriage.capability_analysis import (
     CapabilityAnalysisRequest,
     CapabilityAnalysisService,
     CapabilityEvidenceUnit,
+    CapabilityFamilyMember,
     CapabilityGateCandidate,
     CapabilityGateKind,
     CapabilityIdentity,
@@ -111,9 +112,6 @@ def _entry(
             },
         ],
         "constraints": [],
-        "answer_markdown": "根据图片查找相似内容。",
-        "answer_evidence_ids": [evidence_id],
-        "answer_config_reference_ids": [],
     }
 
 
@@ -237,6 +235,25 @@ def test_analysis_records_last_response_shape(monkeypatch: pytest.MonkeyPatch) -
     }
 
 
+def test_opt_in_diagnostic_trace_excludes_prompt_and_thinking() -> None:
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(
+            lambda _messages, _info: _native_response(),
+            model_name="fixture-model",
+            profile=_NATIVE_PROFILE,
+        ),
+        max_output_tokens=240,
+        capture_diagnostics=True,
+    )
+
+    asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    document = json.dumps(client.diagnostic_trace, ensure_ascii=False)
+    assert '"message": "response"' in document
+    assert "SENTINEL_SOURCE" not in document
+    assert SYSTEM_INSTRUCTION.strip() not in document
+
+
 def test_prompt_requires_complete_usage_literal_affix_self_check() -> None:
     assert "固定字面量、成员变量和 parser 参数结构" in SYSTEM_INSTRUCTION
     assert "逐字符保留成员变量前后的全部固定字面量" in SYSTEM_INSTRUCTION
@@ -246,9 +263,11 @@ def test_prompt_requires_complete_usage_literal_affix_self_check() -> None:
 
 
 def test_prompt_separates_alias_display_from_usage_and_places_repeat_marker_after_slot() -> None:
-    assert "usage claim 仍必须使用 command_body" in SYSTEM_INSTRUCTION
+    assert "不要修改 usage claim 中的 command_body" in SYSTEM_INSTRUCTION
     assert "entry.display_trigger" in SYSTEM_INSTRUCTION
-    assert "展开后必须恰好等于 command_body 与全部 aliases" in SYSTEM_INSTRUCTION
+    assert "展开后必须恰好等于全部入口" in SYSTEM_INSTRUCTION
+    assert "合计超过三项时，不再在 usage 枚举" in SYSTEM_INSTRUCTION
+    assert "合计四至六项时" in SYSTEM_INSTRUCTION
     assert "`<参数>...` 表示至少一项、`[参数]...` 表示零项或多项" in SYSTEM_INSTRUCTION
 
 
@@ -269,7 +288,7 @@ def test_agent_accepts_explicit_baseline_member_change() -> None:
             entries=(
                 CapabilityAnalysisEntryBaseline(
                     "root",
-                    supported_subjects=("封面",),
+                    search_terms=("封面",),
                 ),
             )
         ),
@@ -279,7 +298,7 @@ def test_agent_accepts_explicit_baseline_member_change() -> None:
     entry["baseline_changes"] = [
         {
             "op": "replace",
-            "field": "supported_subjects",
+            "field": "search_terms",
             "old_value": "封面",
             "new_value": "短文标题",
             "evidence_ids": ["evidence-handler"],
@@ -302,7 +321,7 @@ def test_agent_accepts_explicit_baseline_member_change() -> None:
 
     change = result.entries[0].baseline_changes[0]
     assert change.operation is BaselineChangeOperation.REPLACE
-    assert change.field is BaselineMemberField.SUPPORTED_SUBJECTS
+    assert change.field is BaselineMemberField.SEARCH_TERMS
     assert change.new_value == "短文标题"
 
 
@@ -391,8 +410,6 @@ def test_agent_receives_aliases_and_retries_missing_required_mention() -> None:
         calls += 1
         observed["messages"] = messages
         output = _output(usage="状态" if calls == 1 else "@bot 状态")
-        entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
-        entry["answer_markdown"] = "群聊中请发送 @bot 状态。"
         return ModelResponse(
             parts=[TextPart(json.dumps(output, ensure_ascii=False))],
             finish_reason="stop",
@@ -430,13 +447,81 @@ def test_agent_receives_aliases_and_retries_missing_required_mention() -> None:
     assert payload["invocations"][0]["requires_mention"] is True
 
 
-def test_agent_accepts_exact_nested_alias_display_trigger() -> None:
+def test_agent_receives_every_family_member_invocation() -> None:
+    observed: dict[str, object] = {}
+
+    def respond(messages, _info: AgentInfo) -> ModelResponse:
+        observed["messages"] = messages
+        output = {
+            "knowledge_enabled": True,
+            "entries": [
+                {
+                    **_entry(usage="<表情操作> [图片|文字]..."),
+                    "entry_id": "family",
+                }
+            ],
+        }
+        return ModelResponse(
+            parts=[TextPart(json.dumps(output, ensure_ascii=False))],
+            finish_reason="stop",
+        )
+
+    request = replace(
+        _request(),
+        capability=CapabilityIdentity("family:meme", "plugin.demo", "command_family"),
+        invocations=(CapabilityInvocationTarget("family", CapabilityInvocationMode.COMPLETE),),
+        family_members=(
+            CapabilityFamilyMember(
+                "command:touch",
+                (
+                    CapabilityInvocationTarget(
+                        "root",
+                        CapabilityInvocationMode.ANCHORED,
+                        "摸摸",
+                        ("摸摸 <图片>",),
+                    ),
+                ),
+                ("evidence-handler",),
+            ),
+            CapabilityFamilyMember(
+                "command:text-image",
+                (
+                    CapabilityInvocationTarget(
+                        "root",
+                        CapabilityInvocationMode.ANCHORED,
+                        "文字图",
+                        ("文字图 [文字]...",),
+                    ),
+                ),
+                ("evidence-handler",),
+            ),
+        ),
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+
+    asyncio.run(CapabilityAnalysisService(client).analyze(request))
+
+    messages = cast(list[ModelRequest], observed["messages"])
+    payload = json.loads(cast(str, cast(UserPromptPart, messages[0].parts[0]).content))
+    assert [item["capability_id"] for item in payload["family_members"]] == [
+        "command:touch",
+        "command:text-image",
+    ]
+    assert payload["family_members"][1]["invocations"][0]["canonical_usages"] == [
+        "文字图 [文字]..."
+    ]
+
+
+def test_agent_uses_concept_slot_for_more_than_three_fixed_aliases() -> None:
     aliases = ("禁他", "禁她", "口他", "口她", "踩他", "踩她")
 
     def respond(_messages, _info: AgentInfo) -> ModelResponse:
         output = _output(usage="禁言 <用户>")
         entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
-        entry["display_trigger"] = "(禁言|(禁|口|踩)(他|她))"
+        entry["display_trigger"] = "<操作>"
         return ModelResponse(
             parts=[TextPart(json.dumps(output, ensure_ascii=False))],
             finish_reason="stop",
@@ -460,7 +545,7 @@ def test_agent_accepts_exact_nested_alias_display_trigger() -> None:
 
     result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
 
-    assert result.entries[0].display_trigger == "(禁言|(禁|口|踩)(他|她))"
+    assert result.entries[0].display_trigger == "<操作>"
 
 
 def test_agent_retries_alias_pattern_once_then_uses_deterministic_fallback() -> None:
@@ -548,8 +633,6 @@ def test_agent_retries_public_config_value_that_omits_reference() -> None:
         entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
         summary = cast(list[dict[str, object]], entry["claims"])[1]
         summary["config_reference_ids"] = [] if calls == 1 else ["config-limit"]
-        entry["answer_markdown"] = None
-        entry["answer_evidence_ids"] = []
         return ModelResponse(
             parts=[TextPart(json.dumps(output, ensure_ascii=False))],
             finish_reason="stop",
@@ -568,7 +651,6 @@ def test_agent_retries_public_config_value_that_omits_reference() -> None:
 
     assert calls == 2
     assert result.entries[0].claims[1].config_reference_ids == ("config-limit",)
-    assert result.entries[0].answer_config_reference_ids == ("config-limit",)
 
 
 def test_agent_retries_entry_without_summary() -> None:
@@ -601,7 +683,7 @@ def test_agent_retries_entry_without_summary() -> None:
     assert any(claim.kind is SemanticClaimKind.SUMMARY for claim in result.entries[0].claims)
 
 
-def test_invalid_answer_markdown_falls_back_to_validated_public_claims() -> None:
+def test_model_output_rejects_removed_answer_markdown_channel() -> None:
     output = _output()
     entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
     entry["answer_markdown"] = "根据证据，这个 handler 可以搜索图片。"
@@ -617,18 +699,17 @@ def test_invalid_answer_markdown_falls_back_to_validated_public_claims() -> None
         max_output_tokens=240,
     )
 
-    result = asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+    with pytest.raises(CapabilityModelAdapterError, match="output validation failed"):
+        asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
 
-    assert result.entries[0].answer_markdown == "根据图片查找相似内容。"
 
-
-def test_agent_retries_when_complete_usage_enumerates_more_than_four_members() -> None:
+def test_agent_retries_when_complete_usage_enumerates_more_than_three_members() -> None:
     calls = 0
 
     def respond(_messages, _info: AgentInfo) -> ModelResponse:
         nonlocal calls
         calls += 1
-        usage = "#(摸摸|亲亲|贴贴|白底|波纹) [图片]" if calls == 1 else "#<表情名> [图片]"
+        usage = "#(摸摸|亲亲|贴贴|白底) [图片]" if calls == 1 else "#<表情名> [图片]"
         output = {
             "knowledge_enabled": True,
             "entries": [{**_entry(usage=usage), "entry_id": "family"}],
@@ -658,6 +739,63 @@ def test_agent_retries_when_complete_usage_enumerates_more_than_four_members() -
         )
         == "#<表情名> [图片]"
     )
+
+
+def test_agent_retries_when_one_matcher_emits_more_than_three_fixed_usages() -> None:
+    calls = 0
+
+    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        entry = _entry(usage="调色 红")
+        claims = cast(list[dict[str, object]], entry["claims"])
+        if calls == 1:
+            claims.extend(
+                {
+                    "kind": "usage",
+                    "statement": f"调色 {color}",
+                    "evidence_ids": ["evidence-handler"],
+                    "config_reference_ids": [],
+                }
+                for color in ("蓝", "绿", "黄")
+            )
+        else:
+            claims[-1]["statement"] = "调色 <颜色>"
+        return ModelResponse(
+            parts=[
+                TextPart(
+                    json.dumps(
+                        {"knowledge_enabled": True, "entries": [entry]},
+                        ensure_ascii=False,
+                    )
+                )
+            ],
+            finish_reason="stop",
+        )
+
+    request = replace(
+        _request(),
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "调色",
+            ),
+        ),
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+
+    assert calls == 2
+    assert [
+        claim.statement
+        for claim in result.entries[0].claims
+        if claim.kind is SemanticClaimKind.USAGE
+    ] == ["调色 <颜色>"]
 
 
 def test_agent_can_cite_revision_bound_read_evidence() -> None:
@@ -962,7 +1100,7 @@ def test_agent_retries_evidence_reference_outside_current_request() -> None:
 
     result = asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
 
-    assert result.entries[0].answer_evidence_ids == ("evidence-handler",)
+    assert result.entries[0].claims[1].evidence_ids == ("evidence-handler",)
     assert provider_calls == 2
 
 

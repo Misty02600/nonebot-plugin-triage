@@ -86,7 +86,7 @@ def _teaching_annotation() -> CapabilityTeachingAnnotation:
                 name="搜图",
                 summary="搜索图片出处。",
                 usages=("[回复图片] 搜图",),
-                input_requirements=("回复一张图片后发送搜图。",),
+                behavior_boundaries=("回复一张图片后发送搜图。",),
             ),
         ),
     )
@@ -490,9 +490,8 @@ def test_public_contract_evidence_contains_active_teaching_contract() -> None:
                 "name": "搜图",
                 "summary": "搜索图片出处。",
                 "usages": ["[回复图片] 搜图"],
-                "supported_subjects": [],
-                "input_requirements": ["回复一张图片后发送搜图。"],
-                "behavior_boundaries": [],
+                "search_terms": [],
+                "behavior_boundaries": ["回复一张图片后发送搜图。"],
                 "requirements": [],
             }
         ],

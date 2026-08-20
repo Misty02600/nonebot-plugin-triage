@@ -26,6 +26,8 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     RetryPromptPart,
+    TextPart,
+    ToolCallPart,
     ToolReturnPart,
 )
 from pydantic_ai.models import Model
@@ -69,10 +71,11 @@ from nbtriage.capability_annotations import (
     validate_complete_aggregate_usage,
 )
 from nbtriage.capability_usage import (
+    MAX_EXPLICIT_USAGE_ALTERNATIVES,
     CapabilityUsageExpressionError,
-    deterministic_literal_expression,
+    deterministic_usage_selector,
     group_literal_expression_for_usage,
-    validate_literal_expression,
+    validate_usage_selector,
 )
 
 SYSTEM_INSTRUCTION = """\
@@ -85,49 +88,52 @@ SYSTEM_INSTRUCTION = """\
 - matcher_source_structure 中已解析的稳定权限语义直接使用，不要为重复解释它们再次阅读框架源码。
 - NoneBot 官方核心与官方 Adapter、Alconna、Uninfo 的稳定语义可以直接形成框架约束。其他第三方库不能只凭名称猜测；读取已批准源码中的完整定义、相关分支和当前安全配置后，证据足够时也可以形成约束或确认不构成约束，否则保持 unresolved。
 - 文件发现、搜索结果和转到定义只是导航，只有 read_file 返回的 evidence_id 才能支持最终陈述。
-- 每条 claim、constraint 与 answer_markdown 都必须引用本轮允许的 Evidence；未知配置不能被引用或推断。
-- claim、constraint 或 answer_markdown 直接使用 config_projections 中的当前标量值时，同一字段必须列出对应的 reference_id；不得只写配置值而漏掉引用。
+- 每条 claim 与 constraint 都必须引用本轮允许的 Evidence；未知配置不能被引用或推断。
+- claim 或 constraint 直接使用 config_projections 中的当前标量值时，同一字段必须列出对应的 reference_id；不得只写配置值而漏掉引用。
 - 不得暴露源码路径、Python 符号、Matcher、Rule、Permission、handler、配置键、环境变量、Evidence ID 或实现细节。
-- 所有公开字段（包括 answer_markdown）都直接说明功能，不要写“根据证据”“源码表明”“从代码可见”等分析过程措辞；公开文本中不要出现“证据”“源码”“handler”“Matcher”等实现词。
+- 所有公开字段都直接说明功能，不要写“根据证据”“源码表明”“从代码可见”等分析过程措辞；公开文本中不要出现“证据”“源码”“handler”“Matcher”等实现词。
 - 只描述用户看得见、用得上的行为。静态证据不能证明某次请求一定通过，也不能证明外部服务健康。
-- previous_annotation 是上一轮已经验证并发布的公开基线，不是本轮新增事实的 Evidence。模型外会按 entry_id 自动带回未变更的旧有 synonyms、supported_subjects、input_requirements 与 behavior_boundaries；不要为了保留它们而重复输出 claim。
-- baseline_changes 只表达上述四类旧数组成员的变化。遗漏旧成员表示保持不变；不得把 omission 当作删除，也不要输出 keep。没有 previous_annotation 时 baseline_changes 必须为空。
+- previous_annotation 是上一轮已经验证并发布的公开基线，不是本轮新增事实的 Evidence。模型外会按 entry_id 自动带回未变更的旧有 search_terms 与 behavior_boundaries；不要为了保留它们而重复输出 claim。
+- baseline_changes 只表达上述两类旧数组成员的变化。遗漏旧成员表示保持不变；不得把 omission 当作删除，也不要输出 keep。没有 previous_annotation 时 baseline_changes 必须为空。
 - 删除旧成员时使用 remove；替换旧成员时使用 replace 并同时给出 new_value。old_value 必须逐字匹配同一 entry_id、同一 field 的旧成员；每条 remove 或 replace 都必须引用明确推翻旧值的当前 Evidence。新增成员仍作为普通 claim 输出并引用当前 Evidence；本轮已经 remove 或 replace 的 old_value 不得再作为同字段普通 claim 加回。
-- summary 与 answer_markdown 仍以少改为目标，但不会由 baseline_changes 自动合并。删除或替换会改变功能用途或用户可见边界时，必须根据当前 Evidence 重新陈述 summary；Evidence 明确给出当前适用范围时，用 behavior_boundary 正向描述现在支持的范围，不要复述旧值或变更历史。
+- summary 以少改为目标，但不会由 baseline_changes 自动合并。删除或替换会改变功能用途或用户可见边界时，必须根据当前 Evidence 重新陈述 summary；Evidence 明确给出当前适用范围时，用 behavior_boundary 正向描述现在支持的范围，不要复述旧值或变更历史。
 - gate_candidates 只是静态层发现的疑似执行控制点，不等于已经存在约束。你必须逐项调查并解释为 constraint、no_constraint 或 unresolved。
 - constraint 表示确实限制用户使用，并且对应公开 constraint 必须关联该 candidate_id；no_constraint 只允许在函数定义、框架事实或当前运行配置明确证明它不会限制使用时选择，且不得把“不限流”“没有权限限制”等否定结论写进公开字段；unresolved 表示补证后仍不能确认。
-- 如果完整门禁定义表明布尔结果直接由当前运行配置决定，而当前投影值已经使门禁放行，例如 `return enabled` 且 `enabled=true`，该门禁必须解释为 no_constraint。不要把已经满足的全局开关写成 feature_state、input_requirement、summary 条件或 Answer 使用前提。
+- 如果完整门禁定义表明布尔结果直接由当前运行配置决定，而当前投影值已经使门禁放行，例如 `return enabled` 且 `enabled=true`，该门禁必须解释为 no_constraint。不要把已经满足的内部开关写成 access、summary、behavior_boundary 或其他公开使用前提。
 - 每个 gate resolution 都必须引用 candidate 自己的结构 Evidence。constraint 与 no_constraint 还必须额外引用实际定义、框架事实或运行配置；只重复引用结构候选不算完成解释。
 - 只有在调用入口、必要参数、公开性、权限和全部限流都足够确定时才能启用知识。任一 gate candidate 仍为 unresolved 时，设置 knowledge_enabled=false 且 entries 为空；不得把未知解释成不存在。
-- 如果证据不足、工厂成员没有可靠共同语义，或无法给出确定正确的用法，设置 knowledge_enabled=false 且 entries 为空。
+- 如果证据不足、工厂成员没有可靠共同业务语义，或成员与调用事实无法可靠绑定，设置 knowledge_enabled=false 且 entries 为空。成员参数数量、类型、必选性或精确 usage 不同本身不是关闭理由。
 
 输出指导：
 - payload.invocations 是模型必须逐项返回的功能入口；knowledge_enabled=true 时，entries 的 entry_id 必须与它完全一致，不得自行合并、拆分或新增入口。
 - mode=anchored 时 command_body 是已经确定的完整命令正文。每条 usage 都必须原样包含它一次；不要添加 NoneBot 全局 COMMAND_START，也不要使用 `{command}`。插件自己的业务前缀如果已在 command_body 中，应原样保留。
 - aliases 是 Runtime 已确认的同义命令入口。usage claim 仍必须使用 command_body，不要把别名写进 usage，也不要为了列出 alias 复制用法。
-- aliases 非空时，为 entry.display_trigger 生成一条只由固定文字、`|` 和可嵌套圆括号组成的紧凑表达式；它展开后必须恰好等于 command_body 与全部 aliases，不能遗漏、增加或重复命令。例如可把“取消全体禁言、关闭全体禁言、取消全员禁言、关闭全员禁言”写成 `(取消|关闭)(全体|全员)禁言`。aliases 为空时 display_trigger 必须为 null。
-- display_trigger 只负责同一功能入口的触发词展示，不得包含参数槽位、`@bot`、NoneBot 全局 COMMAND_START 或额外说明。不要修改 usage claim 中的 command_body；模型外会在全部校验通过后替换展示触发词。
-- requires_mention=true 时，每条 usage 必须在 command_body 紧前写 `@bot `；回复上下文仍放在最前，例如 `[回复图片] @bot 识图`。
+- command_body 与 aliases 合计不超过三项时，为 entry.display_trigger 生成一条只由固定文字、`|` 和可嵌套圆括号组成的紧凑表达式；它展开后必须恰好等于全部入口，不能遗漏、增加或重复命令。
+- command_body 与 aliases 合计超过三项时，不再在 usage 枚举，entry.display_trigger 必须改成一个简短必填概念槽位，例如 `<指令>`、`<操作>` 或 `<模板名>`。aliases 为空时 display_trigger 必须为 null。合计四至六项时，summary 必须自然地完整说明这些固定选项；七项及以上只说明选项类别，不把长名单塞进 summary。
+- display_trigger 只负责同一功能入口的触发词展示；三项以内不得包含参数槽位，超过三项必须恰好是一个概念槽位。不得包含 `@bot`、NoneBot 全局 COMMAND_START 或额外说明。不要修改 usage claim 中的 command_body；模型外会在全部校验通过后替换展示触发词。
+- requires_mention=true 时，每条 anchored usage 必须在 command_body 紧前写 `@bot `；complete 聚合 usage 必须包含且只包含一个 `@bot` 占位。回复上下文仍放在最前，例如 `[回复图片] @bot 识图`。
 - canonical_usages 非空时，它来自 Runtime parser 的确定结构；usage 必须逐字复制这些值且不得增删。参数必选性、Option 与别名已经由模型外负责。
-- mode=complete 时，当前入口需要模型根据工厂代码生成一个完整聚合用法；只输出一条 usage。证据不足则关闭整个知识。
+- mode=complete 时，当前入口需要模型根据工厂代码和 payload.family_members 生成一个 family 聚合用法；只输出一条 usage。它负责概括成员选择位和输入种类，具体成员的直接调用形式由 Runtime 成员事实负责。
 - complete 聚合返回前必须复核真正传给 Matcher 注册函数的调用表达式。把表达式还原为固定字面量、成员变量和 parser 参数结构；usage 必须逐字符保留成员变量前后的全部固定字面量，包括 ASCII 或全角符号、空格、业务前缀和业务后缀，不得因为它们不是自然语言而省略。
 - 例如 `f"^{name}图"` 必须完整写成 `^<名称>图`，不能只保留前缀或后缀。传入注册函数的 Python 字符串字面量即使命中 `^`、`$`、`*` 等看似正则或格式控制的符号，也不得自行解释或删除；只有本轮框架 Evidence 明确证明它不是用户输入的一部分时才能省略。这些例子只说明固定字面量的所有权，不授权自行添加 `^` 或“图”；如果实际注册表达式或变量替换关系无法确认，必须关闭知识。
-- 参数化工厂只有在成员共享同一用户目标、同一调用结构和同类可观察结果时才有共同语义。把互不相关的命令列成“工具集合”“混合命令”或菜单不算共同语义，必须关闭知识。
-- complete 聚合中的 `(A|B)` 只能枚举同一成员槽位的简短固定值，共同参数写在括号外。如果各备选项各自携带不同的 `<参数>`、`[参数]` 或完整命令结构，说明无法形成一个聚合用法，必须关闭知识。
+- 参数化工厂只有在成员共享同一用户目标、同一业务概念和同类可观察用途时才有共同语义。把互不相关的命令列成“工具集合”“混合命令”或菜单不算共同语义，必须关闭知识。
+- complete 聚合中的 `(A|B)` 只能枚举同一成员槽位的简短固定值，共同参数写在括号外。成员可以具有不同的参数数量、图片或文字输入、必选性和精确 usage；这些差异保留在 payload.family_members，不得因此关闭 family。聚合用法可以用 `<成员名> [图片|文字]...` 这类概览表达输入种类，但不得声称每个成员都具有完全相同的精确参数合同。
 - complete 聚合必须明确包含成员选择位，例如 `<表情名> [图片]`。只有 Evidence 明确给出业务前缀时才能保留，例如源码确实生成 `%素描`、`%油画` 时可写 `%(素描|油画) <图片>`；不得从示例或常识自行添加 `#`、`%` 等前缀。`滤镜 <图片>` 只有输入，没有选择哪个成员，不能作为聚合用法。业务前缀与成员变量必须使用 `<>` 或 `()`，不要写成 `%{风格名}` 这类花括号模板。
-- Alconna 子命令已经由模型外拆成不同 entry；同一 entry 的参数格式、Option、别名、回复输入等变体才写成多条 usage，最多四条。不要把 Option 擅自拆成新功能。
+- Alconna 子命令已经由模型外拆成不同 entry；同一 entry 的参数格式、Option、别名、回复输入等变体才写成多条 usage，最多三条。不要把 Option 擅自拆成新功能。
 - 一条带 `[...]` 的 usage 已经同时表达“省略该参数”和“提供该参数”，不得再额外输出省略后的短写法。如果命令正文单独可用，而同一 entry 还能追加一个参数，该参数就是可选参数，应合并为一条 `[参数]` 用法，不得另写成 `<参数>`。
 - 每个 entry 必须恰好包含一条 name、一条 summary 和至少一条 usage。name 是简短功能名；summary 写用途和必要的用户特殊说明，不重复 usage。summary 作为帮助图中的短行，默认不加句末句号。参数占位优先简洁，如 `<用户>`、`<话题>`、`<文本>`。
 - `<参数>` 表示当次调用必须提供；`[参数]` 表示可省略。可选 Option 放入方括号；同义触发或 Option 别名可用 `(A|B)`。`[图片] [文字]` 表示可分别组合，`[图片|文字]` 表示二选一，不得混用。
 - 同一参数可以重复提供多次时，把省略号写在完整槽位之后：`<参数>...` 表示至少一项、`[参数]...` 表示零项或多项；不要写成 `<参数...>`、`[参数...]`，也不要为了展示重复性把同一个参数槽位连续写很多遍。Runtime parser 已提供 canonical_usages 时仍须逐字复制，不得自行增删 `...`。
-- 同一位置由当前证据明确给出的备选值不超过四个时可以直接枚举；超过四个时改用一个简短概念槽位。聚合能力的成员槽位是必填时使用 `<成员名>`，不要用表示可省略的方括号。
-- 参数化能力只保证所有 Runtime Matcher 执行同一段闭包 Handler 代码；不会额外提供成员数量、成员名或“外层函数就是工厂”的结论。请阅读获准源码判断是否存在共同语义和完整用法，不得猜测未提供的成员表；无法确认时关闭知识。
+- 同一位置由当前证据明确给出的备选值不超过三个时可以直接枚举；四至六个时使用一个简短概念槽位，并在 summary 完整说明这些选项；七个及以上使用概念槽位，summary 只说明选项类别。聚合能力的成员槽位是必填时使用 `<成员名>`，不要用表示可省略的方括号。
+- 参数化能力只保证所有 Runtime Matcher 执行同一段闭包 Handler 代码。payload.family_members 给出本轮全部公开成员的确定命令、alias 和可由 Runtime parser 确认的参数结构；它们是共同语义和聚合用法的输入，但不会各自变成模型输出 entry。不得遗漏成员、跨 family 合并成员或猜测未提供的参数。
 - Handler 形参的名称或类型本身不等于用户输入合同。`image: bytes`、`text: str` 等普通形参不能证明用户要在命令后发送、回复消息或经历后续交互；只有 Runtime parser 结构、定义与行为均已提供的依赖注入来源，或 Handler 实际读取消息/回复的代码才能证明输入方式。只看到 `Depends(resolve_image)` 而没有 `resolve_image` 的定义时，仍然不能判断图片来自当前消息、回复还是其他来源。
 - 只有当前 Evidence 明确显示 Handler 会读取被回复的消息或媒体时，才允许生成 `[回复图片]`、`[回复表情包]` 等回复上下文；不得因为命令涉及图片、Bot 或常见聊天习惯而猜测支持回复。回复上下文不要添加“消息”；需要提及 Bot 时使用 `@bot`。
-- 后续交互不要写进 usage；只在 input_requirement 或 answer_markdown 中保留确实有助使用的高层说明。
-- synonym 只用于检索同一能力，不得虚构命令；supported_subject 只写简短名词或名词短语，最多八项。
-- constraints 只记录实际存在的公开前提。role 为 all、admin、owner、superuser 或 custom；Uninfo MEMBER 记作 custom。rate_limit 必须同时填写 policy 与 scope，且不能只凭类似 limiter 的名称断言。若限流约束引用了数值配置，公开说明必须明确写出这些数值。
-- answer_markdown 只保存普通用户可见的补充知识；不得讲解监听、缓存、学习条件、源码结构或内部实现。
+- 后续交互不要写进 usage；只在确实有助使用时作为 behavior_boundary 简洁说明。
+- search_term 同时承载同义检索词和能力支持对象；不得虚构命令，也不得写成使用说明。
+- behavior_boundary 只记录 usage 无法表达的输入格式、后续交互、处理范围、结果范围或业务能力边界。普通必填/可选参数不得重复成 behavior_boundary；权限、场景、访问资格和限流不得重复写进 behavior_boundary。
+- constraints 只记录真实存在并影响能力能否执行的公开前提，kind 只能是 scene、role、access 或 rate_limit。普通命令参数、回复上下文和 `@bot` 由 usage 唯一表达，永远不生成 constraint。
+- role 为 admin、owner、superuser 或 custom；Uninfo MEMBER 记作 custom。scene 记录私聊、群聊、频道等使用场景。access 只记录脱敏后的授权或开放范围，例如“需授权”或“可能只对部分用户、群或场景开放”，不得输出名单、ID、配置键或断言当前主体命中名单。rate_limit 必须同时填写 policy 与 scope，且不能只凭类似 limiter 的名称断言。若限流约束引用了数值配置，公开说明必须明确写出这些数值。
+- 同一公开事实只能选择一个语义所有者：usage 已表达的参数结构不得重复；调用频率只写 rate_limit；角色、场景和访问资格只写对应 constraint。
 - 最终输出自检：previous_annotation 存在时，只有当前 Evidence 明确推翻旧成员才提交 baseline_changes；其余旧成员不要重复输出，也不要提交变化操作。
 - 只返回已配置的结构化输出。
 """
@@ -154,9 +160,11 @@ class CapabilityModelAdapterError(CapabilityAnalysisError):
         message: str,
         *,
         reason_code: CapabilityModelAdapterReason = CapabilityModelAdapterReason.UNKNOWN,
+        detail_code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.reason_code = reason_code
+        self.detail_code = detail_code
 
 
 class _BoundedNavigationToolset(WrapperToolset[Any]):
@@ -204,14 +212,16 @@ class _StrictModel(BaseModel):
 
 
 class _ClaimOutput(_StrictModel):
-    kind: Literal[
-        "name",
-        "summary",
-        "usage",
-        "synonym",
-        "supported_subject",
-        "input_requirement",
-        "behavior_boundary",
+    kind: Annotated[
+        Literal["name", "summary", "usage", "search_term", "behavior_boundary"],
+        Field(
+            description=(
+                "公开能力事实类型：name=简短能力名称；summary=一句话用途；"
+                "usage=完整调用形式；search_term=同义检索词或支持对象；"
+                "behavior_boundary=usage 无法表达的输入格式、后续交互、处理或结果边界，"
+                "不得重复参数结构、权限、场景、访问资格或限流。"
+            )
+        ),
     ]
     statement: Annotated[str, Field(min_length=1, max_length=1_000)]
     evidence_ids: Annotated[list[str], Field(min_length=1, max_length=16)]
@@ -223,19 +233,13 @@ class _ClaimOutput(_StrictModel):
             self.statement = _normalize_usage_statement(self.statement)
         validate_capability_public_statement(
             self.statement,
-            allow_at_bot=self.kind == "usage",
         )
         return self
 
 
 class _BaselineChangeOutput(_StrictModel):
     op: Literal["remove", "replace"]
-    field: Literal[
-        "synonyms",
-        "supported_subjects",
-        "input_requirements",
-        "behavior_boundaries",
-    ]
+    field: Literal["search_terms", "behavior_boundaries"]
     old_value: Annotated[str, Field(min_length=1, max_length=1_000)]
     new_value: Annotated[str | None, Field(max_length=1_000)] = None
     evidence_ids: Annotated[list[str], Field(min_length=1, max_length=16)]
@@ -250,8 +254,6 @@ class _BaselineChangeOutput(_StrictModel):
             self.new_value = validate_capability_public_statement(self.new_value)
             if self.new_value == self.old_value:
                 raise ValueError("replace baseline change must change the value")
-            if self.field == "supported_subjects" and len(self.new_value) > 20:
-                raise ValueError("supported_subjects must contain short noun phrases")
         elif self.new_value is not None:
             raise ValueError("remove baseline change must not define new_value")
         return self
@@ -292,11 +294,20 @@ def _complete_usage_embeds_distinct_invocations(usage: str) -> bool:
 
 
 class _ConstraintOutput(_StrictModel):
-    kind: Literal["input", "scene", "role", "rate_limit", "feature_state", "other"]
+    kind: Annotated[
+        Literal["scene", "role", "access", "rate_limit"],
+        Field(
+            description=(
+                "影响能力能否执行的公开前提：scene=会话或平台场景；role=调用者角色；"
+                "access=脱敏授权或开放范围；rate_limit=冷却、配额或并发。"
+                "普通参数、回复上下文和 @bot 不属于 constraint。"
+            )
+        ),
+    ]
     statement: Annotated[str, Field(min_length=1, max_length=1_000)]
     evidence_ids: Annotated[list[str], Field(min_length=1, max_length=16)]
     config_reference_ids: Annotated[list[str], Field(max_length=16)] = []
-    role: Literal["all", "admin", "owner", "superuser", "custom"] | None = None
+    role: Literal["admin", "owner", "superuser", "custom"] | None = None
     rate_limit_policy: Literal["cooldown", "quota", "concurrency", "custom"] | None = None
     rate_limit_scope: Literal["user", "scene", "bot", "global", "custom", "unknown"] | None = None
     gate_candidate_ids: Annotated[list[str], Field(max_length=16)] = []
@@ -330,9 +341,6 @@ class _AnalysisEntryOutput(_StrictModel):
     claims: Annotated[list[_ClaimOutput], Field(max_length=64)] = []
     baseline_changes: Annotated[list[_BaselineChangeOutput], Field(max_length=64)] = []
     constraints: Annotated[list[_ConstraintOutput], Field(max_length=64)] = []
-    answer_markdown: Annotated[str | None, Field(max_length=32_000)] = None
-    answer_evidence_ids: Annotated[list[str], Field(max_length=16)] = []
-    answer_config_reference_ids: Annotated[list[str], Field(max_length=16)] = []
 
     @model_validator(mode="after")
     def validate_entry_output(self) -> _AnalysisEntryOutput:
@@ -340,46 +348,23 @@ class _AnalysisEntryOutput(_StrictModel):
             raise ValueError("teaching entry requires exactly one name claim")
         if sum(item.kind == "summary" for item in self.claims) != 1:
             raise ValueError("teaching entry requires exactly one summary claim")
-        if not any(item.kind == "usage" for item in self.claims):
+        usage_count = sum(item.kind == "usage" for item in self.claims)
+        if usage_count == 0:
             raise ValueError("teaching entry requires at least one usage claim")
-        if not self.answer_markdown or not self.answer_evidence_ids:
-            self._replace_answer_with_public_claims()
-        else:
-            try:
-                for line in self.answer_markdown.splitlines():
-                    normalized = " ".join(line.split())
-                    if normalized:
-                        validate_capability_public_statement(normalized, allow_at_bot=True)
-            except CapabilityAnnotationError:
-                self._replace_answer_with_public_claims()
-        assert self.answer_markdown is not None
+        if usage_count > MAX_EXPLICIT_USAGE_ALTERNATIVES:
+            raise ValueError(
+                "teaching entry allows at most three usages; larger fixed alternatives "
+                "must use a concept slot"
+            )
         public_statements = [
             *(claim.statement for claim in self.claims),
             *(constraint.statement for constraint in self.constraints),
-            self.answer_markdown,
         ]
         if any(_NEGATED_RESTRICTION_RE.search(statement) for statement in public_statements):
             raise ValueError(
                 "absence of a restriction must not be promoted to public teaching output"
             )
         return self
-
-    def _replace_answer_with_public_claims(self) -> None:
-        preferred = [
-            item
-            for item in self.claims
-            if item.kind in {"summary", "input_requirement", "behavior_boundary"}
-        ]
-        selected = preferred or [item for item in self.claims if item.kind == "name"]
-        self.answer_markdown = "\n\n".join(item.statement for item in selected)
-        self.answer_evidence_ids = list(
-            dict.fromkeys(evidence_id for item in selected for evidence_id in item.evidence_ids)
-        )
-        self.answer_config_reference_ids = list(
-            dict.fromkeys(
-                reference_id for item in selected for reference_id in item.config_reference_ids
-            )
-        )
 
 
 class _AnalysisOutput(_StrictModel):
@@ -417,7 +402,7 @@ def _alias_pattern_failures(
     for entry in entries:
         target = targets[entry.entry_id]
         literals = _alias_literals(target)
-        fallback = deterministic_literal_expression(literals)
+        fallback = deterministic_usage_selector(literals)
         if len(literals) <= 1 or fallback is None:
             entry.display_trigger = None
             continue
@@ -425,7 +410,7 @@ def _alias_pattern_failures(
             failures.append((entry, target, "缺少 display_trigger"))
             continue
         try:
-            validate_literal_expression(entry.display_trigger, literals)
+            validate_usage_selector(entry.display_trigger, literals)
         except CapabilityUsageExpressionError as error:
             failures.append((entry, target, str(error)))
             continue
@@ -476,6 +461,7 @@ class PydanticAICapabilityAnalysisClient:
         max_tool_calls: int = 5,
         total_tokens_limit: int = 120_000,
         cost_limit_usd: Decimal = Decimal("0.05"),
+        capture_diagnostics: bool = False,
     ) -> None:
         if timeout_seconds <= 0:
             raise CapabilityModelAdapterError(
@@ -519,6 +505,8 @@ class PydanticAICapabilityAnalysisClient:
         self._active_tool_runtime: CapabilityAnalysisToolRuntime | None = None
         self._last_response: ModelResponse | None = None
         self._last_usage: RunUsage | None = None
+        self._capture_diagnostics = capture_diagnostics
+        self._diagnostic_trace: tuple[dict[str, Any], ...] = ()
         self._agent: Agent[CapabilityAnalysisRequest, _AnalysisOutput] = Agent(
             model,
             output_type=_AnalysisOutput,
@@ -571,11 +559,12 @@ class PydanticAICapabilityAnalysisClient:
                     )
                     self._last_validation_failure = detail
                     raise ModelRetry(
-                        "display_trigger 必须恰好展开为 Runtime 已确认的全部同义命令；"
+                        "display_trigger 在三项以内必须恰好展开为 Runtime 已确认的全部入口，"
+                        "超过三项必须是一个简短必填概念槽位；"
                         f"只修正 display_trigger，其他字段保持不变。{detail}"
                     )
                 for entry, target, _reason in alias_failures:
-                    fallback = deterministic_literal_expression(_alias_literals(target))
+                    fallback = deterministic_usage_selector(_alias_literals(target))
                     entry.display_trigger = (
                         fallback
                         if fallback is not None
@@ -645,6 +634,14 @@ class PydanticAICapabilityAnalysisClient:
                             raise CapabilityAnnotationError(
                                 "mention-required usage must place @bot before command_body"
                             )
+                        if (
+                            target.requires_mention
+                            and target.mode is CapabilityInvocationMode.COMPLETE
+                            and len(re.findall(r"(?<!\S)@bot(?=\s)", usage)) != 1
+                        ):
+                            raise CapabilityAnnotationError(
+                                "mention-required aggregate usage must contain one @bot placeholder"
+                            )
                     _validate_rate_limit_config_values(entry, ctx.deps)
                 captured_evidence = (
                     self._active_tool_runtime.evidence_units()
@@ -670,6 +667,10 @@ class PydanticAICapabilityAnalysisClient:
     @property
     def last_usage(self) -> RunUsage | None:
         return self._last_usage
+
+    @property
+    def diagnostic_trace(self) -> tuple[dict[str, Any], ...]:
+        return self._diagnostic_trace
 
     async def analyze(self, request: CapabilityAnalysisRequest) -> CapabilityAnalysisOutput:
         if not isinstance(request, CapabilityAnalysisRequest):
@@ -726,6 +727,7 @@ class PydanticAICapabilityAnalysisClient:
                 raise CapabilityModelAdapterError(
                     f"capability model request failed with HTTP {error.status_code}",
                     reason_code=CapabilityModelAdapterReason.HTTP,
+                    detail_code=f"http_{error.status_code}",
                 ) from error
             except TimeoutError as error:
                 raise CapabilityModelAdapterError(
@@ -763,6 +765,9 @@ class PydanticAICapabilityAnalysisClient:
                         if truncated
                         else CapabilityModelAdapterReason.OUTPUT_VALIDATION
                     ),
+                    detail_code=(
+                        "finish_reason_length" if truncated else "agent_output_validation"
+                    ),
                 ) from error
             except (AgentRunError, UserError, ValueError) as error:
                 raise CapabilityModelAdapterError("capability model request failed") from error
@@ -771,6 +776,11 @@ class PydanticAICapabilityAnalysisClient:
             finally:
                 self._last_response = _last_model_response(captured_messages)
                 self._last_usage = _captured_run_usage(captured_messages)
+                self._diagnostic_trace = (
+                    _diagnostic_message_trace(captured_messages)
+                    if self._capture_diagnostics
+                    else ()
+                )
                 record_agent_response_shape(
                     self._last_response,
                     metadata={
@@ -831,7 +841,7 @@ class PydanticAICapabilityAnalysisClient:
 def _build_payload(request: CapabilityAnalysisRequest) -> str:
     invocation_targets = {item.entry_id: item for item in request.invocations}
     payload = {
-        "schema_version": 4,
+        "schema_version": 6,
         "prompt_id": CAPABILITY_ANNOTATION_PROMPT_ID,
         "capability": {
             "capability_id": request.capability.capability_id,
@@ -849,6 +859,24 @@ def _build_payload(request: CapabilityAnalysisRequest) -> str:
                 "requires_mention": item.requires_mention,
             }
             for item in request.invocations
+        ],
+        "family_members": [
+            {
+                "capability_id": member.capability_id,
+                "invocations": [
+                    {
+                        "entry_id": item.entry_id,
+                        "mode": item.mode.value,
+                        "command_body": item.command_body,
+                        "canonical_usages": list(item.canonical_usages),
+                        "aliases": list(item.aliases),
+                        "requires_mention": item.requires_mention,
+                    }
+                    for item in member.invocations
+                ],
+                "evidence_ids": list(member.evidence_ids),
+            }
+            for member in request.family_members
         ],
         "gate_candidates": [
             {
@@ -929,12 +957,9 @@ def _build_payload(request: CapabilityAnalysisRequest) -> str:
                             )
                             else list(entry.usages)
                         ),
-                        "synonyms": list(entry.synonyms),
-                        "supported_subjects": list(entry.supported_subjects),
-                        "input_requirements": list(entry.input_requirements),
+                        "search_terms": list(entry.search_terms),
                         "behavior_boundaries": list(entry.behavior_boundaries),
                         "requirements": list(entry.requirements),
-                        "answer_markdown": entry.answer_markdown,
                     }
                     for entry in request.previous_annotation.entries
                 ],
@@ -957,7 +982,6 @@ def _to_domain_output(
         for item in (*entry.claims, *entry.constraints)
         for evidence_id in item.evidence_ids
     }
-    referenced.update(evidence_id for entry in entries for evidence_id in entry.answer_evidence_ids)
     referenced.update(
         evidence_id
         for entry in entries
@@ -1091,9 +1115,6 @@ def _to_domain_entry(output: _AnalysisEntryOutput) -> CapabilityAnalysisEntryOut
             )
             for item in output.constraints
         ),
-        answer_markdown=output.answer_markdown,
-        answer_evidence_ids=tuple(output.answer_evidence_ids),
-        answer_config_reference_ids=tuple(output.answer_config_reference_ids),
     )
 
 
@@ -1102,6 +1123,55 @@ def _last_model_response(messages: list[ModelMessage]) -> ModelResponse | None:
         (message for message in reversed(messages) if isinstance(message, ModelResponse)),
         None,
     )
+
+
+def _diagnostic_message_trace(
+    messages: list[ModelMessage],
+) -> tuple[dict[str, Any], ...]:
+    """仅保留模型输出、工具往返和修正，不记录系统或用户输入。"""
+    trace: list[dict[str, Any]] = []
+    for message in messages:
+        if isinstance(message, ModelResponse):
+            parts: list[dict[str, Any]] = []
+            for part in message.parts:
+                if isinstance(part, TextPart):
+                    parts.append({"kind": "assistant_text", "content": part.content})
+                elif isinstance(part, ToolCallPart):
+                    parts.append(
+                        {
+                            "kind": "assistant_tool_call",
+                            "tool_name": part.tool_name,
+                            "tool_call_id": part.tool_call_id,
+                            "args": part.args,
+                        }
+                    )
+            if parts:
+                trace.append(
+                    {
+                        "message": "response",
+                        "finish_reason": message.finish_reason,
+                        "parts": parts,
+                    }
+                )
+            continue
+        if not isinstance(message, ModelRequest):
+            continue
+        parts = []
+        for part in message.parts:
+            if isinstance(part, RetryPromptPart):
+                parts.append({"kind": "correction", "content": part.content})
+            elif isinstance(part, ToolReturnPart):
+                parts.append(
+                    {
+                        "kind": "tool_result",
+                        "tool_name": part.tool_name,
+                        "tool_call_id": part.tool_call_id,
+                        "content": part.content,
+                    }
+                )
+        if parts:
+            trace.append({"message": "request_followup", "parts": parts})
+    return tuple(trace)
 
 
 def _captured_run_usage(messages: list[ModelMessage]) -> RunUsage:
@@ -1199,8 +1269,6 @@ def _captured_retry_reason(messages: list[ModelMessage]) -> str | None:
 def _safe_validation_error_code(error: Mapping[str, Any]) -> str:
     message = str(error.get("msg", ""))
     known_messages = {
-        "teaching entry requires answer_markdown": "missing_answer_markdown",
-        "answer_markdown requires Evidence references": "missing_answer_evidence",
         "teaching entry requires exactly one name claim": "invalid_name_count",
         "teaching entry requires at least one usage claim": "missing_usage",
         "absence of a restriction must not be promoted": "negated_restriction",

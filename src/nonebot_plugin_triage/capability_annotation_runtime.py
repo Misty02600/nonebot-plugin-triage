@@ -11,6 +11,7 @@ from nbtriage.capability_annotations import (
     CAPABILITY_ANNOTATION_BUDGET_PROFILE,
     CAPABILITY_ANNOTATION_PRIVACY_POLICY,
     CAPABILITY_ANNOTATION_PROMPT_ID,
+    CAPABILITY_ANNOTATION_REQUEST_REVISION,
     CAPABILITY_ANNOTATION_SCHEMA_VERSION,
     CAPABILITY_ANNOTATION_TASK,
 )
@@ -36,6 +37,7 @@ CAPABILITY_ANNOTATION_EVALUATION = unverified_evaluation_id(
 )
 CAPABILITY_ANNOTATION_ANALYSIS_REVISION = (
     f"{CAPABILITY_ANNOTATION_TASK}:{CAPABILITY_ANNOTATION_PROMPT_ID}:"
+    f"{CAPABILITY_ANNOTATION_REQUEST_REVISION}:"
     f"{CAPABILITY_ANNOTATION_EVALUATION}"
 )
 
@@ -48,6 +50,7 @@ class CapabilityAnnotationTaskQualification:
     task: str
     schema_version: int
     prompt_id: str
+    request_revision: str
     privacy_policy: str
     budget_profile: str
     evaluation: str | None
@@ -61,6 +64,7 @@ OPENCODE_GO_CAPABILITY_ANNOTATION_QUALIFICATION = CapabilityAnnotationTaskQualif
     task=CAPABILITY_ANNOTATION_TASK,
     schema_version=CAPABILITY_ANNOTATION_SCHEMA_VERSION,
     prompt_id=CAPABILITY_ANNOTATION_PROMPT_ID,
+    request_revision=CAPABILITY_ANNOTATION_REQUEST_REVISION,
     privacy_policy=CAPABILITY_ANNOTATION_PRIVACY_POLICY,
     budget_profile=CAPABILITY_ANNOTATION_BUDGET_PROFILE,
     evaluation=CAPABILITY_ANNOTATION_EVALUATION,
@@ -181,6 +185,7 @@ def _capability_annotation_qualification(
         task=CAPABILITY_ANNOTATION_TASK,
         schema_version=CAPABILITY_ANNOTATION_SCHEMA_VERSION,
         prompt_id=CAPABILITY_ANNOTATION_PROMPT_ID,
+        request_revision=CAPABILITY_ANNOTATION_REQUEST_REVISION,
         privacy_policy=CAPABILITY_ANNOTATION_PRIVACY_POLICY,
         budget_profile=CAPABILITY_ANNOTATION_BUDGET_PROFILE,
         evaluation=(

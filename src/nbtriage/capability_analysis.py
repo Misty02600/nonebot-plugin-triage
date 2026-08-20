@@ -15,16 +15,12 @@ class SemanticClaimKind(StrEnum):
     NAME = "name"
     SUMMARY = "summary"
     USAGE = "usage"
-    SYNONYM = "synonym"
-    SUPPORTED_SUBJECT = "supported_subject"
-    INPUT_REQUIREMENT = "input_requirement"
+    SEARCH_TERM = "search_term"
     BEHAVIOR_BOUNDARY = "behavior_boundary"
 
 
 class BaselineMemberField(StrEnum):
-    SYNONYMS = "synonyms"
-    SUPPORTED_SUBJECTS = "supported_subjects"
-    INPUT_REQUIREMENTS = "input_requirements"
+    SEARCH_TERMS = "search_terms"
     BEHAVIOR_BOUNDARIES = "behavior_boundaries"
 
 
@@ -34,16 +30,13 @@ class BaselineChangeOperation(StrEnum):
 
 
 class SemanticConstraintKind(StrEnum):
-    INPUT = "input"
     SCENE = "scene"
     ROLE = "role"
+    ACCESS = "access"
     RATE_LIMIT = "rate_limit"
-    FEATURE_STATE = "feature_state"
-    OTHER = "other"
 
 
 class TeachingRole(StrEnum):
-    ALL = "all"
     ADMIN = "admin"
     OWNER = "owner"
     SUPERUSER = "superuser"
@@ -122,12 +115,9 @@ class CapabilityAnalysisEntryBaseline:
     name: str | None = None
     summary: str | None = None
     usages: tuple[str, ...] = ()
-    synonyms: tuple[str, ...] = ()
-    supported_subjects: tuple[str, ...] = ()
-    input_requirements: tuple[str, ...] = ()
+    search_terms: tuple[str, ...] = ()
     behavior_boundaries: tuple[str, ...] = ()
     requirements: tuple[str, ...] = ()
-    answer_markdown: str | None = None
 
     def __post_init__(self) -> None:
         _bounded_text(self.entry_id, "baseline entry_id", max_length=128)
@@ -137,15 +127,11 @@ class CapabilityAnalysisEntryBaseline:
             _bounded_text(self.summary, "baseline summary", max_length=1_000)
         for label, values in (
             ("baseline usages", self.usages),
-            ("baseline synonyms", self.synonyms),
-            ("baseline supported_subjects", self.supported_subjects),
-            ("baseline input_requirements", self.input_requirements),
+            ("baseline search_terms", self.search_terms),
             ("baseline behavior_boundaries", self.behavior_boundaries),
             ("baseline requirements", self.requirements),
         ):
             _bounded_text_tuple(values, label, max_items=24, max_length=1_000)
-        if self.answer_markdown is not None:
-            _bounded_text(self.answer_markdown, "baseline answer_markdown", max_length=32_000)
 
 
 @dataclass(frozen=True)
@@ -207,8 +193,33 @@ class CapabilityInvocationTarget:
             raise CapabilityAnalysisError("only anchored invocations may define aliases")
         if not isinstance(self.requires_mention, bool):
             raise CapabilityAnalysisError("requires_mention must be a boolean")
-        if self.requires_mention and self.mode is not CapabilityInvocationMode.ANCHORED:
-            raise CapabilityAnalysisError("only anchored invocations may require a mention")
+
+
+@dataclass(frozen=True)
+class CapabilityFamilyMember:
+    """参数化 family 中一个当前 Runtime Matcher 的确定调用事实。"""
+
+    capability_id: str
+    invocations: tuple[CapabilityInvocationTarget, ...]
+    evidence_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _bounded_text(self.capability_id, "family member capability_id", max_length=128)
+        _bounded_instances(
+            self.invocations,
+            CapabilityInvocationTarget,
+            "family member invocations",
+            min_items=1,
+            max_items=32,
+        )
+        if any(item.mode is not CapabilityInvocationMode.ANCHORED for item in self.invocations):
+            raise CapabilityAnalysisError(
+                "family member invocations must be deterministic anchored entries"
+            )
+        entry_ids = [item.entry_id for item in self.invocations]
+        if len(entry_ids) != len(set(entry_ids)):
+            raise CapabilityAnalysisError("family member invocation entry IDs must be unique")
+        _evidence_ids(self.evidence_ids, "family member evidence_ids")
 
 
 @dataclass(frozen=True)
@@ -310,6 +321,7 @@ class CapabilityAnalysisRequest:
     fixed_constraints: tuple[SemanticConstraint, ...] = ()
     previous_annotation: CapabilityAnalysisBaseline | None = field(default=None, repr=False)
     invocations: tuple[CapabilityInvocationTarget, ...] = ()
+    family_members: tuple[CapabilityFamilyMember, ...] = ()
     gate_candidates: tuple[CapabilityGateCandidate, ...] = ()
 
     def __post_init__(self) -> None:
@@ -333,6 +345,17 @@ class CapabilityAnalysisRequest:
         invocation_ids = [item.entry_id for item in self.invocations]
         if len(invocation_ids) != len(set(invocation_ids)):
             raise CapabilityAnalysisError("invocation entry IDs must be unique")
+        _bounded_instances(
+            self.family_members,
+            CapabilityFamilyMember,
+            "family_members",
+            max_items=512,
+        )
+        family_member_ids = [item.capability_id for item in self.family_members]
+        if len(family_member_ids) != len(set(family_member_ids)):
+            raise CapabilityAnalysisError("family member capability IDs must be unique")
+        if self.family_members and self.capability.kind != "command_family":
+            raise CapabilityAnalysisError("only command_family requests may define family members")
         _bounded_instances(
             self.gate_candidates,
             CapabilityGateCandidate,
@@ -376,6 +399,10 @@ class CapabilityAnalysisRequest:
         evidence_ids = [item.evidence_id for item in self.evidence_units]
         if len(evidence_ids) != len(set(evidence_ids)):
             raise CapabilityAnalysisError("evidence units contain duplicate evidence IDs")
+        for member in self.family_members:
+            unavailable_evidence = set(member.evidence_ids).difference(evidence_ids)
+            if unavailable_evidence:
+                raise CapabilityAnalysisError("family member references unavailable evidence IDs")
         for candidate in self.gate_candidates:
             unavailable_evidence = set(candidate.evidence_ids).difference(evidence_ids)
             if unavailable_evidence:
@@ -508,9 +535,6 @@ class CapabilityAnalysisEntryOutput:
     entry_id: str
     claims: tuple[SemanticClaim, ...] = ()
     constraints: tuple[SemanticConstraint, ...] = ()
-    answer_markdown: str | None = None
-    answer_evidence_ids: tuple[str, ...] = ()
-    answer_config_reference_ids: tuple[str, ...] = ()
     display_trigger: str | None = None
     baseline_changes: tuple[BaselineMemberChange, ...] = ()
 
@@ -528,13 +552,6 @@ class CapabilityAnalysisEntryOutput:
             SemanticConstraint,
             "constraints",
             max_items=64,
-        )
-        if self.answer_markdown is not None:
-            _bounded_text(self.answer_markdown, "answer_markdown", max_length=32_000)
-        _optional_evidence_ids(self.answer_evidence_ids, "answer_evidence_ids")
-        _config_reference_ids(
-            self.answer_config_reference_ids,
-            "answer_config_reference_ids",
         )
         if self.display_trigger is not None:
             _bounded_text(self.display_trigger, "display_trigger", max_length=256)
@@ -641,9 +658,6 @@ def validate_capability_analysis_output(
         for evidence_id in item.evidence_ids
     }
     referenced.update(
-        evidence_id for entry in output.entries for evidence_id in entry.answer_evidence_ids
-    )
-    referenced.update(
         evidence_id
         for entry in output.entries
         for change in entry.baseline_changes
@@ -666,11 +680,6 @@ def validate_capability_analysis_output(
         for item in (*entry.claims, *entry.constraints)
         for reference_id in item.config_reference_ids
     }
-    referenced_config.update(
-        reference_id
-        for entry in output.entries
-        for reference_id in entry.answer_config_reference_ids
-    )
     referenced_config.update(
         reference_id
         for entry in output.entries
@@ -699,15 +708,11 @@ def validate_capability_analysis_output(
 
 
 _BASELINE_CLAIM_FIELDS = {
-    SemanticClaimKind.SYNONYM: BaselineMemberField.SYNONYMS,
-    SemanticClaimKind.SUPPORTED_SUBJECT: BaselineMemberField.SUPPORTED_SUBJECTS,
-    SemanticClaimKind.INPUT_REQUIREMENT: BaselineMemberField.INPUT_REQUIREMENTS,
+    SemanticClaimKind.SEARCH_TERM: BaselineMemberField.SEARCH_TERMS,
     SemanticClaimKind.BEHAVIOR_BOUNDARY: BaselineMemberField.BEHAVIOR_BOUNDARIES,
 }
 _BASELINE_MEMBER_LIMITS = {
-    BaselineMemberField.SYNONYMS: 16,
-    BaselineMemberField.SUPPORTED_SUBJECTS: 8,
-    BaselineMemberField.INPUT_REQUIREMENTS: 16,
+    BaselineMemberField.SEARCH_TERMS: 24,
     BaselineMemberField.BEHAVIOR_BOUNDARIES: 16,
 }
 
@@ -788,12 +793,6 @@ def _validate_projected_config_value_references(
             _validate_text_config_value_references(
                 item.statement,
                 item.config_reference_ids,
-                unique_references,
-            )
-        if entry.answer_markdown is not None:
-            _validate_text_config_value_references(
-                entry.answer_markdown,
-                entry.answer_config_reference_ids,
                 unique_references,
             )
 
@@ -1032,6 +1031,7 @@ __all__ = (
     "CapabilityAnalysisRequest",
     "CapabilityAnalysisService",
     "CapabilityEvidenceUnit",
+    "CapabilityFamilyMember",
     "CapabilityGateCandidate",
     "CapabilityGateKind",
     "CapabilityGateResolution",

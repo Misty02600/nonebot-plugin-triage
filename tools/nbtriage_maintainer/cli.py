@@ -71,6 +71,8 @@ from tools.nbtriage_maintainer.capability_teaching_evaluation import (
     CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION,
     CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID,
     CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256,
+    CAPABILITY_TEACHING_QUALIFIED_MAX_OUTPUT_TOKENS,
+    CAPABILITY_TEACHING_QUALIFIED_TIMEOUT_SECONDS,
     CapabilityTeachingEvaluationError,
     evaluate_capability_teaching,
 )
@@ -356,7 +358,7 @@ def build_parser() -> argparse.ArgumentParser:
     capability_teaching_evaluation_parser.add_argument(
         "--fixtures",
         type=Path,
-        default=Path("evals/datasets/fixtures/capability-teaching-v11-forward-heldout.json"),
+        default=Path("evals/datasets/fixtures/capability-teaching-v13-forward-heldout.json"),
     )
     capability_teaching_evaluation_parser.add_argument("--report", type=Path, required=True)
     capability_teaching_evaluation_parser.add_argument(
@@ -371,12 +373,12 @@ def build_parser() -> argparse.ArgumentParser:
     capability_teaching_evaluation_parser.add_argument(
         "--timeout-seconds",
         type=_positive_float,
-        default=60.0,
+        default=CAPABILITY_TEACHING_QUALIFIED_TIMEOUT_SECONDS,
     )
     capability_teaching_evaluation_parser.add_argument(
         "--max-output-tokens",
         type=_positive_int,
-        default=4_096,
+        default=CAPABILITY_TEACHING_QUALIFIED_MAX_OUTPUT_TOKENS,
     )
     capability_teaching_evaluation_parser.add_argument(
         "--official-fixture-set-id",
@@ -393,6 +395,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Run only the named fixture case as a non-qualifying diagnostic. "
             "Repeat for multiple cases."
+        ),
+    )
+    capability_teaching_evaluation_parser.add_argument(
+        "--capture-invalid-output",
+        action="store_true",
+        help=(
+            "Persist assistant outputs, tool exchanges, and corrections for failed or "
+            "retried cases. Only available for an exact official synthetic fixture run."
         ),
     )
     _add_model_evaluation_target_arguments(capability_teaching_evaluation_parser)
@@ -1290,9 +1300,16 @@ def _run_evaluate_capability_teaching(args: argparse.Namespace) -> int:
         )
         return 2
     partial_report = args.report.with_name(f"{args.report.stem}.partial.json")
+    diagnostic_output = (
+        args.report.with_name(f"{args.report.stem}.invalid-output.json")
+        if args.capture_invalid_output
+        else None
+    )
     try:
         _require_new_report_target(args.report)
         _require_new_report_target(partial_report)
+        if diagnostic_output is not None:
+            _require_new_report_target(diagnostic_output)
         binding, price_profile, evaluation_id, evaluation_revision = _build_model_evaluation_target(
             args,
             timeout_seconds=args.timeout_seconds,
@@ -1312,6 +1329,7 @@ def _run_evaluate_capability_teaching(args: argparse.Namespace) -> int:
                 expected_provider=binding.provider,
                 expected_model=binding.model_name,
                 tool_runtime_factory=tool_runtime_factory,
+                capture_diagnostics=args.capture_invalid_output,
             )
 
         report = asyncio.run(
@@ -1334,6 +1352,8 @@ def _run_evaluate_capability_teaching(args: argparse.Namespace) -> int:
                 pricing_profile=(price_profile.to_report() if price_profile else None),
                 partial_report_path=partial_report,
                 selected_case_ids=(frozenset(args.case_id) if args.case_id else None),
+                enforce_qualification_preflight=True,
+                diagnostic_output_path=diagnostic_output,
             )
         )
         write_new_evaluation_report(args.report, report)
@@ -1357,6 +1377,8 @@ def _run_evaluate_capability_teaching(args: argparse.Namespace) -> int:
     )
     print(f"report: {args.report}")
     print(f"partial audit: {partial_report}")
+    if diagnostic_output is not None:
+        print(f"invalid-output diagnostics: {diagnostic_output}")
     return 0 if report["quality_gate"]["status"] == "passed" else 1
 
 

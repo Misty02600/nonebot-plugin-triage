@@ -68,7 +68,9 @@ NoneBot `SUPERUSER` 只决定当前事件是否可以读取维护者可见的能
 Matcher / 工厂结构、已加载 handler 和内存配置投影组成的确定性 Evidence Pack；仅当首包不足时，才可通过
 共享只读 FileSystem 在批准根内 glob/search/read、由 Jedi 从已读 Python 标识符转到当前环境依赖定义，或
 查询当前版本对应的 NoneBot 公开文档索引。源码只补充已注册记录：加载失败、未观察到或只在静态制品中
-存在的插件不会进入普通用户帮助；一轮中任一分析单元失败都不会激活半套新教学视图，基础索引仍可用。
+存在的插件不会进入普通用户帮助。单个 teaching unit 失败只关闭没有当前可信结果的对应单元，其他成功或
+精确命中缓存的单元可以进入显式标记覆盖量的 partial generation；共享 snapshot 或发布可信度失败时才保留
+上一活动 generation，基础索引始终可用。
 
 插件源码中的 Matcher 注册、handler 装饰器、配置引用及 Rule / Permission / 限流候选由项目内固定、只读的
 ast-grep 规则提取；部署配置和模型都不能提交规则，也不开放 fix 或 rewrite。它只提供静态语法位置和候选
@@ -92,19 +94,33 @@ partial / opaque 边界。官方直接 `on_*` 入口均可形成源码锚点；`
 能唯一定位外层工厂、且同一工厂没有未准入成员时才聚合分析一次。静态层不生成成员列表或共同语义摘要；
 Agent 无法形成可靠共同说明时输出 `knowledge_enabled=false`。公开查询会把命中的注释作为
 事实交给无工具 Answer Agent 结合当前问题组织回答，只有 Answer 失败时才直接使用确定性注释模板；同一注释
-还会投影成独立的展示 YAML 和 Answer Markdown。LocalStore cache 只保存公开
+还会投影成独立的展示 YAML 和从结构化公开字段确定性渲染的 Answer Markdown。模型不再生成自由 Markdown。
+当前公开 entry 只保存 name、summary、usages、search terms、behavior boundaries 及 role / scene / access /
+rate limit requirements。LocalStore cache 只保存公开
 文本、请求指纹，以及动态 `read_file` Evidence 的 ID、相对位置和 revision 清单；它不保存源码正文或配置
-值。教学文件策略硬拒绝 `.env*`、凭据与数据库，并额外拒绝日志、Migut Help 人工 YAML、评测 Gold 和本任务
-生成的 help-display，避免秘密外发与评价数据泄漏。
+值。缓存按插件写入 `capability-annotations/<module_name>.json`，同一文件内按 teaching unit 分别保留
+`last_good` 与 `last_attempt`：失败尝试不覆盖仍精确匹配当前 revision / fingerprint / Evidence 的最近完整
+结果，尝试状态也不会被误当成公开事实。分片的 `published_generation` 还必须与当前输出指针一致，否则只
+能作为编辑基线。缓存候选和活动视图之间的 staging 只存在于内存，缓存文件不承担
+发布指针职责。教学文件策略硬拒绝 `.env*`、凭据与数据库，并额外拒绝日志、Migut Help 人工 YAML、评测
+Gold 和本任务生成的 help-display，避免秘密外发与评价数据泄漏。
 
 一次能力分析可以包含多个由模型外固定 ID 的公开 entry：普通命令通常只有一项，确定性的 Alconna 叶子
 子命令分别成为独立项，同一功能的 Option、别名、回复输入和参数变体仍保留在该项的有序 `usages` 中。模型
 直接输出完整命令正文，不再使用 `{command}`；普通 entry 必须包含 runtime / parser 给定的 anchored 正文，
-参数化工厂则由模型基于 Evidence 给出一种完整、确定正确的聚合调用形式。插件把 Migut Help 最小字段 YAML
-与 Answer Markdown 写入 LocalStore
-`capability-teaching/objects/<generation>/{help-display,answer-knowledge}/`，并只用一个原子
-`current.json` 切换两类输出。目录与 Migut Help 配置相互独立，当前没有导入或监听接线；生成文件用于观察
-首版效果，SUPERUSER 可用 `triage 刷新帮助 [plugin_module]` 主动重生成。
+参数化工厂请求会携带全部当前公开成员的 anchored 命令、alias 与 Runtime parser 参数结构；模型只生成一条共同
+family 注释，成员参数数量、图片或文字输入、必选性和精确 usage 不同不会因此关闭 family。同一位置的一至三项固定
+备选在 usage 显式枚举，四至六项使用概念槽并在 summary 完整说明，七项及以上只在 summary 说明类别；该规则同时
+适用 family 成员与单个 Matcher 的命令头、别名、Option 和固定参数。查询层按 family 去重，精确命中成员时从当前
+Runtime record 的 `command.arguments / components` 重建完整 usage，不持久化成员目录或引入插件专属 schema。插件把
+Migut Help 最小字段 YAML 与结构化渲染的 Answer Markdown 写入 LocalStore
+`capability-teaching/objects/<generation>/{help-display,answer-knowledge}/`，manifest 记录 teaching unit
+状态与每个插件的 `active / eligible` 覆盖量，并只用一个原子 `current.json` 切换两类输出和对应 Answer
+内存视图。指针切换前的候选不是 active teaching contract；`SOURCE_CHANGED` 会作废该插件整份内存 staging，
+但不会阻止其他插件发布。插件源码 revision 变化时首版仍全量重生成该插件，不尝试逐 unit hash 复用。
+缓存和输出文件都只接受能够直接安全落盘的 module name；不使用 hash fallback 或 module 到文件名 manifest，
+非法名称只关闭对应插件。目录与 Migut Help 配置相互独立，当前没有导入或监听接线；生成文件用于观察首版
+效果，SUPERUSER 可用 `triage 刷新帮助 [plugin_module]` 主动重生成。
 
 ## 后续来源接口
 
@@ -149,4 +165,9 @@ SUPERUSER 身份自动进入 LLM。真正执行仍由原插件自己的 Matcher�
 - [ADR-0034：区分 Matcher 事实与用户可观察能力](../adr/0034-distinguish-matchers-from-user-observable-capabilities.md)
 - [ADR-0058：用确定性证据与有界源码导航生成教学注释](../adr/0058-use-deterministic-evidence-and-bounded-navigation-for-teaching-annotations.md)
 - [ADR-0059：跨 Agent 链路共享只读证据访问工具](../adr/0059-share-read-only-evidence-access-across-agent-flows.md)
+- [ADR-0066：用当前公开教学合同前置筛查普通用户 Bug](../adr/0066-use-active-teaching-contract-as-bug-precheck.md)
+- [ADR-0069：分离帮助展示与 Answer 知识，并让静态分析只界定证据范围](../adr/0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md)
+- [ADR-0077：把上一版机器生成教学内容作为非证据的最小改写基线](../adr/0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md)
 - [ADR-0080：把一次能力分析投影为多个公开教学条目](../adr/0080-model-capability-teaching-as-multiple-public-entries.md)
+- [ADR-0088：按插件限制教学注释并发并保持插件内顺序](../adr/0088-bound-capability-annotation-concurrency-by-plugin.md)
+- [ADR-0093：按插件分片教学注释缓存并按单元部分发布](../adr/0093-shard-capability-annotation-cache-by-plugin.md)

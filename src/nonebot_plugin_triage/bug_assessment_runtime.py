@@ -748,8 +748,7 @@ def _public_record_evidence(
                     "name": entry.name,
                     "summary": entry.summary,
                     "usages": list(entry.usages),
-                    "supported_subjects": list(entry.supported_subjects),
-                    "input_requirements": list(entry.input_requirements),
+                    "search_terms": list(entry.search_terms),
                     "behavior_boundaries": list(entry.behavior_boundaries),
                     "requirements": [item.to_dict() for item in entry.requirements],
                 }

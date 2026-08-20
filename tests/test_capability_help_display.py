@@ -263,12 +263,17 @@ def test_writer_projects_any_rate_limit_to_migut_help_cooldown_marker(
             CapabilityTeachingEntry(
                 entry_id="root",
                 name="搜图",
+                summary="搜索图片出处。",
                 usages=("搜图 [图片]",),
                 requirements=(
                     CapabilityTeachingRequirement(
                         kind=SemanticConstraintKind.ROLE,
                         text="仅普通成员可用。",
                         role=TeachingRole.CUSTOM,
+                    ),
+                    CapabilityTeachingRequirement(
+                        kind=SemanticConstraintKind.ACCESS,
+                        text="仅已绑定账号的用户可用。",
                     ),
                     CapabilityTeachingRequirement(
                         kind=SemanticConstraintKind.RATE_LIMIT,
@@ -297,7 +302,7 @@ def test_writer_projects_any_rate_limit_to_migut_help_cooldown_marker(
     assert command["required_role"] == "custom"
     assert "permission" not in command
     assert command["description"] == (
-        "仅普通成员可用；每名用户连续使用需要等待冷却；全局并发达到上限时需要稍后再试"
+        "搜索图片出处；仅普通成员可用；需授权；每名用户连续使用需要等待冷却；全局并发达到上限时需要稍后再试"
     )
 
 

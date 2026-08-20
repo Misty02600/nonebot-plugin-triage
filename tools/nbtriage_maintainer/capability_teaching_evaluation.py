@@ -1,18 +1,38 @@
 from __future__ import annotations
 
+import ast
 import hashlib
+import importlib
 import json
+import keyword
 import re
-from collections.abc import Callable
+import sys
+import textwrap
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from decimal import ROUND_CEILING, Decimal
+from importlib.machinery import ModuleSpec
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Protocol, cast
 
+from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 from pydantic_ai.usage import RunUsage
+from pydantic_core import to_jsonable_python
 
+from nbtriage.capabilities import (
+    CapabilityRecord,
+    Claim,
+    ClaimBasis,
+    Constraint,
+    ConstraintEvaluability,
+    Disclosure,
+    EvidenceRef,
+    RecordState,
+)
 from nbtriage.capability_analysis import (
     CapabilityAnalysisBaseline,
     CapabilityAnalysisEntryBaseline,
@@ -22,6 +42,7 @@ from nbtriage.capability_analysis import (
     CapabilityEvidenceUnit,
     CapabilityGateCandidate,
     CapabilityGateKind,
+    CapabilityGateResolutionKind,
     CapabilityIdentity,
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
@@ -39,6 +60,7 @@ from nbtriage.capability_annotations import (
     CAPABILITY_ANNOTATION_BUDGET_PROFILE,
     CAPABILITY_ANNOTATION_PRIVACY_POLICY,
     CAPABILITY_ANNOTATION_PROMPT_ID,
+    CAPABILITY_ANNOTATION_REQUEST_REVISION,
     CAPABILITY_ANNOTATION_SCHEMA_VERSION,
     CAPABILITY_ANNOTATION_TASK,
     CapabilityTeachingAnnotation,
@@ -60,7 +82,7 @@ from nbtriage.opencode_go_semantic_adapter import normalized_opencode_go_cost_mi
 
 CAPABILITY_TEACHING_EVALUATION_ID = "capability-teaching-opencode-go-v1"
 CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION = (
-    "capability-teaching-forward-heldout-20-20260818-v11-v38-zh-a"
+    "capability-teaching-forward-heldout-20-20260819-v13-v39-request-v3-zh-a"
 )
 CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SET_ID = (
     "capability-teaching-v8-forward-heldout-20-20260816-a-v34-zh"
@@ -69,24 +91,55 @@ CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SHA256 = (
     "9b4a6a21aed98efcf12a5094defe18aed4ec1f713c32b350464997a87d3aabf2"
 )
 CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID = (
-    "capability-teaching-v11-forward-heldout-20-20260818-a-v38-zh"
+    "capability-teaching-v13-forward-heldout-20-20260819-a-v39-request-v3-zh"
 )
 CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256 = (
-    "e7380865424ce6102a726f0ae4bfa538fb81038835b31d64d3e6ac8a910d7d65"
+    "55c0799739b2ac815c20d3a90de50de702486aeac6f946ac0d1fbe2e1dd8f454"
 )
 CAPABILITY_TEACHING_CONSUMED_V1_FIXTURE_SHA256 = (
     "783f8daabcaf5587f942a0463ce9237726d77c875344760354ce52d08c5df76f"
 )
 _QUALIFIED_PROVIDER = "opencode-go"
 _QUALIFIED_MODEL = "deepseek-v4-flash"
+_QUALIFIED_API_FAMILY = "chat-completions"
+_QUALIFIED_CONNECTION_REVISION = "provider-default"
+_QUALIFIED_SETTINGS_REVISION = "provider-default"
+CAPABILITY_TEACHING_QUALIFIED_TIMEOUT_SECONDS = 300.0
+CAPABILITY_TEACHING_QUALIFIED_MAX_OUTPUT_TOKENS = 16_384
 _OPTION_PATTERN = re.compile(r"(?<![\w-])--?[A-Za-z][A-Za-z0-9_-]*")
 _FIXTURE_SCHEMA_VERSIONS = frozenset({3, 4})
+_CAPABILITY_SCHEMA_VERSIONS = frozenset({6, CAPABILITY_ANNOTATION_SCHEMA_VERSION})
 _FINAL_MEMBER_FIELDS = frozenset(
     {
-        "synonyms",
-        "supported_subjects",
-        "input_requirements",
+        "search_terms",
         "behavior_boundaries",
+    }
+)
+_LEGACY_FINAL_MEMBER_FIELDS = frozenset(
+    {"synonyms", "supported_subjects", "input_requirements", "behavior_boundaries"}
+)
+_LEGACY_CLAIM_KINDS = frozenset({"synonym", "supported_subject", "input_requirement"})
+_EXPECTED_SCORING_FIELDS = frozenset(
+    {
+        "allowed_options",
+        "allowed_usage_patterns",
+        "dynamic_evidence_cited",
+        "entry_ids",
+        "forbidden_constraint_kinds",
+        "forbidden_public_substrings",
+        "knowledge_enabled",
+        "maximum_candidate_constraint_count",
+        "minimum_tool_calls",
+        "preserve_baseline_fields",
+        "preserve_baseline_member_fields",
+        "required_candidate_claim_kinds",
+        "required_claim_kinds",
+        "required_config_reference_ids",
+        "required_constraints",
+        "required_final_members",
+        "required_gate_resolution_outcomes",
+        "required_public_text_groups",
+        "required_usage_patterns",
     }
 )
 
@@ -111,6 +164,34 @@ class _PreparedCase:
     request: CapabilityAnalysisRequest
     input_kind: str
     source_audit: dict[str, object] | None = None
+
+
+@dataclass(frozen=True)
+class _FixtureFunction:
+    module: str
+    qualname: str
+    name: str
+    line: int
+    first_line: int
+    source_revision: str
+    content: str
+
+
+@dataclass
+class _FixtureModuleEnvironment:
+    module_root: str
+    source_root: Path
+    modules: dict[str, ModuleType]
+    functions: dict[tuple[str, str], _FixtureFunction]
+    config_fields: dict[tuple[str, str, str], tuple[str, str]]
+
+
+@dataclass(frozen=True)
+class _AnalysisAdapterRuntime:
+    source_slice_cache_factory: Callable[[], object]
+    config_policy_factory: Callable[[], object]
+    build_record: Callable[..., CapabilityAnalysisRequest]
+    build_family: Callable[..., CapabilityAnalysisRequest]
 
 
 class _FixtureToolState:
@@ -189,6 +270,8 @@ async def evaluate_capability_teaching(
     pricing_profile: dict[str, str] | None = None,
     partial_report_path: Path | None = None,
     selected_case_ids: frozenset[str] | None = None,
+    enforce_qualification_preflight: bool = False,
+    diagnostic_output_path: Path | None = None,
 ) -> dict[str, Any]:
     fixture_raw = fixtures_path.read_bytes()
     payload = json.loads(fixture_raw)
@@ -235,6 +318,54 @@ async def evaluate_capability_teaching(
         raise CapabilityTeachingEvaluationError("evaluation target identity must not be empty")
 
     prepared_cases = tuple(_prepare_case(fixtures_path, raw_case) for raw_case in cases)
+    for prepared in prepared_cases:
+        _validate_expected_request_contract(
+            _required_dict(prepared.raw, "expected"),
+            prepared.request,
+        )
+    preflight_checks = _qualification_checks(
+        payload,
+        cases=cases,
+        prepared_cases=prepared_cases,
+        fixture_sha256=fixture_sha256,
+        diagnostic_mode=diagnostic_mode,
+        provider=provider,
+        model=model,
+        api_family=api_family,
+        connection_revision=connection_revision,
+        settings_revision=settings_revision,
+        timeout_seconds=timeout_seconds,
+        max_output_tokens=max_output_tokens,
+        official_fixture_set_id=official_fixture_set_id,
+        official_fixture_sha256=official_fixture_sha256,
+    )
+    if enforce_qualification_preflight and not diagnostic_mode:
+        failed_checks = sorted(name for name, passed in preflight_checks.items() if not passed)
+        if failed_checks:
+            raise CapabilityTeachingEvaluationError(
+                "capability teaching qualification preflight failed: " + ", ".join(failed_checks)
+            )
+    diagnostic_cases: list[dict[str, Any]] = []
+    if diagnostic_output_path is not None:
+        diagnostic_required = (
+            "full_fixture_run",
+            "held_out_split",
+            "fixture_set_id",
+            "fixture_sha256",
+            "contract_exact",
+        )
+        if diagnostic_mode or not all(preflight_checks[name] for name in diagnostic_required):
+            raise CapabilityTeachingEvaluationError(
+                "invalid-output capture requires the exact official synthetic fixture bundle"
+            )
+        _write_diagnostic_output(
+            diagnostic_output_path,
+            status="running",
+            fixture_sha256=fixture_sha256,
+            cases=diagnostic_cases,
+            evaluation_id=evaluation_id,
+            evaluation_revision=evaluation_revision,
+        )
     rows: list[dict[str, Any]] = []
     total_cost_microusd = 0
     total_input_tokens = 0
@@ -253,6 +384,7 @@ async def evaluate_capability_teaching(
     tool_cases_compliant = 0
     tool_case_count = 0
     source_case_count = 0
+    adapter_source_case_count = 0
     source_extraction_valid = 0
     observed_coverage: set[str] = set()
     case_ids: set[str] = set()
@@ -276,9 +408,11 @@ async def evaluate_capability_teaching(
         coverage = _string_list(raw_case.get("coverage"), "coverage")
         observed_coverage.update(coverage)
         request = prepared.request
-        if prepared.input_kind == "source":
+        if prepared.input_kind in {"source", "adapter_source"}:
             source_case_count += 1
             source_extraction_valid += 1
+        if prepared.input_kind == "adapter_source":
+            adapter_source_case_count += 1
         expected = _required_dict(raw_case, "expected")
         tool_state = _FixtureToolState(
             case_id,
@@ -392,6 +526,35 @@ async def evaluate_capability_teaching(
             and response_id_present
         )
         budget_compliant += within_budget
+        trace = getattr(client, "diagnostic_trace", ())
+        if (
+            diagnostic_output_path is not None
+            and trace
+            and (
+                error_type is not None
+                or (requests is not None and requests > 1)
+                or _diagnostic_trace_has_correction(trace)
+            )
+        ):
+            diagnostic_cases.append(
+                {
+                    "case_id": case_id,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "trace": to_jsonable_python(
+                        trace,
+                        fallback=lambda value: {"unsupported_type": type(value).__name__},
+                    ),
+                }
+            )
+            _write_diagnostic_output(
+                diagnostic_output_path,
+                status="running",
+                fixture_sha256=fixture_sha256,
+                cases=diagnostic_cases,
+                evaluation_id=evaluation_id,
+                evaluation_revision=evaluation_revision,
+            )
         rows.append(
             {
                 "case_id": case_id,
@@ -429,20 +592,7 @@ async def evaluate_capability_teaching(
 
     count = len(rows)
     expected_contract = _expected_qualification_contract()
-    declared_contract = _required_dict(payload, "qualification_contract")
-    qualification_checks = {
-        "full_fixture_run": not diagnostic_mode,
-        "held_out_split": payload.get("split") == "held_out",
-        "fixture_set_id": (payload.get("fixture_set_id") == official_fixture_set_id),
-        "fixture_sha256": fixture_sha256 == official_fixture_sha256,
-        "target_provider": bool(provider.strip()),
-        "target_model": bool(model.strip()),
-        "target_api_family": bool(api_family.strip()),
-        "target_connection_revision": bool(connection_revision.strip()),
-        "target_settings_revision": bool(settings_revision.strip()),
-        "contract_exact": declared_contract == expected_contract,
-        "required_coverage": _required_coverage().issubset(observed_coverage),
-    }
+    qualification_checks = dict(preflight_checks)
     schema_rate = schema_valid / count
     evidence_rate = evidence_closed / count
     projection_rate = projection_valid / count
@@ -457,7 +607,6 @@ async def evaluate_capability_teaching(
         if baseline_member_case_count
         else 1.0
     )
-    qualification_checks["minimum_source_cases"] = source_case_count >= 12
     passed = (
         all(qualification_checks.values())
         and schema_rate == 1.0
@@ -489,6 +638,7 @@ async def evaluate_capability_teaching(
         "capability_schema_version": CAPABILITY_ANNOTATION_SCHEMA_VERSION,
         "prompt_id": CAPABILITY_ANNOTATION_PROMPT_ID,
         "prompt_sha256": expected_contract["prompt_sha256"],
+        "request_revision": CAPABILITY_ANNOTATION_REQUEST_REVISION,
         "privacy_policy": CAPABILITY_ANNOTATION_PRIVACY_POLICY,
         "budget_profile": CAPABILITY_ANNOTATION_BUDGET_PROFILE,
         "summary": {
@@ -506,6 +656,7 @@ async def evaluate_capability_teaching(
             "budget_compliance_rate": budget_rate,
             "tool_case_compliance_rate": tool_rate,
             "source_case_count": source_case_count,
+            "adapter_source_case_count": adapter_source_case_count,
             "source_extraction_valid_rate": source_rate,
             "input_tokens": total_input_tokens,
             "output_tokens": total_output_tokens,
@@ -534,6 +685,15 @@ async def evaluate_capability_teaching(
             fixture_sha256=fixture_sha256,
             rows=rows,
             total_cost_microusd=total_cost_microusd,
+            evaluation_id=evaluation_id,
+            evaluation_revision=evaluation_revision,
+        )
+    if diagnostic_output_path is not None:
+        _write_diagnostic_output(
+            diagnostic_output_path,
+            status="report_ready",
+            fixture_sha256=fixture_sha256,
+            cases=diagnostic_cases,
             evaluation_id=evaluation_id,
             evaluation_revision=evaluation_revision,
         )
@@ -572,6 +732,10 @@ def _score_case(
     }
     if "required_final_members" in expected:
         checks["required_final_members"] = False
+    if "maximum_candidate_constraint_count" in expected:
+        checks["maximum_candidate_constraint_count"] = False
+    if "required_gate_resolution_outcomes" in expected:
+        checks["required_gate_resolution_outcomes"] = False
     if output is None or annotation is None:
         return checks
     expected_enabled = expected.get("knowledge_enabled")
@@ -579,7 +743,10 @@ def _score_case(
         raise CapabilityTeachingEvaluationError("expected knowledge_enabled must be boolean")
     output_claims = tuple(item for entry in output.entries for item in entry.claims)
     claims = {item.kind.value for item in output_claims}
-    required_claims = set(_string_list(expected.get(candidate_claim_key, []), candidate_claim_key))
+    required_claims = {
+        _current_claim_kind(item)
+        for item in _string_list(expected.get(candidate_claim_key, []), candidate_claim_key)
+    }
     required_final_members = _final_member_contract(expected.get("required_final_members", {}))
     constraints = (
         *request.fixed_constraints,
@@ -658,11 +825,6 @@ def _score_case(
     }
     referenced_config.update(
         reference_id
-        for entry in output.entries
-        for reference_id in entry.answer_config_reference_ids
-    )
-    referenced_config.update(
-        reference_id
         for constraint in request.fixed_constraints
         for reference_id in constraint.config_reference_ids
     )
@@ -672,6 +834,21 @@ def _score_case(
             "required_config_reference_ids",
         )
     )
+    candidate_constraint_count = sum(len(entry.constraints) for entry in output.entries)
+    maximum_candidate_constraints = (
+        _nonnegative_int(
+            expected["maximum_candidate_constraint_count"],
+            "maximum_candidate_constraint_count",
+        )
+        if "maximum_candidate_constraint_count" in expected
+        else candidate_constraint_count
+    )
+    required_gate_outcomes = _required_gate_resolution_outcomes(
+        expected.get("required_gate_resolution_outcomes", {})
+    )
+    actual_gate_outcomes = {
+        resolution.candidate_id: resolution.outcome.value for resolution in output.gate_resolutions
+    }
     checks = {
         "projection_valid": True,
         "knowledge_enabled": annotation.knowledge_enabled is expected_enabled,
@@ -703,6 +880,15 @@ def _score_case(
         checks["required_final_members"] = _final_members_present(
             annotation,
             required_final_members,
+        )
+    if "maximum_candidate_constraint_count" in expected:
+        checks["maximum_candidate_constraint_count"] = (
+            candidate_constraint_count <= maximum_candidate_constraints
+        )
+    if "required_gate_resolution_outcomes" in expected:
+        checks["required_gate_resolution_outcomes"] = all(
+            actual_gate_outcomes.get(candidate_id) == outcome
+            for candidate_id, outcome in required_gate_outcomes.items()
         )
     return checks
 
@@ -761,20 +947,18 @@ def _baseline_preserved(
         "name": (baseline_entry.name, annotation_entry.name),
         "summary": (baseline_entry.summary, annotation_entry.summary),
         "usages": (baseline_entry.usages, annotation_entry.usages),
-        "synonyms": (baseline_entry.synonyms, annotation_entry.synonyms),
-        "supported_subjects": (
-            baseline_entry.supported_subjects,
-            annotation_entry.supported_subjects,
-        ),
-        "input_requirements": (
-            baseline_entry.input_requirements,
-            annotation_entry.input_requirements,
-        ),
+        "search_terms": (baseline_entry.search_terms, annotation_entry.search_terms),
+        "synonyms": (baseline_entry.search_terms, annotation_entry.search_terms),
+        "supported_subjects": (baseline_entry.search_terms, annotation_entry.search_terms),
         "behavior_boundaries": (
             baseline_entry.behavior_boundaries,
             annotation_entry.behavior_boundaries,
         ),
-        "answer_markdown": (baseline_entry.answer_markdown, annotation_entry.answer_markdown),
+        "input_requirements": (
+            baseline_entry.behavior_boundaries,
+            annotation_entry.behavior_boundaries,
+        ),
+        "answer_markdown": (None, None),
     }
     return all(field in mapping and mapping[field][0] == mapping[field][1] for field in fields)
 
@@ -794,16 +978,14 @@ def _baseline_members_preserved(
         if current_entry is None:
             return False
         mapping = {
-            "synonyms": (baseline_entry.synonyms, current_entry.synonyms),
-            "supported_subjects": (
-                baseline_entry.supported_subjects,
-                current_entry.supported_subjects,
+            "search_terms": (baseline_entry.search_terms, current_entry.search_terms),
+            "synonyms": (baseline_entry.search_terms, current_entry.search_terms),
+            "supported_subjects": (baseline_entry.search_terms, current_entry.search_terms),
+            "behavior_boundaries": (
+                baseline_entry.behavior_boundaries,
+                current_entry.behavior_boundaries,
             ),
             "input_requirements": (
-                baseline_entry.input_requirements,
-                current_entry.input_requirements,
-            ),
-            "behavior_boundaries": (
                 baseline_entry.behavior_boundaries,
                 current_entry.behavior_boundaries,
             ),
@@ -823,12 +1005,9 @@ def _public_text(annotation: CapabilityTeachingAnnotation) -> str:
             entry.name,
             entry.summary,
             *entry.usages,
-            *entry.synonyms,
-            *entry.supported_subjects,
-            *entry.input_requirements,
+            *entry.search_terms,
             *entry.behavior_boundaries,
             *(requirement.text for requirement in entry.requirements),
-            entry.answer_markdown,
         )
         if item
     )
@@ -883,9 +1062,6 @@ def _candidate_payload(output: CapabilityAnalysisOutput | None) -> dict[str, obj
                     }
                     for item in entry.baseline_changes
                 ],
-                "answer_markdown": entry.answer_markdown,
-                "answer_evidence_ids": list(entry.answer_evidence_ids),
-                "answer_config_reference_ids": list(entry.answer_config_reference_ids),
             }
             for entry in output.entries
         ],
@@ -999,6 +1175,16 @@ def _parse_fixed_constraint(raw: dict[str, object]) -> SemanticConstraint:
 
 
 def _prepare_case(fixtures_path: Path, raw_case: dict[str, object]) -> _PreparedCase:
+    raw_adapter = raw_case.get("adapter_case")
+    if raw_adapter is not None:
+        if not isinstance(raw_adapter, dict):
+            raise CapabilityTeachingEvaluationError("adapter_case must be an object")
+        if raw_case.get("source_case") is not None:
+            raise CapabilityTeachingEvaluationError(
+                "capability teaching case cannot define both adapter_case and source_case"
+            )
+        return _prepare_adapter_case(fixtures_path, raw_case, raw_adapter)
+
     request = _parse_request(_required_dict(raw_case, "request"))
     raw_source = raw_case.get("source_case")
     if raw_source is None:
@@ -1070,6 +1256,653 @@ def _prepare_case(fixtures_path: Path, raw_case: dict[str, object]) -> _Prepared
             "partial": pack.is_partial,
         },
     )
+
+
+def _prepare_adapter_case(
+    fixtures_path: Path,
+    raw_case: dict[str, object],
+    raw_adapter: dict[str, object],
+) -> _PreparedCase:
+    source_root = _resolve_fixture_source_root(
+        fixtures_path,
+        _required_text(raw_adapter, "source_root"),
+    )
+    case_id = _required_text(raw_case, "case_id")
+    environment = _fixture_module_environment(case_id, source_root)
+    with _analysis_adapter_runtime() as adapter_runtime:
+        installed = _install_fixture_modules(environment)
+        try:
+            _install_fixture_configs(environment, raw_adapter)
+            records = tuple(
+                _adapter_record(environment, item, index=index)
+                for index, item in enumerate(_dict_list(raw_adapter.get("records"), "records"))
+            )
+            if not records:
+                raise CapabilityTeachingEvaluationError("adapter_case records must not be empty")
+            family = _optional_bool(raw_adapter.get("family", False), "family")
+            if family:
+                if len(records) < 2:
+                    raise CapabilityTeachingEvaluationError(
+                        "adapter_case family requires at least two records"
+                    )
+            elif len(records) != 1:
+                raise CapabilityTeachingEvaluationError(
+                    "ordinary adapter_case requires exactly one record"
+                )
+
+            source_pack_cache: dict[str, CapabilitySourceEvidencePack] = {}
+            source_slice_cache = adapter_runtime.source_slice_cache_factory()
+            config_policy = adapter_runtime.config_policy_factory()
+            if family:
+                request = adapter_runtime.build_family(
+                    records,
+                    config_policy,
+                    source_pack_cache=source_pack_cache,
+                    source_slice_cache=source_slice_cache,
+                )
+            else:
+                request = adapter_runtime.build_record(
+                    records[0],
+                    config_policy,
+                    source_pack_cache=source_pack_cache,
+                    source_slice_cache=source_slice_cache,
+                )
+            pack = source_pack_cache.get(environment.module_root)
+            if pack is None:
+                raise CapabilityTeachingEvaluationError(
+                    "adapter_case did not produce source evidence"
+                )
+            raw_expected_extraction = raw_adapter.get("expected_extraction")
+            if raw_expected_extraction is not None:
+                if not isinstance(raw_expected_extraction, dict):
+                    raise CapabilityTeachingEvaluationError(
+                        "adapter_case expected_extraction must be an object"
+                    )
+                _validate_source_expectations(pack, raw_expected_extraction)
+            _validate_adapter_request_audit(
+                request,
+                environment,
+                _required_dict(raw_adapter, "request_audit"),
+            )
+        finally:
+            _remove_fixture_modules(installed)
+
+    return _PreparedCase(
+        raw=raw_case,
+        request=request,
+        input_kind="adapter_source",
+        source_audit={
+            "adapter_built": True,
+            "family": family,
+            "record_count": len(records),
+            "module_name": environment.module_root,
+            "source_revision": pack.source_revision,
+            "extractor_generation": pack.generation,
+            "file_count": len(pack.files),
+            "registration_count": len(pack.registrations),
+            "handler_count": len(pack.handlers),
+            "config_reference_count": len(pack.config_references),
+            "permission_constraint_count": len(pack.permission_constraints),
+            "partial": pack.is_partial,
+        },
+    )
+
+
+@contextmanager
+def _analysis_adapter_runtime() -> Iterator[_AnalysisAdapterRuntime]:
+    """加载生产 adapter 子模块，但不执行 NoneBot 插件入口。"""
+    package_name = "nonebot_plugin_triage"
+    existing_package = sys.modules.get(package_name)
+    if existing_package is None:
+        orphaned = tuple(name for name in sys.modules if name.startswith(f"{package_name}."))
+        if orphaned:
+            raise CapabilityTeachingEvaluationError(
+                "capability analysis adapter module state is inconsistent"
+            )
+        package_root = Path(__file__).resolve().parents[2] / "src" / package_name
+        if not (package_root / "capability_analysis_adapter.py").is_file():
+            raise CapabilityTeachingEvaluationError(
+                "capability analysis adapter source is unavailable"
+            )
+        package = ModuleType(package_name)
+        package.__file__ = str(package_root / "__init__.py")
+        package.__package__ = package_name
+        package.__path__ = [str(package_root)]  # type: ignore[attr-defined]
+        package_spec = ModuleSpec(package_name, loader=None, is_package=True)
+        package_spec.submodule_search_locations = [str(package_root)]
+        package.__spec__ = package_spec
+        sys.modules[package_name] = package
+
+    try:
+        try:
+            adapter_module = importlib.import_module(f"{package_name}.capability_analysis_adapter")
+            config_module = importlib.import_module(f"{package_name}.config_policy")
+        except Exception as error:
+            raise CapabilityTeachingEvaluationError(
+                "capability analysis adapter is unavailable"
+            ) from error
+        yield _AnalysisAdapterRuntime(
+            source_slice_cache_factory=cast(
+                Callable[[], object],
+                adapter_module.CapabilitySourceSliceCache,
+            ),
+            config_policy_factory=cast(
+                Callable[[], object],
+                config_module.ConfigValuePolicy,
+            ),
+            build_record=cast(
+                Callable[..., CapabilityAnalysisRequest],
+                adapter_module.build_capability_analysis_request,
+            ),
+            build_family=cast(
+                Callable[..., CapabilityAnalysisRequest],
+                adapter_module.build_parameterized_family_analysis_request,
+            ),
+        )
+    finally:
+        if existing_package is None:
+            added_module_names = tuple(
+                name
+                for name in sys.modules
+                if name == package_name or name.startswith(f"{package_name}.")
+            )
+            for name in sorted(added_module_names, reverse=True):
+                sys.modules.pop(name, None)
+
+
+def _fixture_module_environment(
+    case_id: str,
+    source_root: Path,
+) -> _FixtureModuleEnvironment:
+    root_file = source_root / "__init__.py"
+    if not root_file.is_file():
+        raise CapabilityTeachingEvaluationError("adapter_case source root must contain __init__.py")
+    module_root = f"_nbtriage_fixture_{hashlib.sha256(case_id.encode()).hexdigest()[:20]}"
+    modules: dict[str, ModuleType] = {}
+    functions: dict[tuple[str, str], _FixtureFunction] = {}
+    for path in sorted(source_root.rglob("*.py"), key=lambda item: item.as_posix()):
+        if path.is_symlink():
+            raise CapabilityTeachingEvaluationError("adapter_case source must not contain symlinks")
+        relative = path.relative_to(source_root)
+        module_name, is_package = _fixture_module_name(module_root, relative)
+        if module_name in modules:
+            raise CapabilityTeachingEvaluationError("adapter_case contains duplicate modules")
+        try:
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+        except (OSError, UnicodeError, SyntaxError, ValueError, RecursionError) as error:
+            raise CapabilityTeachingEvaluationError(
+                "adapter_case source is not readable Python"
+            ) from error
+        module = ModuleType(module_name)
+        module.__file__ = str(path)
+        module.__package__ = module_name if is_package else module_name.rpartition(".")[0]
+        if is_package:
+            module.__path__ = [str(path.parent)]  # type: ignore[attr-defined]
+        modules[module_name] = module
+        revision = (
+            f"sha256:{hashlib.sha256(source.encode('utf-8', errors='surrogatepass')).hexdigest()}"
+        )
+        for function in _fixture_ast_functions(tree, source, module_name, revision):
+            key = (function.module, function.qualname)
+            if key in functions:
+                raise CapabilityTeachingEvaluationError(
+                    "adapter_case contains duplicate function definitions"
+                )
+            functions[key] = function
+    return _FixtureModuleEnvironment(
+        module_root=module_root,
+        source_root=source_root,
+        modules=modules,
+        functions=functions,
+        config_fields={},
+    )
+
+
+def _fixture_module_name(module_root: str, relative: Path) -> tuple[str, bool]:
+    parts = list(relative.parts)
+    if not parts or relative.suffix.casefold() != ".py":
+        raise CapabilityTeachingEvaluationError("adapter_case module path is invalid")
+    is_package = relative.name == "__init__.py"
+    module_parts = parts[:-1] if is_package else [*parts[:-1], relative.stem]
+    if any(not part.isidentifier() or keyword.iskeyword(part) for part in module_parts):
+        raise CapabilityTeachingEvaluationError(
+            "adapter_case Python paths must use module identifiers"
+        )
+    suffix = ".".join(module_parts)
+    return (f"{module_root}.{suffix}" if suffix else module_root), is_package
+
+
+def _fixture_ast_functions(
+    tree: ast.Module,
+    source: str,
+    module_name: str,
+    source_revision: str,
+) -> tuple[_FixtureFunction, ...]:
+    found: list[_FixtureFunction] = []
+    lines = source.splitlines(keepends=True)
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
+        child_scope = scope
+        if isinstance(node, ast.ClassDef):
+            child_scope = (*scope, node.name)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            qualname = ".".join((*scope, node.name))
+            first_line = min((node.lineno, *(item.lineno for item in node.decorator_list)))
+            if node.end_lineno is None or node.end_lineno > len(lines):
+                raise CapabilityTeachingEvaluationError(
+                    "adapter_case function has no bounded source span"
+                )
+            content = textwrap.dedent("".join(lines[node.lineno - 1 : node.end_lineno])).rstrip()
+            found.append(
+                _FixtureFunction(
+                    module=module_name,
+                    qualname=qualname,
+                    name=node.name,
+                    line=node.lineno,
+                    first_line=first_line,
+                    source_revision=source_revision,
+                    content=content,
+                )
+            )
+            child_scope = (*scope, node.name, "<locals>")
+        for child in ast.iter_child_nodes(node):
+            visit(child, child_scope)
+
+    for child in tree.body:
+        visit(child, ())
+    return tuple(found)
+
+
+def _install_fixture_modules(
+    environment: _FixtureModuleEnvironment,
+) -> tuple[tuple[str, ModuleType], ...]:
+    collisions = sorted(name for name in environment.modules if name in sys.modules)
+    if collisions:
+        raise CapabilityTeachingEvaluationError("adapter_case module identity collision")
+    installed: list[tuple[str, ModuleType]] = []
+    for name, module in environment.modules.items():
+        sys.modules[name] = module
+        installed.append((name, module))
+    return tuple(installed)
+
+
+def _remove_fixture_modules(installed: tuple[tuple[str, ModuleType], ...]) -> None:
+    for name, module in reversed(installed):
+        if sys.modules.get(name) is module:
+            del sys.modules[name]
+
+
+def _install_fixture_configs(
+    environment: _FixtureModuleEnvironment,
+    raw_adapter: dict[str, object],
+) -> None:
+    for index, raw_config in enumerate(_dict_list(raw_adapter.get("configs", []), "configs")):
+        module_name = _adapter_module_name(environment, raw_config.get("module"))
+        module = environment.modules.get(module_name)
+        if module is None:
+            raise CapabilityTeachingEvaluationError("adapter_case config module is unavailable")
+        binding = _required_text(raw_config, "binding")
+        if not binding.isidentifier() or keyword.iskeyword(binding):
+            raise CapabilityTeachingEvaluationError(
+                "adapter_case config binding must be an identifier"
+            )
+        raw_fields = raw_config.get("fields")
+        if not isinstance(raw_fields, dict) or not raw_fields:
+            raise CapabilityTeachingEvaluationError(
+                "adapter_case config fields must be a non-empty object"
+            )
+        field_definitions: dict[str, tuple[Any, Any]] = {}
+        field_keys: dict[str, str] = {}
+        for field_name, raw_field in raw_fields.items():
+            if (
+                not isinstance(field_name, str)
+                or not field_name.isidentifier()
+                or keyword.iskeyword(field_name)
+                or not isinstance(raw_field, dict)
+                or "value" not in raw_field
+            ):
+                raise CapabilityTeachingEvaluationError("adapter_case config field is invalid")
+            key = _required_text(raw_field, "key")
+            field_definitions[field_name] = (
+                Any,
+                Field(default=raw_field["value"], validation_alias=key),
+            )
+            field_keys[field_name] = key
+        class_name = f"FixtureConfig{index}"
+        model_factory = cast(Callable[..., type[BaseModel]], create_model)
+        model_type = model_factory(
+            class_name,
+            __config__=ConfigDict(populate_by_name=True, extra="forbid"),
+            __module__=module_name,
+            **field_definitions,
+        )
+        setattr(module, class_name, model_type)
+        setattr(module, binding, model_type())
+        config_type = f"{module_name}:{model_type.__qualname__}"
+        for field_name, key in field_keys.items():
+            config_key = (module_name, binding, field_name)
+            if config_key in environment.config_fields:
+                raise CapabilityTeachingEvaluationError("adapter_case config field is duplicated")
+            environment.config_fields[config_key] = (key, config_type)
+
+
+def _adapter_record(
+    environment: _FixtureModuleEnvironment,
+    raw_record: dict[str, object],
+    *,
+    index: int,
+) -> CapabilityRecord:
+    plugin_evidence_id = f"evidence:adapter-plugin:{index}"
+    matcher_evidence_id = f"evidence:adapter-matcher:{index}"
+    handler_references = [
+        _adapter_handler_reference(environment, item, binding_index=handler_index)
+        for handler_index, item in enumerate(_dict_list(raw_record.get("handlers"), "handlers"))
+    ]
+    if not handler_references:
+        raise CapabilityTeachingEvaluationError("adapter_case record handlers must not be empty")
+    claims = [
+        Claim(
+            "plugin.module_name",
+            environment.module_root,
+            ClaimBasis.OBSERVED,
+            (plugin_evidence_id,),
+        ),
+        Claim(
+            "handler.references",
+            handler_references,
+            ClaimBasis.OBSERVED,
+            (matcher_evidence_id,),
+        ),
+    ]
+    config_references = [
+        _adapter_config_reference(environment, item)
+        for item in _dict_list(
+            raw_record.get("config_references", []),
+            "config_references",
+        )
+    ]
+    if config_references:
+        claims.append(
+            Claim(
+                "config.references",
+                config_references,
+                ClaimBasis.OBSERVED,
+                (matcher_evidence_id,),
+            )
+        )
+    raw_claims = raw_record.get("claims", {})
+    if not isinstance(raw_claims, dict):
+        raise CapabilityTeachingEvaluationError("adapter_case record claims must be an object")
+    allowed_claims = {
+        "invocation.header",
+        "command.path",
+        "command.header",
+        "command.literals",
+        "command.aliases",
+        "command.prefixes",
+        "command.separators",
+        "command.force_whitespace",
+        "command.enabled",
+        "command.arguments",
+        "command.components",
+        "trigger.factory",
+        "trigger.entries",
+        "description",
+        "usage",
+        "example",
+        "plugin.metadata",
+    }
+    if any(field not in allowed_claims for field in raw_claims):
+        raise CapabilityTeachingEvaluationError("adapter_case record contains unsupported claims")
+    claims.extend(
+        Claim(field, value, ClaimBasis.OBSERVED, (matcher_evidence_id,))
+        for field, value in raw_claims.items()
+    )
+    constraints = tuple(
+        _adapter_constraint(item, matcher_evidence_id, index=index, item_index=item_index)
+        for item_index, item in enumerate(
+            _dict_list(raw_record.get("constraints", []), "constraints")
+        )
+    )
+    owner = raw_record.get("owner", environment.module_root)
+    kind = raw_record.get("kind", "command")
+    if not isinstance(owner, str) or not owner or not isinstance(kind, str) or not kind:
+        raise CapabilityTeachingEvaluationError("adapter_case record identity is invalid")
+    return CapabilityRecord(
+        capability_id=_required_text(raw_record, "capability_id"),
+        owner=owner,
+        kind=kind,
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.CANDIDATE,
+        claims=tuple(claims),
+        constraints=constraints,
+        evidence_refs=(
+            EvidenceRef(
+                evidence_id=plugin_evidence_id,
+                source_id=f"source:adapter-plugin:{index}",
+                kind="plugin_source",
+                locator=f"fixture://{environment.module_root}",
+            ),
+            EvidenceRef(
+                evidence_id=matcher_evidence_id,
+                source_id=f"source:adapter-matcher:{index}",
+                kind="matcher_source",
+                locator=f"fixture://{environment.module_root}/{index}",
+            ),
+        ),
+    )
+
+
+def _adapter_handler_reference(
+    environment: _FixtureModuleEnvironment,
+    raw_handler: dict[str, object],
+    *,
+    binding_index: int,
+) -> dict[str, object]:
+    function = _adapter_function(environment, raw_handler, "handler")
+    closure_freevars = _string_list(
+        raw_handler.get("closure_freevars", []),
+        "closure_freevars",
+    )
+    if any(not item.isidentifier() or keyword.iskeyword(item) for item in closure_freevars):
+        raise CapabilityTeachingEvaluationError(
+            "adapter_case handler closure names must be identifiers"
+        )
+    return {
+        "module": function.module,
+        "function": function.name,
+        "qualname": function.qualname,
+        "line": function.line,
+        "code_firstlineno": function.first_line,
+        "source_revision": function.source_revision,
+        "closure_freevars": closure_freevars,
+        "binding_index": binding_index,
+    }
+
+
+def _adapter_config_reference(
+    environment: _FixtureModuleEnvironment,
+    raw_reference: dict[str, object],
+) -> dict[str, object]:
+    function = _adapter_function(environment, raw_reference, "config reference")
+    binding = _required_text(raw_reference, "binding")
+    field = _required_text(raw_reference, "field")
+    config = environment.config_fields.get((function.module, binding, field))
+    if config is None:
+        raise CapabilityTeachingEvaluationError(
+            "adapter_case config reference has no fake runtime value"
+        )
+    key, config_type = config
+    helper_depth = raw_reference.get("helper_depth", 0)
+    if type(helper_depth) is not int or helper_depth not in (0, 1):
+        raise CapabilityTeachingEvaluationError(
+            "adapter_case config helper_depth must be zero or one"
+        )
+    return {
+        "module": function.module,
+        "binding": binding,
+        "field": field,
+        "key": key,
+        "function": function.name,
+        "line": function.line,
+        "helper_depth": helper_depth,
+        "source_revision": function.source_revision,
+        "config_type": config_type,
+    }
+
+
+def _adapter_constraint(
+    raw_constraint: dict[str, object],
+    evidence_id: str,
+    *,
+    index: int,
+    item_index: int,
+) -> Constraint:
+    raw_payload = raw_constraint.get("payload", {})
+    if not isinstance(raw_payload, dict):
+        raise CapabilityTeachingEvaluationError("adapter_case constraint payload must be an object")
+    try:
+        evaluability = ConstraintEvaluability(_required_text(raw_constraint, "evaluability"))
+    except ValueError as error:
+        raise CapabilityTeachingEvaluationError(
+            "adapter_case constraint evaluability is invalid"
+        ) from error
+    return Constraint(
+        constraint_id=f"constraint:adapter:{index}:{item_index}",
+        kind=_required_text(raw_constraint, "kind"),
+        operation=_required_text(raw_constraint, "operation"),
+        evaluability=evaluability,
+        payload=raw_payload,
+        evidence_ids=(evidence_id,),
+    )
+
+
+def _adapter_function(
+    environment: _FixtureModuleEnvironment,
+    raw: Mapping[str, object],
+    label: str,
+) -> _FixtureFunction:
+    module_name = _adapter_module_name(environment, raw.get("module"))
+    qualname = raw.get("qualname")
+    if not isinstance(qualname, str) or not qualname:
+        raise CapabilityTeachingEvaluationError(f"adapter_case {label} qualname must be non-empty")
+    function = environment.functions.get((module_name, qualname))
+    if function is None:
+        raise CapabilityTeachingEvaluationError(f"adapter_case {label} function is unavailable")
+    return function
+
+
+def _adapter_module_name(
+    environment: _FixtureModuleEnvironment,
+    relative: object,
+) -> str:
+    if relative in (None, ""):
+        return environment.module_root
+    if not isinstance(relative, str) or any(
+        not part.isidentifier() or keyword.iskeyword(part) for part in relative.split(".")
+    ):
+        raise CapabilityTeachingEvaluationError("adapter_case relative module name is invalid")
+    return f"{environment.module_root}.{relative}"
+
+
+def _validate_adapter_request_audit(
+    request: CapabilityAnalysisRequest,
+    environment: _FixtureModuleEnvironment,
+    raw_audit: dict[str, object],
+) -> None:
+    python_evidence_units = tuple(
+        item for item in request.evidence_units if item.source_kind == "python_function"
+    )
+    python_evidence = {
+        item.content.replace("\r\n", "\n").replace("\r", "\n") for item in python_evidence_units
+    }
+    python_evidence_labels = tuple(
+        sorted(item.locator or item.content.splitlines()[0] for item in python_evidence_units)
+    )
+    for raw_function in _dict_list(
+        raw_audit.get("required_python_functions", []),
+        "required_python_functions",
+    ):
+        function = _adapter_function(environment, raw_function, "request audit")
+        if function.content.replace("\r\n", "\n").replace("\r", "\n") not in python_evidence:
+            raise CapabilityTeachingEvaluationError(
+                "adapter_case request audit missed Python function "
+                f"{function.module}:{function.qualname}; available={python_evidence_labels!r}"
+            )
+    required_gate_kinds = set(
+        _string_list(raw_audit.get("required_gate_kinds", []), "required_gate_kinds")
+    )
+    actual_gate_kinds = {item.kind.value for item in request.gate_candidates}
+    if not required_gate_kinds.issubset(actual_gate_kinds):
+        raise CapabilityTeachingEvaluationError(
+            "adapter_case request audit missed a gate candidate"
+        )
+    required_usages = set(_string_list(raw_audit.get("required_usages", []), "required_usages"))
+    actual_usages = {
+        usage for invocation in request.invocations for usage in invocation.canonical_usages
+    }
+    if not required_usages.issubset(actual_usages):
+        raise CapabilityTeachingEvaluationError(
+            "adapter_case request audit missed a canonical usage"
+        )
+    for expected in _dict_list(
+        raw_audit.get("required_fixed_constraints", []),
+        "required_fixed_constraints",
+    ):
+        kind = _required_text(expected, "kind")
+        role = expected.get("role")
+        statement = expected.get("statement")
+        if role is not None and not isinstance(role, str):
+            raise CapabilityTeachingEvaluationError(
+                "adapter_case fixed constraint role must be a string"
+            )
+        if statement is not None and not isinstance(statement, str):
+            raise CapabilityTeachingEvaluationError(
+                "adapter_case fixed constraint statement must be a string"
+            )
+        if not any(
+            item.kind.value == kind
+            and (role is None or (item.role is not None and item.role.value == role))
+            and (statement is None or item.statement == statement)
+            for item in request.fixed_constraints
+        ) and not (
+            kind == "input"
+            and isinstance(statement, str)
+            and "@" in statement
+            and any(item.requires_mention for item in request.invocations)
+        ):
+            raise CapabilityTeachingEvaluationError(
+                "adapter_case request audit missed a fixed constraint"
+            )
+    legacy_mention_constraint_count = int(
+        any(item.requires_mention for item in request.invocations)
+        and any(
+            item.get("kind") == "input" and "@" in str(item.get("statement", ""))
+            for item in _dict_list(
+                raw_audit.get("required_fixed_constraints", []),
+                "required_fixed_constraints",
+            )
+        )
+    )
+    count_fields = (
+        ("python_function_count", len(python_evidence_units)),
+        ("gate_candidate_count", len(request.gate_candidates)),
+        (
+            "fixed_constraint_count",
+            len(request.fixed_constraints) + legacy_mention_constraint_count,
+        ),
+    )
+    for field, actual in count_fields:
+        expected_count = raw_audit.get(field)
+        if expected_count is None:
+            continue
+        if type(expected_count) is not int or expected_count < 0:
+            raise CapabilityTeachingEvaluationError(
+                f"adapter_case request audit {field} must be a nonnegative integer"
+            )
+        if actual != expected_count:
+            raise CapabilityTeachingEvaluationError(f"adapter_case request audit {field} mismatch")
 
 
 def _resolve_fixture_source_root(fixtures_path: Path, relative: str) -> Path:
@@ -1186,7 +2019,10 @@ def _fixture_bundle_sha256(
     fixture_raw: bytes,
     cases: list[dict[str, object]],
 ) -> str:
-    if not any(raw_case.get("source_case") is not None for raw_case in cases):
+    if not any(
+        raw_case.get("source_case") is not None or raw_case.get("adapter_case") is not None
+        for raw_case in cases
+    ):
         return hashlib.sha256(fixture_raw).hexdigest()
     fixtures_root = fixtures_path.parent.resolve(strict=True)
     digest = hashlib.sha256()
@@ -1194,10 +2030,19 @@ def _fixture_bundle_sha256(
     seen: set[str] = set()
     for raw_case in cases:
         raw_source = raw_case.get("source_case")
+        raw_adapter = raw_case.get("adapter_case")
+        if raw_source is not None and raw_adapter is not None:
+            raise CapabilityTeachingEvaluationError(
+                "capability teaching case cannot define both adapter_case and source_case"
+            )
+        source_label = "source_case"
+        if raw_source is None:
+            raw_source = raw_adapter
+            source_label = "adapter_case"
         if raw_source is None:
             continue
         if not isinstance(raw_source, dict):
-            raise CapabilityTeachingEvaluationError("source_case must be an object")
+            raise CapabilityTeachingEvaluationError(f"{source_label} must be an object")
         source_root = _resolve_fixture_source_root(
             fixtures_path,
             _required_text(raw_source, "source_root"),
@@ -1235,31 +2080,16 @@ def _parse_baseline(value: object) -> CapabilityAnalysisBaseline | None:
                 name=_optional_text(item.get("name"), "baseline name"),
                 summary=_optional_text(item.get("summary"), "baseline summary"),
                 usages=tuple(_string_list(item.get("usages", []), "baseline usages")),
-                synonyms=tuple(_string_list(item.get("synonyms", []), "baseline synonyms")),
-                supported_subjects=tuple(
-                    _string_list(
-                        item.get("supported_subjects", []),
-                        "baseline supported_subjects",
-                    )
+                search_terms=_merged_fixture_members(
+                    item,
+                    ("search_terms", "synonyms", "supported_subjects"),
                 ),
-                input_requirements=tuple(
-                    _string_list(
-                        item.get("input_requirements", []),
-                        "baseline input_requirements",
-                    )
-                ),
-                behavior_boundaries=tuple(
-                    _string_list(
-                        item.get("behavior_boundaries", []),
-                        "baseline behavior_boundaries",
-                    )
+                behavior_boundaries=_merged_fixture_members(
+                    item,
+                    ("behavior_boundaries", "input_requirements"),
                 ),
                 requirements=tuple(
                     _string_list(item.get("requirements", []), "baseline requirements")
-                ),
-                answer_markdown=_optional_text(
-                    item.get("answer_markdown"),
-                    "baseline answer_markdown",
                 ),
             )
             for item in _dict_list(value.get("entries"), "baseline entries")
@@ -1287,7 +2117,7 @@ def _validate_fixture(payload: object) -> list[dict[str, object]]:
     fixture_schema_version = payload.get("schema_version")
     if (
         fixture_schema_version not in _FIXTURE_SCHEMA_VERSIONS
-        or payload.get("capability_schema_version") != CAPABILITY_ANNOTATION_SCHEMA_VERSION
+        or payload.get("capability_schema_version") not in _CAPABILITY_SCHEMA_VERSIONS
         or payload.get("synthetic_only") is not True
         or payload.get("contains_real_user_data") is not False
         or payload.get("split") != "held_out"
@@ -1302,6 +2132,7 @@ def _validate_fixture(payload: object) -> list[dict[str, object]]:
         _validate_expected_scoring_contract(
             _required_dict(raw_case, "expected"),
             fixture_schema_version=cast(int, fixture_schema_version),
+            capability_schema_version=cast(int, payload["capability_schema_version"]),
         )
     return cases
 
@@ -1310,7 +2141,15 @@ def _validate_expected_scoring_contract(
     expected: dict[str, object],
     *,
     fixture_schema_version: int,
+    capability_schema_version: int,
 ) -> None:
+    unknown_fields = sorted(set(expected).difference(_EXPECTED_SCORING_FIELDS))
+    if unknown_fields:
+        raise CapabilityTeachingEvaluationError(
+            "unknown expected scoring fields: " + ", ".join(unknown_fields)
+        )
+    if type(expected.get("knowledge_enabled")) is not bool:
+        raise CapabilityTeachingEvaluationError("expected knowledge_enabled must be boolean")
     if fixture_schema_version == 3:
         if "required_claim_kinds" not in expected or any(
             key in expected for key in ("required_candidate_claim_kinds", "required_final_members")
@@ -1335,13 +2174,83 @@ def _validate_expected_scoring_contract(
             expected["required_candidate_claim_kinds"],
             "required_candidate_claim_kinds",
         )
-        _final_member_contract(expected["required_final_members"])
+        _final_member_contract(
+            expected["required_final_members"],
+            allow_legacy=capability_schema_version < CAPABILITY_ANNOTATION_SCHEMA_VERSION,
+        )
     valid_claim_kinds = {kind.value for kind in SemanticClaimKind}
+    if capability_schema_version < CAPABILITY_ANNOTATION_SCHEMA_VERSION:
+        valid_claim_kinds.update(_LEGACY_CLAIM_KINDS)
     if not set(required_claims).issubset(valid_claim_kinds):
         raise CapabilityTeachingEvaluationError("required candidate claim kind is invalid")
+    if "maximum_candidate_constraint_count" in expected:
+        _nonnegative_int(
+            expected["maximum_candidate_constraint_count"],
+            "maximum_candidate_constraint_count",
+        )
+    if "required_gate_resolution_outcomes" in expected:
+        _required_gate_resolution_outcomes(expected["required_gate_resolution_outcomes"])
 
 
-def _final_member_contract(value: object) -> dict[str, dict[str, list[str]]]:
+def _validate_expected_request_contract(
+    expected: dict[str, object],
+    request: CapabilityAnalysisRequest,
+) -> None:
+    expected_enabled = expected["knowledge_enabled"]
+    if expected_enabled is True:
+        expected_entry_ids = _string_list(expected.get("entry_ids", []), "entry_ids")
+        actual_entry_ids = [item.entry_id for item in request.invocations]
+        if expected_entry_ids != actual_entry_ids:
+            raise CapabilityTeachingEvaluationError(
+                "expected entry IDs do not match adapter request invocations"
+            )
+    required_config = set(
+        _string_list(
+            expected.get("required_config_reference_ids", []),
+            "required_config_reference_ids",
+        )
+    )
+    available_config = {item.reference_id for item in request.config_projections}
+    unknown_config = sorted(required_config.difference(available_config))
+    if unknown_config:
+        raise CapabilityTeachingEvaluationError(
+            "required config references are unavailable: " + ", ".join(unknown_config)
+        )
+    required_outcomes = _required_gate_resolution_outcomes(
+        expected.get("required_gate_resolution_outcomes", {})
+    )
+    candidate_ids = {item.candidate_id for item in request.gate_candidates}
+    unknown_candidate_ids = sorted(set(required_outcomes).difference(candidate_ids))
+    if unknown_candidate_ids:
+        raise CapabilityTeachingEvaluationError(
+            "required gate outcome references unavailable candidates: "
+            + ", ".join(unknown_candidate_ids)
+        )
+
+
+def _required_gate_resolution_outcomes(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise CapabilityTeachingEvaluationError(
+            "required_gate_resolution_outcomes must be an object"
+        )
+    allowed_outcomes = {item.value for item in CapabilityGateResolutionKind}
+    parsed: dict[str, str] = {}
+    for candidate_id, outcome in value.items():
+        if not isinstance(candidate_id, str) or not candidate_id:
+            raise CapabilityTeachingEvaluationError(
+                "required gate outcome candidate ID must be non-empty"
+            )
+        if not isinstance(outcome, str) or outcome not in allowed_outcomes:
+            raise CapabilityTeachingEvaluationError("required gate resolution outcome is invalid")
+        parsed[candidate_id] = outcome
+    return parsed
+
+
+def _final_member_contract(
+    value: object,
+    *,
+    allow_legacy: bool = True,
+) -> dict[str, dict[str, list[str]]]:
     if not isinstance(value, dict):
         raise CapabilityTeachingEvaluationError("required_final_members must be an object")
     parsed: dict[str, dict[str, list[str]]] = {}
@@ -1356,16 +2265,49 @@ def _final_member_contract(value: object) -> dict[str, dict[str, list[str]]]:
             )
         fields: dict[str, list[str]] = {}
         for field, raw_values in raw_fields.items():
-            if field not in _FINAL_MEMBER_FIELDS:
+            if field not in _FINAL_MEMBER_FIELDS and not (
+                allow_legacy and field in _LEGACY_FINAL_MEMBER_FIELDS
+            ):
                 raise CapabilityTeachingEvaluationError("required_final_members field is invalid")
             values = _string_list(raw_values, f"required_final_members.{entry_id}.{field}")
             if not values or len(values) != len(set(values)):
                 raise CapabilityTeachingEvaluationError(
                     "required_final_members values must be non-empty and unique"
                 )
-            fields[field] = values
+            current_field = _current_member_field(field)
+            fields.setdefault(current_field, []).extend(values)
+        if any(len(values) != len(set(values)) for values in fields.values()):
+            raise CapabilityTeachingEvaluationError(
+                "required_final_members values must be non-empty and unique"
+            )
         parsed[entry_id] = fields
     return parsed
+
+
+def _merged_fixture_members(
+    item: dict[str, object],
+    fields: tuple[str, ...],
+) -> tuple[str, ...]:
+    values: list[str] = []
+    for field in fields:
+        values.extend(_string_list(item.get(field, []), f"baseline {field}"))
+    return tuple(dict.fromkeys(values))
+
+
+def _current_member_field(field: str) -> str:
+    if field in {"synonyms", "supported_subjects"}:
+        return "search_terms"
+    if field == "input_requirements":
+        return "behavior_boundaries"
+    return field
+
+
+def _current_claim_kind(kind: str) -> str:
+    if kind in {"synonym", "supported_subject"}:
+        return "search_term"
+    if kind == "input_requirement":
+        return "behavior_boundary"
+    return kind
 
 
 def _expected_qualification_contract() -> dict[str, object]:
@@ -1376,8 +2318,58 @@ def _expected_qualification_contract() -> dict[str, object]:
         "schema_version": CAPABILITY_ANNOTATION_SCHEMA_VERSION,
         "prompt_id": CAPABILITY_ANNOTATION_PROMPT_ID,
         "prompt_sha256": hashlib.sha256(SYSTEM_INSTRUCTION.encode("utf-8")).hexdigest(),
+        "request_revision": CAPABILITY_ANNOTATION_REQUEST_REVISION,
         "privacy_policy": CAPABILITY_ANNOTATION_PRIVACY_POLICY,
         "budget_profile": CAPABILITY_ANNOTATION_BUDGET_PROFILE,
+    }
+
+
+def _qualification_checks(
+    payload: dict[str, object],
+    *,
+    cases: list[dict[str, object]],
+    prepared_cases: tuple[_PreparedCase, ...],
+    fixture_sha256: str,
+    diagnostic_mode: bool,
+    provider: str,
+    model: str,
+    api_family: str,
+    connection_revision: str,
+    settings_revision: str,
+    timeout_seconds: float,
+    max_output_tokens: int,
+    official_fixture_set_id: str,
+    official_fixture_sha256: str,
+) -> dict[str, bool]:
+    coverage = {
+        value for raw_case in cases for value in _string_list(raw_case.get("coverage"), "coverage")
+    }
+    source_case_count = sum(
+        item.input_kind in {"source", "adapter_source"} for item in prepared_cases
+    )
+    adapter_source_case_count = sum(item.input_kind == "adapter_source" for item in prepared_cases)
+    return {
+        "full_fixture_run": not diagnostic_mode,
+        "held_out_split": payload.get("split") == "held_out",
+        "fixture_set_id": payload.get("fixture_set_id") == official_fixture_set_id,
+        "fixture_sha256": fixture_sha256 == official_fixture_sha256,
+        "target_provider": provider == _QUALIFIED_PROVIDER,
+        "target_model": model == _QUALIFIED_MODEL,
+        "target_api_family": api_family == _QUALIFIED_API_FAMILY,
+        "target_connection_revision": (connection_revision == _QUALIFIED_CONNECTION_REVISION),
+        "target_settings_revision": settings_revision == _QUALIFIED_SETTINGS_REVISION,
+        "target_timeout_seconds": (
+            timeout_seconds == CAPABILITY_TEACHING_QUALIFIED_TIMEOUT_SECONDS
+        ),
+        "target_max_output_tokens": (
+            max_output_tokens == CAPABILITY_TEACHING_QUALIFIED_MAX_OUTPUT_TOKENS
+        ),
+        "contract_exact": (
+            _required_dict(payload, "qualification_contract") == _expected_qualification_contract()
+        ),
+        "required_coverage": _required_coverage().issubset(coverage),
+        "minimum_source_cases": source_case_count >= 12,
+        "minimum_adapter_source_cases": adapter_source_case_count >= 12,
     }
 
 
@@ -1486,6 +2478,47 @@ def _write_partial_report(
     except OSError as error:
         raise CapabilityTeachingEvaluationError(
             "failed to persist capability teaching partial audit"
+        ) from error
+
+
+def _diagnostic_trace_has_correction(trace: object) -> bool:
+    return isinstance(trace, tuple | list) and any(
+        isinstance(message, dict)
+        and isinstance(parts := message.get("parts"), list | tuple)
+        and any(isinstance(part, dict) and part.get("kind") == "correction" for part in parts)
+        for message in trace
+    )
+
+
+def _write_diagnostic_output(
+    path: Path,
+    *,
+    status: str,
+    fixture_sha256: str,
+    cases: list[dict[str, Any]],
+    evaluation_id: str,
+    evaluation_revision: str,
+) -> None:
+    payload = {
+        "schema_version": 1,
+        "evaluation_id": evaluation_id,
+        "evaluation_revision": evaluation_revision,
+        "fixture_sha256": fixture_sha256,
+        "status": status,
+        "captured_case_count": len(cases),
+        "cases": cases,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    except (OSError, TypeError, ValueError) as error:
+        raise CapabilityTeachingEvaluationError(
+            "failed to persist capability teaching invalid-output diagnostics"
         ) from error
 
 

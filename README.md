@@ -131,7 +131,7 @@ uv run nb orm upgrade
 | `NBTRIAGE_KNOWLEDGE_PACK_SHA256` | 未设置 | 与 URL 成对固定 knowledge pack 压缩包的 64 位十六进制 SHA-256；下载内容不匹配时拒绝安装。它校验制品身份，不表示制品来源或许可证已自动获准。 |
 | `NBTRIAGE_MODEL_NAME` | 未设置 | 使用 Pydantic AI 的 `provider:model` 选择 Provider、API 族和精确模型，例如 `alibaba:qwen-max`；任意 OpenAI-compatible Chat 服务使用 `openai-chat:<模型 ID>`。这是唯一的 transport 选择字段。held-out 只标记项目已经验证的精确组合，未评测模型不会因此被拒绝运行。未设置时插件仍能启动并提供确定性能力索引，但不会生成教学注释、执行语义分类或调用 Answer Agent。 |
 | `NBTRIAGE_MODEL_BASE_URL` | 未设置 | 可选覆盖所选 Provider 的部署端地址，例如中国大陆百炼或自建 OpenAI-compatible Chat endpoint。它不替代 `provider:model`；已知 Provider 保留其 ModelProfile，通用兼容服务应显式选择 `openai-chat:`。Provider 构造器不支持地址覆盖时失败关闭。外部地址必须为 HTTPS，HTTP 只允许本机 loopback，且 URL 不得携带凭据、query 或 fragment。 |
-| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 单次语义、公开能力回答或自动教学注释请求的最长等待时间；这三类请求都不做 Provider 自动重试。Bug Agent 使用独立的 120 秒任务上限。与已发布评测预算不同只会使组合显示为未验证，不会成为运行禁令。 |
+| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 单次语义、公开能力回答或自动教学注释请求的最长等待时间。语义和公开回答不做 Provider 自动重试；后台教学注释只对 timeout、transport、HTTP 429/5xx，以及 Agent 阶段的输出校验失败做至多一次单元级重试。Bug Agent 使用独立的 120 秒任务上限。与已发布评测预算不同只会使组合显示为未验证，不会成为运行禁令。 |
 | `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 单次语义 assessment 与 Answer Agent 结构化输出的 token 上限。自动教学注释使用任务内固定的 16384 output token；Bug Agent 使用独立的 800 output token、最多 8 次请求、6 次实际证据读取和 0.50 美元单轮预算。它不限制用户输入长度；与已发布评测预算不同会使用新的未验证质量标签。 |
 | `NBTRIAGE_AGENT_TRACE_ENABLED` | `true` | 模型 transport 已配置时，把脱敏后的 Pydantic AI Agent / model / tool spans 写入本插件 LocalStore data 下的 `agent-traces.jsonl`；固定按 10 MiB、5 个备份轮转。文件只含调用结构、耗时、状态、Provider/model、token、费用、安全关联 ID，以及响应 part 类型和正文/工具参数长度等无内容形状，不含 Prompt、源码、模型原文、工具参数/结果或配置值。设为 `false` 时不解析路径、不创建文件。 |
 | `NBTRIAGE_CAPABILITY_ANNOTATION_MAX_CONCURRENCY` | `4` | 自动教学注释同时分析的插件数上限，范围 `1..32`。不同插件有限并发，同一插件内分析单元保持顺序；设为 `1` 可恢复全局串行。它不改变单次请求 timeout，较慢 Provider 继续通过 `NBTRIAGE_MODEL_TIMEOUT_SECONDS` 调整。 |
@@ -234,10 +234,12 @@ router 仍只执行一个动作。
 配置模型 transport 后，脱敏 Agent 轨迹默认写入同一插件 data 目录下的 `agent-traces.jsonl`。它和普通告警
 日志互补：日志快速指出失败单元，trace 用共同的 trace ID 串起 Agent run、模型请求、工具调用、重试、耗时和
 token。教学注释还会写入独立的无内容 response-shape span，记录最终响应的 part 类型、文本/思考/工具参数
-字符数，以及能够完整解析时的 entry、claim、constraint 数量和各 entry 的 Answer Markdown 字符数。轨迹
+字符数，以及能够完整解析时的 entry、claim 和 constraint 数量。轨迹
 不会保存生成所用的源码、Prompt、模型原文、工具正文或配置值，也不会自动上传；可通过
 `NBTRIAGE_AGENT_TRACE_ENABLED=false` 完全关闭。部署者可以先用 `nb localstore data` 查看 LocalStore data
 基目录；插件启动日志也会打印本次解析出的 `agent-traces.jsonl` 完整路径。
+维护者只有在运行完整、精确的官方合成教学 fixture 时才能显式开启无效输出诊断；诊断文件位于本地忽略目录，
+只保存失败或 correction 轮的 assistant 输出和 tool call/result，不保存初始 Prompt、API key 或真实私有源码。
 
 `NBTRIAGE_RESTRICTED_CONFIG` 的 JSON 数组格式示例：
 
@@ -268,6 +270,14 @@ flowchart LR
 配置了可用的模型 transport 后，后台教学注释任务会按插件有限并发地分析本轮
 所有符合准入条件但没有有效缓存的当前能力；同一插件内的分析单元仍保持顺序。每个单元从当前 runtime
 snapshot 出发，先提供确定性的命令结构、ast-grep Matcher 结构、已加载 handler 片段和当前内存配置投影；
+随后用 Python AST 枚举调用位置，并复用 Jedi DefinitionNavigator 在当前插件批准源码根内优先补入唯一可定位的
+未解析自定义 Permission/Rule 定义，再按广度优先展开本地 helper。Handler 与自定义 gate 为深度 0，最多展开三层；
+单函数最多 8,000 字符，单教学单元的初始源码切片合计最多 32,000 字符。动态分派、多定义和外部依赖不会被猜测成
+正式 Evidence；普通单元仍可由 Agent 使用现有只读工具按需调查。参数化 family 只有在每个成员的注册级
+Permission/Rule 都能形成同一个有证据的共同合同后才会合并：已识别权限成为固定约束，共享自定义 gate 合并成一个
+family candidate 并附带唯一插件内定义；成员合同不一致、动态不透明或定义不唯一时整项 fail-closed。源码 revision
+漂移则拒绝混用两代 Evidence，并停止该插件本轮剩余教学分析。确定性切片只在进程内按源码 revision 与函数定义身份复用，
+每个教学单元仍生成自己的 Evidence ID 与 manifest。
 初始 Evidence 不足时，Agent 才能在批准的 Bot、插件与 LocalStore 根中使用只读 glob/search/read，或用 Jedi
 从已读 Python 标识符转到当前解释器依赖的定义。依赖根不允许自由 glob，只允许按已知位置读取；`.env*`、
 凭据、数据库、教学日志、人工维护的帮助 YAML、评测 Gold 和本任务生成的 help-display 始终不能进入教学模型。
@@ -276,33 +286,80 @@ Bot 项目根只用于非 Python 项目文本和配置，Python 源码必须从�
 配置当前值只从已构造且与源码引用匹配的 Pydantic 实例投影，并在读取前应用
 `NBTRIAGE_RESTRICTED_CONFIG`，不会读取整份 Config、消息、用户身份或枚举进程环境。
 
-模型输出必须引用本轮初始 Evidence 或成功 `read_file` 返回的动态 Evidence。LocalStore cache 不保存源码正文
-或配置值，只保存公开教学文本、请求指纹，以及用于复核动态证据是否仍有效的 Evidence ID、相对位置和文件
-revision。旧 cache 只有在能力仍于当前 runtime 成功注册、插件源码与其他生成输入未变、动态证据 revision
-仍匹配时才能提供，因此
-插件加载失败或本轮未观察到的能力不会成为普通用户可见的“幽灵帮助”。未评测模型也可以生成，但仍须通过
-相同的模型外闭合检查，并以未验证质量标签记录。当前 schema 6 允许一次分析产生多个模型外固定 ID 的公开 entry：确定性的 Alconna
-子命令分别成为帮助条目，Option、别名和同功能用法仍留在同一 entry；模型直接返回完整命令正文，不再使用
+模型输出必须引用本轮初始 Evidence 或成功 `read_file` 返回的动态 Evidence。教学 cache 按插件写入 Triage
+LocalStore cache 的 `capability-annotations/<module_name>.json`，同一文件内按 teaching unit 保存
+`last_good` 与 `last_attempt`。`last_good` 是最近通过完整校验的公开结果；`last_attempt` 只记录最近真实生成
+尝试的状态、阶段、请求指纹和脱敏失败原因，失败不会覆盖仍精确有效的 `last_good`。cache 不保存源码正文或
+配置值，只保存公开教学文本、请求指纹，以及用于复核动态证据是否仍有效的 Evidence ID、相对位置和文件
+revision。每个分片还绑定实际发布它的 `published_generation`；只有它与 `current.json` 一致，且能力仍于当前
+runtime 成功注册、插件源码与其他生成输入未变、动态证据 revision 仍匹配时，旧结果才能提供。因此缓存写入
+落后、插件加载失败或本轮未观察到的能力都不会成为普通用户可见的“幽灵帮助”。插件文件
+直接使用安全的 `module_name.json`，不建立 hash fallback 或文件名映射；非法 module name 或同轮大小写折叠
+冲突只关闭相关插件的教学增强。未评测模型也可以生成，但仍须通过
+相同的模型外闭合检查，并以未验证质量标签记录。当前 schema 7 的公开 entry 只保存
+`name / summary / usages / search_terms / behavior_boundaries / requirements`，requirement 只允许
+`role / scene / access / rate_limit`。Alconna 叶子仍可投影为多个模型外固定 ID 的 entry；模型不再生成
+自由 Answer Markdown，Help 与 Answer 都从同一结构合同确定性投影。同一位置的一至三项固定备选在 usage 显式枚举，
+四至六项使用概念槽并在 summary 完整说明，七项及以上只说明类别；该规则同时适用 family、单个 Matcher 的多命令头、
+别名、Option 和固定参数值。
+
+历史 schema 曾允许 Alconna 子命令分别成为帮助条目，Option、别名和同功能用法留在同一 entry；模型直接返回完整命令正文，不再使用
 `{command}`，也不再输出结构化 interaction。2026-08-16 的全新 v3 24 条真实 Provider held-out 中，schema、
 Evidence 闭合、投影、预算、工具与 12/12 源码提取均通过，但安全率 0.9167、语义率 0.3333，质量 Gate 仍失败，
 因此不能继承 semantic、Bug 或 Answer 任务的质量结论，也不宣称该精确组合具有同等已验证质量。
-当前 v35 Prompt 又复用了同一批 20 条案例和 12 组冻结源码，对国内 Alibaba Qwen3.6 Flash 独立运行 v9
+历史 v35 Prompt 又复用了同一批 20 条案例和 12 组冻结源码，对国内 Alibaba Qwen3.6 Flash 独立运行 v9
 forward-heldout。源码提取率为 1.000，但 schema / Evidence / 投影 / 安全 / 预算均为 0.900，语义率为
 0.600，需要补读工具的案例未通过，正式 Gate 失败；因此 Qwen 能力标注仍只属于“可运行、未验证”，不会进入
 `QUALIFIED_CAPABILITY_ANNOTATION_TASKS`。
+2026-08-19 又用旧 request v2、Prompt v38 和 fixture schema v4 对 OpenCode Go `deepseek-v4-flash`
+运行全新 v12：12/20 案例通过真实 production request builder，整批 20 条中 16 条通过；schema / Evidence
+闭合为 0.950，投影 / 安全为 0.900，语义为 0.800，工具案例为 0.500，预算与源码提取均为 1.000。33 次请求
+共 197,757 input / 110,238 output tokens，按冻结价格审计为 37,169 microUSD，正式 Gate 失败，因此当前请求
+合同不登记能力注释质量资格。v12 暴露了输入 requirement 重复、`@` 公开文字过度拒绝、基线细化语义和截断后
+correction 责任难以判断等问题，这些问题推动了 Prompt v39 / request v3 / schema 7 收敛。已消费的 v12 保持冻结历史证据，
+不会通过事后修改 Oracle 或 Prompt 重新冒充 held-out。
+同日又对 Prompt v39 / request v3 / schema 7 运行全新 v13：20 条中 12 条通过真实 production adapter
+builder，24 次 Provider 请求共 132,972 input / 65,381 output tokens，按冻结价格审计为 22,670 microUSD。
+schema、Evidence 闭合、投影、安全、预算、工具和源码提取均为 1.000，语义为 0.800，低于 0.900 门槛，
+因此正式 Gate 仍失败，`QUALIFIED_CAPABILITY_ANNOTATION_TASKS` 仍为空。四条自动失败中，人工复核确认三条是
+过窄 Oracle：自定义角色同义文案、`baseline_changes.replace.new_value` 已形成正确最终边界却仍被要求重复 claim，
+以及 `@值班员` 的正确详细改写未逐字等于期望；剩余一条是模型把按群名单限制错分为 `scene` 而非 `access`。
+v13 分数保持冻结，不用事后改 Oracle 冒充通过。
+当前 Prompt v40 / request v4 保留全部 family 成员调用事实，并采用 `≤3 / 4–6 / ≥7` 展示阈值；它改变了
+模型输入和生成合同，不能继承 v13 质量结论，仍标记为未验证。
 
-完整刷新会从同一份有效教学注释生成两类一插件一文件的数据：面向外部公开帮助消费者的紧凑 YAML 和供 Answer
-补充公开细节的 Markdown。它们写入 Triage 自己的 LocalStore plugin data：
+一次可发布刷新先在内存 staging 中形成候选，再从同一份候选生成两类一插件一文件的数据：面向外部公开帮助
+消费者的紧凑 YAML 和供 Answer 补充公开细节的 Markdown。它们写入 Triage 自己的 LocalStore plugin data：
 `capability-teaching/objects/<generation>/help-display/<module_name>.yml` 与
 `capability-teaching/objects/<generation>/answer-knowledge/<module_name>.md`。两类文件和 manifest 全部写完后才
-原子替换 `capability-teaching/current.json`，所以不会出现一半新、一半旧。文件不包含源码、Evidence、配置
-值、指纹或审核状态。当前版本不设草稿或审核流程，也没有把 YAML 目录接入外部帮助系统；这些文件目前用于
+完成校验并原子替换 `capability-teaching/current.json`，指针切换成功后才提交对应 Answer 内存视图，所以不会
+出现一半新、一半旧。`current.json` 是唯一活动指针；cache、内存 staging、最近尝试记录和未被指针选中的
+generation 都不是正在服务的教学合同。Help 与 Answer 文件不包含
+源码、Evidence、配置值、指纹或审核状态；同 generation 的 `manifest.json` 保存脱敏的单元状态、fingerprint、
+动态 Evidence 位置/revision、尝试次数，以及每个插件的 `partial` 和 `active/eligible` 数量。
+`capability-teaching/last-refresh.json` 原子记录最近一次刷新尝试，即使该轮因全局可信度失败而没有发布。
+当前版本不设草稿或审核流程，也没有把 YAML 目录接入外部帮助系统；这些文件目前用于
 部署者观察效果，并由 Triage 的 Answer 公开教学视图消费。
 
-带闭包 Handler 的参数化 Matcher 不再逐条重复调用模型：Triage 只在能用精确源码位置找到唯一外层工厂、
-且该工厂所有 Runtime 成员都通过公开准入时，把工厂作为一个分析单元。模型阅读工厂源码和批准 Evidence，
-能形成可靠共同说明才启用知识；否则缓存 `knowledge_enabled=false`，两种公开文件都不生成该条目。首版仍
+教学内容按普通 Matcher 或参数化 family 为不可拆分单元 fail-closed，而 generation 仍整体原子发布。单个普通
+Matcher 失败只关闭该单元；family 失败会关闭整个 family。同轮其他成功单元，以及请求指纹、插件 revision 和
+Evidence manifest 仍精确匹配的 `last_good`，可以进入 partial generation；失效旧注释不会继续发布，普通检索
+回退到确定性能力信息。插件文件会显示“目前可说明以下功能（n/m）”。插件源码 revision 与 cache 不同时，
+首版全量重生成该插件当前教学单元；Agent 运行中发现 `SOURCE_CHANGED` 时，已生成和已复用的该插件内存
+staging 一并作废，后续单元停止，但其他插件仍可发布。快照 partial、共享 Provider / Schema 身份失败、
+HTTP 401 或 generation / `current.json` 原子发布失去可信度时整轮不切换。下一轮会复用仍精确匹配的
+`last_good` 并只补做缺失或失败单元；配置、Provider / endpoint / model、Prompt / Schema revision 或 Evidence
+manifest 变化会使对应单元重新生成。
+
+带闭包 Handler 的参数化 Matcher 不再逐条重复调用模型：Triage 只在 Runtime code identity 能精确定位同一段闭包
+Handler、该身份的所有 Runtime 成员都通过公开准入，且共同注册 gate 合同可安全表达时，把它们作为一个分析单元。
+模型阅读共享 Handler、确定性展开的本地依赖和批准 Evidence，
+能形成可靠共同说明才启用知识；适配器无法安全表达时该 family 直接关闭，模型选择 abstain 时缓存
+`knowledge_enabled=false`，两种公开文件都不生成该条目。首版仍
 排除全局消息、通知、请求和其他没有确定公开触发形式的被动监听器。
+family 请求会携带本轮全部公开成员的确定命令、alias 和 Runtime parser 参数结构；成员参数数量、图片或文字输入、
+必选性和精确 usage 不同不再关闭共同知识。查询先按 family 去重，精确命中成员时从当前 Runtime record 重建它的完整
+usage，普通 family 查询使用聚合 usage。这不是新的 LLM 工具，也不为单个插件增加 `members / variants / catalog` schema。
 
 ## 使用
 
@@ -369,7 +426,7 @@ just maintainer search-capabilities "搜图怎么用" \
 维护者 CLI 还可以显式查看带具体 `analysis_issues` 的未解决能力和 `restricted` 能力；维护者结果报告实际 issue，
 不把它们笼统称为待审核候选。索引缺少可靠用法或存在
 不透明规则时不会补写参数，也不会把“发现到”宣称为“当前一定能执行”。启动刷新失败但仍有上一份成功构建
-索引时，维护者回复会明确标记快照陈旧；第三方说明中的 mention 和 Unicode 控制字符会在发送前中和。
+索引时，维护者回复会明确标记快照陈旧；第三方说明中的 Unicode 控制字符会在发送前移除。普通字符串中的 `@用户` 保留，不被视为已构造的平台 At 消息段。
 
 ## 许可证
 
