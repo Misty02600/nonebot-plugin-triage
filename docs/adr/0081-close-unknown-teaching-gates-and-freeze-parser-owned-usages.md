@@ -1,11 +1,13 @@
 # ADR-0081：未知安全门禁关闭公开教学，并冻结 parser 拥有的用法
 
-- 状态：部分被 ADR-0082、ADR-0083 替代；parser canonical usage 与有限枚举决定继续有效
+- 状态：部分被 ADR-0082、ADR-0083、ADR-0095、ADR-0099 替代；Parser 语法结构继续有效，公开槽位名改由 ADR-0099 接续
 - 决策日期：2026-08-16
 - 后续关系：[ADR-0082](0082-group-parameterized-matchers-only-by-runtime-handler-code-identity.md) 删除本 ADR
   为参数化工厂构造成员数量、成员名和省略标记的部分；有限枚举仍是通用展示规则。
 - 后续关系：[ADR-0083](0083-resolve-unknown-teaching-gates-before-closing-public-knowledge.md) 保留
   “最终未知必须关闭”的安全目标，但改为先让 Agent 对结构候选补证并区分实际约束、已证明无约束与仍未知。
+- 后续关系：[ADR-0099](0099-separate-parser-structure-from-public-slot-names.md) 保留参数顺序、必选性、
+  Option、别名和重复性的模型外所有权，但不再把内部 `Arg.name` 逐字公开。
 
 ## 背景
 

@@ -13,9 +13,11 @@ from pathlib import Path, PurePosixPath
 from ast_grep_py import SgNode, SgRoot
 
 from nbtriage.capability_analysis import (
+    PermissionAlternative,
     SemanticConstraint,
     SemanticConstraintKind,
     TeachingRole,
+    TeachingScene,
 )
 from nbtriage.framework_semantics import (
     PermissionSemanticProfile,
@@ -189,6 +191,7 @@ class PermissionConstraintFact:
     kind: PublicConstraintKind
     operation: str
     teaching_role: TeachingRole | None
+    teaching_scene: TeachingScene | None
     symbol: str
     owner: str
     source: SourceSpan
@@ -223,28 +226,60 @@ def fixed_permission_constraints(
 ) -> tuple[SemanticConstraint, ...]:
     """把版本限定、已识别的 Permission 事实投影为模型不可移除的公开约束。"""
 
-    constraints = {
+    alternatives = {
+        alternative for fact in facts for alternative in _permission_fact_alternatives(fact)
+    }
+    if not alternatives:
+        return ()
+    ordered = tuple(
+        sorted(
+            alternatives,
+            key=lambda item: (
+                item.kind.value,
+                item.role.value if item.role is not None else "",
+                item.scene.value if item.scene is not None else "",
+                item.statement,
+            ),
+        )
+    )
+    statement = "；或".join(item.statement.removeprefix("仅") for item in ordered)
+    return (
         SemanticConstraint(
+            kind=SemanticConstraintKind.PERMISSION,
+            statement=f"满足以下任一条件：{statement}",
+            evidence_ids=(evidence_id,),
+            permission_alternatives=ordered,
+        ),
+    )
+
+
+def _permission_fact_alternatives(
+    fact: PermissionConstraintFact,
+) -> tuple[PermissionAlternative, ...]:
+    if fact.kind is PublicConstraintKind.ROLE and fact.operation == "administrator_or_owner":
+        return (
+            PermissionAlternative(
+                kind=SemanticConstraintKind.ROLE,
+                statement="群管理员可用",
+                role=TeachingRole.ADMIN,
+            ),
+            PermissionAlternative(
+                kind=SemanticConstraintKind.ROLE,
+                statement="群主可用",
+                role=TeachingRole.OWNER,
+            ),
+        )
+    return (
+        PermissionAlternative(
             kind=(
                 SemanticConstraintKind.ROLE
                 if fact.kind is PublicConstraintKind.ROLE
                 else SemanticConstraintKind.SCENE
             ),
             statement=public_permission_statement(fact.kind, fact.operation),
-            evidence_ids=(evidence_id,),
             role=fact.teaching_role,
-        )
-        for fact in facts
-    }
-    return tuple(
-        sorted(
-            constraints,
-            key=lambda item: (
-                item.kind.value,
-                item.role.value if item.role is not None else "",
-                item.statement,
-            ),
-        )
+            scene=fact.teaching_scene,
+        ),
     )
 
 
@@ -1188,6 +1223,7 @@ def _resolved_permission_constraints(
                 kind=semantic.kind,
                 operation=semantic.operation,
                 teaching_role=semantic.teaching_role,
+                teaching_scene=semantic.teaching_scene,
                 symbol=symbol,
                 owner=owner,
                 source=_span(source_file, expression),

@@ -16,6 +16,7 @@ from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from arclet.alconna import Alconna, command_manager
+from arclet.alconna.base import Completion, Help, Shortcut
 
 from nbtriage.capabilities import (
     AnalysisIssue,
@@ -105,6 +106,7 @@ class PluginIdentity:
 @dataclass(frozen=True)
 class AlconnaArgument:
     name: str
+    notice: str | None
     required: bool
     hidden: bool
     variadic: bool
@@ -1016,13 +1018,14 @@ def _alconna_arguments(args: object) -> tuple[AlconnaArgument, ...]:
         default = getattr(field, "default", _MISSING)
         has_default = default is not _MISSING and not _is_tarina_empty(default)
         pattern = getattr(argument, "value", None)
-        pattern_type = _qualified_type_name(pattern) if pattern is not None else None
+        pattern_type = _alconna_pattern_type(pattern) if pattern is not None else None
         variadic = _safe_type_name(pattern) in {"MultiVar", "MultiKeyWordVar"}
         raw_variadic_flag = getattr(pattern, "flag", None) if variadic else None
         variadic_flag = raw_variadic_flag if raw_variadic_flag in {"+", "*"} else None
         result.append(
             AlconnaArgument(
                 name=name,
+                notice=_safe_text(getattr(argument, "notice", None)),
                 required=(
                     not bool(getattr(argument, "optional", False))
                     and not has_default
@@ -1038,12 +1041,36 @@ def _alconna_arguments(args: object) -> tuple[AlconnaArgument, ...]:
     return tuple(result)
 
 
+def _alconna_pattern_type(pattern: object) -> str:
+    union = (
+        getattr(pattern, "base", None)
+        if _safe_type_name(pattern) in {"MultiVar", "MultiKeyWordVar"}
+        else pattern
+    )
+    if _safe_type_name(union) == "UnionPattern":
+        members = getattr(union, "base", None)
+        if isinstance(members, Sequence) and not isinstance(members, str | bytes):
+            member_types = tuple(
+                sorted(
+                    {
+                        _qualified_type_name(getattr(member, "origin", None) or member)
+                        for member in members
+                    }
+                )
+            )
+            if member_types:
+                return f"typing.Union[{','.join(member_types)}]"
+    pattern_origin = getattr(pattern, "origin", None)
+    return _qualified_type_name(pattern_origin or pattern)
+
+
 def _alconna_components(value: object) -> tuple[AlconnaComponent, ...]:
     if not isinstance(value, Sequence) or isinstance(value, str | bytes):
         return ()
     return tuple(
         converted
         for component in value
+        if not isinstance(component, (Help, Completion, Shortcut))
         if (converted := _alconna_component(component)) is not None
     )
 
@@ -1622,7 +1649,7 @@ def _safe_type_name(value: object) -> str:
 
 
 def _qualified_type_name(value: object) -> str:
-    value_type = type(value)
+    value_type = value if isinstance(value, type) else type(value)
     return f"{value_type.__module__}.{value_type.__qualname__}"
 
 

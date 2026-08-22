@@ -4,11 +4,12 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, cast
 
+from pydantic_ai import ToolDefinition
 from pydantic_ai.tools import RunContext
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset, ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
@@ -40,11 +41,13 @@ from nbtriage.readonly_tools import (
 )
 from nonebot_plugin_triage.evidence_access import (
     EvidenceAccessError,
+    EvidenceAccessProfiles,
     EvidenceTaskKind,
     build_evidence_access_profiles,
 )
 
 _DEPENDENCY_FILE_TOOLS = frozenset({"read_file", "file_info"})
+_TARGET_PLUGIN_ROOT_NAME = "target_plugin"
 _MAX_CITABLE_FILE_EXCERPT_CHARS = 7_600
 _DYNAMIC_EVIDENCE_SOURCE_KIND = "approved_file_excerpt"
 
@@ -201,12 +204,22 @@ class CapabilityTeachingToolProvider:
                 task_kind=EvidenceTaskKind.TEACHING,
                 additional_denied_patterns=self._additional_denied_patterns,
             )
+            profiles = _with_target_plugin_alias(profiles)
             capture = _EvidenceCapture(request.capability.capability_id)
+            expose_bot_project = _request_uses_bot_project(request, profiles)
             tool_names = {
                 root.name: (
-                    READ_ONLY_FILE_TOOL_NAMES
-                    if profiles.file_profile.root(root.name) is not None
-                    else _DEPENDENCY_FILE_TOOLS
+                    frozenset()
+                    if root.name == "bot_project" and not expose_bot_project
+                    else (
+                        READ_ONLY_FILE_TOOL_NAMES
+                        if (
+                            (file_root := profiles.file_profile.root(root.name)) is not None
+                            and file_root.allowed_patterns == root.allowed_patterns
+                            and file_root.denied_patterns == root.denied_patterns
+                        )
+                        else _DEPENDENCY_FILE_TOOLS
+                    )
                 )
                 for root in profiles.navigation_profile.roots
             }
@@ -224,20 +237,24 @@ class CapabilityTeachingToolProvider:
             )
             wrapped_file_tools = tuple(
                 _EvidenceRecordingToolset(
-                    cast(AbstractToolset[Any], toolset),
+                    cast(AbstractToolset[Any], toolset).prepared(
+                        _file_tool_definition_preparer(root)
+                    ),
                     root=root,
                     access=profiles.navigation_profile,
                     capture=capture,
                 )
                 for root, toolset in zip(active_roots, file_bundle.toolsets, strict=True)
             )
+            navigation_roots = tuple(root.name for root in active_roots)
+            navigation_project_root = (
+                "bot_project" if expose_bot_project else profiles.plugin_source_root.name
+            )
             navigator = DefinitionNavigator(
                 PythonNavigationProfile(
                     access=profiles.navigation_profile,
-                    project_root_name="bot_project",
-                    source_root_names=tuple(
-                        root.name for root in profiles.navigation_profile.roots
-                    ),
+                    project_root_name=navigation_project_root,
+                    source_root_names=navigation_roots,
                 )
             )
             navigation_toolset = _navigation_toolset(
@@ -282,7 +299,18 @@ class CapabilityTeachingToolProvider:
         request: CapabilityAnalysisRequest,
         manifest: tuple[CapabilityAnnotationEvidenceRef, ...],
     ) -> bool:
-        if not manifest:
+        dependency_manifest = tuple(
+            CapabilityAnnotationEvidenceRef(
+                evidence_id=item.evidence_id,
+                source_kind=item.source_kind,
+                locator=item.locator,
+                revision=item.revision,
+            )
+            for item in request.evidence_units
+            if item.source_kind == "python_dependency_function" and item.locator is not None
+        )
+        references = (*manifest, *dependency_manifest)
+        if not references:
             return True
         source_context = request.source_context
         if source_context is None:
@@ -294,9 +322,10 @@ class CapabilityTeachingToolProvider:
                 task_kind=EvidenceTaskKind.TEACHING,
                 additional_denied_patterns=self._additional_denied_patterns,
             )
-        except EvidenceAccessError:
+            profiles = _with_target_plugin_alias(profiles)
+        except (EvidenceAccessError, ReadOnlyToolsError):
             return False
-        for reference in manifest:
+        for reference in references:
             if reference.source_kind.startswith("knowledge_"):
                 if self._knowledge_pack_revision is None:
                     return False
@@ -304,6 +333,16 @@ class CapabilityTeachingToolProvider:
                 if current_revision is None or not reference.revision.startswith(
                     f"pack:{current_revision}:"
                 ):
+                    return False
+                continue
+            if reference.source_kind == "python_dependency_function":
+                root_name, separator, locator = reference.locator.partition("/")
+                root = profiles.navigation_profile.root(root_name)
+                relative_path = locator.partition(":")[0]
+                if not separator or root is None or not relative_path:
+                    return False
+                state = _file_state(profiles.navigation_profile, root, relative_path)
+                if state is None or f"sha256:{state.revision}" != reference.revision:
                     return False
                 continue
             if reference.source_kind != _DYNAMIC_EVIDENCE_SOURCE_KIND:
@@ -386,7 +425,7 @@ def _navigation_toolset(
         column: int,
         source_revision: str,
     ) -> dict[str, object]:
-        """从已读 Python 标识符转到当前环境中的定义位置。"""
+        """按已读源码坐标解析 Python 定义，可跨批准的插件、宿主与依赖源码根。"""
         try:
             result = navigator.go_to_definition(
                 GoToDefinitionRequest(
@@ -422,13 +461,103 @@ def _navigation_toolset(
     toolset = FunctionToolset(
         tools=[go_to_definition],
         instructions=(
-            "python_go_to_definition 只解析已经定位的 Python 标识符。"
+            "python_go_to_definition 是已知 Python 标识符位置的定义导航入口；"
+            "文件 search_files 只在单个根内做文本搜索，不能替代跨依赖的符号导航。"
             f"当前目标插件根为 {plugin_root_name}。"
             "定义位置本身不是可引用证据；在最终注释中使用其行为之前，必须通过对应根的 "
             "read_file 工具读取返回文件。"
         ),
     )
     return cast(AbstractToolset[Any], toolset.prefixed("python"))
+
+
+def _request_uses_bot_project(
+    request: CapabilityAnalysisRequest,
+    profiles: EvidenceAccessProfiles,
+) -> bool:
+    bot_root = profiles.navigation_profile.root("bot_project")
+    if bot_root is None:
+        return False
+    if profiles.plugin_source_root.path.is_relative_to(bot_root.path):
+        return True
+    return any(
+        unit.locator is not None and unit.locator.startswith("bot_project/")
+        for unit in request.evidence_units
+    )
+
+
+def _file_tool_definition_preparer(
+    root: ReadOnlyRoot,
+) -> Callable[
+    [RunContext[Any], list[ToolDefinition]],
+    list[ToolDefinition],
+]:
+    def prepare(
+        _ctx: RunContext[Any],
+        definitions: list[ToolDefinition],
+    ) -> list[ToolDefinition]:
+        prepared: list[ToolDefinition] = []
+        for definition in definitions:
+            suffix = definition.name.removeprefix(f"{root.name}_")
+            description = definition.description or ""
+            if suffix == "search_files":
+                description = (
+                    f"{description.rstrip()} 只在 {root.name} 根内做纯文本搜索；"
+                    "不会搜索导入的第三方依赖，也不是 Python 定义导航。"
+                    "已知标识符所在文件、行、列和 revision 时使用 "
+                    "python_go_to_definition。"
+                )
+            elif suffix in {"read_file", "file_info", "list_directory"}:
+                description = (
+                    f"{description.rstrip()} 当前文件根固定为 {root.name}；"
+                    "路径参数相对此根，不要添加根名或目标插件模块名。"
+                )
+            prepared.append(replace(definition, description=description))
+        return prepared
+
+    return prepare
+
+
+def _with_target_plugin_alias(profiles: EvidenceAccessProfiles) -> EvidenceAccessProfiles:
+    source = profiles.plugin_source_root
+    if source.name == _TARGET_PLUGIN_ROOT_NAME:
+        return profiles
+    bot_project = profiles.navigation_profile.root("bot_project")
+    if bot_project is not None and bot_project.path == source.path:
+        # 单文件本地插件可以直接位于 Bot 根；此时保留 bot_project 的真实语义，
+        # 不把整个宿主目录伪装成 target_plugin。
+        return profiles
+
+    def replace(profile: ReadOnlyTaskProfile) -> ReadOnlyTaskProfile:
+        return ReadOnlyTaskProfile(
+            task_id=profile.task_id,
+            roots=tuple(
+                (
+                    ReadOnlyRoot(
+                        _TARGET_PLUGIN_ROOT_NAME,
+                        root.path,
+                        allowed_patterns=root.allowed_patterns,
+                        denied_patterns=root.denied_patterns,
+                    )
+                    if root.path == source.path
+                    else root
+                )
+                for root in profile.roots
+            ),
+            policy=profile.policy,
+        )
+
+    aliased = ReadOnlyRoot(
+        _TARGET_PLUGIN_ROOT_NAME,
+        source.path,
+        allowed_patterns=source.allowed_patterns,
+        denied_patterns=source.denied_patterns,
+    )
+    return EvidenceAccessProfiles(
+        file_profile=replace(profiles.file_profile),
+        navigation_profile=replace(profiles.navigation_profile),
+        plugin_source_root=aliased,
+    )
 
 
 def _file_state(

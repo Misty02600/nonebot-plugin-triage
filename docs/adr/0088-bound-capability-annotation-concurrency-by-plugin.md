@@ -1,5 +1,8 @@
 # ADR-0088：按插件限制教学注释并发并保持插件内顺序
 
+> 后续关系：[ADR-0096](0096-bound-capability-annotation-concurrency-by-unit.md) 替代本 ADR 中“并发槽位按插件
+> 分配、同一插件内顺序执行”的决定；全局锁、有限并发、复用通用 timeout 和模型内预算原则继续有效。
+
 > 后续关系：[ADR-0093](0093-shard-capability-annotation-cache-by-plugin.md) 部分替代本 ADR 决策第 4 项中
 > “任一单元失败都不激活半套 Answer 视图”的整轮失败边界，并把成功缓存具体化为按插件 JSON、文件内按
 > teaching unit 保存。插件间有限并发、插件内顺序、全局 refresh lock、缓存写入锁、Runtime 准入和全局
@@ -7,7 +10,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；第 4 项部分被 ADR-0093 替代 | 2026-08-17 |
+| 插件级调度被 ADR-0096 替代；第 4 项部分被 ADR-0093 替代 | 2026-08-17 |
 
 ## 背景
 

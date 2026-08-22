@@ -31,6 +31,7 @@ from nbtriage.capability_analysis import (
 from nbtriage.capability_annotations import (
     CapabilityAnnotationError,
     CapabilityAnnotationEvidenceRef,
+    CapabilityAnnotationProjectionError,
     CapabilityTeachingAnnotation,
     capability_analysis_fingerprint,
     project_capability_annotation,
@@ -305,7 +306,7 @@ class CapabilityAnnotationService:
         source_revision_validator: CapabilityAnnotationSourceRevisionValidator | None = None,
         published_generation_resolver: CapabilityAnnotationPublishedGenerationResolver
         | None = None,
-        max_plugin_concurrency: int = 4,
+        max_analysis_concurrency: int = 10,
     ) -> None:
         if not callable(client_factory):
             raise TypeError("client_factory must be callable")
@@ -314,12 +315,12 @@ class CapabilityAnnotationService:
         if not isinstance(analysis_revision, str) or not analysis_revision:
             raise ValueError("analysis_revision must be a non-empty string")
         if (
-            isinstance(max_plugin_concurrency, bool)
-            or not isinstance(max_plugin_concurrency, int)
-            or max_plugin_concurrency < 1
-            or max_plugin_concurrency > 32
+            isinstance(max_analysis_concurrency, bool)
+            or not isinstance(max_analysis_concurrency, int)
+            or max_analysis_concurrency < 1
+            or max_analysis_concurrency > 32
         ):
-            raise ValueError("max_plugin_concurrency must be an integer between 1 and 32")
+            raise ValueError("max_analysis_concurrency must be an integer between 1 and 32")
         if isinstance(cache_directory, Path):
             self._cache_directory: Path | None = cache_directory
             self._cache_directory_resolver: Callable[[], Path] | None = None
@@ -332,7 +333,7 @@ class CapabilityAnnotationService:
         self._evidence_validator = evidence_validator
         self._source_revision_validator = source_revision_validator
         self._published_generation_resolver = published_generation_resolver
-        self._max_plugin_concurrency = max_plugin_concurrency
+        self._max_analysis_concurrency = max_analysis_concurrency
         self._source_slice_cache = CapabilitySourceSliceCache()
         self._active_view = _ActiveAnnotationView({}, {}, {})
         self._published_generation: str | None = None
@@ -460,6 +461,7 @@ class CapabilityAnnotationService:
             prepared, skipped_units, skip_reasons = await asyncio.to_thread(
                 self._prepare,
                 snapshot,
+                plugin_module,
             )
             skipped = list(skipped_units)
             skip_reason_counts = dict(skip_reasons)
@@ -557,9 +559,6 @@ class CapabilityAnnotationService:
                 for module_name, cache in cache_by_plugin.items()
             }
 
-            prepared_requests = {
-                item.request.capability.capability_id: item.request for item in prepared
-            }
             current_fingerprints = {
                 item.request.capability.capability_id: item.fingerprint for item in prepared
             }
@@ -591,7 +590,7 @@ class CapabilityAnnotationService:
                     unit.last_good is not None
                     and unit.last_good.request_fingerprint == item.fingerprint
                     and self._cached_evidence_is_current(
-                        prepared_requests[unit_id],
+                        item.request,
                         unit.last_good,
                     )
                 ):
@@ -613,7 +612,7 @@ class CapabilityAnnotationService:
                 if (
                     annotation.request_fingerprint == item.fingerprint
                     and self._cached_evidence_is_current(
-                        prepared_requests[unit_id],
+                        item.request,
                         annotation,
                     )
                 ):
@@ -640,12 +639,10 @@ class CapabilityAnnotationService:
             )
             # 已确认 stale 的旧注释立即退出运行时视图；模型新结果仍要等输出发布成功。
             self._active_view = active_view
-            candidate_annotations = dict(base_annotations)
             missing = [
                 item
                 for item in prepared
-                if (plugin_module is None or item.plugin_module == plugin_module)
-                and (
+                if (
                     force
                     or item.request.capability.capability_id not in reusable_annotations
                     or item.request.capability.capability_id in retry_units
@@ -665,13 +662,13 @@ class CapabilityAnnotationService:
             ]
             logger.info(
                 "NoneBot Triage 教学注释刷新开始：refresh_id={}, eligible={}, cached={}, "
-                "pending={}, plugin_groups={}, max_plugin_concurrency={}, scope={}",
+                "pending={}, plugin_groups={}, max_analysis_concurrency={}, scope={}",
                 refresh_id,
                 len(prepared),
                 len(base_annotations),
                 len(missing),
                 len({item.plugin_module for item in missing}),
-                self._max_plugin_concurrency,
+                self._max_analysis_concurrency,
                 plugin_module or "all",
             )
             attempts = await self._analyze_missing(missing, refresh_id=refresh_id)
@@ -697,7 +694,6 @@ class CapabilityAnnotationService:
                     continue
                 evidence_changed_fallbacks.add(unit_id)
                 base_annotations.pop(unit_id, None)
-                reusable_annotations.pop(unit_id, None)
                 active_fallbacks.pop(unit_id, None)
 
             revalidated_attempts: list[_AnalysisAttempt] = []
@@ -763,7 +759,6 @@ class CapabilityAnnotationService:
                 if item.plugin_module in source_changed_plugins:
                     unit_id = item.request.capability.capability_id
                     candidate_annotations.pop(unit_id, None)
-                    reusable_annotations.pop(unit_id, None)
                     base_annotations.pop(unit_id, None)
                     active_fallbacks.pop(unit_id, None)
             active_view = _annotation_view(
@@ -963,7 +958,7 @@ class CapabilityAnnotationService:
                 "NoneBot Triage 教学注释刷新完成：eligible={}, cached={}, "
                 "generated={}, disabled={}, family_eligible={}, family_disabled={}, "
                 "family_failed={}, skipped={}, failed={}, plugin_groups={}, "
-                "max_plugin_concurrency={}",
+                "max_analysis_concurrency={}",
                 self._status.eligible_count,
                 self._status.cached_count,
                 self._status.generated_count,
@@ -974,7 +969,7 @@ class CapabilityAnnotationService:
                 self._status.skipped_count,
                 self._status.failed_count,
                 len({item.plugin_module for item in missing}),
-                self._max_plugin_concurrency,
+                self._max_analysis_concurrency,
             )
             return self._status
 
@@ -984,63 +979,53 @@ class CapabilityAnnotationService:
         *,
         refresh_id: str,
     ) -> tuple[_AnalysisAttempt, ...]:
-        grouped: dict[str, list[_PreparedAnalysis]] = {}
-        for item in missing:
-            grouped.setdefault(item.plugin_module, []).append(item)
-        semaphore = asyncio.Semaphore(self._max_plugin_concurrency)
+        semaphore = asyncio.Semaphore(self._max_analysis_concurrency)
         global_stop = asyncio.Event()
         global_detail: list[str] = []
+        source_changed: dict[str, str] = {}
 
-        async def analyze_plugin(
-            items: tuple[_PreparedAnalysis, ...],
-        ) -> tuple[_AnalysisAttempt, ...]:
+        async def analyze_item(item: _PreparedAnalysis) -> _AnalysisAttempt:
             async with semaphore:
-                attempts: list[_AnalysisAttempt] = []
-                source_changed_detail: str | None = None
-                for item in items:
-                    if source_changed_detail is not None:
-                        attempts.append(
-                            _AnalysisAttempt(
-                                item,
-                                None,
-                                CapabilityTeachingUnitStage.NOT_ATTEMPTED,
-                                CapabilityTeachingUnitReason.SOURCE_CHANGED,
-                                source_changed_detail,
-                            )
-                        )
-                        continue
-                    if global_stop.is_set():
-                        attempts.append(
-                            _AnalysisAttempt(
-                                item,
-                                None,
-                                CapabilityTeachingUnitStage.NOT_ATTEMPTED,
-                                CapabilityTeachingUnitReason.GLOBAL_STOP,
-                                global_detail[0] if global_detail else "global_stop",
-                                global_stop=True,
-                            )
-                        )
-                        continue
-                    attempt = await self._analyze_one(
+                if item.plugin_module in source_changed:
+                    return _AnalysisAttempt(
                         item,
-                        refresh_id=refresh_id,
+                        None,
+                        CapabilityTeachingUnitStage.NOT_ATTEMPTED,
+                        CapabilityTeachingUnitReason.SOURCE_CHANGED,
+                        source_changed[item.plugin_module],
                     )
-                    attempts.append(attempt)
-                    if attempt.reason is CapabilityTeachingUnitReason.SOURCE_CHANGED:
-                        source_changed_detail = attempt.detail_code or "source_changed"
-                    if attempt.global_stop:
-                        if not global_detail:
-                            global_detail.append(
-                                attempt.detail_code
-                                or (attempt.reason.value if attempt.reason else "unknown")
-                            )
-                        global_stop.set()
-                return tuple(attempts)
+                if global_stop.is_set():
+                    return _AnalysisAttempt(
+                        item,
+                        None,
+                        CapabilityTeachingUnitStage.NOT_ATTEMPTED,
+                        CapabilityTeachingUnitReason.GLOBAL_STOP,
+                        global_detail[0] if global_detail else "global_stop",
+                        global_stop=True,
+                    )
+                attempt = await self._analyze_one(
+                    item,
+                    refresh_id=refresh_id,
+                )
+                if attempt.reason is CapabilityTeachingUnitReason.SOURCE_CHANGED:
+                    source_changed.setdefault(
+                        item.plugin_module,
+                        attempt.detail_code or "source_changed",
+                    )
+                if attempt.global_stop:
+                    if not global_detail:
+                        global_detail.append(
+                            attempt.detail_code
+                            or (attempt.reason.value if attempt.reason else "unknown")
+                        )
+                    global_stop.set()
+                return attempt
 
-        grouped_attempts = await asyncio.gather(
-            *(analyze_plugin(tuple(items)) for items in grouped.values())
+        return tuple(
+            await asyncio.gather(
+                *(analyze_item(item) for item in missing),
+            )
         )
-        return tuple(attempt for attempts in grouped_attempts for attempt in attempts)
 
     async def _analyze_one(
         self,
@@ -1075,7 +1060,6 @@ class CapabilityAnnotationService:
                 detail_code = _annotation_failure_detail(error, stage)
                 if attempt_number < 2 and _retryable_annotation_failure(
                     reason,
-                    detail_code,
                     stage,
                 ):
                     await asyncio.sleep(0)
@@ -1083,13 +1067,14 @@ class CapabilityAnnotationService:
                 logger.warning(
                     "NoneBot Triage 教学注释单元分析失败：refresh_id={}, "
                     "plugin_module={}, unit_label={}, unit_id={}, stage={}, reason={}, "
-                    "duration_ms={}",
+                    "detail_code={}, duration_ms={}",
                     refresh_id,
                     _safe_log_identifier(item.plugin_module),
                     _teaching_unit_log_label(item),
                     _safe_log_identifier(item.request.capability.capability_id),
                     stage.value,
                     reason.value,
+                    detail_code,
                     max(0, round((perf_counter() - stage_started_at) * 1000)),
                 )
                 return _AnalysisAttempt(
@@ -1140,7 +1125,7 @@ class CapabilityAnnotationService:
         validator = self._source_revision_validator
         if validator is None or not plugin_revisions:
             return set()
-        semaphore = asyncio.Semaphore(self._max_plugin_concurrency)
+        semaphore = asyncio.Semaphore(self._max_analysis_concurrency)
 
         async def validate(module_name: str, revision: str) -> tuple[str, bool]:
             async with semaphore:
@@ -1336,6 +1321,7 @@ class CapabilityAnnotationService:
     def _prepare(
         self,
         snapshot: CapabilitySnapshot,
+        plugin_module: str | None = None,
     ) -> tuple[
         tuple[_PreparedAnalysis, ...],
         tuple[CapabilityTeachingUnitStatus, ...],
@@ -1345,13 +1331,22 @@ class CapabilityAnnotationService:
         skipped_units: list[CapabilityTeachingUnitStatus] = []
         skip_reasons: dict[str, int] = {}
         source_pack_cache: dict[str, CapabilitySourceEvidencePack] = {}
-        eligible = _ordered_eligible_records(snapshot.records)
+        scoped_records = (
+            snapshot.records
+            if plugin_module is None
+            else tuple(
+                record
+                for record in snapshot.records
+                if _records_plugin_module((record,)) == plugin_module
+            )
+        )
+        eligible = _ordered_eligible_records(scoped_records)
         family_records: dict[ParameterizedHandlerCodeIdentity, list[CapabilityRecord]] = {}
         regular_records: list[CapabilityRecord] = []
         identity_by_capability: dict[str, ParameterizedHandlerCodeIdentity | None] = {}
         invalid_identity_ids: set[str] = set()
         all_identity_member_ids: dict[ParameterizedHandlerCodeIdentity, set[str]] = {}
-        for record in snapshot.records:
+        for record in scoped_records:
             try:
                 identity = parameterized_handler_code_identity(record)
             except CapabilityAnalysisAdapterError:
@@ -1474,7 +1469,10 @@ class CapabilityAnnotationService:
         request: CapabilityAnalysisRequest,
         annotation: CapabilityTeachingAnnotation,
     ) -> bool:
-        if not annotation.evidence_manifest:
+        has_initial_dependency_evidence = any(
+            item.source_kind == "python_dependency_function" for item in request.evidence_units
+        )
+        if not annotation.evidence_manifest and not has_initial_dependency_evidence:
             return True
         if self._evidence_validator is None:
             return False
@@ -1549,6 +1547,8 @@ def _annotation_failure_detail(
     error: Exception,
     stage: CapabilityTeachingUnitStage,
 ) -> str:
+    if isinstance(error, CapabilityAnnotationProjectionError):
+        return f"projection_{error.code.value}"
     if isinstance(error, CapabilityModelAdapterError) and error.detail_code is not None:
         detail = error.detail_code
         if (
@@ -1570,16 +1570,8 @@ def _annotation_failure_detail(
 
 def _retryable_annotation_failure(
     reason: CapabilityTeachingUnitReason,
-    detail_code: str,
     stage: CapabilityTeachingUnitStage,
 ) -> bool:
-    if reason in {
-        CapabilityTeachingUnitReason.TIMEOUT,
-        CapabilityTeachingUnitReason.TRANSPORT,
-    }:
-        return True
-    if reason is CapabilityTeachingUnitReason.HTTP:
-        return detail_code == "http_429" or detail_code.startswith("http_5")
     return (
         reason is CapabilityTeachingUnitReason.OUTPUT_VALIDATION
         and stage is CapabilityTeachingUnitStage.AGENT_RUN

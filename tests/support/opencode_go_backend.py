@@ -12,6 +12,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RequestUsage
 
 from nbtriage.model_contracts import B1ProviderError
+from nbtriage.provider_http_diagnostics import provider_http_client
 from nbtriage.pydantic_agent_adapter import PydanticAIAgentStepClient
 
 OPENCODE_GO_CHAT_PROVIDER_ID = "opencode-go-chat-completions"
@@ -56,7 +57,7 @@ def create_opencode_go_agent_step_client(
     timeout_seconds: float = 60.0,
     max_calls: int = 1,
 ) -> PydanticAIAgentStepClient:
-    """构造固定为非思考模式、零 SDK 重试的 OpenCode Go B4 评测客户端。"""
+    """构造固定为非思考模式、启用两次传输重试的 OpenCode Go B4 评测客户端。"""
     _validate_factory_arguments(
         api_key=api_key,
         model=model,
@@ -67,7 +68,8 @@ def create_opencode_go_agent_step_client(
         api_key=api_key,
         base_url=OPENCODE_GO_BASE_URL,
         timeout=timeout_seconds,
-        max_retries=0,
+        max_retries=2,
+        http_client=provider_http_client(timeout_seconds=timeout_seconds),
     )
     pydantic_model = OpenCodeGoChatModel(
         model,
@@ -89,7 +91,8 @@ def create_opencode_go_agent_step_client(
         model_settings=OpenAIChatModelSettings(
             parallel_tool_calls=False,
             temperature=0,
-            extra_body={"thinking": {"type": "disabled"}},
+            openai_reasoning_effort="high",
+            extra_body={"thinking": {"type": "enabled"}},
         ),
     )
 

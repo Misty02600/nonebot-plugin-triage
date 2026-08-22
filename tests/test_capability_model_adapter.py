@@ -6,8 +6,9 @@ from dataclasses import replace
 from typing import Any, cast
 
 import pytest
-from pydantic_ai import ModelResponse, TextPart, ToolCallPart, models
-from pydantic_ai.messages import ModelRequest, UserPromptPart
+from pydantic_ai import ModelResponse, TextPart, ThinkingPart, ToolCallPart, models
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.messages import ModelRequest, RetryPromptPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.toolsets import FunctionToolset
@@ -161,6 +162,13 @@ def test_agent_uses_native_output_and_bounded_source_payload() -> None:
     info = cast(AgentInfo, observed["info"])
     assert info.model_request_parameters.output_mode == "native"
     assert info.model_request_parameters.function_tools == []
+    output_object = info.model_request_parameters.output_object
+    assert output_object is not None
+    assert set(output_object.json_schema["properties"]) == {
+        "knowledge_enabled",
+        "entries",
+        "gate_resolutions",
+    }
 
 
 def test_agent_payload_marks_fixed_permission_as_model_external() -> None:
@@ -200,6 +208,7 @@ def test_agent_payload_marks_fixed_permission_as_model_external() -> None:
             "role": "admin",
             "rate_limit_policy": None,
             "rate_limit_scope": None,
+            "permission_alternatives": [],
         }
     ]
 
@@ -235,10 +244,21 @@ def test_analysis_records_last_response_shape(monkeypatch: pytest.MonkeyPatch) -
     }
 
 
-def test_opt_in_diagnostic_trace_excludes_prompt_and_thinking() -> None:
+def test_opt_in_diagnostic_trace_includes_thinking_but_excludes_prompt() -> None:
+    response = ModelResponse(
+        parts=[
+            ThinkingPart(
+                "PRIVATE_THINKING",
+                id="reasoning_content",
+                provider_name="fixture-provider",
+            ),
+            TextPart(json.dumps(_output(), ensure_ascii=False)),
+        ],
+        finish_reason="stop",
+    )
     client = PydanticAICapabilityAnalysisClient(
         FunctionModel(
-            lambda _messages, _info: _native_response(),
+            lambda _messages, _info: response,
             model_name="fixture-model",
             profile=_NATIVE_PROFILE,
         ),
@@ -250,11 +270,164 @@ def test_opt_in_diagnostic_trace_excludes_prompt_and_thinking() -> None:
 
     document = json.dumps(client.diagnostic_trace, ensure_ascii=False)
     assert '"message": "response"' in document
+    assert '"kind": "assistant_thinking"' in document
+    assert "PRIVATE_THINKING" in document
     assert "SENTINEL_SOURCE" not in document
     assert SYSTEM_INSTRUCTION.strip() not in document
+    provider_document = json.dumps(client.diagnostic_provider_responses, ensure_ascii=False)
+    assert '"kind": "assistant_thinking"' in provider_document
+    assert "PRIVATE_THINKING" in provider_document
+
+
+def test_unbounded_maintenance_diagnostics_remove_request_limit() -> None:
+    provider_calls = 0
+
+    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal provider_calls
+        provider_calls += 1
+        return _native_response(
+            summary=(
+                "plugin_config.search_enabled 可用于查找图片。"
+                if provider_calls == 1
+                else "根据图片查找相似内容。"
+            )
+        )
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+        max_requests=1,
+    )
+    client.enable_maintenance_diagnostics(unbounded=True)
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert result.entries[0].claims[1].statement == "根据图片查找相似内容。"
+    assert provider_calls == 2
+    assert client.diagnostic_trace
+
+
+def test_maintenance_diagnostics_capture_response_before_usage_limit() -> None:
+    raw_output = "RAW_TRUNCATED_PROVIDER_OUTPUT"
+    response = ModelResponse(
+        parts=[TextPart(raw_output)],
+        finish_reason="length",
+        model_name="fixture-model",
+        provider_name="fixture-provider",
+        usage=RequestUsage(input_tokens=64_001, output_tokens=240),
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(
+            lambda _messages, _info: response,
+            model_name="fixture-model",
+            profile=_NATIVE_PROFILE,
+        ),
+        max_output_tokens=240,
+    )
+    client.enable_maintenance_diagnostics()
+
+    with pytest.raises(CapabilityModelAdapterError) as error_info:
+        asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert error_info.value.reason_code is CapabilityModelAdapterReason.BUDGET
+    captured = client.diagnostic_provider_responses
+    assert captured[0]["finish_reason"] == "length"
+    assert captured[0]["parts"] == [{"kind": "assistant_text", "content": raw_output}]
+    assert client.last_response is response
+    assert client.last_usage is not None
+    assert client.last_usage.input_tokens == 64_001
+
+
+def test_maintenance_diagnostics_capture_redacted_http_error() -> None:
+    async def fail(_messages, _info: AgentInfo) -> ModelResponse:
+        raise ModelHTTPError(
+            503,
+            "fixture-model",
+            {
+                "error": {"code": "upstream_unavailable", "message": "retry later"},
+                "access_token": "private-value",
+            },
+            headers={
+                "authorization": "Bearer private-value",
+                "retry-after": "2",
+                "x-request-id": "request-123",
+            },
+        )
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(fail, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+    client.enable_maintenance_diagnostics()
+
+    with pytest.raises(CapabilityModelAdapterError):
+        asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert client.diagnostic_provider_errors == (
+        {
+            "request_index": 1,
+            "status_code": 503,
+            "model_name": "fixture-model",
+            "retry_after_seconds": 2.0,
+            "response_headers": {
+                "retry-after": "2",
+                "x-request-id": "request-123",
+            },
+            "body": {
+                "format": "json",
+                "content": (
+                    '{"access_token":"[REDACTED]","error":'
+                    '{"code":"upstream_unavailable","message":"retry later"}}'
+                ),
+                "truncated": False,
+            },
+        },
+    )
+
+
+def test_total_token_limit_accepts_valid_final_response_but_blocks_another_retry() -> None:
+    def run(*, repair_second_response: bool):
+        provider_calls = 0
+
+        def respond(_messages, _info: AgentInfo) -> ModelResponse:
+            nonlocal provider_calls
+            provider_calls += 1
+            output = _output()
+            if provider_calls == 1 or not repair_second_response:
+                entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
+                entry["entry_id"] = "other"
+            return ModelResponse(
+                parts=[TextPart(json.dumps(output, ensure_ascii=False))],
+                usage=RequestUsage(input_tokens=60, output_tokens=5),
+                finish_reason="stop",
+            )
+
+        client = PydanticAICapabilityAnalysisClient(
+            FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+            max_output_tokens=240,
+            total_tokens_limit=100,
+        )
+        return client, lambda: provider_calls
+
+    valid_client, valid_calls = run(repair_second_response=True)
+    result = asyncio.run(CapabilityAnalysisService(valid_client).analyze(_request()))
+
+    assert result.entries[0].entry_id == "root"
+    assert valid_calls() == 2
+    assert valid_client.last_usage is not None
+    assert valid_client.last_usage.total_tokens == 130
+
+    invalid_client, invalid_calls = run(repair_second_response=False)
+    with pytest.raises(CapabilityModelAdapterError) as error_info:
+        asyncio.run(CapabilityAnalysisService(invalid_client).analyze(_request()))
+
+    assert error_info.value.reason_code is CapabilityModelAdapterReason.BUDGET
+    assert invalid_calls() == 2
 
 
 def test_prompt_requires_complete_usage_literal_affix_self_check() -> None:
+    assert "不得为了再次确认而重读整个文件" in SYSTEM_INSTRUCTION
+    assert "已知 Python 调用位置时优先使用 `python_go_to_definition`" in SYSTEM_INSTRUCTION
     assert "固定字面量、成员变量和 parser 参数结构" in SYSTEM_INSTRUCTION
     assert "逐字符保留成员变量前后的全部固定字面量" in SYSTEM_INSTRUCTION
     assert 'f"^{name}图"' in SYSTEM_INSTRUCTION
@@ -267,7 +440,6 @@ def test_prompt_separates_alias_display_from_usage_and_places_repeat_marker_afte
     assert "entry.display_trigger" in SYSTEM_INSTRUCTION
     assert "展开后必须恰好等于全部入口" in SYSTEM_INSTRUCTION
     assert "合计超过三项时，不再在 usage 枚举" in SYSTEM_INSTRUCTION
-    assert "合计四至六项时" in SYSTEM_INSTRUCTION
     assert "`<参数>...` 表示至少一项、`[参数]...` 表示零项或多项" in SYSTEM_INSTRUCTION
 
 
@@ -325,14 +497,26 @@ def test_agent_accepts_explicit_baseline_member_change() -> None:
     assert change.new_value == "短文标题"
 
 
-def test_agent_uses_profile_selected_output_tool() -> None:
+@pytest.mark.parametrize("serialize_output", [False, True])
+def test_agent_uses_profile_selected_output_tool(serialize_output: bool) -> None:
     observed: dict[str, Any] = {}
 
     def respond(_messages, info: AgentInfo) -> ModelResponse:
         observed["info"] = info
         output_tool = info.output_tools[0]
+        output = _output()
         return ModelResponse(
-            parts=[ToolCallPart(output_tool.name, _output(), "call-1")],
+            parts=[
+                ToolCallPart(
+                    output_tool.name,
+                    {
+                        "output": (
+                            json.dumps(output, ensure_ascii=False) if serialize_output else output
+                        )
+                    },
+                    "call-1",
+                )
+            ],
             finish_reason="tool_call",
         )
 
@@ -347,6 +531,12 @@ def test_agent_uses_profile_selected_output_tool() -> None:
     info = cast(AgentInfo, observed["info"])
     assert info.model_request_parameters.output_mode == "tool"
     assert info.model_request_parameters.function_tools == []
+    output_tool = info.output_tools[0]
+    assert output_tool.name == "final_result"
+    assert set(output_tool.parameters_json_schema["properties"]) == {"output"}
+    assert output_tool.parameters_json_schema["required"] == ["output"]
+    output_schema = output_tool.parameters_json_schema["properties"]["output"]
+    assert "anyOf" not in output_schema
 
 
 def test_client_allows_only_one_provider_run() -> None:
@@ -364,13 +554,13 @@ def test_client_allows_only_one_provider_run() -> None:
         asyncio.run(client.analyze(_request()))
 
 
-def test_agent_retries_when_model_changes_parser_owned_usage() -> None:
+def test_agent_retries_when_model_changes_parser_owned_usage_structure() -> None:
     calls = 0
 
     def respond(_messages, _info: AgentInfo) -> ModelResponse:
         nonlocal calls
         calls += 1
-        return _native_response(usage="搜图 <图片>" if calls == 1 else "搜图 [图片]")
+        return _native_response(usage="搜图 <图片>" if calls == 1 else "搜图 [搜索词]")
 
     request = replace(
         _request(),
@@ -379,7 +569,7 @@ def test_agent_retries_when_model_changes_parser_owned_usage() -> None:
                 "root",
                 CapabilityInvocationMode.ANCHORED,
                 "搜图",
-                ("搜图 [图片]",),
+                ("搜图 [slot:0]",),
             ),
         ),
     )
@@ -397,7 +587,7 @@ def test_agent_retries_when_model_changes_parser_owned_usage() -> None:
             for claim in result.entries[0].claims
             if claim.kind is SemanticClaimKind.USAGE
         )
-        == "搜图 [图片]"
+        == "搜图 [搜索词]"
     )
 
 
@@ -469,6 +659,16 @@ def test_agent_receives_every_family_member_invocation() -> None:
     request = replace(
         _request(),
         capability=CapabilityIdentity("family:meme", "plugin.demo", "command_family"),
+        evidence_units=(
+            *_request().evidence_units,
+            CapabilityEvidenceUnit(
+                "evidence-family-members",
+                "runtime_family_members",
+                '{"members":[{"capability_id":"command:touch"},'
+                '{"capability_id":"command:text-image"}]}',
+                "sha256:family-members",
+            ),
+        ),
         invocations=(CapabilityInvocationTarget("family", CapabilityInvocationMode.COMPLETE),),
         family_members=(
             CapabilityFamilyMember(
@@ -481,7 +681,7 @@ def test_agent_receives_every_family_member_invocation() -> None:
                         ("摸摸 <图片>",),
                     ),
                 ),
-                ("evidence-handler",),
+                ("evidence-family-members",),
             ),
             CapabilityFamilyMember(
                 "command:text-image",
@@ -493,26 +693,329 @@ def test_agent_receives_every_family_member_invocation() -> None:
                         ("文字图 [文字]...",),
                     ),
                 ),
-                ("evidence-handler",),
+                ("evidence-family-members",),
             ),
         ),
     )
     client = PydanticAICapabilityAnalysisClient(
-        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        FunctionModel(
+            respond,
+            model_name="fixture-model",
+            profile=ModelProfile(
+                supports_tools=True,
+                supports_json_schema_output=True,
+                default_structured_output_mode="native",
+            ),
+        ),
         max_output_tokens=240,
+        tool_runtime_factory=lambda _request: pytest.fail(
+            "complete family must use only its closed initial Evidence"
+        ),
     )
 
     asyncio.run(CapabilityAnalysisService(client).analyze(request))
 
     messages = cast(list[ModelRequest], observed["messages"])
     payload = json.loads(cast(str, cast(UserPromptPart, messages[0].parts[0]).content))
-    assert [item["capability_id"] for item in payload["family_members"]] == [
-        "command:touch",
-        "command:text-image",
-    ]
-    assert payload["family_members"][1]["invocations"][0]["canonical_usages"] == [
-        "文字图 [文字]..."
-    ]
+    assert "family_members" not in payload
+    assert payload["family_manifest"] == {
+        "member_count": 2,
+        "evidence_ids": ["evidence-family-members"],
+    }
+    assert "文字图 [文字]..." not in cast(str, cast(UserPromptPart, messages[0].parts[0]).content)
+
+
+def test_complete_family_accepts_generic_parameter_slot_after_category_correction() -> None:
+    calls = 0
+    retry_prompts: list[str] = []
+
+    def respond(messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        retry_prompts.extend(
+            cast(str, part.content)
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, RetryPromptPart)
+        )
+        usage = "<操作> [数值] <图片>..." if calls == 1 else "<操作> [参数] <图片>..."
+        output = {
+            "knowledge_enabled": True,
+            "entries": [
+                {
+                    "entry_id": "family",
+                    "claims": [
+                        {
+                            "kind": "name",
+                            "statement": "图片操作",
+                            "evidence_ids": ["evidence-handler"],
+                        },
+                        {
+                            "kind": "summary",
+                            "statement": "执行多种图片处理操作",
+                            "evidence_ids": ["evidence-handler"],
+                        },
+                        {
+                            "kind": "usage",
+                            "statement": usage,
+                            "evidence_ids": ["evidence-family-shapes"],
+                        },
+                    ],
+                    "constraints": [],
+                }
+            ],
+        }
+        return ModelResponse(
+            parts=[TextPart(json.dumps(output, ensure_ascii=False))],
+            finish_reason="stop",
+        )
+
+    request = replace(
+        _request(),
+        capability=CapabilityIdentity("family:image", "plugin.demo", "command_family"),
+        evidence_units=(
+            *_request().evidence_units,
+            CapabilityEvidenceUnit(
+                "evidence-family-shapes",
+                "runtime_family_shapes",
+                json.dumps(
+                    {
+                        "shapes": [
+                            {
+                                "arguments": [
+                                    {"pattern_type": "builtins.str"},
+                                    {"pattern_type": "nonebot_plugin_alconna.uniseg.segment.Image"},
+                                ]
+                            },
+                            {
+                                "arguments": [
+                                    {"pattern_type": "builtins.float"},
+                                    {"pattern_type": "nonebot_plugin_alconna.uniseg.segment.Image"},
+                                ]
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                "sha256:family-shapes",
+            ),
+        ),
+        invocations=(CapabilityInvocationTarget("family", CapabilityInvocationMode.COMPLETE),),
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+
+    assert calls == 2
+    assert any("field=entries[family].usage" in item for item in retry_prompts)
+    assert any("同时包含文本与数值类型槽位" in item for item in retry_prompts)
+    assert any("不得把 builtins.str 自动解释成“文字”" in item for item in retry_prompts)
+    assert all("缺失=文字" not in item for item in retry_prompts)
+    assert (
+        next(
+            claim.statement
+            for claim in result.entries[0].claims
+            if claim.kind is SemanticClaimKind.USAGE
+        )
+        == "<操作> [参数] <图片>..."
+    )
+
+
+def test_complete_family_retry_reports_missing_category_without_prescribing_usage() -> None:
+    calls = 0
+    retry_prompts: list[str] = []
+
+    def respond(messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        retry_prompts.extend(
+            cast(str, part.content)
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, RetryPromptPart)
+        )
+        usage = "<操作> <图片>..." if calls == 1 else "<操作> [数值] <图片>..."
+        output = {
+            "knowledge_enabled": True,
+            "entries": [
+                {
+                    "entry_id": "family",
+                    "claims": [
+                        {
+                            "kind": "name",
+                            "statement": "图片操作",
+                            "evidence_ids": ["evidence-handler"],
+                        },
+                        {
+                            "kind": "summary",
+                            "statement": "执行多种图片处理操作",
+                            "evidence_ids": ["evidence-handler"],
+                        },
+                        {
+                            "kind": "usage",
+                            "statement": usage,
+                            "evidence_ids": ["evidence-family-shapes"],
+                        },
+                    ],
+                    "constraints": [],
+                }
+            ],
+        }
+        return ModelResponse(
+            parts=[TextPart(json.dumps(output, ensure_ascii=False))],
+            finish_reason="stop",
+        )
+
+    request = replace(
+        _request(),
+        capability=CapabilityIdentity("family:image", "plugin.demo", "command_family"),
+        evidence_units=(
+            *_request().evidence_units,
+            CapabilityEvidenceUnit(
+                "evidence-family-shapes",
+                "runtime_family_shapes",
+                json.dumps(
+                    {
+                        "shapes": [
+                            {
+                                "arguments": [
+                                    {
+                                        "pattern_type": (
+                                            "nonebot_plugin_alconna.uniseg.segment.Image"
+                                        )
+                                    }
+                                ]
+                            },
+                            {
+                                "arguments": [
+                                    {"pattern_type": "builtins.float"},
+                                    {
+                                        "pattern_type": (
+                                            "nonebot_plugin_alconna.uniseg.segment.Image"
+                                        )
+                                    },
+                                ]
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                "sha256:family-shapes",
+            ),
+        ),
+        invocations=(CapabilityInvocationTarget("family", CapabilityInvocationMode.COMPLETE),),
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+
+    assert calls == 2
+    assert any("family_usage_missing_input_category" in item for item in retry_prompts)
+    assert any("缺少对应结构槽位=数值" in item for item in retry_prompts)
+    assert all("操作参数" not in item for item in retry_prompts)
+    assert (
+        next(
+            claim.statement
+            for claim in result.entries[0].claims
+            if claim.kind is SemanticClaimKind.USAGE
+        )
+        == "<操作> [数值] <图片>..."
+    )
+
+
+def test_complete_family_retry_preserves_uniseg_mention_input() -> None:
+    calls = 0
+    retry_prompts: list[str] = []
+
+    def respond(messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        retry_prompts.extend(
+            cast(str, part.content)
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, RetryPromptPart)
+        )
+        usage = "<表情名> [图片|文字]..." if calls == 1 else "<表情名> [图片|文字|@用户]..."
+        output = {
+            "knowledge_enabled": True,
+            "entries": [
+                {
+                    "entry_id": "family",
+                    "claims": [
+                        {
+                            "kind": "name",
+                            "statement": "表情制作",
+                            "evidence_ids": ["evidence-handler"],
+                        },
+                        {
+                            "kind": "summary",
+                            "statement": "使用不同模板生成表情",
+                            "evidence_ids": ["evidence-handler"],
+                        },
+                        {
+                            "kind": "usage",
+                            "statement": usage,
+                            "evidence_ids": ["evidence-family-shapes"],
+                        },
+                    ],
+                    "constraints": [],
+                }
+            ],
+        }
+        return ModelResponse(
+            parts=[TextPart(json.dumps(output, ensure_ascii=False))],
+            finish_reason="stop",
+        )
+
+    union_type = (
+        "typing.Union[nonebot_plugin_alconna.uniseg.segment.At,"
+        "nonebot_plugin_alconna.uniseg.segment.Image,"
+        "nonebot_plugin_alconna.uniseg.segment.Text]"
+    )
+    request = replace(
+        _request(),
+        capability=CapabilityIdentity("family:meme", "plugin.demo", "command_family"),
+        evidence_units=(
+            *_request().evidence_units,
+            CapabilityEvidenceUnit(
+                "evidence-family-shapes",
+                "runtime_family_shapes",
+                json.dumps(
+                    {"shapes": [{"arguments": [{"pattern_type": union_type}]}]},
+                    ensure_ascii=False,
+                ),
+                "sha256:family-shapes",
+            ),
+        ),
+        invocations=(CapabilityInvocationTarget("family", CapabilityInvocationMode.COMPLETE),),
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+
+    assert calls == 2
+    assert any("缺少对应结构槽位=@用户（Uniseg At）" in item for item in retry_prompts)
+    assert (
+        next(
+            claim.statement
+            for claim in result.entries[0].claims
+            if claim.kind is SemanticClaimKind.USAGE
+        )
+        == "<表情名> [图片|文字|@用户]..."
+    )
 
 
 def test_agent_uses_concept_slot_for_more_than_three_fixed_aliases() -> None:
@@ -826,7 +1329,13 @@ def test_agent_can_cite_revision_bound_read_evidence() -> None:
             )
         output = _output(evidence_id=dynamic.evidence_id)
         return ModelResponse(
-            parts=[ToolCallPart(info.output_tools[0].name, output, "call-output")],
+            parts=[
+                ToolCallPart(
+                    info.output_tools[0].name,
+                    {"output": output},
+                    "call-output",
+                )
+            ],
             usage=RequestUsage(input_tokens=100, output_tokens=20),
             finish_reason="tool_call",
         )
@@ -1027,6 +1536,31 @@ def test_output_validation_failure_preserves_provider_usage() -> None:
     assert client.last_usage.requests == provider_calls
     assert client.last_usage.input_tokens == 100 * provider_calls
     assert client.last_usage.output_tokens == 10 * provider_calls
+
+
+def test_public_projection_failure_gets_one_precise_correction() -> None:
+    provider_calls = 0
+
+    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal provider_calls
+        provider_calls += 1
+        return _native_response(
+            summary=(
+                "plugin_config.search_enabled 可用于查找图片。"
+                if provider_calls == 1
+                else "根据图片查找相似内容。"
+            )
+        )
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert result.entries[0].claims[1].statement == "根据图片查找相似内容。"
+    assert provider_calls == 2
 
 
 def test_output_validation_failure_preserves_successful_tool_call_count() -> None:
@@ -1255,22 +1789,38 @@ def test_agent_retries_enabled_output_with_unresolved_gate_then_closes() -> None
 
 def test_agent_requires_real_constraint_to_link_gate_candidate() -> None:
     calls = 0
+    retry_prompts: list[str] = []
 
-    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+    def respond(messages, _info: AgentInfo) -> ModelResponse:
         nonlocal calls
         calls += 1
+        retry_prompts.extend(
+            cast(str, part.content)
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, RetryPromptPart)
+        )
         output = _output()
         entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
         entry["constraints"] = [
             {
-                "kind": "role",
-                "statement": "仅管理员可用",
+                "kind": "permission",
+                "statement": "满足以下任一条件：群管理员或群主",
                 "evidence_ids": ["evidence-handler", "evidence-definition"],
                 "config_reference_ids": [],
-                "role": "admin",
+                "role": None,
                 "rate_limit_policy": None,
                 "rate_limit_scope": None,
                 "gate_candidate_ids": [] if calls == 1 else ["gate:admin"],
+                "permission_alternatives": [
+                    {
+                        "kind": "role",
+                        "statement": "群管理员或群主",
+                        "role": "admin",
+                        "scene": None,
+                    }
+                ],
             }
         ]
         output["gate_resolutions"] = [
@@ -1314,5 +1864,9 @@ def test_agent_requires_real_constraint_to_link_gate_candidate() -> None:
     result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
 
     assert calls == 2
-    assert result.entries[0].constraints[0].role is TeachingRole.ADMIN
+    assert any("constraint_missing_gate_candidate_link" in item for item in retry_prompts)
+    assert any("candidate_id=gate:admin" in item for item in retry_prompts)
+    assert any("missing_entry_ids=root" in item for item in retry_prompts)
+    assert any("gate_candidate_ids" in item for item in retry_prompts)
+    assert result.entries[0].constraints[0].permission_alternatives[0].role is TeachingRole.ADMIN
     assert result.entries[0].constraints[0].gate_candidate_ids == ("gate:admin",)

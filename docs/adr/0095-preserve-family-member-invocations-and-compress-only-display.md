@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-20 |
+| 已采纳；请求内成员表示由 [ADR-0098](0098-deduplicate-complete-family-member-manifests.md) 细化，聚合参数展示由 [ADR-0102](0102-keep-family-aggregate-parameters-actionable.md) 细化 | 2026-08-20 |
 
 ## 当时遇到了什么
 

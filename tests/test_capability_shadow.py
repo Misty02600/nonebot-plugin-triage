@@ -1024,6 +1024,7 @@ def test_public_guidance_combines_exact_matcher_with_shared_family_knowledge() -
                     [
                         {
                             "name": "图片",
+                            "pattern_type": "nonebot_plugin_alconna.uniseg.Image",
                             "required": True,
                             "hidden": False,
                             "variadic": False,

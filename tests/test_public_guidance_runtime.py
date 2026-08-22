@@ -14,9 +14,13 @@ from nbtriage.public_guidance import (
 )
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.public_guidance_runtime import (
+    OPENCODE_GO_PUBLIC_GUIDANCE_QUALIFICATION,
+    _public_guidance_qualification,
+    _same_public_guidance_target,
     create_opencode_go_public_guidance_client_factory,
     create_public_guidance_service,
 )
+from nonebot_plugin_triage.task_model_runtime import create_task_model_binding
 
 
 def _config() -> NBTriageConfig:
@@ -36,6 +40,30 @@ def test_public_guidance_factory_allows_unverified_combination() -> None:
     )
 
     assert callable(factory)
+
+
+def test_thinking_settings_do_not_inherit_legacy_public_guidance_qualification() -> None:
+    config = _config()
+    binding = create_task_model_binding(
+        config,
+        environ={"OPENAI_API_KEY": "test-only"},
+    )
+    candidate = _public_guidance_qualification(
+        config,
+        binding.provider,
+        binding.model_name,
+        binding.api_family,
+        binding.connection_revision,
+        binding.settings_revision,
+    )
+
+    assert candidate.settings_revision != (
+        OPENCODE_GO_PUBLIC_GUIDANCE_QUALIFICATION.settings_revision
+    )
+    assert not _same_public_guidance_target(
+        OPENCODE_GO_PUBLIC_GUIDANCE_QUALIFICATION,
+        candidate,
+    )
 
 
 def test_public_guidance_factory_requires_compatible_key() -> None:

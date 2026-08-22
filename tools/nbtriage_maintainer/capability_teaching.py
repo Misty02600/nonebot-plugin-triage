@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 from contextlib import chdir
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
+
+from nbtriage.capability_analysis import (
+    CapabilityAnalysisClient,
+    CapabilityAnalysisOutput,
+    CapabilityAnalysisRequest,
+)
+from nbtriage.capability_model_adapter import PydanticAICapabilityAnalysisClient
 
 _MODULE_NAME = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$", re.ASCII)
 
@@ -17,14 +24,19 @@ class CapabilityTeachingMaintenanceError(RuntimeError):
 
 @dataclass(frozen=True)
 class CapabilityTeachingMaintenanceResult:
-    plugins: tuple[str, ...]
-    records: int
-    partial: bool
-    eligible: int
+    plugin: str
+    units: int
+    active: int
     cached: int
     generated: int
+    disabled: int
     skipped: int
     failed: int
+    stale: int
+    family_eligible: int
+    family_disabled: int
+    family_failed: int
+    diagnostics_file: str | None
     files: tuple[str, ...]
 
     def to_json(self) -> str:
@@ -33,91 +45,192 @@ class CapabilityTeachingMaintenanceResult:
 
 def analyze_capability_teaching(
     pyproject_path: Path,
-    plugin_modules: tuple[str, ...],
+    plugin_module: str,
+    *,
+    diagnostic_output: Path | None = None,
+    unbounded: bool = False,
 ) -> CapabilityTeachingMaintenanceResult:
-    """在指定 NoneBot 宿主中分析明确点名的已加载插件。"""
+    """在临时 NoneBot 宿主中加载目标插件并调用现有单插件教学刷新 API。"""
     project_file = pyproject_path.resolve()
     if project_file.name != "pyproject.toml" or not project_file.is_file():
         raise CapabilityTeachingMaintenanceError("host pyproject.toml is unavailable")
-    modules = tuple(dict.fromkeys(plugin_modules))
-    if not modules or any(not _MODULE_NAME.fullmatch(item) for item in modules):
-        raise CapabilityTeachingMaintenanceError("plugin modules must be explicit import names")
-    if "nonebot_plugin_triage" in modules:
+    if not _MODULE_NAME.fullmatch(plugin_module):
+        raise CapabilityTeachingMaintenanceError("plugin module must be an explicit import name")
+    if plugin_module == "nonebot_plugin_triage":
         raise CapabilityTeachingMaintenanceError("the Triage plugin is not an analysis target")
+    if unbounded and diagnostic_output is None:
+        raise CapabilityTeachingMaintenanceError(
+            "unbounded analysis requires an explicit diagnostic output path"
+        )
+    resolved_diagnostic_output = (
+        diagnostic_output.resolve() if diagnostic_output is not None else None
+    )
 
     with chdir(project_file.parent):
-        return _analyze_in_host(project_file, modules)
+        return _analyze_in_host(
+            plugin_module,
+            diagnostic_output=resolved_diagnostic_output,
+            unbounded=unbounded,
+        )
 
 
 def _analyze_in_host(
-    project_file: Path,
-    modules: tuple[str, ...],
+    plugin_module: str,
+    *,
+    diagnostic_output: Path | None,
+    unbounded: bool,
 ) -> CapabilityTeachingMaintenanceResult:
     import nonebot
 
-    nonebot.init(driver="~none", log_level="WARNING")
-    loaded = []
-    for module_name in modules:
-        plugin = nonebot.load_plugin(module_name)
-        if plugin is None:
-            raise CapabilityTeachingMaintenanceError(
-                f"requested plugin failed to load: {module_name}"
-            )
-        loaded.append(plugin)
+    nonebot.init(driver="~none", log_level="INFO")
+    if nonebot.load_plugin(plugin_module) is None:
+        raise CapabilityTeachingMaintenanceError(
+            f"requested plugin failed to load: {plugin_module}"
+        )
     if nonebot.load_plugin("nonebot_plugin_triage") is None:
         raise CapabilityTeachingMaintenanceError("nonebot_plugin_triage failed to load")
 
-    from nonebot_plugin_localstore import get_cache_file, get_data_dir
+    from nonebot_plugin_triage.handlers import plugin_runtime
 
-    from nonebot_plugin_triage import plugin_config
-    from nonebot_plugin_triage.capability_analysis_tools import CapabilityTeachingToolProvider
-    from nonebot_plugin_triage.capability_annotation_runtime import (
-        CAPABILITY_ANNOTATION_ANALYSIS_REVISION,
-        create_capability_annotation_client_factory,
+    shadow = plugin_runtime.capability_shadow
+    if shadow is None:
+        raise CapabilityTeachingMaintenanceError("capability teaching runtime is unavailable")
+    capture = _install_model_output_capture(
+        shadow,
+        plugin_module=plugin_module,
+        diagnostic_output=diagnostic_output,
+        unbounded=unbounded,
     )
-    from nonebot_plugin_triage.capability_annotations import CapabilityAnnotationService
-    from nonebot_plugin_triage.capability_help_display import CapabilityHelpDisplayWriter
-    from nonebot_plugin_triage.capability_snapshot import build_capability_snapshot
-    from nonebot_plugin_triage.config_policy import ConfigValuePolicy
-
-    tool_provider = CapabilityTeachingToolProvider(pyproject_path=project_file)
     try:
-        client_factory = create_capability_annotation_client_factory(
-            plugin_config,
-            environ=os.environ,
-            tool_runtime_factory=tool_provider.create_runtime,
-        )
+        result = asyncio.run(shadow.refresh_teaching(plugin_module))
     except Exception as error:
         raise CapabilityTeachingMaintenanceError(
-            f"capability annotation model is unavailable: {type(error).__name__}"
+            f"capability teaching refresh failed: {type(error).__name__}"
         ) from error
-    snapshot = build_capability_snapshot(plugins=loaded)
-    service = CapabilityAnnotationService(
-        get_cache_file("nonebot_plugin_triage", "capability-annotations.json"),
-        client_factory=client_factory,
-        config_policy=ConfigValuePolicy.from_keys(plugin_config.nbtriage_restricted_config),
-        analysis_revision=CAPABILITY_ANNOTATION_ANALYSIS_REVISION,
-        evidence_validator=tool_provider.evidence_is_current,
-    )
-    status = asyncio.run(service.refresh(snapshot))
-    paths = CapabilityHelpDisplayWriter(
-        get_data_dir("nonebot_plugin_triage") / "help-display"
-    ).refresh(
-        snapshot,
-        service.get,
-        reconcile_stale=False,
-    )
+    finally:
+        if capture is not None:
+            capture.write()
     return CapabilityTeachingMaintenanceResult(
-        plugins=modules,
-        records=len(snapshot.records),
-        partial=snapshot.manifest.partial,
-        eligible=status.eligible_count,
-        cached=status.cached_count,
-        generated=status.generated_count,
-        skipped=status.skipped_count,
-        failed=status.failed_count,
-        files=tuple(path.name for path in paths),
+        plugin=plugin_module,
+        units=result.unit_count,
+        active=result.active_count,
+        cached=result.cached_count,
+        generated=result.generated_count,
+        disabled=result.disabled_count,
+        skipped=result.skipped_count,
+        failed=result.failed_count,
+        stale=result.stale_count,
+        family_eligible=result.family_eligible_count,
+        family_disabled=result.family_disabled_count,
+        family_failed=result.family_failed_count,
+        diagnostics_file=(str(diagnostic_output) if diagnostic_output is not None else None),
+        files=tuple(str(path) for path in result.files),
     )
+
+
+class _CapturedCapabilityClient:
+    def __init__(
+        self,
+        inner: PydanticAICapabilityAnalysisClient,
+        capture: _ModelOutputCapture,
+        sequence: int,
+    ) -> None:
+        self._inner = inner
+        self._capture = capture
+        self._sequence = sequence
+
+    async def analyze(self, request: CapabilityAnalysisRequest) -> CapabilityAnalysisOutput:
+        try:
+            return await self._inner.analyze(request)
+        finally:
+            self._capture.append(
+                sequence=self._sequence,
+                unit_id=request.capability.capability_id,
+                trace=self._inner.diagnostic_trace,
+                provider_responses=self._inner.diagnostic_provider_responses,
+                provider_errors=self._inner.diagnostic_provider_errors,
+            )
+
+
+class _ModelOutputCapture:
+    def __init__(self, path: Path, *, plugin_module: str) -> None:
+        self._path = path
+        self._plugin_module = plugin_module
+        self._records: list[dict[str, Any]] = []
+        self._next_sequence = 1
+
+    def wrap_factory(
+        self,
+        factory: Any,
+        *,
+        unbounded: bool,
+    ) -> CapabilityAnalysisClient:
+        client = factory()
+        if not isinstance(client, PydanticAICapabilityAnalysisClient):
+            raise CapabilityTeachingMaintenanceError(
+                "model-output capture requires the Pydantic AI capability client"
+            )
+        client.enable_maintenance_diagnostics(unbounded=unbounded)
+        sequence = self._next_sequence
+        self._next_sequence += 1
+        return _CapturedCapabilityClient(client, self, sequence)
+
+    def append(
+        self,
+        *,
+        sequence: int,
+        unit_id: str,
+        trace: tuple[dict[str, Any], ...],
+        provider_responses: tuple[dict[str, Any], ...],
+        provider_errors: tuple[dict[str, Any], ...],
+    ) -> None:
+        self._records.append(
+            {
+                "sequence": sequence,
+                "unit_id": unit_id,
+                "messages": trace,
+                "provider_responses": provider_responses,
+                "provider_errors": provider_errors,
+            }
+        )
+
+    def write(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": 3,
+            "plugin_module": self._plugin_module,
+            "captures": sorted(self._records, key=lambda item: item["sequence"]),
+        }
+        temporary = self._path.with_suffix(f"{self._path.suffix}.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        temporary.replace(self._path)
+
+
+def _install_model_output_capture(
+    shadow: Any,
+    *,
+    plugin_module: str,
+    diagnostic_output: Path | None,
+    unbounded: bool,
+) -> _ModelOutputCapture | None:
+    if diagnostic_output is None:
+        return None
+    annotation_service = getattr(shadow, "_annotation_service", None)
+    client_factory = getattr(annotation_service, "_client_factory", None)
+    if annotation_service is None or not callable(client_factory):
+        raise CapabilityTeachingMaintenanceError(
+            "capability annotation client factory is unavailable"
+        )
+    capture = _ModelOutputCapture(diagnostic_output, plugin_module=plugin_module)
+
+    def create_client() -> CapabilityAnalysisClient:
+        return capture.wrap_factory(client_factory, unbounded=unbounded)
+
+    annotation_service.__dict__["_client_factory"] = create_client
+    return capture
 
 
 __all__ = (

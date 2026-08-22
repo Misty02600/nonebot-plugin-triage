@@ -30,6 +30,7 @@ class BaselineChangeOperation(StrEnum):
 
 
 class SemanticConstraintKind(StrEnum):
+    PERMISSION = "permission"
     SCENE = "scene"
     ROLE = "role"
     ACCESS = "access"
@@ -37,10 +38,17 @@ class SemanticConstraintKind(StrEnum):
 
 
 class TeachingRole(StrEnum):
+    CHANNEL_ADMIN = "channel_admin"
     ADMIN = "admin"
     OWNER = "owner"
     SUPERUSER = "superuser"
     CUSTOM = "custom"
+
+
+class TeachingScene(StrEnum):
+    PRIVATE = "private"
+    GROUP = "group"
+    GUILD_OR_CHANNEL = "guild_or_channel"
 
 
 class RateLimitPolicy(StrEnum):
@@ -376,7 +384,6 @@ class CapabilityAnalysisRequest:
             CapabilityEvidenceUnit,
             "evidence_units",
             min_items=1,
-            max_items=64,
         )
         _bounded_instances(
             self.config_projections,
@@ -486,6 +493,33 @@ class BaselineMemberChange:
 
 
 @dataclass(frozen=True)
+class PermissionAlternative:
+    kind: SemanticConstraintKind
+    statement: str
+    role: TeachingRole | None = None
+    scene: TeachingScene | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in {
+            SemanticConstraintKind.ROLE,
+            SemanticConstraintKind.SCENE,
+            SemanticConstraintKind.ACCESS,
+        }:
+            raise CapabilityAnalysisError("permission alternative kind is invalid")
+        _bounded_text(self.statement, "permission alternative statement", max_length=1_000)
+        if self.kind is SemanticConstraintKind.ROLE:
+            if not isinstance(self.role, TeachingRole):
+                raise CapabilityAnalysisError("role alternative requires role metadata")
+        elif self.role is not None:
+            raise CapabilityAnalysisError("only role alternatives may define role metadata")
+        if self.kind is SemanticConstraintKind.SCENE:
+            if not isinstance(self.scene, TeachingScene):
+                raise CapabilityAnalysisError("scene alternative requires scene metadata")
+        elif self.scene is not None:
+            raise CapabilityAnalysisError("only scene alternatives may define scene metadata")
+
+
+@dataclass(frozen=True)
 class SemanticConstraint:
     kind: SemanticConstraintKind
     statement: str
@@ -495,6 +529,7 @@ class SemanticConstraint:
     rate_limit_policy: RateLimitPolicy | None = None
     rate_limit_scope: RateLimitScope | None = None
     gate_candidate_ids: tuple[str, ...] = ()
+    permission_alternatives: tuple[PermissionAlternative, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SemanticConstraintKind):
@@ -528,6 +563,18 @@ class SemanticConstraint:
                 raise CapabilityAnalysisError("rate-limit constraint requires policy and scope")
         elif self.rate_limit_policy is not None or self.rate_limit_scope is not None:
             raise CapabilityAnalysisError("only rate-limit constraints may define rate metadata")
+        if self.kind is SemanticConstraintKind.PERMISSION:
+            _bounded_instances(
+                self.permission_alternatives,
+                PermissionAlternative,
+                "permission alternatives",
+                min_items=1,
+                max_items=16,
+            )
+        elif self.permission_alternatives:
+            raise CapabilityAnalysisError(
+                "only permission constraints may define permission alternatives"
+            )
 
 
 @dataclass(frozen=True)
@@ -668,6 +715,16 @@ def validate_capability_analysis_output(
         for resolution in output.gate_resolutions
         for evidence_id in resolution.evidence_ids
     )
+    navigation_only = {
+        item.evidence_id
+        for item in request.evidence_units
+        if item.source_kind == "external_dependency_navigation"
+    }
+    cited_navigation = referenced.intersection(navigation_only)
+    if cited_navigation:
+        raise CapabilityAnalysisError(
+            f"analysis output cites navigation-only evidence IDs: {sorted(cited_navigation)}"
+        )
     unavailable = referenced.difference(allowed)
     if unavailable:
         raise CapabilityAnalysisError(
@@ -933,9 +990,14 @@ def _bounded_instances(
     label: str,
     *,
     min_items: int = 0,
-    max_items: int,
+    max_items: int | None = None,
 ) -> None:
-    if not isinstance(value, tuple) or not min_items <= len(value) <= max_items:
+    if not isinstance(value, tuple) or len(value) < min_items:
+        maximum = "unbounded" if max_items is None else str(max_items)
+        raise CapabilityAnalysisError(
+            f"{label} must be a tuple containing {min_items} to {maximum} items"
+        )
+    if max_items is not None and len(value) > max_items:
         raise CapabilityAnalysisError(
             f"{label} must be a tuple containing {min_items} to {max_items} items"
         )
@@ -1042,6 +1104,7 @@ __all__ = (
     "CapabilitySourceContext",
     "ConfigProjection",
     "FakeCapabilityAnalysisClient",
+    "PermissionAlternative",
     "RateLimitPolicy",
     "RateLimitScope",
     "SemanticClaim",
@@ -1049,6 +1112,7 @@ __all__ = (
     "SemanticConstraint",
     "SemanticConstraintKind",
     "TeachingRole",
+    "TeachingScene",
     "UnknownConfigReference",
     "validate_capability_analysis_output",
 )

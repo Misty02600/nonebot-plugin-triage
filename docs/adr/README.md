@@ -81,18 +81,32 @@
 | [ADR-0078](0078-defer-persisting-unknown-bug-assessments.md) | 已采纳；unknown 固定终局与不落库边界已实现 | 在可记录性合同确定前不持久化任何 unknown，缺关键知识时失败关闭且不声称已记录 |
 | [ADR-0079](0079-list-pending-problems-with-triage-query.md) | 已采纳；待处理列表与命令树已实现 | 用无编号的 `triage 报错查询` 列出全部未解决 Bug Problem |
 | [ADR-0080](0080-model-capability-teaching-as-multiple-public-entries.md) | 已采纳；公开字段由 ADR-0094 收敛 | 一次能力分析仍可产生多个固定 entry，Alconna 叶子仍投影为独立帮助条目 |
-| [ADR-0081](0081-close-unknown-teaching-gates-and-freeze-parser-owned-usages.md) | 部分被 ADR-0082、ADR-0083、ADR-0095 替代 | Runtime parser 已确认的用法仍由模型外冻结；四项枚举边界改由 ADR-0095 的 `≤3 / 4–6 / ≥7` 展示规则接续，未知门禁生命周期由 ADR-0083 接续 |
+| [ADR-0081](0081-close-unknown-teaching-gates-and-freeze-parser-owned-usages.md) | 部分被 ADR-0082、ADR-0083、ADR-0095、ADR-0099 替代 | Runtime parser 已确认的语法结构仍由模型外冻结；公开槽位名改由 ADR-0099 接续，枚举与未知门禁分别由 ADR-0095、ADR-0083 接续 |
 | [ADR-0082](0082-group-parameterized-matchers-only-by-runtime-handler-code-identity.md) | 已采纳；成员输入边界由 ADR-0095 细化 | 参数化 Matcher 仍只按 Runtime Handler 精确代码身份形成 family 候选；ADR-0095 重新投影当前 Runtime 成员调用事实，但不恢复 AST 工厂猜测 |
 | [ADR-0083](0083-resolve-unknown-teaching-gates-before-closing-public-knowledge.md) | 已采纳；已实现，待新 Provider Gate | AST 只登记疑似门禁；Agent 以实际定义、框架或运行配置解释为约束、无约束或仍未知，只有仍未知才关闭公开知识 |
 | [ADR-0084](0084-install-pydantic-ai-control-plane-by-default-and-keep-providers-and-adapters-optional.md) | 已采纳；已实现 | 默认安装 Pydantic AI 控制层、Harness 与 Jedi，Provider SDK 和 NoneBot Adapter 仍由部署按需安装 |
 | [ADR-0085](0085-remove-serena-bug-source-backend.md) | 已采纳；已实现 | 删除 Serena MCP extra、Bug-only 后端与配置，Bug 固定使用内置有界文本源码读取 |
 | [ADR-0086](0086-treat-model-evaluation-as-a-quality-label.md) | 已采纳；部署端地址由 ADR-0090 补充 | held-out 只提供公开质量标签；未评测模型和自定义连接可在相同安全合同下运行 |
 | [ADR-0087](0087-validate-and-factor-runtime-command-aliases-for-teaching-usages.md) | 已采纳；已实现，待新模型评测 | Runtime 拥有别名真值，模型只生成可展开验证的紧凑触发表达式；失败一次重试后确定性回退 |
-| [ADR-0088](0088-bound-capability-annotation-concurrency-by-plugin.md) | 已采纳；第 4 项部分被 ADR-0093 替代 | 教学注释继续按插件有限并发、插件内顺序生成；全局锁与发布 pointer 保留，缓存分片和单元部分发布由 ADR-0093 接续 |
-| [ADR-0089](0089-persist-redacted-pydantic-ai-agent-traces.md) | 已采纳；ADR-0094 增加仅限官方合成评测的 opt-in 诊断例外 | 生产默认仍只保存无正文轨迹；评测诊断不保存初始 Prompt、密钥或真实私有源码 |
+| [ADR-0088](0088-bound-capability-annotation-concurrency-by-plugin.md) | 插件级调度被 ADR-0096 替代；第 4 项部分被 ADR-0093 替代 | 全局锁、有限并发和通用 timeout 原则保留；调度粒度由 ADR-0096 接续，缓存分片和单元部分发布由 ADR-0093 接续 |
+| [ADR-0089](0089-persist-redacted-pydantic-ai-agent-traces.md) | 已采纳；诊断例外由 ADR-0097、ADR-0103 接续 | 生产默认仍只保存无正文轨迹；显式维护诊断可保存 assistant 正文与 thinking，但不保存初始 Prompt、密钥或真实私有源码 |
 | [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) | 已采纳；已实现 | 保留标准 `provider:model` 与 ModelProfile，并允许部署者为支持该参数的 Pydantic AI Provider 配置受限 Base URL |
 | [ADR-0091](0091-use-pydantic-ai-model-ids-as-the-public-transport-selector.md) | 已采纳；兼容迁移部分由 ADR-0092 替代 | 直接以 Pydantic AI `provider:model` 选择 transport；Base URL 连接兼容服务 |
 | [ADR-0092](0092-remove-legacy-model-backend-configuration.md) | 已采纳；已实现 | 删除旧 backend 字段、专用 runtime 分支和 OpenCode 密钥别名；旧配置明确失败并迁移到唯一的 `provider:model` 入口 |
 | [ADR-0093](0093-shard-capability-annotation-cache-by-plugin.md) | 已采纳 | 教学注释按插件 JSON 分片、文件内按 teaching unit 保存 `last_good / last_attempt`，以内存 staging 和全局原子 pointer 支持单元部分发布 |
-| [ADR-0094](0094-simplify-the-public-capability-teaching-contract.md) | 已采纳；family 展示部分被 ADR-0095 替代 | 公开 entry 收敛为 name / summary / usages / search terms / behavior boundaries / requirements，requirement 只保留 role / scene / access / rate limit |
-| [ADR-0095](0095-preserve-family-member-invocations-and-compress-only-display.md) | 已采纳 | family 请求保留全部 Runtime 成员调用事实，参数异构不再关闭共同知识；固定备选改用 `≤3 / 4–6 / ≥7` 展示边界，查询按 family 去重并为精确成员补完整 usage |
+| [ADR-0094](0094-simplify-the-public-capability-teaching-contract.md) | 已采纳；family 展示与 Help description 分别被 ADR-0095、ADR-0100 部分替代 | 公开 entry 收敛为 name / summary / usages / search terms / behavior boundaries / requirements，requirement 只保留 role / scene / access / rate limit |
+| [ADR-0095](0095-preserve-family-member-invocations-and-compress-only-display.md) | 已采纳；请求表示由 ADR-0098、聚合参数展示由 ADR-0102 细化 | family 请求保留全部 Runtime 成员调用事实，参数异构不再关闭共同知识；固定备选改用 `≤3 / 4–6 / ≥7` 展示边界，查询按 family 去重并为精确成员补完整 usage |
+| [ADR-0096](0096-bound-capability-annotation-concurrency-by-unit.md) | 已采纳 | 所有待生成 teaching unit 共用全局有限并发池；同插件单元可并行，缓存与原子发布边界不变 |
+| [ADR-0097](0097-capture-complete-capability-model-output-in-explicit-maintenance-runs.md) | 已采纳 | 显式单插件维护运行可把完整模型输出写入本地诊断文件，生产 trace 仍保持脱敏 |
+| [ADR-0098](0098-deduplicate-complete-family-member-manifests.md) | 已采纳 | family 仍向模型提供全部成员，但命令清单与 Parser shape 分离去重；普通命令明确保持 anchor-only，不伪造参数结构 |
+| [ADR-0099](0099-separate-parser-structure-from-public-slot-names.md) | 已采纳；family 聚合槽位由 ADR-0102、联合输入传递由 ADR-0111 细化 | Parser 锁定参数结构，模型依据 Evidence 命名匿名槽位；确定性精确成员回退只使用类型能保证的保守名称 |
+| [ADR-0100](0100-keep-migut-help-descriptions-minimal.md) | 已采纳 | Migut Help description 只显示 summary；标准权限和冷却继续使用原生字段，其他公开事实留给 Answer |
+| [ADR-0102](0102-keep-family-aggregate-parameters-actionable.md) | 已采纳 | family 聚合槽位必须覆盖全部 shape；公开槽位不再预设成品词，七类以上不逐类解释，“参数”不设专门门禁 |
+| [ADR-0103](0103-enable-opencode-go-thinking-and-capture-maintenance-reasoning.md) | 已采纳 | OpenCode Go Agent 任务启用 high thinking，显式维护诊断保存 ThinkingPart，普通生产 trace 继续脱敏 |
+| [ADR-0104](0104-preload-one-hop-python-dependency-source-for-teaching.md) | 已采纳 | 教学首包预载一层唯一 Python 依赖函数；过长实现或编译扩展 stub 只给精确导航目标，不递归枚举依赖树 |
+| [ADR-0106](0106-follow-static-parameter-dependencies-for-teaching-evidence.md) | 已采纳 | 教学源码切片沿静态 `Annotated[..., Depends(provider)]` 参数依赖补齐 provider Evidence，不根据符号名猜语义 |
+| [ADR-0107](0107-capture-provider-http-errors-in-explicit-maintenance-diagnostics.md) | 已采纳 | 显式维护诊断保存有界脱敏的 Provider HTTP 错误元数据与正文，生产 trace 继续不保存正文 |
+| [ADR-0108](0108-preserve-permission-disjunctions-in-teaching-requirements.md) | 已采纳 | 一个 Permission 用带 OR alternatives 的 requirement 保存；Migut Help 只投影单一 SUPERUSER 或精确 `admin OR owner` 组合 |
+| [ADR-0109](0109-delegate-transient-http-retries-to-provider-sdks.md) | 已采纳 | Provider SDK 最多进行两次传输重试，教学层不再因网络错误重跑整个 Agent；维护诊断记录内部失败尝试 |
+| [ADR-0110](0110-preload-static-family-member-callables.md) | 已采纳 | Family 初始 Evidence 有界预载静态工厂表中唯一可解析的本地 Callable，不递归展开或逐成员运行 Agent |
+| [ADR-0111](0111-preserve-alconna-union-input-types-in-family-shapes.md) | 已采纳 | Alconna 联合输入类型完整进入 family shape；Uniseg At 作为直接 `@用户` 输入不能在聚合 usage 中丢失 |

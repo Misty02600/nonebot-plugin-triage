@@ -78,11 +78,22 @@ ast-grep 规则提取；部署配置和模型都不能提交规则，也不开�
 partial / opaque 边界。官方直接 `on_*` 入口均可形成源码锚点；`CommandGroup` / `MatcherGroup` 方法只有
 在构造来源和接收者绑定可证明时才识别，普通业务对象的同名方法不会命中。
 
-宿主安装 Uninfo 时，静态首包还会临时解析 Permission 表达式的 import 绑定，把已
-确认来自 Uninfo 的 `MEMBER / ADMIN / OWNER` 与 `PRIVATE / GROUP / GUILD` 直接投影为角色 / 场景约束。
+宿主安装 Uninfo 时，静态首包还会临时解析 Permission 表达式的 import 绑定，把已确认来自 NoneBot 的
+`SUPERUSER`，以及来自 Uninfo 的 `MEMBER / ADMIN / OWNER` 与 `PRIVATE / GROUP / GUILD`，投影为同一个
+`permission` requirement 的 OR alternatives；场景分别使用 `private / group / guild_or_channel` 元数据。
+Uninfo 0.11.1 的 `ADMIN()` 精确展开为 `admin OR owner`；`CHANNEL_ADMINISTRATOR` 只有在实际角色 ID 或
+`ROLE_IN(...)` 字面集合提供 Evidence 时才映射为 `channel_admin`，不会根据 `role.level` 或 Adapter 猜测补齐。
+同一表达式仍有未知自定义分支时，已知分支不会被单独发布成 fixed AND。
 最终索引不保存 import 来源；同名本地符号不会套用该语义。模型被要求直接使用这些稳定事实，不再为每个
 插件重复打开 Uninfo 源码；实际安装版本既不作为启用门，也不单独触发教学注释失效。高级动态 Permission
 继续保持 opaque，必要时才走 Jedi / 文件补读。当前映射已用 nonemigut 的 0.11.1 源码复核。
+
+源码切片中的 Handler 或 helper 实际使用 `Uninfo` / `QryItrface` 类型注解时，首包还会加入一份可引用的
+框架语义 Evidence。它覆盖 README 中与源码理解相关的 Session、User、Scene、Member、查询接口与内建
+Permission 公共含义，并以 0.11.1 源码补足 README 未展开的 `Session.scene_path` / `Session.id` 计算边界。
+其中 `Session.self_id` 是机器人 ID、`Session.user.id` 是触发用户 ID，群聊 `scene_path` 通常按群场景共享。
+这些事实只解释框架字段，不替插件推断最终存储、限流或开关作用域；模型仍须结合值是否实际流入执行键的
+数据流形成公开结论。
 
 `NBTRIAGE_RESTRICTED_CONFIG` 已实现为顶层 NoneBot 配置键的 JSON deny-list，运行时持有的
 `ConfigValuePolicy` 在任何值读取前按大小写不敏感顶层键判定，`__` 嵌套键按顶层整项限制。投影器只读
@@ -95,8 +106,9 @@ partial / opaque 边界。官方直接 `on_*` 入口均可形成源码锚点；`
 Agent 无法形成可靠共同说明时输出 `knowledge_enabled=false`。公开查询会把命中的注释作为
 事实交给无工具 Answer Agent 结合当前问题组织回答，只有 Answer 失败时才直接使用确定性注释模板；同一注释
 还会投影成独立的展示 YAML 和从结构化公开字段确定性渲染的 Answer Markdown。模型不再生成自由 Markdown。
-当前公开 entry 只保存 name、summary、usages、search terms、behavior boundaries 及 role / scene / access /
-rate limit requirements。LocalStore cache 只保存公开
+当前公开 entry 只保存 name、summary、usages、search terms、behavior boundaries 及 requirements；独立
+`role / scene / access / rate_limit` 继续表达各自条件，Permission 的组合资格使用带 `role / scene / access`
+alternatives 的单一 requirement。LocalStore cache 只保存公开
 文本、请求指纹，以及动态 `read_file` Evidence 的 ID、相对位置和 revision 清单；它不保存源码正文或配置
 值。缓存按插件写入 `capability-annotations/<module_name>.json`，同一文件内按 teaching unit 分别保留
 `last_good` 与 `last_attempt`：失败尝试不覆盖仍精确匹配当前 revision / fingerprint / Evidence 的最近完整
@@ -108,16 +120,30 @@ Gold 和本任务生成的 help-display，避免秘密外发与评价数据泄�
 一次能力分析可以包含多个由模型外固定 ID 的公开 entry：普通命令通常只有一项，确定性的 Alconna 叶子
 子命令分别成为独立项，同一功能的 Option、别名、回复输入和参数变体仍保留在该项的有序 `usages` 中。模型
 直接输出完整命令正文，不再使用 `{command}`；普通 entry 必须包含 runtime / parser 给定的 anchored 正文，
-参数化工厂请求会携带全部当前公开成员的 anchored 命令、alias 与 Runtime parser 参数结构；模型只生成一条共同
-family 注释，成员参数数量、图片或文字输入、必选性和精确 usage 不同不会因此关闭 family。同一位置的一至三项固定
-备选在 usage 显式枚举，四至六项使用概念槽并在 summary 完整说明，七项及以上只在 summary 说明类别；该规则同时
+参数化工厂请求会携带全部当前公开成员，但不再逐成员复制通用 claims 和相同 Parser AST：紧凑成员清单保留
+anchored 命令、alias 与语法可信度，只有 Runtime adapter 能证明完整的参数结构才按 `shape_id` 去重保存。
+当前 Alconna 使用 `parser_exact`，普通 `on_command` 保持 `anchor_only`，不能把缺少结构化参数误读为没有参数。
+`parser_exact` 只冻结参数顺序、必选性、重复性、Option 和别名；内部 `Arg.name` 会先匿名化为 `slot:N`，
+公开槽位名由模型依据 notice、声明 usage 与源码 Evidence 生成，模型外再按匿名模板校验结构。
+模型只生成一条共同 family 注释，成员参数数量、图片、文字或 `@用户` 输入、必选性和精确 usage 不同不会因此关闭 family。
+Alconna 联合输入的限定类型完整进入 Parser shape；`At` 是直接输入形式，不能因为后续被转换成头像图片而从
+聚合 usage 省略。
+若 Handler 访问静态工厂成员的 Callable 字段，且字段值能唯一解析到目标插件本地函数，这些函数按定义去重并
+有界加入首包，不递归展开，也不为成员分别运行 Agent。同一位置的一至三项固定
+备选在 usage 显式枚举，四至六项使用由 Evidence 命名的概念槽并在 summary 说明，七项及以上使用概念槽，允许简单概括共同类别但不逐项解释；
+Prompt 不提供固定的聚合槽位成品词；该规则同时
 适用 family 成员与单个 Matcher 的命令头、别名、Option 和固定参数。查询层按 family 去重，精确命中成员时从当前
-Runtime record 的 `command.arguments / components` 重建完整 usage，不持久化成员目录或引入插件专属 schema。插件把
+Runtime record 的 `command.arguments / components` 重建完整 usage，不持久化成员目录或引入插件专属 schema。请求内
+manifest 只用于一次完整 family 语义判断，不是新的 serving catalog。插件把
 Migut Help 最小字段 YAML 与结构化渲染的 Answer Markdown 写入 LocalStore
 `capability-teaching/objects/<generation>/{help-display,answer-knowledge}/`，manifest 记录 teaching unit
 状态与每个插件的 `active / eligible` 覆盖量，并只用一个原子 `current.json` 切换两类输出和对应 Answer
 内存视图。指针切换前的候选不是 active teaching contract；`SOURCE_CHANGED` 会作废该插件整份内存 staging，
 但不会阻止其他插件发布。插件源码 revision 变化时首版仍全量重生成该插件，不尝试逐 unit hash 复用。
+Migut Help 的 description 只投影 summary，用于简短功能说明和必要的参数含义。只有整个 Permission 恰好是
+单一 `SUPERUSER`，或 `admin OR owner` 管理员组合时，才投影原生 `permission`；是否存在冷却继续投影
+`has_cd`。`channel_admin / MEMBER`、其他混合 OR、scene、access、behavior boundaries 和具体限流文字留给
+Answer，不拼入 Help description，也不把复合资格误压成全局 admin。
 缓存和输出文件都只接受能够直接安全落盘的 module name；不使用 hash fallback 或 module 到文件名 manifest，
 非法名称只关闭对应插件。目录与 Migut Help 配置相互独立，当前没有导入或监听接线；生成文件用于观察首版
 效果，SUPERUSER 可用 `triage 刷新帮助 [plugin_module]` 主动重生成。
@@ -169,5 +195,5 @@ SUPERUSER 身份自动进入 LLM。真正执行仍由原插件自己的 Matcher�
 - [ADR-0069：分离帮助展示与 Answer 知识，并让静态分析只界定证据范围](../adr/0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md)
 - [ADR-0077：把上一版机器生成教学内容作为非证据的最小改写基线](../adr/0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md)
 - [ADR-0080：把一次能力分析投影为多个公开教学条目](../adr/0080-model-capability-teaching-as-multiple-public-entries.md)
-- [ADR-0088：按插件限制教学注释并发并保持插件内顺序](../adr/0088-bound-capability-annotation-concurrency-by-plugin.md)
+- [ADR-0096：按教学单元限制教学注释并发](../adr/0096-bound-capability-annotation-concurrency-by-unit.md)
 - [ADR-0093：按插件分片教学注释缓存并按单元部分发布](../adr/0093-shard-capability-annotation-cache-by-plugin.md)

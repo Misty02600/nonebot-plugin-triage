@@ -7,6 +7,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pytest import MonkeyPatch
 
 import nonebot_plugin_triage.task_model_runtime as task_model_runtime
+from nbtriage.opencode_go_contracts import OPENCODE_GO_THINKING_SETTINGS_REVISION
 from nbtriage.task_model_settings import ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.semantic_runtime import create_semantic_client_factory
@@ -77,8 +78,10 @@ def test_opencode_go_url_selects_known_profile_without_backend() -> None:
     assert binding.model_name == "deepseek-v4-flash"
     assert binding.api_family == "chat-completions"
     assert binding.connection_revision == "provider-default"
+    assert binding.settings_revision == OPENCODE_GO_THINKING_SETTINGS_REVISION
     assert binding.model_settings is not None
-    assert binding.model_settings.get("extra_body") == {"thinking": {"type": "disabled"}}
+    assert binding.model_settings.get("extra_body") == {"thinking": {"type": "enabled"}}
+    assert binding.model_settings.get("openai_reasoning_effort") == "high"
     assert binding.model_settings.get("parallel_tool_calls") is False
     assert binding.model_settings.get("temperature") == 0
 

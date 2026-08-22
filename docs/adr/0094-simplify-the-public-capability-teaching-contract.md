@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；family 成员输入、参数异构关闭和四项展示阈值被 [ADR-0095](0095-preserve-family-member-invocations-and-compress-only-display.md) 替代 | 2026-08-19 |
+| 已采纳；family 边界被 [ADR-0095](0095-preserve-family-member-invocations-and-compress-only-display.md) 替代；真实插件诊断范围被 [ADR-0097](0097-capture-complete-capability-model-output-in-explicit-maintenance-runs.md) 部分替代；Migut Help description 边界被 [ADR-0100](0100-keep-migut-help-descriptions-minimal.md) 替代 | 2026-08-19 |
 
 ## 当时遇到了什么
 

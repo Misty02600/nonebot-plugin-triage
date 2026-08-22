@@ -178,6 +178,24 @@ def test_invocation_target_bounds_parser_owned_canonical_usages() -> None:
     )
 
     assert target.canonical_usages == ("订阅 添加 <主题> [-q|--quiet]",)
+
+
+def test_request_accepts_more_than_sixty_four_initial_evidence_units() -> None:
+    request = _request()
+    evidence_type = type(request.evidence_units[0])
+    evidence = tuple(
+        evidence_type(
+            evidence_id=f"evidence:bulk:{index}",
+            source_kind="runtime_family_members",
+            content=f"member-{index}",
+            revision="sha256:" + f"{index:064x}"[-64:],
+        )
+        for index in range(65)
+    )
+
+    rebuilt = replace(request, evidence_units=evidence)
+
+    assert len(rebuilt.evidence_units) == 65
     mention_target = CapabilityInvocationTarget(
         "root",
         CapabilityInvocationMode.ANCHORED,
@@ -239,6 +257,7 @@ def test_output_has_only_semantic_fields_and_evidence_ids() -> None:
         "rate_limit_policy",
         "rate_limit_scope",
         "gate_candidate_ids",
+        "permission_alternatives",
     }
     with pytest.raises(TypeError):
         cast(Any, SemanticClaim)(
@@ -371,6 +390,28 @@ def test_service_rejects_evidence_ids_outside_request() -> None:
 
     with pytest.raises(CapabilityAnalysisError, match="unavailable evidence IDs"):
         asyncio.run(service.analyze(_request()))
+
+
+def test_service_rejects_navigation_only_evidence_as_semantic_support() -> None:
+    request = replace(
+        _request(),
+        evidence_units=(
+            *_request().evidence_units,
+            CapabilityEvidenceUnit(
+                evidence_id="ev-navigation",
+                source_kind="external_dependency_navigation",
+                content='{"navigation_only":true}',
+                locator="python_purelib/package/module.py:lookup:20",
+                revision="sha256:external",
+            ),
+        ),
+    )
+    service = CapabilityAnalysisService(
+        FakeCapabilityAnalysisClient(_output(evidence_id="ev-navigation"))
+    )
+
+    with pytest.raises(CapabilityAnalysisError, match="navigation-only evidence IDs"):
+        asyncio.run(service.analyze(request))
 
 
 def test_service_accepts_explicit_change_to_exact_baseline_member() -> None:

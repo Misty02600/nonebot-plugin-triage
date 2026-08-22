@@ -73,20 +73,40 @@ Provider SDK、密钥、网络、任务传输能力或输出校验不可用时�
 
 教学工具不能读取 `.env*`、凭据、数据库、日志、Migut Help 人工 YAML、评测 Gold 或本任务生成的
 help-display。Bot 项目、目标插件及其 LocalStore config/data/cache 是按任务批准的文件根；当前解释器的
-依赖 Python 源码只进入导航 profile，不允许在整个依赖环境自由 glob。Jedi 只提供从已知文件位置转到定义，
-定义位置本身不能作为结论，必须再经受控 `read_file` 取得可引用 Evidence。
+purelib / platlib 和生效的 site-packages / dist-packages 自动作为 Python-only 导航根，无需逐包批准，也不允许在整个依赖环境自由 glob/search。
+Jedi 从已知调用位置唯一定位的直接外部函数可以在 8,000 / 32,000 字符预算内预载一层，但不递归进入依赖
+BFS；过长或不可切片的唯一定义只生成不可引用的精确 read target，必须再经受控 `read_file` 取得可引用
+Evidence。只有编译扩展的 `.pyi` 签名同样只作为导航事实，不能支持业务行为结论。教学请求把目标插件根稳定命名为
+`target_plugin`，初始源码 locator 与 `target_plugin_*` 工具都使用相对插件包根的路径；`bot_project` 明确只指
+宿主部署项目，并且只在目标就是本地宿主插件、单文件插件与宿主根共享目录，或已有宿主 Evidence 时提供，
+不应被当作外部目标插件源码的试探入口。
+Handler 或本地 helper 的参数注解若直接写成 `Annotated[..., Depends(provider)]`，或经 Jedi 唯一定位的
+插件内类型别名静态展开成该形式，provider 函数也沿同一深度、字符和 revision 边界加入初始 Evidence；
+该导航不根据 provider、参数或局部变量名模型外推断业务语义，也不会因此读取 LocalStore 动态文件。
 
 普通能力继续一项 Runtime Matcher 对应一个分析单元。Runtime 记录中的 Handler 带闭包自由变量时，适配器
-用精确源码位置解析其唯一外层工厂；同一工厂产生的公开成员共享一次分析。请求同时提供全部当前成员的
-anchored 命令、alias、Runtime parser 参数结构和对应 Evidence；共享 Handler 与源码依赖只提供一次。参数数量、
-图片或文字输入、必选性和精确 usage 不同保留为成员事实，不会单独关闭 family。工厂源码无法唯一定位、同一
-工厂含未准入成员、源码 inventory 不完整、共同业务概念不可信，或 gate 冲突且无法安全绑定成员时，整个工厂
-`knowledge_enabled=false`。
+用当前 callable 的模块、qualname、首行和源码 revision 建立代码身份；共享同一 Handler 代码身份的公开成员
+共享一次分析。请求仍提供全部当前成员，但把 anchored 命令、alias 与语法可信度放入紧凑成员清单，只有
+Runtime adapter 能证明完整的 Parser 参数结构才另存为可复用 shape；当前 Alconna 是 `parser_exact`，联合
+输入的成员限定类型也会完整保留，不能把 `Text | Image | At` 退化成 `typing.Any`；普通
+`on_command` 是 `anchor_only`，缺少 shape 不表示没有参数。共享 Handler、源码依赖和共同 gate 只提供一次。
+若共享 Handler 访问闭包成员的 Callable 字段，且静态工厂表把该字段唯一绑定到目标插件本地函数，首包还会在
+8,000 / 32,000 字符预算内按定义去重加入这些 `python_family_callable`；它们不成为递归 BFS seed，也不
+触发逐成员 Agent。
+参数数量、图片或文字输入、必选性和精确 usage 不同不会单独关闭 family。Handler 代码身份无法唯一定位、同组
+含未准入成员、源码 inventory 不完整、共同业务概念不可信，或 gate 冲突且无法安全绑定成员时，整个 family
+`knowledge_enabled=false`。family 初始 Evidence 不再另设条目总数上限，因此大型 Runtime family 不会只因
+成员数超过 64 而在模型前失败；单条 Evidence 的字节上限与 Agent 的 token、请求、工具和费用预算仍然有效。
 全局消息、通知、请求和没有确定公开触发形式的被动监听器仍不进入第一阶段教学分析。
 查询先按 annotation capability ID 把同一 family 收敛为一个候选，不让多个成员占满检索 limit；不同插件的相似
 family 保持分离。精确命中成员命令或 alias 时，Answer 组合 family 共同知识与该成员从 Runtime record 确定性
-重建的完整 usage；普通 family 查询只使用聚合 usage。一至三项固定备选在 usage 枚举，四至六项改用概念槽并在
-summary 完整说明，七项及以上只说明类别。该规则也适用于单个 Matcher 的多固定命令头、别名、Option 和固定参数值。
+重建的完整 usage；普通 family 查询只使用聚合 usage。一至三项固定备选在 usage 枚举，四至六项改用由 Evidence
+命名的概念槽并在 summary 说明，七项及以上使用概念槽，可以简单概括共同类别但不逐项解释。该规则也适用于单个 Matcher 的多固定命令头、别名、Option 和固定参数值。
+family 的异构输入槽位还必须保持可操作：模型选择 Evidence 支持的最窄共同角色；无法用一个词准确概括时
+使用由当前 Evidence 命名的概念槽位；Prompt 不提供固定成品词，“参数”与其他槽位名称使用相同的通用
+公开文本和 usage 校验，不设置专门门禁、优先级或强制说明。
+Uniseg `At` 属于用户直接提供的 `@用户` 输入，即使 Handler 随后把它转换为头像图片，也不能只写进
+behavior boundary 而从聚合 usage 删除。
 
 教学缓存位于 Triage LocalStore cache 的 `capability-annotations/`：每个安全插件模块名直接对应一个
 `<module_name>.json`，文件内用稳定 teaching unit ID 保存 `last_good` 与 `last_attempt`。`last_good` 是最近
@@ -107,12 +127,15 @@ generation 都不是 active teaching contract。源码、Evidence、配置值、
 
 ## 状态与失败语义
 
+- 普通运行只持久化无正文 Agent trace。维护者对一个精确插件运行教学刷新时，可显式把完整 assistant 文本、
+  thinking、工具往返与 correction 写入指定的本地 ignored 文件；该诊断文件可能包含 reasoning 或工具读取的真实源码，不属于活动
+  教学 cache、immutable generation 或公开报告，也不会自动上传。
 - 制品版本、VCS commit、有界相对路径与文件摘要用于部署清单和诊断，不构成逐能力源码身份合同。
 - `.env*`、日志、数据库、缓存和运行数据不参与摘要，索引不保存原始配置值。
 - 新索引在临时文件完整写入并校验后替换目标；构建失败保留最近可用索引。
 - LocalStore 路径只在启动刷新阶段解析；解析失败、cache 不可写或版本不兼容时记录稳定错误类型并降级，
   不阻止插件加载、`triage` 或模型语义分流。
-- 自动注释按插件分组有限并发，同一插件内的分析单元保持顺序；活动插件数由
+- 自动注释按 teaching unit 进入同一个有限并发池，同一插件内的不同分析单元也可并行；活动单元数由
   `NBTRIAGE_CAPABILITY_ANNOTATION_MAX_CONCURRENCY` 限制，全局 refresh lock、发布锁和缓存写入串行化边界
   保持不变。一个 teaching unit 失败时，其他已生成或精确命中 `last_good` 的单元仍可进入 partial generation；
   失败、stale、skipped 与合法关闭的单元不提供公开知识。确定性 SQLite 索引继续可用，单次请求继续复用
@@ -120,15 +143,24 @@ generation 都不是 active teaching contract。源码、Evidence、配置值、
 - 插件受管 Python 源码 inventory 不完整、含未处理 symlink 或分析期间 revision 改变时，该插件失败关闭。
   缓存中的插件源码 revision 与当前值不同时，首版重生成该插件全部当前 teaching unit，不按调用关系或
   单元 hash 猜测可复用范围。若分析期间出现 `SOURCE_CHANGED`，本轮该插件已生成与已复用的内存 staging
-  一并作废，后续单元停止；其他插件仍可发布。源码与其他生成输入均未变化且动态 Evidence revision 仍匹配
+  一并作废；尚未取得并发槽位的同插件单元停止，已经在途的结果完成后也被丢弃；其他插件仍可发布。源码与其他生成输入均未变化且动态 Evidence revision 仍匹配
   时，逐字复用 `last_good` 并不调用模型。
 - 需要重算且存在上一版机器生成注释时，只把上一版公开文字作为 `previous_annotation` 编辑基线；它不属于
   Evidence。新 entry 中的 claim 与 constraint 仍须引用本轮当前 Evidence；Answer Markdown 不再由模型生成，而是从公开结构字段确定性渲染。该引用闭包可以阻止旧 Evidence
   或虚构 ID 被继续引用，但不能一般性证明自然语言陈述一定被所引证据语义蕴含；后者由模型资格与离线评测
   观察。
+- 模型输出通过内部 Schema 与 Evidence 闭包后，还必须投影成公开 entry。投影失败以稳定的
+  `projection_*` 错误码反馈给同一 Agent 定向修正一次；第二次仍失败才关闭该单元。单元状态、cache
+  `last_attempt.detail_code` 和警告日志只记录稳定码，不记录真实源码或模型全文。
+- 瞬时连接、限流和 5xx 由 Provider SDK 在同一逻辑模型请求内最多重试两次；教学服务不再因此从头重跑
+  整个 Agent 单元。显式维护诊断会按 SDK attempt 保存有界脱敏的失败响应，生产 trace 不保存正文。
 - Runtime 同一 command entry 的完整 literal 集合由模型外拥有。模型只提出可选的紧凑 `display_trigger`；
   Triage 展开后必须与 Runtime 集合完全相等，首次错误定向重试，第二次仍错则使用确定性完整枚举。最终 usage
-  才把已校验的触发表达式替换进固定参数结构；别名压缩失败不会关闭原本正确的知识。
+  才把已校验的触发表达式替换进固定参数结构；别名压缩失败不会关闭原本正确的知识。Alconna 的 `Help`、
+  `Completion` 与 `Shortcut` 内建辅助 Option 在 Runtime 适配时确定性过滤，不进入普通教学 canonical usage。
+- Parser canonical usage 以 `slot:N` 保存匿名结构槽位；模型依据 notice、声明 usage 与源码 Evidence 命名槽位，
+  校验器只允许改槽位文字，不允许改变必选性、顺序、Option、别名或重复性。精确 family 成员的无模型回退
+  只使用类型能保证的“图片 / 文本 / 整数 / 数值 / 参数”，不会公开内部 `Arg.name`。
 - YAML 与 Markdown 仍只在完整 snapshot 和共享发布可信度成立时作为一个 generation 切换，但 generation
   可以包含 teaching-unit 级 partial 覆盖；两类输出不会在不同 generation 间拼接。partial snapshot、共享
   Provider / schema 身份失败、generation 校验失败或指针切换失败时保留 `current.json`，并丢弃本轮 Answer
@@ -138,8 +170,11 @@ generation 都不是 active teaching contract。源码、Evidence、配置值、
   返回简短结果。
 - deployment 未刷新、刷新失败、snapshot / deployment 任一 partial 或索引 stale 时，普通查询失败关闭；维护者
   仍可读取最近快照并看到 partial / stale 标记。
-- `opaque` Permission、Rule 和 handler 条件只表示无法静态求值；能力说明不等于执行授权，实际执行仍由原
-  插件裁决。
+- 已识别的 NoneBot `SUPERUSER` 与 Uninfo 角色 / 场景 Permission 使用一个带 OR alternatives 的公开
+  `permission` requirement 表达；若同一表达式仍有未知分支，不把已知分支单独发布成 fixed AND。
+- `gate_candidate_ids` 只关联静态层已经发现并解释为 constraint 的候选；Handler/helper Evidence 直接证明的
+  其他执行限制仍可形成 requirement 并把该数组留空。没有 gate candidate 不等于没有执行限制。
+  `opaque` Permission、Rule 和 handler 条件只表示无法静态求值；能力说明不等于执行授权，实际执行仍由原插件裁决。
 - 所有第三方文本在进入消息前都会折叠空白、限制长度并移除控制字符。普通字符串中的 `@用户` 原样保留；它不等于构造平台 At 消息段。
 
 ## 相关决定
@@ -154,5 +189,5 @@ generation 都不是 active teaching contract。源码、Evidence、配置值、
 - [ADR-0069：分离帮助展示与 Answer 知识，并让静态分析只界定证据范围](../../adr/0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md)
 - [ADR-0077：把上一版机器生成教学内容作为非证据的最小改写基线](../../adr/0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md)
 - [ADR-0080：把一次能力分析投影为多个公开教学条目](../../adr/0080-model-capability-teaching-as-multiple-public-entries.md)
-- [ADR-0088：按插件限制教学注释并发并保持插件内顺序](../../adr/0088-bound-capability-annotation-concurrency-by-plugin.md)
+- [ADR-0096：按教学单元限制教学注释并发](../../adr/0096-bound-capability-annotation-concurrency-by-unit.md)
 - [ADR-0093：按插件分片教学注释缓存并按单元部分发布](../../adr/0093-shard-capability-annotation-cache-by-plugin.md)

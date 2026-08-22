@@ -6,6 +6,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 
 from nbtriage.model_adapters import PydanticAIB1Client
 from nbtriage.model_contracts import B1ProviderError
+from nbtriage.provider_http_diagnostics import provider_http_client
 from nbtriage.pydantic_agent_adapter import PydanticAIAgentStepClient
 
 OPENAI_RESPONSES_PROVIDER_ID = "openai-responses"
@@ -18,7 +19,7 @@ def create_openai_responses_b1_client(
     timeout_seconds: float = 60.0,
     max_calls: int,
 ) -> PydanticAIB1Client:
-    """构造关闭存储、重试和遥测的 OpenAI Responses B1 客户端。
+    """构造关闭存储和遥测、启用两次传输重试的 OpenAI Responses B1 客户端。
 
     Args:
         api_key: 仅用于当前进程 OpenAI 客户端的 API Key。
@@ -44,7 +45,8 @@ def create_openai_responses_b1_client(
     sdk_client = AsyncOpenAI(
         api_key=api_key,
         timeout=timeout_seconds,
-        max_retries=0,
+        max_retries=2,
+        http_client=provider_http_client(timeout_seconds=timeout_seconds),
     )
     pydantic_model = OpenAIResponsesModel(
         model,
@@ -66,7 +68,7 @@ def create_openai_responses_agent_step_client(
     timeout_seconds: float = 60.0,
     max_calls: int = 1,
 ) -> PydanticAIAgentStepClient:
-    """构造关闭存储、SDK 重试和遥测的 OpenAI Responses Agent 单步客户端。"""
+    """构造关闭存储和遥测、启用两次传输重试的 OpenAI Responses Agent 单步客户端。"""
     if not api_key.strip():
         raise B1ProviderError("OpenAI API key must be explicit")
     if not model.strip():
@@ -79,7 +81,8 @@ def create_openai_responses_agent_step_client(
     sdk_client = AsyncOpenAI(
         api_key=api_key,
         timeout=timeout_seconds,
-        max_retries=0,
+        max_retries=2,
+        http_client=provider_http_client(timeout_seconds=timeout_seconds),
     )
     pydantic_model = OpenAIResponsesModel(
         model,

@@ -11,6 +11,8 @@ from pydantic_ai.models import Model, infer_model
 from pydantic_ai.providers import Provider, infer_provider_class
 from pydantic_ai.settings import ModelSettings
 
+from nbtriage.opencode_go_contracts import OPENCODE_GO_THINKING_SETTINGS_REVISION
+from nbtriage.provider_http_diagnostics import provider_http_client
 from nbtriage.task_model_settings import task_model_settings
 
 _PER_MILLION = Decimal(1_000_000)
@@ -87,6 +89,7 @@ def create_model_evaluation_binding(
                 model,
                 api_family="chat-completions",
                 model_settings=opencode_go_model_settings(),
+                settings_revision=OPENCODE_GO_THINKING_SETTINGS_REVISION,
             )
 
         if backend == "openai-responses":
@@ -106,7 +109,8 @@ def create_model_evaluation_binding(
                     openai_client=AsyncOpenAI(
                         api_key=api_key,
                         timeout=timeout_seconds,
-                        max_retries=0,
+                        max_retries=2,
+                        http_client=provider_http_client(timeout_seconds=timeout_seconds),
                     )
                 ),
             )
@@ -132,7 +136,8 @@ def create_model_evaluation_binding(
                     anthropic_client=AsyncAnthropic(
                         api_key=api_key,
                         timeout=timeout_seconds,
-                        max_retries=0,
+                        max_retries=2,
+                        http_client=provider_http_client(timeout_seconds=timeout_seconds),
                     )
                 ),
             )

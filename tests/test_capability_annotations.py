@@ -45,6 +45,8 @@ from nbtriage.capability_analysis import (
 from nbtriage.capability_annotations import (
     CapabilityAnnotationError,
     CapabilityAnnotationEvidenceRef,
+    CapabilityAnnotationProjectionCode,
+    CapabilityAnnotationProjectionError,
     CapabilityTeachingAnnotation,
     CapabilityTeachingRequirement,
     capability_analysis_fingerprint,
@@ -247,12 +249,17 @@ def test_projection_rejects_more_than_three_usages_in_one_matcher() -> None:
         for value in ("红", "蓝", "绿", "黄")
     )
 
-    with pytest.raises(CapabilityAnnotationError, match="at most three usages"):
+    with pytest.raises(
+        CapabilityAnnotationProjectionError,
+        match="at most three usages",
+    ) as raised:
         project_capability_annotation(
             _request(),
             CapabilityAnalysisOutput(entries=(_entry(*usages),)),
             analysis_revision="analysis-v1",
         )
+
+    assert raised.value.code is CapabilityAnnotationProjectionCode.USAGE
 
 
 def test_schema7_rejects_schema6_entry_fields_without_migration() -> None:
@@ -432,7 +439,7 @@ def test_anchored_usage_must_contain_command_body_exactly_once() -> None:
             project_capability_annotation(_request(), output, analysis_revision="analysis-v1")
 
 
-def test_parser_owned_canonical_usage_cannot_be_rewritten() -> None:
+def test_parser_owned_usage_allows_slot_naming_but_rejects_structure_changes() -> None:
     request = CapabilityAnalysisRequest(
         capability=_request().capability,
         evidence_units=_request().evidence_units,
@@ -441,7 +448,7 @@ def test_parser_owned_canonical_usage_cannot_be_rewritten() -> None:
                 "root",
                 CapabilityInvocationMode.ANCHORED,
                 "订阅 添加",
-                ("订阅 添加 <主题> [-q|--quiet]",),
+                ("订阅 添加 <slot:0> [-q|--quiet]",),
             ),
         ),
     )
@@ -460,8 +467,114 @@ def test_parser_owned_canonical_usage_cannot_be_rewritten() -> None:
         )
     )
 
-    with pytest.raises(CapabilityAnnotationError, match="canonical usage"):
+    with pytest.raises(CapabilityAnnotationError, match="structural template"):
         project_capability_annotation(request, output, analysis_revision="analysis-v1")
+
+    base_entry = _entry()
+    valid_output = CapabilityAnalysisOutput(
+        entries=(
+            replace(
+                base_entry,
+                claims=tuple(
+                    replace(claim, statement="订阅 添加 <主题> [-q|--quiet]")
+                    if claim.kind is SemanticClaimKind.USAGE
+                    else claim
+                    for claim in base_entry.claims
+                ),
+            ),
+        )
+    )
+    annotation = project_capability_annotation(
+        request,
+        valid_output,
+        analysis_revision="analysis-v1",
+    )
+    assert annotation.entries[0].usages == ("订阅 添加 <主题> [-q|--quiet]",)
+
+    alternative_request = replace(
+        request,
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "随机表情",
+                ("随机表情 [slot:0]...",),
+            ),
+        ),
+    )
+    alternative_output = CapabilityAnalysisOutput(
+        entries=(
+            replace(
+                base_entry,
+                claims=tuple(
+                    replace(claim, statement="随机表情 [图片|文字|@用户]...")
+                    if claim.kind is SemanticClaimKind.USAGE
+                    else claim
+                    for claim in base_entry.claims
+                ),
+            ),
+        )
+    )
+    alternative_annotation = project_capability_annotation(
+        alternative_request,
+        alternative_output,
+        analysis_revision="analysis-v1",
+    )
+    assert alternative_annotation.entries[0].usages == ("随机表情 [图片|文字|@用户]...",)
+
+
+def test_parser_owned_usage_requires_a_public_name_instead_of_a_source_symbol() -> None:
+    base_request = _request()
+    request = replace(
+        base_request,
+        evidence_units=(
+            replace(base_request.evidence_units[0], locator="plugin.memes:meme_name:12"),
+        ),
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "表情搜索",
+                ("表情搜索 <slot:0>",),
+            ),
+        ),
+    )
+    base_entry = _entry()
+    valid_entry = replace(
+        base_entry,
+        claims=tuple(
+            replace(claim, statement="表情搜索 <表情名>")
+            if claim.kind is SemanticClaimKind.USAGE
+            else claim
+            for claim in base_entry.claims
+        ),
+    )
+    output = CapabilityAnalysisOutput(entries=(valid_entry,))
+
+    annotation = project_capability_annotation(
+        request,
+        output,
+        analysis_revision="analysis-v1",
+    )
+
+    assert annotation.entries[0].usages == ("表情搜索 <表情名>",)
+
+    invalid_output = CapabilityAnalysisOutput(
+        entries=(
+            replace(
+                valid_entry,
+                claims=tuple(
+                    replace(claim, statement="表情搜索 <meme_name>")
+                    if claim.kind is SemanticClaimKind.USAGE
+                    else claim
+                    for claim in valid_entry.claims
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(CapabilityAnnotationError, match="internal evidence symbol"):
+        project_capability_annotation(request, invalid_output, analysis_revision="analysis-v1")
 
 
 def test_public_annotation_rejects_framework_permission_terms() -> None:
@@ -755,11 +868,11 @@ def test_runtime_marks_changed_annotation_prompt_unverified_until_new_evaluation
     qualification = OPENCODE_GO_CAPABILITY_ANNOTATION_QUALIFICATION
 
     assert qualification.evaluation == CAPABILITY_ANNOTATION_EVALUATION
-    assert qualification.prompt_id == "capability-teaching-annotation-v5-prompt-v40-zh"
-    assert qualification.request_revision == "capability-teaching-request-v4"
+    assert qualification.prompt_id == "capability-teaching-annotation-v5-prompt-v56-zh"
+    assert qualification.request_revision == "capability-teaching-request-v23"
     assert qualification.evaluation == (
         "unverified:capability-teaching-annotation-agent-v4:"
-        "capability-teaching-annotation-v5-prompt-v40-zh"
+        "capability-teaching-annotation-v5-prompt-v56-zh"
     )
     assert qualification.verified is False
     assert frozenset() == QUALIFIED_CAPABILITY_ANNOTATION_TASKS
@@ -1069,7 +1182,7 @@ async def test_source_change_closes_only_its_plugin_and_discards_old_and_new_can
         client_factory=SourceChangingClient,
         config_policy=ConfigValuePolicy.from_keys(()),
         analysis_revision="analysis-v1",
-        max_plugin_concurrency=2,
+        max_analysis_concurrency=2,
     )
     records = tuple(
         replace(_record(capability_id, Disclosure.PUBLIC), owner=owner)
@@ -1142,7 +1255,7 @@ async def test_force_refresh_counts_generated_units_without_double_counting_cach
 
 
 @pytest.mark.asyncio
-async def test_transient_failure_retries_once_but_budget_does_not(
+async def test_transport_failure_is_left_to_the_provider_sdk_retry_layer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1178,9 +1291,9 @@ async def test_transient_failure_retries_once_but_budget_does_not(
         CapabilitySnapshot.create((_record("command:image", Disclosure.PUBLIC),))
     )
 
-    assert calls == 2
-    assert status.generated_count == 1
-    assert status.units[0].attempts == 2
+    assert calls == 1
+    assert status.generated_count == 0
+    assert status.units[0].attempts == 1
 
 
 @pytest.mark.asyncio
@@ -2290,7 +2403,7 @@ async def test_disabled_last_good_remains_disabled_when_regeneration_fails(
 
 
 @pytest.mark.asyncio
-async def test_annotations_run_plugins_concurrently_and_units_within_plugin_sequentially(
+async def test_annotations_run_units_from_the_same_plugin_concurrently(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2315,7 +2428,7 @@ async def test_annotations_run_plugins_concurrently_and_units_within_plugin_sequ
         client_factory=lambda: _PluginConcurrencyClient(tracker),
         config_policy=ConfigValuePolicy.from_keys(()),
         analysis_revision="analysis-v1",
-        max_plugin_concurrency=2,
+        max_analysis_concurrency=2,
     )
     records = tuple(
         replace(_record(f"command:{plugin}-{index}", Disclosure.PUBLIC), owner=f"plugin.{plugin}")
@@ -2328,14 +2441,14 @@ async def test_annotations_run_plugins_concurrently_and_units_within_plugin_sequ
 
     assert tracker.active_total == 2
     assert tracker.max_active_total == 2
-    assert all(active == 1 for active in tracker.active_by_plugin.values())
+    assert tracker.active_by_plugin == {"plugin.a": 2}
     tracker.release.set()
     status = await asyncio.wait_for(refresh, timeout=2)
 
     assert status.generated_count == 6
     assert status.failed_count == 0
     assert tracker.max_active_total == 2
-    assert set(tracker.max_active_by_plugin.values()) == {1}
+    assert tracker.max_active_by_plugin["plugin.a"] == 2
     for plugin in ("a", "b", "c"):
         assert [
             capability_id for owner, capability_id in tracker.started if owner == f"plugin.{plugin}"
@@ -2450,6 +2563,7 @@ async def test_failed_teaching_unit_log_has_safe_location_and_reason(
             CapabilityModelAdapterError(
                 private_text,
                 reason_code=CapabilityModelAdapterReason.OUTPUT_VALIDATION,
+                detail_code="projection_public_text",
             )
         ),
         config_policy=ConfigValuePolicy.from_keys(()),
@@ -2481,14 +2595,14 @@ async def test_failed_teaching_unit_log_has_safe_location_and_reason(
     )
     assert logger.infos[2] == (
         "NoneBot Triage 教学注释刷新开始：refresh_id={}, eligible={}, cached={}, "
-        "pending={}, plugin_groups={}, max_plugin_concurrency={}, scope={}",
+        "pending={}, plugin_groups={}, max_analysis_concurrency={}, scope={}",
         (
             "0123456789abcdef0123456789abcdef",
             1,
             0,
             1,
             1,
-            4,
+            10,
             "all",
         ),
     )
@@ -2496,7 +2610,7 @@ async def test_failed_teaching_unit_log_has_safe_location_and_reason(
         (
             "NoneBot Triage 教学注释单元分析失败：refresh_id={}, "
             "plugin_module={}, unit_label={}, unit_id={}, stage={}, reason={}, "
-            "duration_ms={}",
+            "detail_code={}, duration_ms={}",
             (
                 "0123456789abcdef0123456789abcdef",
                 "plugin.image",
@@ -2504,6 +2618,7 @@ async def test_failed_teaching_unit_log_has_safe_location_and_reason(
                 "command:image",
                 "agent_run",
                 "output_validation",
+                "projection_public_text",
                 125,
             ),
         )

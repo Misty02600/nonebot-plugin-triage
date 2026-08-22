@@ -19,6 +19,7 @@ from tools.nbtriage_maintainer.capability_teaching_evaluation import (
     CAPABILITY_TEACHING_OFFICIAL_FIXTURE_SHA256,
     CapabilityTeachingEvaluationError,
     _candidate_payload,
+    _canonical_usage_satisfies_audit,
     _expected_qualification_contract,
     _fixture_bundle_sha256,
     _prepare_case,
@@ -353,7 +354,10 @@ def test_frozen_v13_fixture_bundle_remains_valid_historical_data() -> None:
     prepared = tuple(_prepare_case(_CURRENT_FIXTURE, case) for case in cases)
 
     for case, prepared_case in zip(cases, prepared, strict=True):
-        _validate_expected_request_contract(case["expected"], prepared_case.request)
+        _validate_expected_request_contract(
+            cast(dict[str, object], case["expected"]),
+            prepared_case.request,
+        )
 
     assert payload["fixture_set_id"] == CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID
     assert payload["qualification_contract"] != _expected_qualification_contract()
@@ -1503,6 +1507,7 @@ raise RuntimeError("fixture source must never execute")
     prepared = _prepare_case(fixture, raw_case)
 
     assert prepared.input_kind == "adapter_source"
+    assert prepared.request.invocations[0].canonical_usages == ("海报 <slot:0>",)
     assert prepared.request.config_projections[0].value == 23
     assert prepared.source_audit is not None
     module_name = cast(str, prepared.source_audit["module_name"])
@@ -1523,6 +1528,23 @@ raise RuntimeError("fixture source must never execute")
     second_sha = _fixture_bundle_sha256(fixture, fixture_raw, [raw_case])
 
     assert first_sha != second_sha
+
+
+def test_adapter_request_audit_only_ignores_anonymous_slot_labels() -> None:
+    actual = "海报 <slot:0> [slot:1] [--quiet|-q <slot:2>]"
+
+    assert _canonical_usage_satisfies_audit(
+        actual,
+        "海报 <主题> [数量] [--quiet|-q <格式>]",
+    )
+    assert not _canonical_usage_satisfies_audit(
+        actual,
+        "海报 <主题> [数量] [--silent|-s <格式>]",
+    )
+    assert not _canonical_usage_satisfies_audit(
+        "海报 [slot:0]",
+        "海报 [--quiet]",
+    )
 
 
 def test_adapter_case_builds_parameterized_family_with_shared_gate(

@@ -35,6 +35,7 @@ from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_SEMANTIC_TASK,
     OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS,
 )
+from nbtriage.provider_http_diagnostics import provider_http_client
 from nbtriage.public_guidance_model_adapter import PydanticAIPublicGuidanceClient
 from nbtriage.support_semantic_model_adapter import PydanticAISupportSemanticClient
 
@@ -205,7 +206,8 @@ def create_opencode_go_chat_model(
         api_key=api_key,
         base_url=OPENCODE_GO_BASE_URL,
         timeout=timeout_seconds,
-        max_retries=0,
+        max_retries=2,
+        http_client=provider_http_client(timeout_seconds=timeout_seconds),
     )
     return OpenCodeGoChatModel(
         model,
@@ -219,7 +221,8 @@ def opencode_go_model_settings() -> OpenAIChatModelSettings:
         parallel_tool_calls=False,
         tool_choice="auto",
         temperature=0,
-        extra_body={"thinking": {"type": "disabled"}},
+        openai_reasoning_effort="high",
+        extra_body={"thinking": {"type": "enabled"}},
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import sys
 from collections.abc import Sequence
@@ -263,6 +264,13 @@ class DefinitionNavigator:
         ignored: set[DefinitionFailureReason] = set()
         for definition in raw_definitions:
             if definition.module_path is None:
+                stub_locations = _compiled_definition_stub_locations(
+                    self._profile,
+                    definition,
+                )
+                if stub_locations:
+                    accepted.extend(stub_locations)
+                    continue
                 ignored.add(DefinitionFailureReason.DEFINITION_SOURCE_UNAVAILABLE)
                 continue
             match = _match_approved_root(
@@ -309,6 +317,85 @@ class DefinitionNavigator:
             source_revision=source_revision,
             ignored_failures=ignored_tuple,
         )
+
+
+def _compiled_definition_stub_locations(
+    profile: PythonNavigationProfile,
+    raw: RawJediDefinition,
+) -> tuple[DefinitionLocation, ...]:
+    if (
+        raw.kind != "function"
+        or not isinstance(raw.name, str)
+        or not raw.name
+        or not isinstance(raw.full_name, str)
+        or not raw.full_name.endswith(f".{raw.name}")
+    ):
+        return ()
+    module_parts = raw.full_name.split(".")[:-1]
+    if not module_parts or any(not part.isidentifier() for part in module_parts):
+        return ()
+
+    locations: list[DefinitionLocation] = []
+    seen_paths: set[Path] = set()
+    for root in profile.source_roots:
+        for length in range(len(module_parts), 0, -1):
+            relative_parts = module_parts[:length]
+            candidates = (
+                root.path.joinpath(*relative_parts).with_suffix(".pyi"),
+                root.path.joinpath(*relative_parts, "__init__.pyi"),
+            )
+            for candidate in candidates:
+                try:
+                    path = candidate.resolve(strict=True)
+                    locator = path.relative_to(root.path).as_posix()
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                if path in seen_paths or not path_is_allowed(profile.access, root, locator):
+                    continue
+                seen_paths.add(path)
+                locations.extend(_top_level_stub_locations(root, path, locator, raw))
+    return tuple(locations)
+
+
+def _top_level_stub_locations(
+    root: ReadOnlyRoot,
+    path: Path,
+    locator: str,
+    raw: RawJediDefinition,
+) -> tuple[DefinitionLocation, ...]:
+    try:
+        source = _decode_python_source(path.read_bytes())
+        tree = ast.parse(source)
+    except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError):
+        return ()
+    candidates = tuple(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == raw.name
+    )
+    if not candidates:
+        return ()
+    return tuple(
+        location
+        for node in candidates
+        if (
+            location := _definition_location(
+                root,
+                path,
+                locator,
+                RawJediDefinition(
+                    module_path=path,
+                    name=raw.name,
+                    full_name=raw.full_name,
+                    kind=raw.kind,
+                    line=node.lineno,
+                    column=node.col_offset
+                    + len("async def " if isinstance(node, ast.AsyncFunctionDef) else "def "),
+                ),
+            )
+        )
+        is not None
+    )
 
 
 class _JediBackend:

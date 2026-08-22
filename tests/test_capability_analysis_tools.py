@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -24,13 +26,18 @@ from nbtriage.knowledge_index import KnowledgeEvidence
 from nbtriage.readonly_tools import ReadOnlyRoot, ReadOnlyTaskProfile
 from nonebot_plugin_triage.capability_analysis_tools import (
     CapabilityTeachingToolProvider,
+    _with_target_plugin_alias,
 )
 from nonebot_plugin_triage.evidence_access import EvidenceAccessProfiles
 
 _TOOL_PROFILE = ModelProfile(supports_tools=True)
 
 
-def _profiles(tmp_path: Path) -> EvidenceAccessProfiles:
+def _profiles(
+    tmp_path: Path,
+    *,
+    plugin_within_bot_project: bool = False,
+) -> EvidenceAccessProfiles:
     paths = {
         name: tmp_path / name
         for name in (
@@ -44,7 +51,11 @@ def _profiles(tmp_path: Path) -> EvidenceAccessProfiles:
     }
     for path in paths.values():
         path.mkdir()
-    plugin = ReadOnlyRoot("plugin_demo", paths["plugin"])
+    plugin_path = (
+        paths["bot"] / "plugins" / "demo" if plugin_within_bot_project else paths["plugin"]
+    )
+    plugin_path.mkdir(parents=True, exist_ok=True)
+    plugin = ReadOnlyRoot("plugin_demo", plugin_path)
     file_roots = (
         ReadOnlyRoot("bot_project", paths["bot"]),
         plugin,
@@ -104,6 +115,60 @@ def _source_pack(revision: str) -> CapabilitySourceEvidencePack:
     )
 
 
+def test_single_file_plugin_shared_roots_keep_their_runtime_scope(tmp_path: Path) -> None:
+    bot_path = tmp_path / "bot"
+    site_path = tmp_path / "site-packages"
+    bot_path.mkdir()
+    site_path.mkdir()
+    bot = ReadOnlyRoot("bot_project", bot_path)
+    site_source = ReadOnlyRoot(
+        "plugin_demo",
+        site_path,
+        allowed_patterns=("demo_plugin.py",),
+    )
+    site_profiles = EvidenceAccessProfiles(
+        file_profile=ReadOnlyTaskProfile("teaching.files", (bot, site_source)),
+        navigation_profile=ReadOnlyTaskProfile(
+            "teaching.navigation",
+            (
+                bot,
+                ReadOnlyRoot(
+                    "plugin_demo",
+                    site_path,
+                    allowed_patterns=("*.py", "*.pyi", "**/*.py", "**/*.pyi"),
+                ),
+            ),
+        ),
+        plugin_source_root=site_source,
+    )
+
+    site_aliased = _with_target_plugin_alias(site_profiles)
+
+    assert site_aliased.file_profile.root("target_plugin").allowed_patterns == ("demo_plugin.py",)
+    assert site_aliased.navigation_profile.root("target_plugin").allowed_patterns == (
+        "*.py",
+        "*.pyi",
+        "**/*.py",
+        "**/*.pyi",
+    )
+
+    local_source = ReadOnlyRoot(
+        "plugin_demo",
+        bot_path,
+        allowed_patterns=("demo_plugin.py",),
+    )
+    local_profiles = EvidenceAccessProfiles(
+        file_profile=ReadOnlyTaskProfile("teaching.files", (bot,)),
+        navigation_profile=ReadOnlyTaskProfile("teaching.navigation", (bot,)),
+        plugin_source_root=local_source,
+    )
+
+    local_aliased = _with_target_plugin_alias(local_profiles)
+
+    assert local_aliased.navigation_profile.root("bot_project") == bot
+    assert local_aliased.navigation_profile.root("target_plugin") is None
+
+
 def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -124,6 +189,7 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
     runtime = provider.create_runtime(_request(revision))
     assert runtime is not None
     observed_tools: set[str] = set()
+    tool_descriptions: dict[str, str] = {}
     tool_result: dict[str, object] = {}
     calls = 0
 
@@ -131,11 +197,14 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
         nonlocal calls
         calls += 1
         observed_tools.update(tool.name for tool in info.function_tools)
+        tool_descriptions.update(
+            {tool.name: tool.description or "" for tool in info.function_tools}
+        )
         if calls == 1:
             return ModelResponse(
                 parts=[
                     ToolCallPart(
-                        "plugin_demo_read_file",
+                        "target_plugin_read_file",
                         {"path": "handler.py", "offset": 0, "limit": 20},
                         "call-read",
                     )
@@ -155,15 +224,20 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
     )
     asyncio.run(agent.run("Read the handler."))
 
-    assert "plugin_demo_read_file" in observed_tools
-    assert "plugin_demo_search_files" in observed_tools
+    assert "target_plugin_read_file" in observed_tools
+    assert "target_plugin_search_files" in observed_tools
+    assert "bot_project_read_file" not in observed_tools
+    assert "bot_project_search_files" not in observed_tools
     assert "python_purelib_read_file" in observed_tools
     assert "python_purelib_search_files" not in observed_tools
+    assert "只在 target_plugin 根内做纯文本搜索" in tool_descriptions["target_plugin_search_files"]
+    assert "python_go_to_definition" in tool_descriptions["target_plugin_search_files"]
+    assert "可跨批准的插件、宿主与依赖源码根" in tool_descriptions["python_go_to_definition"]
     assert tool_result["citable"] is True
     evidence = runtime.evidence_units()
     assert len(evidence) == 1
     assert tool_result["evidence_id"] == evidence[0].evidence_id
-    assert evidence[0].locator == "plugin_demo/handler.py"
+    assert evidence[0].locator == "target_plugin/handler.py"
     assert runtime.validate_source_context() is True
 
     manifest = (
@@ -177,6 +251,63 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
     assert provider.evidence_is_current(_request(revision), manifest) is True
     handler.write_text("def handle():\n    return True\n", encoding="utf-8")
     assert provider.evidence_is_current(_request(revision), manifest) is False
+
+    dependency = profiles.navigation_profile.root("python_purelib")
+    assert dependency is not None
+    dependency_file = dependency.path / "demo_dependency.py"
+    dependency_source = b"def lookup():\n    return 1\n"
+    dependency_file.write_bytes(dependency_source)
+    dependency_request = replace(
+        _request(revision),
+        evidence_units=(
+            *_request(revision).evidence_units,
+            CapabilityEvidenceUnit(
+                "evidence:dependency",
+                "python_dependency_function",
+                dependency_source.decode(),
+                f"sha256:{hashlib.sha256(dependency_source).hexdigest()}",
+                "python_purelib/demo_dependency.py:lookup:1",
+            ),
+        ),
+    )
+    assert provider.evidence_is_current(dependency_request, ()) is True
+    dependency_file.write_text("def lookup():\n    return 2\n", encoding="utf-8")
+    assert provider.evidence_is_current(dependency_request, ()) is False
+
+
+def test_teaching_tools_keep_bot_project_tools_for_local_project_plugin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profiles = _profiles(tmp_path, plugin_within_bot_project=True)
+    revision = "plugin-revision-v1"
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_analysis_tools.build_evidence_access_profiles",
+        lambda *_args, **_kwargs: profiles,
+    )
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_analysis_tools.build_capability_source_evidence",
+        lambda *_args, **_kwargs: _source_pack(revision),
+    )
+    runtime = CapabilityTeachingToolProvider(
+        pyproject_path=tmp_path / "pyproject.toml"
+    ).create_runtime(_request(revision))
+    assert runtime is not None
+    observed_tools: set[str] = set()
+
+    def respond(_messages, info: AgentInfo) -> ModelResponse:
+        observed_tools.update(tool.name for tool in info.function_tools)
+        return ModelResponse(parts=[TextPart("done")], finish_reason="stop")
+
+    agent = Agent(
+        FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
+        toolsets=cast(Any, list(runtime.toolsets)),
+    )
+    asyncio.run(agent.run("Inspect available tools."))
+
+    assert "target_plugin_read_file" in observed_tools
+    assert "bot_project_read_file" in observed_tools
+    assert "bot_project_search_files" in observed_tools
 
 
 def test_teaching_tools_offer_version_bound_framework_rag_and_capture_evidence(

@@ -1,0 +1,74 @@
+{
+  "schema_version": 4,
+  "fixture_set_id": "capability-teaching-v14-development-actor-scope-1-20260821-v51-request-v17-zh",
+  "split": "held_out",
+  "synthetic_only": true,
+  "contains_real_user_data": false,
+  "capability_schema_version": 7,
+  "qualification_contract": {
+    "provider": "opencode-go",
+    "model": "deepseek-v4-flash",
+    "task": "capability-teaching-annotation-agent-v4",
+    "schema_version": 7,
+    "prompt_id": "capability-teaching-annotation-v5-prompt-v51-zh",
+    "prompt_sha256": "f1b9f26114a9dc9bcfc39b0fa279fdae83a490b845ffafb72ee985402b077019",
+    "request_revision": "capability-teaching-request-v17",
+    "privacy_policy": "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2",
+    "budget_profile": "background-unit-concurrency10-8req-5read-navigation-tools-160line-120k-next-request-stop-16384out-0.05usd-schema7"
+  },
+  "cases": [
+    {
+      "case_id": "ct14-d01-scene-key-is-not-actor-key",
+      "coverage": ["ordinary_command", "source_extraction", "behavior_boundary"],
+      "request": {
+        "capability": {
+          "capability_id": "command:meme-disable",
+          "owner": "fixture.meme_manage",
+          "kind": "command",
+          "adapter": "onebot.v11"
+        },
+        "invocations": [
+          {
+            "entry_id": "root",
+            "mode": "anchored",
+            "command_body": "禁用表情",
+            "canonical_usages": ["禁用表情 <表情名>"]
+          }
+        ],
+        "evidence_units": [
+          {
+            "evidence_id": "ev:ct14:d01:runtime",
+            "source_kind": "runtime_capability_facts",
+            "revision": "fixture:ct14:d01:runtime:1",
+            "content": "当前已注册命令‘禁用表情’，必须提供表情名。"
+          },
+          {
+            "evidence_id": "ev:ct14:d01:source",
+            "source_kind": "python_function",
+            "revision": "fixture:ct14:d01:source:1",
+            "content": "async def disable_meme(name, scope, self_id, scene_path):\n    key = f\"{scope}_{self_id}_{scene_path}\"\n    blocked = load_blocked_names(key)\n    blocked.add(name)\n    save_blocked_names(key, blocked)"
+          }
+        ]
+      },
+      "expected": {
+        "knowledge_enabled": true,
+        "entry_ids": ["root"],
+        "required_candidate_claim_kinds": ["name", "summary", "usage", "behavior_boundary"],
+        "required_final_members": {},
+        "required_constraints": [],
+        "maximum_candidate_constraint_count": 0,
+        "forbidden_constraint_kinds": [],
+        "allowed_usage_patterns": ["^禁用表情 <表情名>$"],
+        "required_usage_patterns": ["^禁用表情 <表情名>$"],
+        "allowed_options": [],
+        "required_public_text_groups": [["禁用"], ["表情"], ["会话", "场景"]],
+        "forbidden_public_substrings": [
+          "不影响其他用户",
+          "仅作用于当前用户",
+          "每位用户独立",
+          "当前调用者"
+        ]
+      }
+    }
+  ]
+}

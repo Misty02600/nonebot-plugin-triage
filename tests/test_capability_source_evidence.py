@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nbtriage.capability_analysis import TeachingRole
+from nbtriage.capability_analysis import SemanticConstraintKind, TeachingRole, TeachingScene
 from nbtriage.capability_source_evidence import (
     SourceEvidenceLimits,
     StructuralSymbolKind,
     build_capability_source_evidence,
+    fixed_permission_constraints,
 )
-from nbtriage.framework_semantics import PublicConstraintKind, uninfo_permission_profile
+from nbtriage.framework_semantics import (
+    PublicConstraintKind,
+    nonebot_permission_profile,
+    uninfo_permission_profile,
+)
 
 
 def _write(path: Path, content: str) -> Path:
@@ -228,6 +233,42 @@ def test_uninfo_permission_profile_has_a_stable_revision() -> None:
     current = uninfo_permission_profile()
 
     assert current.revision == uninfo_permission_profile().revision
+
+
+def test_projects_known_permission_expression_as_one_or_group(tmp_path: Path) -> None:
+    source = _write(
+        tmp_path / "plugin.py",
+        """\
+from nonebot.permission import SUPERUSER
+from nonebot_plugin_uninfo import ADMIN, PRIVATE
+
+matcher = on_command("manage", permission=SUPERUSER | PRIVATE | ADMIN())
+""",
+    )
+    pack = build_capability_source_evidence(
+        "example_plugin",
+        source,
+        permission_semantic_profiles=(
+            nonebot_permission_profile(),
+            uninfo_permission_profile(),
+        ),
+    )
+
+    constraints = fixed_permission_constraints(
+        pack.permission_constraints,
+        evidence_id="evidence:structure",
+    )
+
+    assert len(constraints) == 1
+    assert constraints[0].kind is SemanticConstraintKind.PERMISSION
+    assert {
+        (item.kind, item.role, item.scene) for item in constraints[0].permission_alternatives
+    } == {
+        (SemanticConstraintKind.ROLE, TeachingRole.SUPERUSER, None),
+        (SemanticConstraintKind.ROLE, TeachingRole.ADMIN, None),
+        (SemanticConstraintKind.ROLE, TeachingRole.OWNER, None),
+        (SemanticConstraintKind.SCENE, None, TeachingScene.PRIVATE),
+    }
 
 
 def test_tracks_imported_config_binding_without_reading_values(tmp_path: Path) -> None:

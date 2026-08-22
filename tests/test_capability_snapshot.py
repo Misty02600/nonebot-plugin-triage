@@ -25,7 +25,7 @@ from nonebot.matcher import matchers
 from nonebot.permission import SUPERUSER, Permission
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import CommandRule, Rule
-from nonebot_plugin_alconna import on_alconna
+from nonebot_plugin_alconna import At, Image, Text, on_alconna
 from pydantic import BaseModel
 
 from nbtriage.capabilities import (
@@ -229,7 +229,7 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     called = False
     command = Alconna(
         "image",
-        Args["query", str]["tags", MultiVar(str)],
+        Args["query#关键词", str]["tags", MultiVar(str)],
         Option("--limit", Args["count", int]),
         Subcommand("detail", Args["id", str]),
         meta=CommandMeta(
@@ -273,10 +273,13 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     assert _record_values(public_record, "command.header") == ("image",)
     assert _record_values(public_record, "usage") == ("image <query> [--limit <count>]",)
     assert _record_values(public_record, "command.arguments")[0][0]["name"] == "query"
+    assert _record_values(public_record, "command.arguments")[0][0]["notice"] == "关键词"
+    assert _record_values(public_record, "command.arguments")[0][0]["pattern_type"].endswith(".str")
     assert _record_values(public_record, "command.arguments")[0][1]["variadic"] is True
     assert _record_values(public_record, "command.arguments")[0][1]["variadic_flag"] == "+"
     components = _record_values(public_record, "command.components")[0]
     assert {item["name"] for item in components} >= {"--limit", "detail"}
+    assert {item["name"] for item in components}.isdisjoint({"--help", "--comp", "--shortcut"})
     assert called is False
     command_manager.delete(command)
 
@@ -288,7 +291,7 @@ def test_zero_or_more_alconna_argument_is_not_marked_required(
 ) -> None:
     command = Alconna(
         "collect",
-        Args["items", MultiVar(str, "*")],
+        Args["items", MultiVar(At | Image | Text, "*")],
         namespace=f"snapshot-{uuid4().hex}",
     )
     matcher = on_alconna(command)
@@ -304,6 +307,11 @@ def test_zero_or_more_alconna_argument_is_not_marked_required(
     assert argument["required"] is False
     assert argument["variadic"] is True
     assert argument["variadic_flag"] == "*"
+    assert argument["pattern_type"] == (
+        "typing.Union[nonebot_plugin_alconna.uniseg.segment.At,"
+        "nonebot_plugin_alconna.uniseg.segment.Image,"
+        "nonebot_plugin_alconna.uniseg.segment.Text]"
+    )
     command_manager.delete(command)
 
 
@@ -331,15 +339,9 @@ def test_alconna_dispatch_matchers_only_expose_their_own_subcommand_scope(
         )
 
         assert len(snapshot.records) == 3
-        components = [
-            _record_values(record, "command.components") for record in snapshot.records
-        ]
+        components = [_record_values(record, "command.components") for record in snapshot.records]
         assert components.count(()) == 1
-        scoped = {
-            values[0][0]["name"]: values[0][0]
-            for values in components
-            if values
-        }
+        scoped = {values[0][0]["name"]: values[0][0] for values in components if values}
         assert set(scoped) == {"help", "new"}
         assert scoped["help"]["components"] == []
         assert [item["name"] for item in scoped["new"]["arguments"]] == ["uid", "count"]

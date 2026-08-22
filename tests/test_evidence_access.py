@@ -103,9 +103,15 @@ def test_dependency_roots_are_navigation_only_and_python_only(
     localstore = _localstore(tmp_path)
     site_packages = tmp_path / "site-packages"
     site_packages.mkdir()
+    overlay_site_packages = tmp_path / "overlay" / "site-packages"
+    overlay_site_packages.mkdir(parents=True)
     monkeypatch.setattr(
         "nonebot_plugin_triage.evidence_access.sysconfig.get_paths",
         lambda: {"purelib": str(site_packages), "platlib": str(site_packages)},
+    )
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.evidence_access.sys.path",
+        [str(overlay_site_packages)],
     )
 
     profiles = build_evidence_access_profiles(
@@ -121,6 +127,7 @@ def test_dependency_roots_are_navigation_only_and_python_only(
     dependency_root = next(
         root for root in profiles.navigation_profile.roots if root.path == site_packages
     )
+    assert any(root.path == overlay_site_packages for root in profiles.navigation_profile.roots)
     assert path_is_allowed(profiles.navigation_profile, dependency_root, "package/api.py") is True
     assert path_is_allowed(profiles.navigation_profile, dependency_root, "package/api.pyi") is True
     assert path_is_allowed(profiles.navigation_profile, dependency_root, "README.md") is False

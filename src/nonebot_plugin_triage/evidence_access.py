@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import sys
 import sysconfig
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -109,7 +111,8 @@ def build_evidence_access_profiles(
 
     Returns:
         文件工具 profile 不含依赖环境；导航 profile 额外含只允许 Python 源码的
-        ``purelib`` / ``platlib`` 根。
+        ``purelib`` / ``platlib`` 根，以及当前 ``sys.path`` 中生效的
+        ``site-packages`` / ``dist-packages`` overlay 根。
 
     Raises:
         EvidenceAccessError: 插件未加载、源码归属无法证明或任一批准根无法解析。
@@ -147,14 +150,7 @@ def build_evidence_access_profiles(
         policy=policy,
     )
 
-    dependency_roots = tuple(
-        ReadOnlyRoot(
-            name,
-            path,
-            allowed_patterns=_PYTHON_SOURCE_PATTERNS,
-        )
-        for name, path in _dependency_roots()
-    )
+    dependency_roots = python_dependency_navigation_roots()
     navigation_profile = ReadOnlyTaskProfile(
         task_id=f"{task_kind.value}.navigation",
         roots=_deduplicate_roots((*file_roots, *dependency_roots)),
@@ -208,10 +204,17 @@ def _directory(path: Path) -> Path:
 
 def _dependency_roots() -> tuple[tuple[str, Path], ...]:
     paths = sysconfig.get_paths()
-    candidates = (
+    candidates: list[tuple[str | None, str | None]] = [
         ("python_purelib", paths.get("purelib")),
         ("python_platlib", paths.get("platlib")),
-    )
+    ]
+    for raw_path in sys.path:
+        if not isinstance(raw_path, str) or not raw_path:
+            continue
+        unresolved = Path(raw_path)
+        if unresolved.name.casefold() not in {"site-packages", "dist-packages"}:
+            continue
+        candidates.append((None, raw_path))
     accepted: list[tuple[str, Path]] = []
     seen: set[Path] = set()
     for name, raw_path in candidates:
@@ -224,8 +227,21 @@ def _dependency_roots() -> tuple[tuple[str, Path], ...]:
         if not path.is_dir() or path in seen:
             continue
         seen.add(path)
-        accepted.append((name, path))
+        root_id = hashlib.sha256(str(path).encode()).hexdigest()[:12]
+        accepted.append((name or f"python_site_{root_id}", path))
     return tuple(accepted)
+
+
+def python_dependency_navigation_roots() -> tuple[ReadOnlyRoot, ...]:
+    """返回当前解释器中只允许 Python 源码的依赖导航根。"""
+    return tuple(
+        ReadOnlyRoot(
+            name,
+            path,
+            allowed_patterns=_PYTHON_SOURCE_PATTERNS,
+        )
+        for name, path in _dependency_roots()
+    )
 
 
 def _deduplicate_roots(candidates: tuple[ReadOnlyRoot, ...]) -> tuple[ReadOnlyRoot, ...]:
@@ -286,4 +302,5 @@ __all__ = (
     "LocalStoreRootPaths",
     "LocalStoreRootResolver",
     "build_evidence_access_profiles",
+    "python_dependency_navigation_roots",
 )

@@ -31,6 +31,7 @@ from nbtriage.readonly_tools import (
     DefinitionNavigator,
     GoToDefinitionRequest,
     GoToDefinitionResult,
+    ReadOnlyRoot,
 )
 from nonebot_plugin_triage.capability_analysis_adapter import (
     AnalysisSourcePolicy,
@@ -59,9 +60,28 @@ def _loaded_module(
     return module
 
 
+def _loaded_external_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+) -> tuple[str, ReadOnlyRoot]:
+    package_name = f"analysis_dependency_{uuid4().hex}"
+    dependency_root = tmp_path / "site-packages"
+    package_root = dependency_root / package_name
+    package_root.mkdir(parents=True)
+    (package_root / "__init__.py").write_text(source, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(dependency_root))
+    return package_name, ReadOnlyRoot(
+        "python_purelib",
+        dependency_root,
+        allowed_patterns=("*.py", "*.pyi", "**/*.py", "**/*.pyi"),
+    )
+
+
 def _record(
     module_name: str,
     *,
+    kind: str = "command",
     capability_id: str = "capability:test",
     handlers: list[dict[str, object]],
     config_references: list[dict[str, object]],
@@ -163,7 +183,7 @@ def _record(
     return CapabilityRecord(
         capability_id=capability_id,
         owner=owner or module_name,
-        kind="command",
+        kind=kind,
         disclosure=disclosure,
         state=RecordState.CANDIDATE,
         claims=tuple(claims),
@@ -345,7 +365,7 @@ async def handle_search():
     }
     assert all(str(tmp_path) not in (unit.locator or "") for unit in request.evidence_units)
     assert all(
-        unit.locator and unit.locator.startswith(module.__name__)
+        unit.locator and unit.locator.startswith("target_plugin/")
         for unit in request.evidence_units
         if unit.source_kind == "python_function"
     )
@@ -470,6 +490,137 @@ async def handle():
     assert all("depth_four" not in item for item in functions)
 
 
+def test_initial_source_slices_preload_only_direct_external_function(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_name, dependency_root = _loaded_external_dependency(
+        tmp_path,
+        monkeypatch,
+        """\
+def nested(value: str) -> str:
+    return value.lower()
+
+def search_items(value: str) -> list[str]:
+    return [nested(value)]
+""",
+    )
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        f"""\
+from {package_name} import search_items
+
+def depth_three():
+    return search_items("query")
+
+def depth_two():
+    return depth_three()
+
+def depth_one():
+    return depth_two()
+
+async def handle():
+    return depth_one()
+""",
+    )
+    dependency_module = sys.modules.pop(package_name)
+    monkeypatch.setitem(sys.modules, package_name, dependency_module)
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_analysis_adapter.python_dependency_navigation_roots",
+        lambda: (dependency_root,),
+    )
+
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle", 12)],
+            config_references=[],
+        ),
+        ConfigValuePolicy(),
+    )
+
+    dependency_functions = tuple(
+        item for item in request.evidence_units if item.source_kind == "python_dependency_function"
+    )
+    assert len(dependency_functions) == 1
+    assert dependency_functions[0].content.startswith("def search_items(")
+    assert dependency_functions[0].locator == (
+        f"python_purelib/{package_name}/__init__.py:{package_name}.search_items:4"
+    )
+    assert all("def nested(" not in item.content for item in request.evidence_units)
+    assert all(
+        item.source_kind != "external_dependency_navigation" for item in request.evidence_units
+    )
+
+
+def test_initial_source_slices_preserve_navigation_target_for_oversized_external_function(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_name, dependency_root = _loaded_external_dependency(
+        tmp_path,
+        monkeypatch,
+        "def search_items(value: str) -> list[str]:\n"
+        f'    payload = "{"x" * 8_100}"\n'
+        "    return [value, payload]\n",
+    )
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        f"""\
+from {package_name} import search_items
+
+async def handle():
+    return search_items("query")
+""",
+    )
+    dependency_module = sys.modules.pop(package_name)
+    monkeypatch.setitem(sys.modules, package_name, dependency_module)
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_analysis_adapter.python_dependency_navigation_roots",
+        lambda: (dependency_root,),
+    )
+
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle", 3)],
+            config_references=[],
+        ),
+        ConfigValuePolicy(),
+    )
+
+    assert all(item.source_kind != "python_dependency_function" for item in request.evidence_units)
+    target = next(
+        item
+        for item in request.evidence_units
+        if item.source_kind == "external_dependency_navigation"
+    )
+    payload = json.loads(target.content)
+    assert payload == {
+        "call_site": {
+            "column": len("    return ") + 1,
+            "line": 4,
+            "relative_path": module.__file__.replace("\\", "/").rsplit("/", 1)[-1],
+            "root_name": "target_plugin",
+            "source_revision": hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest(),
+        },
+        "implementation_source_available": True,
+        "navigation_only": True,
+        "read_target": {
+            "line": 1,
+            "relative_path": f"{package_name}/__init__.py",
+            "root_name": "python_purelib",
+            "source_revision": target.revision.removeprefix("sha256:"),
+            "tool": "python_purelib_read_file",
+        },
+        "resolution": "external_dependency",
+        "scope": "external_dependency_navigation",
+        "symbol": f"{package_name}.search_items",
+    }
+
+
 def test_source_slice_cache_reuses_navigation_and_invalidates_on_revision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -591,6 +742,68 @@ second = create_handler("亲亲")
     ]
 
 
+def test_parameterized_family_preloads_unique_static_member_callables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+class Command:
+    keyword: str
+    func: object
+
+    def __init__(self, keyword, func):
+        self.keyword = keyword
+        self.func = func
+
+def rotate(value):
+    return f"rotate:{value}"
+
+def resize(value):
+    return f"resize:{value}"
+
+def create_handler(command):
+    async def handler():
+        return command.func("payload")
+    return handler
+
+commands = [Command("旋转", rotate), Command("缩放", resize)]
+handlers = [create_handler(command) for command in commands]
+first = handlers[0]
+second = handlers[1]
+""",
+    )
+    reference = _handler_reference(module, "first", 15)
+    reference["closure_freevars"] = ["command"]
+    records = (
+        _record(
+            module.__name__,
+            capability_id="command:rotate",
+            handlers=[reference],
+            config_references=[],
+            command_header="旋转",
+        ),
+        _record(
+            module.__name__,
+            capability_id="command:resize",
+            handlers=[reference],
+            config_references=[],
+            command_header="缩放",
+        ),
+    )
+
+    request = build_parameterized_family_analysis_request(records, ConfigValuePolicy())
+
+    callables = {
+        item.content.splitlines()[0]
+        for item in request.evidence_units
+        if item.source_kind == "python_family_callable"
+    }
+    assert callables == {"def resize(value):", "def rotate(value):"}
+
+
 def test_parameterized_family_projects_one_shared_custom_permission_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -710,8 +923,11 @@ second_matcher = on_command("亲亲", permission=ADMIN(), handlers=[second])
 
     assert request.gate_candidates == ()
     assert len(request.fixed_constraints) == 1
-    assert request.fixed_constraints[0].role is TeachingRole.ADMIN
-    assert request.fixed_constraints[0].statement == "仅群管理员或群主可用"
+    assert request.fixed_constraints[0].kind is SemanticConstraintKind.PERMISSION
+    assert {item.role for item in request.fixed_constraints[0].permission_alternatives} == {
+        TeachingRole.ADMIN,
+        TeachingRole.OWNER,
+    }
     member_evidence = next(
         item for item in request.evidence_units if item.source_kind == "runtime_family_members"
     )
@@ -1009,8 +1225,8 @@ matcher = on_alconna("仓库", handlers=[handle])
         "仓库 详情",
     ]
     assert [item.canonical_usages for item in request.invocations] == [
-        ("仓库 搜索 <主题> [--quiet|-q]",),
-        ("仓库 详情 <编号>",),
+        ("仓库 搜索 <slot:0> [--quiet|-q]",),
+        ("仓库 详情 <slot:0>",),
     ]
 
 
@@ -1101,7 +1317,7 @@ matcher = on_alconna("标签", handlers=[handle_tags])
         ConfigValuePolicy(),
     )
 
-    assert request.invocations[0].canonical_usages == ("标签 <词语>... [备注]...",)
+    assert request.invocations[0].canonical_usages == ("标签 <slot:0>... [slot:1]...",)
 
 
 def test_same_named_handlers_are_bound_to_their_exact_matcher_source(
@@ -1326,6 +1542,19 @@ second = create_handler("亲亲")
     assert handler.content.startswith("async def handler():")
     assert len(request.family_members) == 2
     assert any(item.source_kind == "runtime_family_members" for item in request.evidence_units)
+    assert not any(item.source_kind == "runtime_family_shapes" for item in request.evidence_units)
+    member_documents = [
+        json.loads(evidence.content)
+        for evidence in request.evidence_units
+        if evidence.source_kind == "runtime_family_members"
+    ]
+    assert all(document["format"] == "columns-v2" for document in member_documents)
+    assert all(document["member_count"] == 2 for document in member_documents)
+    assert {
+        document["syntax_codes"][row[2]]
+        for document in member_documents
+        for row in document["rows"]
+    } == {"anchor_only"}
 
 
 def test_parameterized_family_keeps_different_member_argument_shapes(
@@ -1343,6 +1572,7 @@ def create_handler(command):
 
 first = create_handler("摸摸")
 second = create_handler("文字图")
+third = create_handler("贴贴")
 """,
     )
     reference = _handler_reference(module, "first", 2)
@@ -1350,6 +1580,7 @@ second = create_handler("文字图")
     records = (
         _record(
             module.__name__,
+            kind="alconna",
             capability_id="command:touch",
             handlers=[reference],
             config_references=[],
@@ -1366,6 +1597,7 @@ second = create_handler("文字图")
         ),
         _record(
             module.__name__,
+            kind="alconna",
             capability_id="command:text-image",
             handlers=[reference],
             config_references=[],
@@ -1381,6 +1613,23 @@ second = create_handler("文字图")
                 }
             ],
         ),
+        _record(
+            module.__name__,
+            kind="alconna",
+            capability_id="command:pat",
+            handlers=[reference],
+            config_references=[],
+            command_header="贴贴",
+            command_arguments=[
+                {
+                    "name": "图片",
+                    "required": True,
+                    "hidden": False,
+                    "variadic": False,
+                    "has_default": False,
+                }
+            ],
+        ),
     )
 
     request = build_parameterized_family_analysis_request(records, ConfigValuePolicy())
@@ -1390,30 +1639,40 @@ second = create_handler("文字图")
         for member in request.family_members
     }
     assert usages == {
-        "command:text-image": ("文字图 [文字]...",),
-        "command:touch": ("摸摸 <图片>",),
+        "command:pat": ("贴贴 <slot:0>",),
+        "command:text-image": ("文字图 [slot:0]...",),
+        "command:touch": ("摸摸 <slot:0>",),
     }
-    member_payloads = {
-        member["capability_id"]: member
+    member_documents = [
+        json.loads(evidence.content)
         for evidence in request.evidence_units
         if evidence.source_kind == "runtime_family_members"
-        for member in json.loads(evidence.content)["members"]
+    ]
+    member_payloads = {
+        row[0][0][0]: row for document in member_documents for row in document["rows"]
     }
-    assert (
-        next(
-            claim["value"]
-            for claim in member_payloads["command:touch"]["claims"]
-            if claim["field"] == "command.arguments"
-        )[0]["name"]
-        == "图片"
+    shape_payloads = {
+        shape["index"]: shape
+        for evidence in request.evidence_units
+        if evidence.source_kind == "runtime_family_shapes"
+        for shape in json.loads(evidence.content)["shapes"]
+    }
+    touch_shape = shape_payloads[member_payloads["摸摸"][1]]
+    text_shape = shape_payloads[member_payloads["文字图"][1]]
+    assert member_payloads["摸摸"][1] == member_payloads["贴贴"][1]
+    assert len(shape_payloads) == 2
+    assert touch_shape["arguments"][0]["name"] == "图片"
+    assert text_shape["arguments"][0]["variadic_flag"] == "*"
+    assert touch_shape["usage_templates"] == ["{command} <slot:0>"]
+    assert text_shape["usage_templates"] == ["{command} [slot:0]..."]
+    assert all(
+        document["columns"] == ["invocations", "shape", "syntax", "hints"]
+        for document in member_documents
     )
-    assert (
-        next(
-            claim["value"]
-            for claim in member_payloads["command:text-image"]["claims"]
-            if claim["field"] == "command.arguments"
-        )[0]["variadic_flag"]
-        == "*"
+    assert all(
+        document["syntax_codes"][row[2]] == "parser_exact"
+        for document in member_documents
+        for row in document["rows"]
     )
     assert request.invocations == (
         CapabilityInvocationTarget("family", CapabilityInvocationMode.COMPLETE),
@@ -1621,6 +1880,7 @@ matcher = on_command("secure", permission=ADMIN(), handlers=[handle])
             },
             "symbol": "ADMIN",
             "teaching_role": "admin",
+            "teaching_scene": None,
             "source": {
                 "digest": payload["permission_constraints"][0]["source"]["digest"],
                 "end_line": 9,
@@ -1635,10 +1895,112 @@ matcher = on_command("secure", permission=ADMIN(), handlers=[handle])
     assert request.gate_candidates == ()
     assert len(request.fixed_constraints) == 1
     fixed = request.fixed_constraints[0]
-    assert fixed.kind is SemanticConstraintKind.ROLE
-    assert fixed.role is TeachingRole.ADMIN
-    assert fixed.statement == "仅群管理员或群主可用"
+    assert fixed.kind is SemanticConstraintKind.PERMISSION
+    assert {item.role for item in fixed.permission_alternatives} == {
+        TeachingRole.ADMIN,
+        TeachingRole.OWNER,
+    }
     assert fixed.evidence_ids == (structure.evidence_id,)
+
+
+def test_includes_uninfo_session_field_semantics_for_typed_handler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+class Uninfo:
+    pass
+
+async def handle(session: Uninfo):
+    return f"{session.scope}_{session.self_id}_{session.scene_path}"
+""",
+    )
+
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle", 4)],
+            config_references=[],
+            command_header="会话设置",
+        ),
+        ConfigValuePolicy(),
+    )
+
+    semantics = [
+        item for item in request.evidence_units if item.source_kind == "framework_semantics"
+    ]
+    assert len(semantics) == 1
+    payload = json.loads(semantics[0].content)
+    statements = {item["symbol"]: item["statement"] for item in payload["facts"]}
+    assert statements["Session.self_id"] == "当前机器人账号 ID，不是触发事件的用户或调用者 ID。"
+    assert "群聊中通常按群场景共享" in statements["Session.scene_path"]
+    assert "当前事件的用户 ID" in statements["Session.user.id"]
+
+
+def test_parameter_dependency_provider_becomes_initial_source_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_name = f"analysis_package_{uuid4().hex}"
+    package_dir = tmp_path / package_name
+    package_dir.mkdir()
+    provider_source = """\
+from typing import Annotated
+
+class Depends:
+    def __init__(self, dependency):
+        self.dependency = dependency
+
+class Uninfo:
+    pass
+
+def get_user_id(uninfo: Uninfo):
+    return f"{uninfo.scope}_{uninfo.self_id}_{uninfo.scene_path}"
+
+UserId = Annotated[str, Depends(get_user_id)]
+"""
+    provider_path = package_dir / "dependencies.py"
+    provider_path.write_text(provider_source, encoding="utf-8")
+    provider_module = ModuleType(f"{package_name}.dependencies")
+    provider_module.__file__ = str(provider_path)
+    provider_module.__package__ = package_name
+    exec(compile(provider_source, str(provider_path), "exec"), provider_module.__dict__)
+    monkeypatch.setitem(sys.modules, provider_module.__name__, provider_module)
+
+    package_source = """\
+from .dependencies import UserId
+
+async def handle(user_id: UserId):
+    return user_id
+"""
+    package_path = package_dir / "__init__.py"
+    package_path.write_text(package_source, encoding="utf-8")
+    package = ModuleType(package_name)
+    package.__file__ = str(package_path)
+    package.__package__ = package_name
+    package.__path__ = [str(package_dir)]  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, package_name, package)
+    exec(compile(package_source, str(package_path), "exec"), package.__dict__)
+
+    request = build_capability_analysis_request(
+        _record(
+            package_name,
+            handlers=[_handler_reference(package, "handle", 3)],
+            config_references=[],
+            command_header="会话设置",
+        ),
+        ConfigValuePolicy(),
+    )
+
+    assert any(
+        item.source_kind == "python_function"
+        and item.content.startswith("def get_user_id(uninfo: Uninfo):")
+        for item in request.evidence_units
+    )
+    assert any(item.source_kind == "framework_semantics" for item in request.evidence_units)
 
 
 def test_unknown_registration_permission_becomes_gate_candidate(

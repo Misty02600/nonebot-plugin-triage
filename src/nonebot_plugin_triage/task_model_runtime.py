@@ -13,6 +13,7 @@ from pydantic_ai.settings import ModelSettings
 from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_BASE_URL,
     OPENCODE_GO_SEMANTIC_MODELS,
+    OPENCODE_GO_THINKING_SETTINGS_REVISION,
 )
 from nbtriage.task_model_settings import task_model_settings
 from nonebot_plugin_triage.config import NBTriageConfig
@@ -79,6 +80,7 @@ def create_task_model_binding(
                 model,
                 api_family="chat-completions",
                 model_settings=opencode_go_model_settings(),
+                settings_revision=OPENCODE_GO_THINKING_SETTINGS_REVISION,
             )
 
         if config.nbtriage_model_base_url is None:

@@ -732,9 +732,18 @@ def build_parser() -> argparse.ArgumentParser:
     capability_teaching_parser.add_argument("--host-pyproject", type=Path, required=True)
     capability_teaching_parser.add_argument(
         "--plugin",
-        action="append",
         required=True,
-        help="Exact loaded plugin module to analyze; repeat for multiple plugins.",
+        help="Exact plugin module to load and refresh.",
+    )
+    capability_teaching_parser.add_argument(
+        "--capture-model-output",
+        type=Path,
+        help="Write complete model responses and follow-up tool messages to a local JSON file.",
+    )
+    capability_teaching_parser.add_argument(
+        "--unbounded",
+        action="store_true",
+        help="Remove project-side request, tool, token, output, and cost limits for diagnostics.",
     )
     return parser
 
@@ -816,7 +825,9 @@ def _run_analyze_capability_teaching(args: argparse.Namespace) -> int:
     try:
         result = analyze_capability_teaching(
             args.host_pyproject,
-            tuple(args.plugin),
+            args.plugin,
+            diagnostic_output=args.capture_model_output,
+            unbounded=args.unbounded,
         )
     except CapabilityTeachingMaintenanceError as error:
         print(f"capability teaching analysis failed: {error}", file=sys.stderr)

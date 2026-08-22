@@ -7,7 +7,7 @@ import keyword
 import sys
 import textwrap
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -40,8 +40,11 @@ from nbtriage.capability_source_evidence import (
     fixed_permission_constraints,
 )
 from nbtriage.framework_semantics import (
+    FrameworkFieldSemanticProfile,
     PermissionSemanticProfile,
+    nonebot_permission_profile,
     uninfo_permission_profile,
+    uninfo_session_field_profile,
 )
 from nbtriage.readonly_tools import (
     DefinitionLocation,
@@ -55,6 +58,7 @@ from nbtriage.readonly_tools import (
     teaching_read_only_policy,
 )
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
+from nonebot_plugin_triage.evidence_access import python_dependency_navigation_roots
 from nonebot_plugin_triage.runtime_config_evidence import (
     RuntimeConfigEvidenceReader,
     RuntimeConfigOmission,
@@ -82,7 +86,8 @@ class CapabilitySourceSliceCache:
 
     def __init__(self) -> None:
         self._functions: dict[_SourceSliceCacheKey, _FunctionSlice] = {}
-        self._definitions: dict[_CallSite, DefinitionLocation | None] = {}
+        self._definitions: dict[_DefinitionCacheKey, DefinitionLocation | None] = {}
+        self._annotation_dependencies: dict[_DefinitionCacheKey, _CallSite] = {}
 
 
 class AnalysisSourcePolicy(StrEnum):
@@ -90,6 +95,11 @@ class AnalysisSourcePolicy(StrEnum):
 
     STANDARD = "standard"
     AUTHORIZED_LOCAL_RESTRICTED_DIAGNOSTIC = "authorized_local_restricted_diagnostic"
+
+
+class _ExternalDefinitionMode(StrEnum):
+    SOURCE = "source"
+    STUB = "stub"
 
 
 @dataclass(frozen=True)
@@ -134,7 +144,14 @@ class _CallSite:
 
 
 @dataclass(frozen=True)
+class _ParameterDependency:
+    call: _CallSite
+    is_alias: bool
+
+
+@dataclass(frozen=True)
 class _FunctionSlice:
+    root_name: str
     relative_path: str
     name: str
     full_name: str | None
@@ -142,14 +159,16 @@ class _FunctionSlice:
     content: str
     source_revision: str
     calls: tuple[_CallSite, ...]
+    parameter_dependencies: tuple[_ParameterDependency, ...]
 
     @property
-    def identity(self) -> tuple[str, int]:
-        return self.relative_path, self.line
+    def identity(self) -> tuple[str, str, int]:
+        return self.root_name, self.relative_path, self.line
 
 
 @dataclass(frozen=True)
 class _SourceSliceCacheKey:
+    root_name: str
     relative_path: str
     line: int
     column: int
@@ -158,9 +177,21 @@ class _SourceSliceCacheKey:
 
 
 @dataclass(frozen=True)
+class _DefinitionCacheKey:
+    project_root: Path
+    navigation_roots: tuple[tuple[str, Path], ...]
+    call: _CallSite
+
+
+@dataclass(frozen=True)
 class _SourceSliceNavigation:
     navigator: DefinitionNavigator
     root: ReadOnlyRoot
+    roots: tuple[ReadOnlyRoot, ...]
+    source_root: tuple[Path, bool]
+
+    def approved_root(self, name: str) -> ReadOnlyRoot | None:
+        return next((root for root in self.roots if root.name == name), None)
 
 
 @dataclass(frozen=True)
@@ -342,7 +373,6 @@ def build_capability_analysis_request(
         handler_sources,
     )
     selected_registrations = _selected_registrations(record, source_pack, handler_sources)
-    registration_sources = {item.source for item in selected_registrations}
     gate_symbols = _unresolved_gate_symbols(
         source_pack,
         selected_registrations,
@@ -366,7 +396,11 @@ def build_capability_analysis_request(
             break
 
         reference = target.reference
-        locator = _module_locator(reference.module, reference.function, target.source.line)
+        locator = _target_plugin_locator(
+            target.source.locator,
+            reference.function,
+            target.source.line,
+        )
         symbol = reference.qualname or reference.function
         source_position = reference.code_firstlineno or target.source.line
         evidence_units.append(
@@ -405,6 +439,7 @@ def build_capability_analysis_request(
         source_chars=source_chars,
         cache=source_slice_cache,
     )
+    _append_framework_semantics_evidence(evidence_units)
 
     projections, unknown = _project_referenced_config(
         config_references,
@@ -427,10 +462,10 @@ def build_capability_analysis_request(
         config_projections=projections,
         unknown_config=unknown,
         fixed_constraints=fixed_permission_constraints(
-            (
-                item
-                for item in source_pack.permission_constraints
-                if item.owner_source in registration_sources
+            _fixed_permission_facts(
+                source_pack,
+                selected_registrations,
+                gate_symbols,
             ),
             evidence_id=structure_evidence.evidence_id,
         ),
@@ -615,13 +650,29 @@ def build_parameterized_family_analysis_request(
                 source_kind="python_function",
                 content=target.content,
                 revision=reference.source_revision,
-                locator=_module_locator(reference.module, symbol, source_position),
+                locator=_target_plugin_locator(
+                    target.source.locator,
+                    symbol,
+                    source_position,
+                ),
             )
         )
         accepted_source_spans.add(source_key)
         accepted_resolved_targets.append(target)
         accepted_targets.add((reference.module, reference.function))
         source_chars += len(target.content)
+
+    callable_units = _family_static_callable_evidence(
+        parsed,
+        handler,
+        analysis_unit_id=identity.analysis_unit_id,
+        handler_qualname=identity.qualname,
+        closure_freevars=handler_reference.closure_freevars,
+    )
+    callable_chars = sum(len(item.content) for item in callable_units)
+    if source_chars + callable_chars <= _MAX_INITIAL_SOURCE_CHARS:
+        evidence_units.extend(callable_units)
+        source_chars += callable_chars
 
     source_file_revisions = {item.source.locator: item.source.digest for item in source_pack.files}
     gate_names = frozenset(item.symbol.rpartition(".")[2] for item in gate_projection.gate_symbols)
@@ -649,6 +700,7 @@ def build_parameterized_family_analysis_request(
         source_chars=source_chars,
         cache=active_source_slice_cache,
     )
+    _append_framework_semantics_evidence(evidence_units)
     projections, unknown = _project_referenced_config(
         config_references,
         accepted_targets=accepted_targets,
@@ -681,56 +733,122 @@ def _family_member_invocations(
     pack: CapabilitySourceEvidencePack,
     handler_sources: tuple[SourceSpan, ...],
 ) -> tuple[tuple[CapabilityFamilyMember, ...], tuple[CapabilityEvidenceUnit, ...]]:
-    projected: list[tuple[str, tuple[CapabilityInvocationTarget, ...], dict[str, object]]] = []
+    projected: list[
+        tuple[
+            str,
+            tuple[CapabilityInvocationTarget, ...],
+            str | None,
+            str,
+            list[list[object]],
+        ]
+    ] = []
+    shapes: dict[str, dict[str, object]] = {}
     for record in sorted(records, key=lambda item: item.capability_id):
         invocations = _invocation_targets(record, pack, handler_sources)
-        payload = {
-            "capability_id": record.capability_id,
-            "invocations": [_invocation_payload(item) for item in invocations],
-            "claims": _runtime_fact_claims(record),
-            "constraints": [
-                {
-                    "kind": item.kind,
-                    "operation": item.operation,
-                    "evaluability": item.evaluability.value,
-                    "payload": item.payload,
-                }
-                for item in record.constraints
-            ],
-        }
-        projected.append((record.capability_id, invocations, payload))
-
-    chunks: list[list[tuple[str, tuple[CapabilityInvocationTarget, ...], dict[str, object]]]] = []
-    current: list[tuple[str, tuple[CapabilityInvocationTarget, ...], dict[str, object]]] = []
-    for item in projected:
-        candidate = [*current, item]
-        try:
-            _bounded_evidence_json(
-                {
-                    "scope": "current_runtime_family_members",
-                    "members": [row[2] for row in candidate],
-                },
-                "parameterized family member facts",
+        shape = _family_parser_shape(record, invocations)
+        shape_id: str | None = None
+        if shape is not None:
+            shape_content = json.dumps(
+                shape,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
             )
-        except CapabilityAnalysisAdapterError:
-            if not current:
-                raise
-            chunks.append(current)
-            current = [item]
-            _bounded_evidence_json(
-                {"scope": "current_runtime_family_members", "members": [item[2]]},
-                "parameterized family member facts",
+            shape_id = f"shape:{hashlib.sha256(shape_content.encode('utf-8')).hexdigest()[:24]}"
+            shapes.setdefault(shape_id, shape)
+        projected.append(
+            (
+                record.capability_id,
+                invocations,
+                shape_id,
+                _family_syntax_fidelity(record),
+                _family_member_hints(record),
             )
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
+        )
 
     evidence_units: list[CapabilityEvidenceUnit] = []
-    evidence_by_member: dict[str, str] = {}
-    for chunk in chunks:
+    shape_evidence_ids: dict[str, str] = {}
+    indexed_shapes = tuple(
+        (shape_id, {"index": index, **payload})
+        for index, (shape_id, payload) in enumerate(sorted(shapes.items()))
+    )
+    shape_indexes = {shape_id: payload["index"] for shape_id, payload in indexed_shapes}
+    shape_envelope = {
+        "scope": "current_runtime_family_shapes",
+        "format": "indexed-v2",
+        "shape_count": len(indexed_shapes),
+    }
+    shape_offset = 0
+    for chunk in _family_manifest_chunks(
+        indexed_shapes,
+        envelope=shape_envelope,
+        collection_key="shapes",
+        label="parameterized family parser shapes",
+    ):
         content = _bounded_evidence_json(
-            {"scope": "current_runtime_family_members", "members": [item[2] for item in chunk]},
+            {
+                **shape_envelope,
+                "row_offset": shape_offset,
+                "shapes": [item[1] for item in chunk],
+            },
+            "parameterized family parser shapes",
+        )
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        evidence_id = f"evidence:family-shapes:{digest}"
+        evidence_units.append(
+            CapabilityEvidenceUnit(
+                evidence_id=evidence_id,
+                source_kind="runtime_family_shapes",
+                content=content,
+                revision=f"sha256:{digest}",
+            )
+        )
+        shape_evidence_ids.update((item[0], evidence_id) for item in chunk)
+        shape_offset += len(chunk)
+
+    evidence_by_member: dict[str, str] = {}
+    syntax_codes = {
+        "a": "anchor_only",
+        "l": "literal_exact",
+        "o": "open_tail",
+        "p": "parser_exact",
+    }
+    syntax_code_by_value = {value: key for key, value in syntax_codes.items()}
+    member_rows = tuple(
+        (
+            capability_id,
+            [
+                [[invocation.command_body, list(invocation.aliases)] for invocation in invocations],
+                shape_indexes.get(shape_id) if shape_id is not None else None,
+                syntax_code_by_value[syntax_fidelity],
+                hints,
+            ],
+        )
+        for capability_id, invocations, shape_id, syntax_fidelity, hints in projected
+    )
+    member_envelope = {
+        "scope": "current_runtime_family_members",
+        "format": "columns-v2",
+        "columns": ["invocations", "shape", "syntax", "hints"],
+        "invocation_columns": ["command", "aliases"],
+        "hint_columns": ["field", "value", "basis"],
+        "syntax_codes": syntax_codes,
+        "member_count": len(member_rows),
+    }
+    member_offset = 0
+    for chunk in _family_manifest_chunks(
+        member_rows,
+        envelope=member_envelope,
+        collection_key="rows",
+        label="parameterized family member facts",
+    ):
+        content = _bounded_evidence_json(
+            {
+                **member_envelope,
+                "row_offset": member_offset,
+                "rows": [item[1] for item in chunk],
+            },
             "parameterized family member facts",
         )
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -744,16 +862,150 @@ def _family_member_invocations(
             )
         )
         evidence_by_member.update((item[0], evidence_id) for item in chunk)
+        member_offset += len(chunk)
 
     members = tuple(
         CapabilityFamilyMember(
             capability_id=capability_id,
             invocations=invocations,
-            evidence_ids=(evidence_by_member[capability_id],),
+            evidence_ids=tuple(
+                dict.fromkeys(
+                    (
+                        evidence_by_member[capability_id],
+                        *((shape_evidence_ids[shape_id],) if shape_id is not None else ()),
+                    )
+                )
+            ),
         )
-        for capability_id, invocations, _payload in projected
+        for capability_id, invocations, shape_id, _syntax_fidelity, _hints in projected
     )
     return members, tuple(evidence_units)
+
+
+def _family_manifest_chunks(
+    rows: tuple[tuple[str, object], ...],
+    *,
+    envelope: Mapping[str, object],
+    collection_key: str,
+    label: str,
+) -> tuple[tuple[tuple[str, object], ...], ...]:
+    chunks: list[tuple[tuple[str, object], ...]] = []
+    current: tuple[tuple[str, object], ...] = ()
+    for item in rows:
+        candidate = (*current, item)
+        try:
+            _bounded_evidence_json(
+                {
+                    **envelope,
+                    "row_offset": len(rows),
+                    collection_key: [row[1] for row in candidate],
+                },
+                label,
+            )
+        except CapabilityAnalysisAdapterError:
+            if not current:
+                raise
+            chunks.append(current)
+            current = (item,)
+            _bounded_evidence_json(
+                {
+                    **envelope,
+                    "row_offset": len(rows),
+                    collection_key: [item[1]],
+                },
+                label,
+            )
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return tuple(chunks)
+
+
+def _family_parser_shape(
+    record: CapabilityRecord,
+    invocations: tuple[CapabilityInvocationTarget, ...],
+) -> dict[str, object] | None:
+    if record.kind != "alconna":
+        return None
+    arguments = _single_family_fact(record, "command.arguments", default=[])
+    components = _single_family_fact(record, "command.components", default=[])
+    return {
+        "parser": "alconna",
+        "arguments": arguments,
+        "components": components,
+        "usage_templates": [
+            _family_usage_template(invocation, usage)
+            for invocation in invocations
+            for usage in invocation.canonical_usages
+        ],
+    }
+
+
+def _single_family_fact(
+    record: CapabilityRecord,
+    field: str,
+    *,
+    default: object,
+) -> object:
+    values = _claim_values(record, field, evidence_kind="matcher_source")
+    if not values:
+        return default
+    if len(values) != 1:
+        raise CapabilityAnalysisAdapterError(f"family member has conflicting {field}")
+    return values[0]
+
+
+def _family_usage_template(invocation: CapabilityInvocationTarget, usage: str) -> str:
+    command_body = invocation.command_body
+    if command_body is None:
+        return usage
+    prefix = f"@bot {command_body}" if invocation.requires_mention else command_body
+    if usage == prefix:
+        return "@bot {command}" if invocation.requires_mention else "{command}"
+    if usage.startswith(f"{prefix} "):
+        command = "@bot {command}" if invocation.requires_mention else "{command}"
+        return f"{command}{usage[len(prefix) :]}"
+    return usage
+
+
+def _family_syntax_fidelity(record: CapabilityRecord) -> str:
+    if record.kind == "alconna":
+        return "parser_exact"
+    factories = {
+        claim.value
+        for claim in record.claims
+        if claim.field == "trigger.factory"
+        and claim.basis is ClaimBasis.OBSERVED
+        and isinstance(claim.value, str)
+    }
+    if factories == {"on_fullmatch"}:
+        return "literal_exact"
+    if factories == {"on_startswith"}:
+        return "open_tail"
+    return "anchor_only"
+
+
+def _family_member_hints(record: CapabilityRecord) -> list[list[object]]:
+    fields = {
+        "command.prefixes",
+        "command.separators",
+        "command.force_whitespace",
+        "trigger.factory",
+        "trigger.entries",
+        "description",
+        "usage",
+        "example",
+    }
+    return [
+        [claim.field, claim.value, claim.basis.value]
+        for claim in sorted(
+            (claim for claim in record.claims if claim.field in fields),
+            key=lambda item: _canonical_json_sort_key(
+                {"field": item.field, "value": item.value, "basis": item.basis.value}
+            ),
+        )
+    ]
 
 
 def _invocation_payload(item: CapabilityInvocationTarget) -> dict[str, object]:
@@ -800,11 +1052,6 @@ def _family_gate_projection(
                 "parameterized family registration gates are opaque"
             )
         registration_sources = {item.source for item in registrations}
-        facts = tuple(
-            item
-            for item in pack.permission_constraints
-            if item.owner_source in registration_sources
-        )
         selected_gate_symbols = tuple(
             item for item in pack.symbols if item.owner_source in registration_sources
         )
@@ -825,6 +1072,7 @@ def _family_gate_projection(
                 and item.symbol.rpartition(".")[2] == "to_me"
             )
         )
+        facts = _fixed_permission_facts(pack, registrations, symbols)
         fixed_contract = tuple(
             sorted(
                 {
@@ -1184,6 +1432,137 @@ def _invocation_targets(
     )
 
 
+def _family_static_callable_evidence(
+    parsed: _ParsedModule,
+    handler: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    analysis_unit_id: str,
+    handler_qualname: str,
+    closure_freevars: tuple[str, ...],
+) -> tuple[CapabilityEvidenceUnit, ...]:
+    factory_name = handler_qualname.partition(".<locals>.")[0]
+    if not factory_name.isidentifier():
+        return ()
+    callable_fields = {
+        (node.value.id, node.attr)
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in closure_freevars
+    }
+    if not callable_fields:
+        return ()
+
+    class_fields: dict[str, tuple[str, ...]] = {}
+    for node in parsed.tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        fields: list[str] = []
+        for statement in node.body:
+            if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                fields.append(statement.target.id)
+            elif isinstance(statement, ast.Assign):
+                fields.extend(
+                    target.id for target in statement.targets if isinstance(target, ast.Name)
+                )
+        if fields:
+            class_fields[node.name] = tuple(fields)
+
+    table_values: dict[str, ast.AST] = {}
+    for node in parsed.tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    table_values[target.id] = node.value
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.value is not None
+        ):
+            table_values[node.target.id] = node.value
+
+    selected_tables = {
+        table_name
+        for table_name in table_values
+        if _factory_consumes_static_table(parsed.tree, factory_name, table_name)
+    }
+    function_names: set[str] = set()
+    callable_attribute_names = {attribute for _binding, attribute in callable_fields}
+    for table_name in selected_tables:
+        value = table_values[table_name]
+        for call in (node for node in ast.walk(value) if isinstance(node, ast.Call)):
+            constructor = call.func.id if isinstance(call.func, ast.Name) else None
+            field_names = class_fields.get(constructor or "", ())
+            for attribute in callable_attribute_names:
+                expression = next(
+                    (keyword.value for keyword in call.keywords if keyword.arg == attribute),
+                    None,
+                )
+                if expression is None and attribute in field_names:
+                    index = field_names.index(attribute)
+                    expression = call.args[index] if index < len(call.args) else None
+                if (
+                    isinstance(expression, ast.Name)
+                    and len(parsed.functions.get(expression.id, ())) == 1
+                ):
+                    function_names.add(expression.id)
+
+    units: list[CapabilityEvidenceUnit] = []
+    for function_name in sorted(function_names):
+        function = parsed.functions[function_name][0]
+        content = _function_source(parsed.source, function)
+        source = _function_source_span(parsed, function)
+        if content is None or source is None or len(content) > _MAX_FUNCTION_CHARS:
+            return ()
+        units.append(
+            CapabilityEvidenceUnit(
+                evidence_id=_evidence_id(
+                    analysis_unit_id,
+                    parsed.module.__name__,
+                    f"family-callable:{function_name}@{function.lineno}",
+                ),
+                source_kind="python_family_callable",
+                content=content,
+                revision=parsed.revision,
+                locator=_target_plugin_locator(source.locator, function_name, function.lineno),
+            )
+        )
+    return tuple(units)
+
+
+def _factory_consumes_static_table(
+    tree: ast.Module,
+    factory_name: str,
+    table_name: str,
+) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ListComp | ast.SetComp | ast.GeneratorExp):
+            if not any(
+                isinstance(generator.iter, ast.Name) and generator.iter.id == table_name
+                for generator in node.generators
+            ):
+                continue
+            if any(
+                isinstance(candidate, ast.Call)
+                and isinstance(candidate.func, ast.Name)
+                and candidate.func.id == factory_name
+                for candidate in ast.walk(node.elt)
+            ):
+                return True
+        if isinstance(node, ast.For) and isinstance(node.iter, ast.Name):
+            if node.iter.id != table_name:
+                continue
+            if any(
+                isinstance(candidate, ast.Call)
+                and isinstance(candidate.func, ast.Name)
+                and candidate.func.id == factory_name
+                for statement in node.body
+                for candidate in ast.walk(statement)
+            ):
+                return True
+    return False
+
+
 def deterministic_record_usages(
     record: CapabilityRecord,
     *,
@@ -1230,6 +1609,7 @@ def deterministic_record_usages(
             header,
             command_arguments,
             _option_components(command_components),
+            generic_slot_names=True,
         )
         if usage is None:
             if command_arguments or _option_components(command_components):
@@ -1242,7 +1622,12 @@ def deterministic_record_usages(
         command_body = " ".join((header, *path))
         component_arguments = component.get("arguments", [])
         options = _option_components(component.get("components", []))
-        usage = _structured_usage(command_body, component_arguments, options)
+        usage = _structured_usage(
+            command_body,
+            component_arguments,
+            options,
+            generic_slot_names=True,
+        )
         if usage is None:
             if component_arguments or options:
                 return ()
@@ -1351,6 +1736,25 @@ def _unresolved_gate_symbols(
     )
 
 
+def _fixed_permission_facts(
+    pack: CapabilitySourceEvidencePack,
+    registrations: tuple[RegistrationAnchor, ...],
+    unresolved_symbols: tuple[StructuralSymbolFact, ...],
+) -> tuple[PermissionConstraintFact, ...]:
+    registration_sources = {item.source for item in registrations}
+    unresolved_owners = {
+        (item.owner, item.owner_source)
+        for item in unresolved_symbols
+        if item.kind is StructuralSymbolKind.PERMISSION
+    }
+    return tuple(
+        item
+        for item in pack.permission_constraints
+        if item.owner_source in registration_sources
+        and (item.owner, item.owner_source) not in unresolved_owners
+    )
+
+
 def _gate_candidate(
     kind: CapabilityGateKind,
     owner: str,
@@ -1404,14 +1808,25 @@ def _structured_usage(
     command_body: str,
     arguments: object,
     options: list[object],
+    *,
+    generic_slot_names: bool = False,
 ) -> str | None:
-    """把 Runtime parser 已确认的结构压成一条稳定帮助用法。"""
+    """把 Runtime parser 结构渲染为匿名模板或保守的直接帮助用法。"""
     if not isinstance(arguments, (list, tuple)):
         return None
-    rendered_arguments = _render_arguments(arguments)
+    slot_indexes = iter(range(1_000))
+    rendered_arguments = _render_arguments(
+        arguments,
+        slot_indexes=slot_indexes,
+        generic_slot_names=generic_slot_names,
+    )
     if rendered_arguments is None:
         return None
-    rendered_options = _render_options(options)
+    rendered_options = _render_options(
+        options,
+        slot_indexes=slot_indexes,
+        generic_slot_names=generic_slot_names,
+    )
     if rendered_options is None:
         return None
     if not rendered_arguments and not rendered_options:
@@ -1421,6 +1836,9 @@ def _structured_usage(
 
 def _render_arguments(
     arguments: list[object] | tuple[object, ...],
+    *,
+    slot_indexes: Iterator[int],
+    generic_slot_names: bool,
 ) -> tuple[str, ...] | None:
     result: list[str] = []
     for argument in arguments:
@@ -1428,11 +1846,10 @@ def _render_arguments(
             return None
         if argument.get("hidden") is True:
             continue
-        name = _public_slot_name(argument.get("name"))
         required = argument.get("required")
         variadic = argument.get("variadic")
         variadic_flag = argument.get("variadic_flag")
-        if name is None or not isinstance(required, bool) or not isinstance(variadic, bool):
+        if not isinstance(required, bool) or not isinstance(variadic, bool):
             return None
         if variadic_flag not in {None, "+", "*"}:
             return None
@@ -1440,12 +1857,22 @@ def _render_arguments(
             return None
         if variadic_flag == "*" and required:
             return None
+        name = (
+            _generic_public_slot_name(argument)
+            if generic_slot_names
+            else f"slot:{next(slot_indexes)}"
+        )
         slot = f"<{name}>" if required else f"[{name}]"
         result.append(f"{slot}..." if variadic else slot)
     return tuple(result)
 
 
-def _render_options(options: list[object]) -> tuple[str, ...] | None:
+def _render_options(
+    options: list[object],
+    *,
+    slot_indexes: Iterator[int],
+    generic_slot_names: bool,
+) -> tuple[str, ...] | None:
     if len(options) > 3:
         return ("[可选参数]",)
     result: list[str] = []
@@ -1464,7 +1891,11 @@ def _render_options(options: list[object]) -> tuple[str, ...] | None:
         option_arguments = option.get("arguments", [])
         if not isinstance(option_arguments, (list, tuple)):
             return None
-        rendered_arguments = _render_arguments(option_arguments)
+        rendered_arguments = _render_arguments(
+            option_arguments,
+            slot_indexes=slot_indexes,
+            generic_slot_names=generic_slot_names,
+        )
         if rendered_arguments is None:
             return None
         if len(names) > 3:
@@ -1479,13 +1910,15 @@ def _render_options(options: list[object]) -> tuple[str, ...] | None:
     return tuple(result)
 
 
-def _public_slot_name(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = " ".join(value.split()).strip("<>{}[]()")
-    if not normalized or len(normalized) > 40 or any(char in normalized for char in "<>[]{}"):
-        return None
-    return normalized
+def _generic_public_slot_name(argument: Mapping[object, object]) -> str:
+    pattern_type = argument.get("pattern_type")
+    terminal = pattern_type.rpartition(".")[2] if isinstance(pattern_type, str) else ""
+    return {
+        "Image": "图片",
+        "int": "整数",
+        "float": "数值",
+        "str": "文本",
+    }.get(terminal, "参数")
 
 
 def _source_evidence_pack(
@@ -1511,7 +1944,73 @@ def _source_evidence_pack(
 
 
 def _permission_semantic_profiles() -> tuple[PermissionSemanticProfile, ...]:
-    return (uninfo_permission_profile(),)
+    return (nonebot_permission_profile(), uninfo_permission_profile())
+
+
+def _append_framework_semantics_evidence(
+    evidence_units: list[CapabilityEvidenceUnit],
+) -> None:
+    profile = uninfo_session_field_profile()
+    if not _python_evidence_uses_framework_annotation(evidence_units, profile):
+        return
+    content = json.dumps(
+        {
+            "component": profile.component,
+            "contract": "public framework model and API semantics",
+            "provenance": {
+                "documentation": "nonebot-plugin-uninfo official README",
+                "source_reviewed_version": "0.11.1",
+            },
+            "facts": [
+                {"symbol": item.symbol, "statement": item.statement} for item in profile.fields
+            ],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    evidence_units.append(
+        CapabilityEvidenceUnit(
+            evidence_id=f"evidence:framework:{digest}",
+            source_kind="framework_semantics",
+            content=content,
+            revision=profile.revision,
+            locator="framework:nonebot-plugin-uninfo/Session",
+        )
+    )
+
+
+def _python_evidence_uses_framework_annotation(
+    evidence_units: list[CapabilityEvidenceUnit],
+    profile: FrameworkFieldSemanticProfile,
+) -> bool:
+    annotations = frozenset(profile.annotations)
+    for evidence in evidence_units:
+        if evidence.source_kind != "python_function":
+            continue
+        try:
+            tree = ast.parse(evidence.content)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            arguments = (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            )
+            for argument in arguments:
+                if argument.annotation is None:
+                    continue
+                try:
+                    annotation = ast.unparse(argument.annotation)
+                except ValueError:
+                    continue
+                if annotation in annotations:
+                    return True
+    return False
 
 
 def _runtime_fact_evidence(record: CapabilityRecord) -> CapabilityEvidenceUnit:
@@ -2073,7 +2572,7 @@ def _append_bounded_source_slices(
     source_chars: int,
     cache: CapabilitySourceSliceCache | None,
 ) -> None:
-    """按 BFS 追加批准插件根内、唯一可定位的函数定义切片。"""
+    """按 BFS 追加插件函数，并预载一层唯一定位的依赖函数。"""
     if source_chars >= _MAX_INITIAL_SOURCE_CHARS or not seeds:
         return
     try:
@@ -2082,7 +2581,7 @@ def _append_bounded_source_slices(
         return
     active_cache = cache or CapabilitySourceSliceCache()
     queued: deque[tuple[_FunctionSlice, int]] = deque()
-    known: set[tuple[str, int]] = set()
+    known: set[tuple[str, str, int]] = set()
     for target in seeds:
         parsed = parsed_modules.get(target.reference.module)
         if parsed is None:
@@ -2114,33 +2613,57 @@ def _append_bounded_source_slices(
         definition = _cached_call_definition(active_cache, navigation, call)
         if definition is None:
             continue
-        resolved = _cached_definition_slice(active_cache, navigation, definition)
-        if resolved is None or resolved.identity in known:
-            continue
-        known.add(resolved.identity)
-        if source_chars + len(resolved.content) > _MAX_INITIAL_SOURCE_CHARS:
-            return
-        symbol = resolved.full_name or resolved.name
-        evidence_units.append(
-            CapabilityEvidenceUnit(
-                evidence_id=_evidence_id(
-                    analysis_unit_id,
-                    resolved.relative_path,
-                    f"{symbol}@{resolved.line}",
-                ),
-                source_kind="python_function",
-                content=resolved.content,
-                revision=f"sha256:{resolved.source_revision}",
-                locator=f"{resolved.relative_path}:{symbol}:{resolved.line}",
-            )
+        source_chars, resolved, external, exhausted = _append_call_definition(
+            evidence_units,
+            analysis_unit_id=analysis_unit_id,
+            navigation=navigation,
+            cache=active_cache,
+            call=call,
+            definition=definition,
+            known=known,
+            source_chars=source_chars,
         )
-        source_chars += len(resolved.content)
-        queued.append((resolved, 0))
+        if exhausted:
+            return
+        if resolved is not None and not external:
+            queued.append((resolved, 0))
 
     while queued:
         current, depth = queued.popleft()
-        if depth >= _MAX_SOURCE_SLICE_DEPTH:
-            continue
+        for dependency in current.parameter_dependencies:
+            call = (
+                _cached_annotation_dependency_provider(
+                    active_cache,
+                    navigation,
+                    dependency.call,
+                )
+                if dependency.is_alias
+                else dependency.call
+            )
+            if call is None:
+                continue
+            definition = _cached_call_definition(active_cache, navigation, call)
+            if definition is None:
+                continue
+            if depth >= _MAX_SOURCE_SLICE_DEPTH and _definition_belongs_to_plugin(
+                navigation,
+                definition,
+            ):
+                continue
+            source_chars, resolved, external, exhausted = _append_call_definition(
+                evidence_units,
+                analysis_unit_id=analysis_unit_id,
+                navigation=navigation,
+                cache=active_cache,
+                call=call,
+                definition=definition,
+                known=known,
+                source_chars=source_chars,
+            )
+            if exhausted:
+                return
+            if resolved is not None and not external and depth < _MAX_SOURCE_SLICE_DEPTH:
+                queued.append((resolved, depth + 1))
         for call in sorted(
             current.calls,
             key=lambda item: (
@@ -2153,28 +2676,189 @@ def _append_bounded_source_slices(
             definition = _cached_call_definition(active_cache, navigation, call)
             if definition is None:
                 continue
-            resolved = _cached_definition_slice(active_cache, navigation, definition)
-            if resolved is None or resolved.identity in known:
+            if depth >= _MAX_SOURCE_SLICE_DEPTH and _definition_belongs_to_plugin(
+                navigation,
+                definition,
+            ):
                 continue
-            known.add(resolved.identity)
-            if source_chars + len(resolved.content) > _MAX_INITIAL_SOURCE_CHARS:
-                return
-            symbol = resolved.full_name or resolved.name
-            evidence_units.append(
-                CapabilityEvidenceUnit(
-                    evidence_id=_evidence_id(
-                        analysis_unit_id,
-                        resolved.relative_path,
-                        f"{symbol}@{resolved.line}",
-                    ),
-                    source_kind="python_function",
-                    content=resolved.content,
-                    revision=f"sha256:{resolved.source_revision}",
-                    locator=f"{resolved.relative_path}:{symbol}:{resolved.line}",
-                )
+            source_chars, resolved, external, exhausted = _append_call_definition(
+                evidence_units,
+                analysis_unit_id=analysis_unit_id,
+                navigation=navigation,
+                cache=active_cache,
+                call=call,
+                definition=definition,
+                known=known,
+                source_chars=source_chars,
             )
-            source_chars += len(resolved.content)
-            queued.append((resolved, depth + 1))
+            if exhausted:
+                return
+            if resolved is not None and not external and depth < _MAX_SOURCE_SLICE_DEPTH:
+                queued.append((resolved, depth + 1))
+
+
+def _append_call_definition(
+    evidence_units: list[CapabilityEvidenceUnit],
+    *,
+    analysis_unit_id: str,
+    navigation: _SourceSliceNavigation,
+    cache: CapabilitySourceSliceCache,
+    call: _CallSite,
+    definition: DefinitionLocation,
+    known: set[tuple[str, str, int]],
+    source_chars: int,
+) -> tuple[int, _FunctionSlice | None, bool, bool]:
+    identity = (definition.root_name, definition.relative_path, definition.line)
+    external = not _definition_belongs_to_plugin(navigation, definition)
+    if identity in known:
+        return source_chars, None, external, False
+    known.add(identity)
+    external_mode = _external_definition_mode(definition) if external else None
+    if external and external_mode is None:
+        return source_chars, None, True, False
+    if external_mode is _ExternalDefinitionMode.STUB:
+        navigation_evidence = _external_dependency_navigation_evidence(
+            analysis_unit_id,
+            call,
+            definition,
+            stub_only=True,
+        )
+        if source_chars + len(navigation_evidence.content) <= _MAX_INITIAL_SOURCE_CHARS:
+            evidence_units.append(navigation_evidence)
+            source_chars += len(navigation_evidence.content)
+        return source_chars, None, True, False
+    resolved = _cached_definition_slice(cache, navigation, definition)
+    if resolved is not None and source_chars + len(resolved.content) <= _MAX_INITIAL_SOURCE_CHARS:
+        evidence_units.append(
+            _function_slice_evidence(
+                analysis_unit_id,
+                navigation,
+                resolved,
+                external=external,
+            )
+        )
+        return source_chars + len(resolved.content), resolved, external, False
+    if not external:
+        return source_chars, None, False, resolved is not None
+
+    navigation_evidence = _external_dependency_navigation_evidence(
+        analysis_unit_id,
+        call,
+        definition,
+        stub_only=False,
+    )
+    if source_chars + len(navigation_evidence.content) <= _MAX_INITIAL_SOURCE_CHARS:
+        evidence_units.append(navigation_evidence)
+        source_chars += len(navigation_evidence.content)
+    return source_chars, None, True, False
+
+
+def _external_definition_mode(
+    definition: DefinitionLocation,
+) -> _ExternalDefinitionMode | None:
+    relative_path = definition.relative_path.casefold()
+    if definition.column not in {4, 10}:
+        return None
+    # Jedi 的 column 指向函数名；模块顶层 def / async def 分别固定从第 4 / 10 列开始。
+    # 类方法和嵌套函数保留给按需导航，避免首包展开通用框架方法。
+    if relative_path.endswith(".py"):
+        return _ExternalDefinitionMode.SOURCE
+    if (
+        relative_path.endswith(".pyi")
+        and "/typeshed/stdlib/" not in f"/{relative_path}"
+        and not (definition.full_name or "").startswith("builtins.")
+    ):
+        return _ExternalDefinitionMode.STUB
+    return None
+
+
+def _function_slice_evidence(
+    analysis_unit_id: str,
+    navigation: _SourceSliceNavigation,
+    resolved: _FunctionSlice,
+    *,
+    external: bool,
+) -> CapabilityEvidenceUnit:
+    symbol = resolved.full_name or resolved.name
+    if external:
+        locator = f"{resolved.root_name}/{resolved.relative_path}:{symbol}:{resolved.line}"
+        source_kind = "python_dependency_function"
+    else:
+        locator = _target_plugin_locator(
+            _source_slice_relative_path(resolved.relative_path, navigation.source_root),
+            symbol,
+            resolved.line,
+        )
+        source_kind = "python_function"
+    return CapabilityEvidenceUnit(
+        evidence_id=_evidence_id(
+            analysis_unit_id,
+            f"{resolved.root_name}:{resolved.relative_path}",
+            f"{symbol}@{resolved.line}",
+        ),
+        source_kind=source_kind,
+        content=resolved.content,
+        revision=f"sha256:{resolved.source_revision}",
+        locator=locator,
+    )
+
+
+def _external_dependency_navigation_evidence(
+    analysis_unit_id: str,
+    call: _CallSite,
+    definition: DefinitionLocation,
+    *,
+    stub_only: bool,
+) -> CapabilityEvidenceUnit:
+    symbol = definition.full_name or definition.name
+    content = json.dumps(
+        {
+            "scope": "external_dependency_navigation",
+            "navigation_only": True,
+            "resolution": ("external_dependency_stub" if stub_only else "external_dependency"),
+            "implementation_source_available": not stub_only,
+            "symbol": symbol,
+            "call_site": {
+                "root_name": "target_plugin",
+                "relative_path": call.relative_path,
+                "line": call.line,
+                "column": call.column,
+                "source_revision": call.source_revision,
+            },
+            "read_target": {
+                "tool": f"{definition.root_name}_read_file",
+                "root_name": definition.root_name,
+                "relative_path": definition.relative_path,
+                "line": definition.line,
+                "source_revision": definition.source_revision,
+            },
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return CapabilityEvidenceUnit(
+        evidence_id=_evidence_id(
+            analysis_unit_id,
+            f"navigation:{definition.root_name}:{definition.relative_path}",
+            f"{symbol}@{definition.line}",
+        ),
+        source_kind="external_dependency_navigation",
+        content=content,
+        revision=f"sha256:{definition.source_revision}",
+        locator=(f"{definition.root_name}/{definition.relative_path}:{symbol}:{definition.line}"),
+    )
+
+
+def _definition_belongs_to_plugin(
+    navigation: _SourceSliceNavigation,
+    definition: DefinitionLocation,
+) -> bool:
+    root = navigation.approved_root(definition.root_name)
+    if root is None:
+        return False
+    path = root.path.joinpath(*definition.relative_path.split("/"))
+    return _path_belongs_to_source_root(path, navigation.source_root)
 
 
 def _validate_common_family_gate_definitions(
@@ -2196,7 +2880,7 @@ def _validate_common_family_gate_definitions(
             "parameterized family gate definitions are unavailable"
         ) from error
 
-    definitions_by_name: dict[str, set[tuple[str, int, int, str]]] = {
+    definitions_by_name: dict[str, set[tuple[str, str, int, int, str]]] = {
         name: set() for name in gate_names
     }
     for registration in registrations:
@@ -2225,6 +2909,7 @@ def _validate_common_family_gate_definitions(
                     )
                 definitions_by_name[name].add(
                     (
+                        definition.root_name,
                         definition.relative_path,
                         definition.line,
                         definition.column,
@@ -2393,8 +3078,16 @@ def _cached_call_definition(
     navigation: _SourceSliceNavigation,
     call: _CallSite,
 ) -> DefinitionLocation | None:
-    if call in cache._definitions:
-        return cache._definitions[call]
+    key = _DefinitionCacheKey(
+        navigation.root.path,
+        tuple((root.name, root.path) for root in navigation.roots),
+        call,
+    )
+    if key in cache._definitions:
+        cached = cache._definitions[key]
+        if cached is None or _definition_is_current(navigation, cached):
+            return cached
+        cache._definitions.pop(key, None)
     try:
         result = navigation.navigator.go_to_definition(
             GoToDefinitionRequest(
@@ -2406,16 +3099,135 @@ def _cached_call_definition(
             )
         )
     except PythonNavigationError:
-        cache._definitions[call] = None
+        cache._definitions[key] = None
         return None
     unique_definitions = {
-        (item.relative_path, item.line, item.column): item
+        (item.root_name, item.relative_path, item.line, item.column): item
         for item in result.definitions
-        if item.root_name == navigation.root.name and item.kind == "function"
+        if item.kind == "function"
     }
     definition = next(iter(unique_definitions.values())) if len(unique_definitions) == 1 else None
-    cache._definitions[call] = definition
+    cache._definitions[key] = definition
     return definition
+
+
+def _cached_annotation_dependency_provider(
+    cache: CapabilitySourceSliceCache,
+    navigation: _SourceSliceNavigation,
+    alias: _CallSite,
+) -> _CallSite | None:
+    key = _DefinitionCacheKey(
+        navigation.root.path,
+        tuple((root.name, root.path) for root in navigation.roots),
+        alias,
+    )
+    if cached := cache._annotation_dependencies.get(key):
+        if _plugin_call_site_is_current(navigation, cached):
+            return cached
+        cache._annotation_dependencies.pop(key, None)
+    try:
+        result = navigation.navigator.go_to_definition(
+            GoToDefinitionRequest(
+                root_name=navigation.root.name,
+                relative_path=alias.relative_path,
+                line=alias.line,
+                column=alias.column,
+                source_revision=alias.source_revision,
+            )
+        )
+    except PythonNavigationError:
+        return None
+    definitions = {
+        (item.root_name, item.relative_path, item.line, item.column): item
+        for item in result.definitions
+        if item.kind == "statement"
+        and item.root_name == navigation.root.name
+        and item.relative_path.casefold().endswith(".py")
+    }
+    if len(definitions) != 1:
+        return None
+    definition = next(iter(definitions.values()))
+    provider = _annotation_dependency_provider_from_definition(navigation, definition)
+    if provider is not None:
+        cache._annotation_dependencies[key] = provider
+    return provider
+
+
+def _annotation_dependency_provider_from_definition(
+    navigation: _SourceSliceNavigation,
+    definition: DefinitionLocation,
+) -> _CallSite | None:
+    path = navigation.root.path.joinpath(*definition.relative_path.split("/"))
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if hashlib.sha256(raw).hexdigest() != definition.source_revision:
+        raise CapabilityAnalysisAdapterError("source changed during analysis preparation")
+    try:
+        source = raw.decode("utf-8")
+        tree = ast.parse(source)
+    except (UnicodeError, SyntaxError, ValueError, RecursionError):
+        return None
+    if sum(1 for _ in ast.walk(tree)) > _MAX_AST_NODES:
+        return None
+    values: list[ast.expr] = []
+    for statement in tree.body:
+        if statement.lineno != definition.line:
+            continue
+        if (
+            (
+                isinstance(statement, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == definition.name
+                    for target in statement.targets
+                )
+            )
+            or (
+                isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.target.id == definition.name
+            )
+        ) and statement.value is not None:
+            values.append(statement.value)
+    if len(values) != 1:
+        return None
+    provider = _annotated_dependency_provider(values[0])
+    return (
+        _navigation_call_site(
+            definition.relative_path,
+            source,
+            definition.source_revision,
+            provider,
+        )
+        if provider is not None
+        else None
+    )
+
+
+def _plugin_call_site_is_current(
+    navigation: _SourceSliceNavigation,
+    call: _CallSite,
+) -> bool:
+    path = navigation.root.path.joinpath(*call.relative_path.split("/"))
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest() == call.source_revision
+    except OSError:
+        return False
+
+
+def _definition_is_current(
+    navigation: _SourceSliceNavigation,
+    definition: DefinitionLocation,
+) -> bool:
+    root = navigation.approved_root(definition.root_name)
+    if root is None:
+        return False
+    path = root.path.joinpath(*definition.relative_path.split("/"))
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest() == definition.source_revision
+    except OSError:
+        return False
 
 
 def _source_slice_navigation(
@@ -2423,34 +3235,42 @@ def _source_slice_navigation(
     source_root: tuple[Path, bool],
 ) -> _SourceSliceNavigation:
     path, is_package = source_root
-    navigation_root = path.parent
+    dependency_roots = python_dependency_navigation_roots()
     if is_package:
-        package = path.name
+        navigation_root = path
         allowed_patterns = (
-            f"{package}/__init__.py",
-            f"{package}/*.py",
-            f"{package}/**/*.py",
+            "__init__.py",
+            "*.py",
+            "**/*.py",
+        )
+        root = ReadOnlyRoot(
+            "plugin_source",
+            navigation_root,
+            allowed_patterns=allowed_patterns,
         )
     else:
-        allowed_patterns = (path.name,)
-    root = ReadOnlyRoot(
-        "plugin_source",
-        navigation_root,
-        allowed_patterns=allowed_patterns,
-    )
+        existing = next((item for item in dependency_roots if item.path == path.parent), None)
+        root = ReadOnlyRoot(
+            "target_plugin",
+            path.parent,
+            allowed_patterns=(existing.allowed_patterns if existing is not None else (path.name,)),
+            denied_patterns=(existing.denied_patterns if existing is not None else ()),
+        )
+        dependency_roots = tuple(item for item in dependency_roots if item.path != root.path)
+    roots = tuple({item.name: item for item in (root, *dependency_roots)}.values())
     access = ReadOnlyTaskProfile(
         task_id=f"capability.source_slices.{hashlib.sha256(module_root.encode()).hexdigest()[:16]}",
-        roots=(root,),
+        roots=roots,
         policy=teaching_read_only_policy(),
     )
     navigator = DefinitionNavigator(
         PythonNavigationProfile(
             access=access,
             project_root_name=root.name,
-            source_root_names=(root.name,),
+            source_root_names=tuple(item.name for item in roots),
         )
     )
-    return _SourceSliceNavigation(navigator, root)
+    return _SourceSliceNavigation(navigator, root, roots, source_root)
 
 
 def _cached_function_slice(
@@ -2476,6 +3296,7 @@ def _cached_function_slice(
     if _normalized_source_revision(raw) != parsed.revision:
         raise CapabilityAnalysisAdapterError("plugin source changed during analysis preparation")
     key = _SourceSliceCacheKey(
+        navigation.root.name,
         relative_path,
         function.lineno,
         function.col_offset,
@@ -2485,6 +3306,7 @@ def _cached_function_slice(
     if cached := cache._functions.get(key):
         return cached
     result = _function_slice_from_ast(
+        navigation.root.name,
         relative_path,
         parsed.source,
         function,
@@ -2501,22 +3323,32 @@ def _cached_definition_slice(
     navigation: _SourceSliceNavigation,
     definition: DefinitionLocation,
 ) -> _FunctionSlice | None:
+    root = navigation.approved_root(definition.root_name)
+    if root is None:
+        return None
     relative_path = definition.relative_path
     line = definition.line
     column = definition.column
     name = definition.name
     revision = definition.source_revision
     full_name = definition.full_name
-    key = _SourceSliceCacheKey(relative_path, line, column, name, revision)
+    key = _SourceSliceCacheKey(
+        definition.root_name,
+        relative_path,
+        line,
+        column,
+        name,
+        revision,
+    )
     if cached := cache._functions.get(key):
         return cached
-    path = navigation.root.path.joinpath(*relative_path.split("/"))
+    path = root.path.joinpath(*relative_path.split("/"))
     try:
         raw = path.read_bytes()
     except OSError:
         return None
     if hashlib.sha256(raw).hexdigest() != revision:
-        raise CapabilityAnalysisAdapterError("plugin source changed during analysis preparation")
+        raise CapabilityAnalysisAdapterError("source changed during analysis preparation")
     try:
         source = raw.decode("utf-8")
         tree = ast.parse(source)
@@ -2534,6 +3366,7 @@ def _cached_definition_slice(
     if len(candidates) != 1:
         return None
     result = _function_slice_from_ast(
+        definition.root_name,
         relative_path,
         source,
         candidates[0],
@@ -2553,7 +3386,8 @@ def _store_source_slice(
     stale = tuple(
         item
         for item in cache._functions
-        if item.relative_path == key.relative_path
+        if item.root_name == key.root_name
+        and item.relative_path == key.relative_path
         and item.line == key.line
         and item.column == key.column
         and item.name == key.name
@@ -2565,6 +3399,7 @@ def _store_source_slice(
 
 
 def _function_slice_from_ast(
+    root_name: str,
     relative_path: str,
     source: str,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
@@ -2576,7 +3411,14 @@ def _function_slice_from_ast(
     if content is None or len(content) > _MAX_FUNCTION_CHARS:
         return None
     calls = _function_call_sites(relative_path, source, source_revision, function)
+    parameter_dependencies = _function_parameter_dependencies(
+        relative_path,
+        source,
+        source_revision,
+        function,
+    )
     return _FunctionSlice(
+        root_name=root_name,
         relative_path=relative_path,
         name=function.name,
         full_name=full_name,
@@ -2584,7 +3426,62 @@ def _function_slice_from_ast(
         content=content,
         source_revision=source_revision,
         calls=calls,
+        parameter_dependencies=parameter_dependencies,
     )
+
+
+def _function_parameter_dependencies(
+    relative_path: str,
+    source: str,
+    source_revision: str,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[_ParameterDependency, ...]:
+    dependencies: dict[tuple[int, int], _ParameterDependency] = {}
+    arguments = (
+        *function.args.posonlyargs,
+        *function.args.args,
+        *function.args.kwonlyargs,
+    )
+    for argument in arguments:
+        annotation = argument.annotation
+        if annotation is None:
+            continue
+        provider = _annotated_dependency_provider(annotation)
+        target = provider or annotation
+        if not isinstance(target, ast.Name | ast.Attribute):
+            continue
+        call = _navigation_call_site(relative_path, source, source_revision, target)
+        if call is not None:
+            dependencies.setdefault(
+                (call.line, call.column),
+                _ParameterDependency(call=call, is_alias=provider is None),
+            )
+    return tuple(dependencies[key] for key in sorted(dependencies))
+
+
+def _annotated_dependency_provider(
+    annotation: ast.expr,
+) -> ast.Name | ast.Attribute | None:
+    if (
+        not isinstance(annotation, ast.Subscript)
+        or _expression_terminal_name(annotation.value) != "Annotated"
+    ):
+        return None
+    items = (
+        annotation.slice.elts if isinstance(annotation.slice, ast.Tuple) else (annotation.slice,)
+    )
+    providers: list[ast.Name | ast.Attribute] = []
+    for metadata in items[1:]:
+        if (
+            not isinstance(metadata, ast.Call)
+            or _expression_terminal_name(metadata.func) != "Depends"
+            or len(metadata.args) != 1
+        ):
+            continue
+        provider = metadata.args[0]
+        if isinstance(provider, ast.Name | ast.Attribute):
+            providers.append(provider)
+    return providers[0] if len(providers) == 1 else None
 
 
 def _function_call_sites(
@@ -2936,8 +3833,19 @@ def _project_referenced_config(
     return tuple(projections), tuple(unknown)
 
 
-def _module_locator(module: str, function: str, line: int) -> str:
-    return f"{module.replace('.', '/')}.py:{function}:{line}"
+def _source_slice_relative_path(
+    relative_path: str,
+    source_root: tuple[Path, bool],
+) -> str:
+    path, is_package = source_root
+    if not is_package:
+        return relative_path
+    prefix = f"{path.name}/"
+    return relative_path.removeprefix(prefix)
+
+
+def _target_plugin_locator(relative_path: str, function: str, line: int) -> str:
+    return f"target_plugin/{relative_path}:{function}:{line}"
 
 
 def _evidence_id(capability_id: str, module: str, function: str) -> str:

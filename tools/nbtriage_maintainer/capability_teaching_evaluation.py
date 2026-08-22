@@ -48,12 +48,14 @@ from nbtriage.capability_analysis import (
     CapabilityInvocationTarget,
     CapabilitySourceContext,
     ConfigProjection,
+    PermissionAlternative,
     RateLimitPolicy,
     RateLimitScope,
     SemanticClaimKind,
     SemanticConstraint,
     SemanticConstraintKind,
     TeachingRole,
+    TeachingScene,
     UnknownConfigReference,
 )
 from nbtriage.capability_annotations import (
@@ -78,6 +80,7 @@ from nbtriage.capability_source_evidence import (
 )
 from nbtriage.framework_semantics import uninfo_permission_profile
 from nbtriage.model_usage import provider_response_identity
+from nbtriage.opencode_go_contracts import OPENCODE_GO_THINKING_SETTINGS_REVISION
 from nbtriage.opencode_go_semantic_adapter import normalized_opencode_go_cost_microusd
 
 CAPABILITY_TEACHING_EVALUATION_ID = "capability-teaching-opencode-go-v1"
@@ -103,12 +106,12 @@ _QUALIFIED_PROVIDER = "opencode-go"
 _QUALIFIED_MODEL = "deepseek-v4-flash"
 _QUALIFIED_API_FAMILY = "chat-completions"
 _QUALIFIED_CONNECTION_REVISION = "provider-default"
-_QUALIFIED_SETTINGS_REVISION = "provider-default"
+_QUALIFIED_SETTINGS_REVISION = OPENCODE_GO_THINKING_SETTINGS_REVISION
 CAPABILITY_TEACHING_QUALIFIED_TIMEOUT_SECONDS = 300.0
 CAPABILITY_TEACHING_QUALIFIED_MAX_OUTPUT_TOKENS = 16_384
 _OPTION_PATTERN = re.compile(r"(?<![\w-])--?[A-Za-z][A-Za-z0-9_-]*")
 _FIXTURE_SCHEMA_VERSIONS = frozenset({3, 4})
-_CAPABILITY_SCHEMA_VERSIONS = frozenset({6, CAPABILITY_ANNOTATION_SCHEMA_VERSION})
+_CAPABILITY_SCHEMA_VERSIONS = frozenset({6, 7, CAPABILITY_ANNOTATION_SCHEMA_VERSION})
 _FINAL_MEMBER_FIELDS = frozenset(
     {
         "search_terms",
@@ -259,7 +262,7 @@ async def evaluate_capability_teaching(
     declared_budget_usd: float,
     api_family: str = "chat-completions",
     connection_revision: str = "provider-default",
-    settings_revision: str = "provider-default",
+    settings_revision: str = OPENCODE_GO_THINKING_SETTINGS_REVISION,
     timeout_seconds: float = 60.0,
     max_output_tokens: int = 4_096,
     evaluation_id: str = CAPABILITY_TEACHING_EVALUATION_ID,
@@ -915,6 +918,27 @@ def _constraint_matches(
     expected: dict[str, object],
     actual: SemanticConstraint,
 ) -> bool:
+    expected_kind = expected.get("kind")
+    if (
+        isinstance(expected_kind, str)
+        and actual.kind is SemanticConstraintKind.PERMISSION
+        and expected_kind in {"role", "scene", "access"}
+    ):
+        alternatives = tuple(
+            item for item in actual.permission_alternatives if item.kind.value == expected_kind
+        )
+        if not alternatives:
+            return False
+        expected_role = expected.get("role")
+        if expected_role is not None and not any(
+            item.role is not None and item.role.value == expected_role for item in alternatives
+        ):
+            return False
+        contains = expected.get("text_contains")
+        return contains is None or (
+            isinstance(contains, str)
+            and any(contains.casefold() in item.statement.casefold() for item in alternatives)
+        )
     for key in ("kind", "role", "rate_limit_policy", "rate_limit_scope"):
         expected_value = expected.get(key)
         if expected_value is None:
@@ -1048,6 +1072,21 @@ def _candidate_payload(output: CapabilityAnalysisOutput | None) -> dict[str, obj
                             else None
                         ),
                         "gate_candidate_ids": list(item.gate_candidate_ids),
+                        "permission_alternatives": [
+                            {
+                                "kind": alternative.kind.value,
+                                "statement": alternative.statement,
+                                "role": (
+                                    alternative.role.value if alternative.role is not None else None
+                                ),
+                                "scene": (
+                                    alternative.scene.value
+                                    if alternative.scene is not None
+                                    else None
+                                ),
+                            }
+                            for alternative in item.permission_alternatives
+                        ],
                     }
                     for item in entry.constraints
                 ],
@@ -1171,6 +1210,24 @@ def _parse_fixed_constraint(raw: dict[str, object]) -> SemanticConstraint:
         rate_limit_scope=(
             RateLimitScope(rate_limit_scope) if isinstance(rate_limit_scope, str) else None
         ),
+        permission_alternatives=tuple(
+            _parse_permission_alternative(item)
+            for item in _dict_list(
+                raw.get("permission_alternatives", []),
+                "permission_alternatives",
+            )
+        ),
+    )
+
+
+def _parse_permission_alternative(raw: dict[str, object]) -> PermissionAlternative:
+    role = raw.get("role")
+    scene = raw.get("scene")
+    return PermissionAlternative(
+        kind=SemanticConstraintKind(_required_text(raw, "kind")),
+        statement=_required_text(raw, "statement"),
+        role=TeachingRole(role) if isinstance(role, str) else None,
+        scene=TeachingScene(scene) if isinstance(scene, str) else None,
     )
 
 
@@ -1842,7 +1899,10 @@ def _validate_adapter_request_audit(
     actual_usages = {
         usage for invocation in request.invocations for usage in invocation.canonical_usages
     }
-    if not required_usages.issubset(actual_usages):
+    if any(
+        not any(_canonical_usage_satisfies_audit(actual, required) for actual in actual_usages)
+        for required in required_usages
+    ):
         raise CapabilityTeachingEvaluationError(
             "adapter_case request audit missed a canonical usage"
         )
@@ -1862,9 +1922,12 @@ def _validate_adapter_request_audit(
                 "adapter_case fixed constraint statement must be a string"
             )
         if not any(
-            item.kind.value == kind
-            and (role is None or (item.role is not None and item.role.value == role))
-            and (statement is None or item.statement == statement)
+            _fixed_constraint_satisfies_audit(
+                item,
+                kind=kind,
+                role=role,
+                statement=statement,
+            )
             for item in request.fixed_constraints
         ) and not (
             kind == "input"
@@ -1903,6 +1966,56 @@ def _validate_adapter_request_audit(
             )
         if actual != expected_count:
             raise CapabilityTeachingEvaluationError(f"adapter_case request audit {field} mismatch")
+
+
+def _fixed_constraint_satisfies_audit(
+    constraint: SemanticConstraint,
+    *,
+    kind: str,
+    role: str | None,
+    statement: str | None,
+) -> bool:
+    if constraint.kind.value == kind:
+        return (
+            role is None or (constraint.role is not None and constraint.role.value == role)
+        ) and (statement is None or constraint.statement == statement)
+    if constraint.kind is not SemanticConstraintKind.PERMISSION or kind not in {
+        "role",
+        "scene",
+        "access",
+    }:
+        return False
+    alternatives = tuple(
+        item for item in constraint.permission_alternatives if item.kind.value == kind
+    )
+    if role is not None:
+        return any(item.role is not None and item.role.value == role for item in alternatives)
+    if statement is None:
+        return bool(alternatives)
+    normalized = statement.removeprefix("仅")
+    return any(item.statement.removeprefix("仅") == normalized for item in alternatives)
+
+
+_ANONYMOUS_CANONICAL_SLOT = re.compile(r"<slot:\d+>|\[slot:\d+\]")
+
+
+def _canonical_usage_satisfies_audit(actual: str, required: str) -> bool:
+    """兼容冻结 fixture 中公开槽位名，同时继续精确审计调用结构。"""
+    if actual == required:
+        return True
+    cursor = 0
+    pattern: list[str] = []
+    for match in _ANONYMOUS_CANONICAL_SLOT.finditer(actual):
+        pattern.append(re.escape(actual[cursor : match.start()]))
+        if match.group().startswith("<"):
+            pattern.append(r"<[^<>\[\]{}|]+>")
+        else:
+            pattern.append(r"\[(?!--)[^<>\[\]{}|]+\]")
+        cursor = match.end()
+    if cursor == 0:
+        return False
+    pattern.append(re.escape(actual[cursor:]))
+    return re.fullmatch("".join(pattern), required) is not None
 
 
 def _resolve_fixture_source_root(fixtures_path: Path, relative: str) -> Path:

@@ -6,6 +6,7 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from nbtriage.model_adapters import PydanticAIB1Client
 from nbtriage.model_contracts import B1ProviderError
+from nbtriage.provider_http_diagnostics import provider_http_client
 from nbtriage.pydantic_agent_adapter import PydanticAIAgentStepClient
 
 ANTHROPIC_MESSAGES_PROVIDER_ID = "anthropic-messages"
@@ -18,7 +19,7 @@ def create_anthropic_messages_b1_client(
     timeout_seconds: float = 60.0,
     max_calls: int,
 ) -> PydanticAIB1Client:
-    """构造关闭 SDK 重试和 Pydantic AI 遥测的 Anthropic Messages B1 客户端。
+    """构造关闭遥测、启用两次传输重试的 Anthropic Messages B1 客户端。
 
     Args:
         api_key: 仅用于当前进程 Anthropic 客户端的 API Key。
@@ -44,7 +45,8 @@ def create_anthropic_messages_b1_client(
     sdk_client = AsyncAnthropic(
         api_key=api_key,
         timeout=timeout_seconds,
-        max_retries=0,
+        max_retries=2,
+        http_client=provider_http_client(timeout_seconds=timeout_seconds),
     )
     pydantic_model = AnthropicModel(
         model,
@@ -65,7 +67,7 @@ def create_anthropic_messages_agent_step_client(
     timeout_seconds: float = 60.0,
     max_calls: int = 1,
 ) -> PydanticAIAgentStepClient:
-    """构造关闭 SDK 重试和遥测的 Anthropic Messages Agent 单步客户端。"""
+    """构造关闭遥测、启用两次传输重试的 Anthropic Messages Agent 单步客户端。"""
     if not api_key.strip():
         raise B1ProviderError("Anthropic API key must be explicit")
     if not model.strip():
@@ -78,7 +80,8 @@ def create_anthropic_messages_agent_step_client(
     sdk_client = AsyncAnthropic(
         api_key=api_key,
         timeout=timeout_seconds,
-        max_retries=0,
+        max_retries=2,
+        http_client=provider_http_client(timeout_seconds=timeout_seconds),
     )
     pydantic_model = AnthropicModel(
         model,

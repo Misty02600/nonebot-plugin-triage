@@ -5,6 +5,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 from nbtriage.capability_analysis import (
@@ -17,11 +18,13 @@ from nbtriage.capability_analysis import (
     CapabilityEvidenceUnit,
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
+    PermissionAlternative,
     RateLimitPolicy,
     RateLimitScope,
     SemanticClaimKind,
     SemanticConstraintKind,
     TeachingRole,
+    TeachingScene,
 )
 from nbtriage.capability_usage import (
     MAX_EXPLICIT_USAGE_ALTERNATIVES,
@@ -30,16 +33,14 @@ from nbtriage.capability_usage import (
     validate_usage_selector,
 )
 
-CAPABILITY_ANNOTATION_SCHEMA_VERSION = 7
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v40-zh"
-CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v4"
+CAPABILITY_ANNOTATION_SCHEMA_VERSION = 8
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v56-zh"
+CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v23"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
 )
-CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
-    "background-sequential-8req-5read-navigation-tools-160line-120k-16384out-0.05usd-schema7"
-)
+CAPABILITY_ANNOTATION_BUDGET_PROFILE = "background-unit-concurrency10-8req-5read-navigation-tools-160line-120k-next-request-stop-16384out-0.05usd-schema8"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _IMPLEMENTATION_MARKERS = (
     ".py",
@@ -61,15 +62,38 @@ _IMPLEMENTATION_MARKERS = (
     "配置项名",
 )
 _REQUIREMENT_KIND_ORDER = {
-    SemanticConstraintKind.SCENE: 0,
-    SemanticConstraintKind.ROLE: 1,
-    SemanticConstraintKind.ACCESS: 2,
-    SemanticConstraintKind.RATE_LIMIT: 3,
+    SemanticConstraintKind.PERMISSION: 0,
+    SemanticConstraintKind.SCENE: 1,
+    SemanticConstraintKind.ROLE: 2,
+    SemanticConstraintKind.ACCESS: 3,
+    SemanticConstraintKind.RATE_LIMIT: 4,
 }
 
 
 class CapabilityAnnotationError(ValueError):
     pass
+
+
+class CapabilityAnnotationProjectionCode(StrEnum):
+    NAME_SUMMARY = "name_summary"
+    USAGE = "usage"
+    PUBLIC_TEXT = "public_text"
+    REQUIREMENT = "requirement"
+    BASELINE = "baseline"
+    PUBLIC_MEMBERS = "public_members"
+    CONTRACT = "contract"
+
+
+class CapabilityAnnotationProjectionError(CapabilityAnnotationError):
+    """公开注释投影失败，并携带可安全持久化的稳定分类。"""
+
+    def __init__(
+        self,
+        code: CapabilityAnnotationProjectionCode,
+        message: str,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -113,12 +137,52 @@ class CapabilityAnnotationEvidenceRef:
 
 
 @dataclass(frozen=True)
+class CapabilityTeachingPermissionAlternative:
+    kind: SemanticConstraintKind
+    text: str
+    role: TeachingRole | None = None
+    scene: TeachingScene | None = None
+
+    def __post_init__(self) -> None:
+        PermissionAlternative(
+            kind=self.kind,
+            statement=self.text,
+            role=self.role,
+            scene=self.scene,
+        )
+        _public_text(self.text, "permission alternative text")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "text": self.text,
+            "role": self.role.value if self.role is not None else None,
+            "scene": self.scene.value if self.scene is not None else None,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> CapabilityTeachingPermissionAlternative:
+        if not isinstance(payload, dict) or set(payload) != {"kind", "text", "role", "scene"}:
+            raise CapabilityAnnotationError("permission alternative fields do not match schema")
+        try:
+            return cls(
+                kind=SemanticConstraintKind(payload["kind"]),
+                text=payload["text"],
+                role=TeachingRole(payload["role"]) if payload["role"] is not None else None,
+                scene=(TeachingScene(payload["scene"]) if payload["scene"] is not None else None),
+            )
+        except (TypeError, ValueError) as error:
+            raise CapabilityAnnotationError("permission alternative fields are invalid") from error
+
+
+@dataclass(frozen=True)
 class CapabilityTeachingRequirement:
     kind: SemanticConstraintKind
     text: str
     role: TeachingRole | None = None
     rate_limit_policy: RateLimitPolicy | None = None
     rate_limit_scope: RateLimitScope | None = None
+    alternatives: tuple[CapabilityTeachingPermissionAlternative, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SemanticConstraintKind):
@@ -136,6 +200,21 @@ class CapabilityTeachingRequirement:
                 raise CapabilityAnnotationError("rate-limit requirement requires policy and scope")
         elif self.rate_limit_policy is not None or self.rate_limit_scope is not None:
             raise CapabilityAnnotationError("only rate-limit requirements may define rate metadata")
+        if self.kind is SemanticConstraintKind.PERMISSION:
+            if (
+                not isinstance(self.alternatives, tuple)
+                or not self.alternatives
+                or len(self.alternatives) > 16
+                or any(
+                    not isinstance(item, CapabilityTeachingPermissionAlternative)
+                    for item in self.alternatives
+                )
+            ):
+                raise CapabilityAnnotationError(
+                    "permission requirement requires permission alternatives"
+                )
+        elif self.alternatives:
+            raise CapabilityAnnotationError("only permission requirements may define alternatives")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -148,6 +227,7 @@ class CapabilityTeachingRequirement:
             "rate_limit_scope": (
                 self.rate_limit_scope.value if self.rate_limit_scope is not None else None
             ),
+            "alternatives": [item.to_dict() for item in self.alternatives],
         }
 
     @classmethod
@@ -158,6 +238,7 @@ class CapabilityTeachingRequirement:
             "role",
             "rate_limit_policy",
             "rate_limit_scope",
+            "alternatives",
         }:
             raise CapabilityAnnotationError("requirement fields do not match schema")
         try:
@@ -175,6 +256,7 @@ class CapabilityTeachingRequirement:
                     if payload["rate_limit_scope"] is not None
                     else None
                 ),
+                alternatives=_permission_alternatives(payload["alternatives"]),
             )
         except (TypeError, ValueError) as error:
             raise CapabilityAnnotationError("requirement fields are invalid") from error
@@ -377,24 +459,20 @@ def capability_analysis_fingerprint(
             }
             for item in request.invocations
         ],
-        "family_members": [
+        "family_manifest": (
             {
-                "capability_id": member.capability_id,
-                "invocations": [
+                "member_count": len(request.family_members),
+                "evidence_ids": sorted(
                     {
-                        "entry_id": item.entry_id,
-                        "mode": item.mode.value,
-                        "command_body": item.command_body,
-                        "canonical_usages": list(item.canonical_usages),
-                        "aliases": list(item.aliases),
-                        "requires_mention": item.requires_mention,
+                        evidence_id
+                        for member in request.family_members
+                        for evidence_id in member.evidence_ids
                     }
-                    for item in member.invocations
-                ],
-                "evidence_ids": list(member.evidence_ids),
+                ),
             }
-            for member in request.family_members
-        ],
+            if request.family_members
+            else None
+        ),
         "gate_candidates": [
             {
                 "candidate_id": item.candidate_id,
@@ -417,6 +495,17 @@ def capability_analysis_fingerprint(
                 "rate_limit_scope": (
                     item.rate_limit_scope.value if item.rate_limit_scope is not None else None
                 ),
+                "permission_alternatives": [
+                    {
+                        "kind": alternative.kind.value,
+                        "statement": alternative.statement,
+                        "role": alternative.role.value if alternative.role is not None else None,
+                        "scene": (
+                            alternative.scene.value if alternative.scene is not None else None
+                        ),
+                    }
+                    for alternative in item.permission_alternatives
+                ],
             }
             for item in request.fixed_constraints
         ],
@@ -476,6 +565,27 @@ def project_capability_annotation(
         raise TypeError("request must be CapabilityAnalysisRequest")
     if not isinstance(output, CapabilityAnalysisOutput):
         raise TypeError("output must be CapabilityAnalysisOutput")
+    try:
+        return _project_capability_annotation(
+            request,
+            output,
+            analysis_revision=analysis_revision,
+        )
+    except CapabilityAnnotationProjectionError:
+        raise
+    except CapabilityAnnotationError as error:
+        raise CapabilityAnnotationProjectionError(
+            CapabilityAnnotationProjectionCode.CONTRACT,
+            str(error),
+        ) from error
+
+
+def _project_capability_annotation(
+    request: CapabilityAnalysisRequest,
+    output: CapabilityAnalysisOutput,
+    *,
+    analysis_revision: str,
+) -> CapabilityTeachingAnnotation:
     if not output.knowledge_enabled:
         return CapabilityTeachingAnnotation(
             capability_id=request.capability.capability_id,
@@ -536,83 +646,134 @@ def _project_teaching_entry(
 ) -> CapabilityTeachingEntry:
     grouped: dict[SemanticClaimKind, list[str]] = {kind: [] for kind in SemanticClaimKind}
     for claim in output.claims:
-        statement = _validated_model_text(
-            claim.statement,
-            request=request,
-            evidence_units=evidence_units,
-        )
-        if claim.kind is SemanticClaimKind.USAGE:
-            statement = _validated_usage(
-                statement,
-                target=target,
-                display_trigger=output.display_trigger,
+        try:
+            statement = _validated_model_text(
+                claim.statement,
+                request=request,
+                evidence_units=evidence_units,
             )
+        except CapabilityAnnotationError as error:
+            raise CapabilityAnnotationProjectionError(
+                CapabilityAnnotationProjectionCode.PUBLIC_TEXT,
+                str(error),
+            ) from error
+        if claim.kind is SemanticClaimKind.USAGE:
+            try:
+                statement = _validated_usage(
+                    statement,
+                    target=target,
+                    display_trigger=output.display_trigger,
+                )
+            except CapabilityAnnotationError as error:
+                raise CapabilityAnnotationProjectionError(
+                    CapabilityAnnotationProjectionCode.USAGE,
+                    str(error),
+                ) from error
         grouped[claim.kind].append(statement)
     names = _canonical_texts(grouped[SemanticClaimKind.NAME])
     summaries = _canonical_texts(grouped[SemanticClaimKind.SUMMARY])
     if len(names) != 1 or len(summaries) != 1:
-        raise CapabilityAnnotationError(
-            "teaching entry requires exactly one name and summary claim"
+        raise CapabilityAnnotationProjectionError(
+            CapabilityAnnotationProjectionCode.NAME_SUMMARY,
+            "teaching entry requires exactly one name and summary claim",
         )
     usages = _ordered_unique(grouped[SemanticClaimKind.USAGE])
     if len(usages) > MAX_EXPLICIT_USAGE_ALTERNATIVES:
-        raise CapabilityAnnotationError(
+        raise CapabilityAnnotationProjectionError(
+            CapabilityAnnotationProjectionCode.USAGE,
             "teaching entry allows at most three usages; larger fixed alternatives "
-            "must use a concept slot"
+            "must use a concept slot",
         )
-    requirements = tuple(
-        dict.fromkeys(
-            sorted(
-                (
-                    CapabilityTeachingRequirement(
-                        kind=item.kind,
-                        text=_validated_model_text(
-                            item.statement,
-                            request=request,
-                            evidence_units=evidence_units,
+    try:
+        requirements = tuple(
+            dict.fromkeys(
+                sorted(
+                    (
+                        CapabilityTeachingRequirement(
+                            kind=item.kind,
+                            text=_validated_model_text(
+                                item.statement,
+                                request=request,
+                                evidence_units=evidence_units,
+                            ),
+                            role=item.role,
+                            rate_limit_policy=item.rate_limit_policy,
+                            rate_limit_scope=item.rate_limit_scope,
+                            alternatives=tuple(
+                                CapabilityTeachingPermissionAlternative(
+                                    kind=alternative.kind,
+                                    text=_validated_model_text(
+                                        alternative.statement,
+                                        request=request,
+                                        evidence_units=evidence_units,
+                                    ),
+                                    role=alternative.role,
+                                    scene=alternative.scene,
+                                )
+                                for alternative in item.permission_alternatives
+                            ),
+                        )
+                        for item in (*request.fixed_constraints, *output.constraints)
+                    ),
+                    key=lambda item: (
+                        _REQUIREMENT_KIND_ORDER[item.kind],
+                        item.role.value if item.role is not None else "",
+                        item.rate_limit_policy.value if item.rate_limit_policy is not None else "",
+                        item.rate_limit_scope.value if item.rate_limit_scope is not None else "",
+                        tuple(
+                            (
+                                alternative.kind.value,
+                                alternative.role.value if alternative.role is not None else "",
+                                alternative.scene.value if alternative.scene is not None else "",
+                                alternative.text.casefold(),
+                                alternative.text,
+                            )
+                            for alternative in item.alternatives
                         ),
-                        role=item.role,
-                        rate_limit_policy=item.rate_limit_policy,
-                        rate_limit_scope=item.rate_limit_scope,
-                    )
-                    for item in (*request.fixed_constraints, *output.constraints)
-                ),
-                key=lambda item: (
-                    _REQUIREMENT_KIND_ORDER[item.kind],
-                    item.role.value if item.role is not None else "",
-                    item.rate_limit_policy.value if item.rate_limit_policy is not None else "",
-                    item.rate_limit_scope.value if item.rate_limit_scope is not None else "",
-                    item.text.casefold(),
-                    item.text,
-                ),
+                        item.text.casefold(),
+                        item.text,
+                    ),
+                )
             )
         )
-    )
-    return CapabilityTeachingEntry(
-        entry_id=output.entry_id,
-        name=names[0],
-        summary=summaries[0],
-        usages=usages,
-        search_terms=_reconciled_baseline_members(
-            request,
-            output,
-            grouped,
-            field=BaselineMemberField.SEARCH_TERMS,
-            claim_kind=SemanticClaimKind.SEARCH_TERM,
-            limit=24,
-            evidence_units=evidence_units,
-        ),
-        behavior_boundaries=_reconciled_baseline_members(
-            request,
-            output,
-            grouped,
-            field=BaselineMemberField.BEHAVIOR_BOUNDARIES,
-            claim_kind=SemanticClaimKind.BEHAVIOR_BOUNDARY,
-            limit=16,
-            evidence_units=evidence_units,
-        ),
-        requirements=requirements,
-    )
+    except CapabilityAnnotationError as error:
+        raise CapabilityAnnotationProjectionError(
+            CapabilityAnnotationProjectionCode.REQUIREMENT,
+            str(error),
+        ) from error
+    try:
+        return CapabilityTeachingEntry(
+            entry_id=output.entry_id,
+            name=names[0],
+            summary=summaries[0],
+            usages=usages,
+            search_terms=_reconciled_baseline_members(
+                request,
+                output,
+                grouped,
+                field=BaselineMemberField.SEARCH_TERMS,
+                claim_kind=SemanticClaimKind.SEARCH_TERM,
+                limit=24,
+                evidence_units=evidence_units,
+            ),
+            behavior_boundaries=_reconciled_baseline_members(
+                request,
+                output,
+                grouped,
+                field=BaselineMemberField.BEHAVIOR_BOUNDARIES,
+                claim_kind=SemanticClaimKind.BEHAVIOR_BOUNDARY,
+                limit=16,
+                evidence_units=evidence_units,
+            ),
+            requirements=requirements,
+        )
+    except CapabilityAnnotationProjectionError:
+        raise
+    except CapabilityAnnotationError as error:
+        raise CapabilityAnnotationProjectionError(
+            CapabilityAnnotationProjectionCode.CONTRACT,
+            str(error),
+        ) from error
 
 
 def _reconciled_baseline_members(
@@ -628,33 +789,50 @@ def _reconciled_baseline_members(
     baseline = _baseline_entry(request, output.entry_id)
     values = list(getattr(baseline, field.value)) if baseline is not None else []
     for change in (item for item in output.baseline_changes if item.field is field):
-        old_value = _validated_model_text(
-            change.old_value,
-            request=request,
-            evidence_units=evidence_units,
-        )
+        try:
+            old_value = _validated_model_text(
+                change.old_value,
+                request=request,
+                evidence_units=evidence_units,
+            )
+        except CapabilityAnnotationError as error:
+            raise CapabilityAnnotationProjectionError(
+                CapabilityAnnotationProjectionCode.PUBLIC_TEXT,
+                str(error),
+            ) from error
         if old_value not in values:
-            raise CapabilityAnnotationError(
-                "baseline change old_value does not exist in the previous entry"
+            raise CapabilityAnnotationProjectionError(
+                CapabilityAnnotationProjectionCode.BASELINE,
+                "baseline change old_value does not exist in the previous entry",
             )
         index = values.index(old_value)
         if change.operation is BaselineChangeOperation.REMOVE:
             values.pop(index)
             continue
         assert change.new_value is not None
-        new_value = _validated_model_text(
-            change.new_value,
-            request=request,
-            evidence_units=evidence_units,
-        )
+        try:
+            new_value = _validated_model_text(
+                change.new_value,
+                request=request,
+                evidence_units=evidence_units,
+            )
+        except CapabilityAnnotationError as error:
+            raise CapabilityAnnotationProjectionError(
+                CapabilityAnnotationProjectionCode.PUBLIC_TEXT,
+                str(error),
+            ) from error
         if new_value in values:
-            raise CapabilityAnnotationError(
-                "baseline replacement must not duplicate an existing member"
+            raise CapabilityAnnotationProjectionError(
+                CapabilityAnnotationProjectionCode.BASELINE,
+                "baseline replacement must not duplicate an existing member",
             )
         values[index] = new_value
     merged = _canonical_texts((*values, *grouped[claim_kind]))
     if len(merged) > limit:
-        raise CapabilityAnnotationError(f"reconciled {field.value} exceeds its public member limit")
+        raise CapabilityAnnotationProjectionError(
+            CapabilityAnnotationProjectionCode.PUBLIC_MEMBERS,
+            f"reconciled {field.value} exceeds its public member limit",
+        )
     return merged
 
 
@@ -750,6 +928,51 @@ def validate_capability_usage_pattern(
     return normalized
 
 
+_STRUCTURAL_USAGE_SLOT = re.compile(r"(?P<opening><|\[)slot:(?P<index>\d+)(?P<closing>>|\])")
+_PUBLIC_USAGE_SLOT = r"[^<>\[\](){}\s]{1,40}"
+
+
+def validate_capability_usage_template(value: str, template: str) -> str:
+    """验证公开槽位命名没有改变 Parser 拥有的调用结构。"""
+    normalized = validate_capability_usage_pattern(value)
+    normalized_template = validate_capability_usage_pattern(template)
+    markers = tuple(_STRUCTURAL_USAGE_SLOT.finditer(normalized_template))
+    if not markers:
+        if normalized != normalized_template:
+            raise CapabilityAnnotationError(
+                "usage must match the parser-provided structural template"
+            )
+        return normalized
+
+    pattern_parts: list[str] = []
+    cursor = 0
+    groups: set[str] = set()
+    for marker in markers:
+        pattern_parts.append(re.escape(normalized_template[cursor : marker.start()]))
+        opening = marker.group("opening")
+        closing = marker.group("closing")
+        if (opening, closing) not in {("<", ">"), ("[", "]")}:
+            raise CapabilityAnnotationError("canonical usage contains an invalid structural slot")
+        group = f"slot_{marker.group('index')}"
+        pattern_parts.append(re.escape(opening))
+        if group in groups:
+            pattern_parts.append(rf"(?P={group})")
+        else:
+            pattern_parts.append(rf"(?P<{group}>{_PUBLIC_USAGE_SLOT})")
+            groups.add(group)
+        pattern_parts.append(re.escape(closing))
+        cursor = marker.end()
+    pattern_parts.append(re.escape(normalized_template[cursor:]))
+    match = re.fullmatch("".join(pattern_parts), normalized)
+    if match is None:
+        raise CapabilityAnnotationError(
+            "usage must preserve the parser-provided structure while naming every slot"
+        )
+    if any(re.fullmatch(r"slot:\d+", value) for value in match.groupdict().values()):
+        raise CapabilityAnnotationError("usage must replace every internal slot identifier")
+    return normalized
+
+
 _GENERIC_INPUT_SLOTS = frozenset(
     {
         "内容",
@@ -786,9 +1009,15 @@ def _validated_usage(
 ) -> str:
     normalized = validate_capability_usage_pattern(value)
     if target.canonical_usages:
-        if normalized not in target.canonical_usages:
+        for template in target.canonical_usages:
+            try:
+                validate_capability_usage_template(normalized, template)
+            except CapabilityAnnotationError:
+                continue
+            break
+        else:
             raise CapabilityAnnotationError(
-                "usage must match a deterministic parser-provided canonical usage"
+                "usage must match a parser-provided structural template"
             )
         if (
             target.requires_mention
@@ -937,6 +1166,14 @@ def _requirements(value: object) -> tuple[CapabilityTeachingRequirement, ...]:
     return tuple(CapabilityTeachingRequirement.from_dict(item) for item in value)
 
 
+def _permission_alternatives(
+    value: object,
+) -> tuple[CapabilityTeachingPermissionAlternative, ...]:
+    if not isinstance(value, list):
+        raise CapabilityAnnotationError("permission alternatives must be a list")
+    return tuple(CapabilityTeachingPermissionAlternative.from_dict(item) for item in value)
+
+
 def _evidence_manifest(value: object) -> tuple[CapabilityAnnotationEvidenceRef, ...]:
     if not isinstance(value, list):
         raise CapabilityAnnotationError("evidence_manifest must be a list")
@@ -958,12 +1195,16 @@ __all__ = (
     "CAPABILITY_ANNOTATION_TASK",
     "CapabilityAnnotationError",
     "CapabilityAnnotationEvidenceRef",
+    "CapabilityAnnotationProjectionCode",
+    "CapabilityAnnotationProjectionError",
     "CapabilityTeachingAnnotation",
     "CapabilityTeachingEntry",
+    "CapabilityTeachingPermissionAlternative",
     "CapabilityTeachingRequirement",
     "capability_analysis_fingerprint",
     "project_capability_annotation",
     "validate_capability_public_statement",
     "validate_capability_usage_pattern",
+    "validate_capability_usage_template",
     "validate_complete_aggregate_usage",
 )

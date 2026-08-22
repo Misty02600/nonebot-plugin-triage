@@ -2,6 +2,9 @@
 
 > 2026-08-17：[ADR-0084](0084-install-pydantic-ai-control-plane-by-default-and-keep-providers-and-adapters-optional.md)
 > 将本 ADR 的 Harness 与 Jedi 从模型 extra 移入基础依赖；工具职责与安全边界不变。
+>
+> 2026-08-21：[ADR-0104](0104-preload-one-hop-python-dependency-source-for-teaching.md)
+> 细化教学链路的依赖导航：可预载一层唯一外部函数，安全根、revision 和不递归边界继续有效。
 
 | 状态 | 决策日期 |
 |---|---|

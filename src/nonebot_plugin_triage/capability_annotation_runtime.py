@@ -16,7 +16,10 @@ from nbtriage.capability_annotations import (
     CAPABILITY_ANNOTATION_TASK,
 )
 from nbtriage.capability_model_adapter import CapabilityAnalysisToolRuntimeFactory
-from nbtriage.opencode_go_contracts import OPENCODE_GO_SEMANTIC_API_FAMILY
+from nbtriage.opencode_go_contracts import (
+    OPENCODE_GO_SEMANTIC_API_FAMILY,
+    OPENCODE_GO_THINKING_SETTINGS_REVISION,
+)
 from nbtriage.task_model_settings import (
     PROVIDER_DEFAULT_SETTINGS_REVISION,
     task_model_settings_revision,
@@ -38,6 +41,7 @@ CAPABILITY_ANNOTATION_EVALUATION = unverified_evaluation_id(
 CAPABILITY_ANNOTATION_ANALYSIS_REVISION = (
     f"{CAPABILITY_ANNOTATION_TASK}:{CAPABILITY_ANNOTATION_PROMPT_ID}:"
     f"{CAPABILITY_ANNOTATION_REQUEST_REVISION}:"
+    f"{OPENCODE_GO_THINKING_SETTINGS_REVISION}:"
     f"{CAPABILITY_ANNOTATION_EVALUATION}"
 )
 
@@ -147,7 +151,9 @@ def capability_annotation_analysis_revision(config: NBTriageConfig) -> str:
     model = config.nbtriage_model_name or "none"
     connection_revision = model_connection_revision(config)
     settings_revision = PROVIDER_DEFAULT_SETTINGS_REVISION
-    if ":" in model:
+    if is_opencode_go_profile(config):
+        settings_revision = OPENCODE_GO_THINKING_SETTINGS_REVISION
+    elif ":" in model:
         provider, provider_model = model.split(":", 1)
         settings_revision = task_model_settings_revision(provider, provider_model)
     if (

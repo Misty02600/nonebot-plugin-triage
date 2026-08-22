@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
+from itertools import pairwise
 from typing import Any
 
 from nbtriage.baselines import SECRET_PATTERNS
@@ -64,6 +65,27 @@ NEGATED_ACTION = re.compile(
 CODE_IDENTIFIER_SECRET_VALUE = re.compile(
     r"^(?:self|token|request|context|ctx|config|settings)\."
     r"[A-Za-z_][A-Za-z0-9_.]*$"
+)
+
+_PERSISTED_ASSIGNMENT = re.compile(
+    r"(?i)(?<![A-Za-z0-9_-])(?P<label>[A-Za-z][A-Za-z0-9_-]{0,127})"
+    r"\s*[:=]\s*['\"]?(?P<value>[^\s,'\";\]}]{4,})"
+)
+_SECRET_LABEL_COMPONENTS = frozenset(
+    {"authorization", "cookie", "password", "passwd", "pwd", "secret", "session", "token"}
+)
+_SECRET_LABEL_PAIRS = frozenset(
+    {("access", "key"), ("api", "key"), ("client", "secret"), ("private", "key")}
+)
+_PERSISTED_SECRET_PATTERNS = (
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+    re.compile(
+        r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?i)https?://[^/@\s:]+:[^/@\s]+@"),
 )
 
 
@@ -140,6 +162,29 @@ def _has_credential_exposure(text: str) -> bool:
             if not CODE_IDENTIFIER_SECRET_VALUE.fullmatch(value):
                 return True
     return False
+
+
+def contains_credential_exposure(text: str) -> bool:
+    """判断一段准备持久化或外发的文字是否疑似包含凭据。"""
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    if _has_credential_exposure(text):
+        return True
+    for match in _PERSISTED_ASSIGNMENT.finditer(text):
+        if not _is_secret_assignment_label(match.group("label")):
+            continue
+        value = match.group("value").lstrip("'\"")
+        if not CODE_IDENTIFIER_SECRET_VALUE.fullmatch(value):
+            return True
+    return any(pattern.search(text) is not None for pattern in _PERSISTED_SECRET_PATTERNS)
+
+
+def _is_secret_assignment_label(label: str) -> bool:
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", label)
+    components = tuple(part for part in re.split(r"[_-]+", separated.casefold()) if part)
+    if _SECRET_LABEL_COMPONENTS.intersection(components):
+        return True
+    return any(pair in pairwise(components) for pair in _SECRET_LABEL_PAIRS)
 
 
 def _string(value: Any) -> str:

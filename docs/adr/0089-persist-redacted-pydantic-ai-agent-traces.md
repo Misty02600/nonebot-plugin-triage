@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；已实现 | 2026-08-17 |
+| 已采纳；原始内容维护模式由 [ADR-0097](0097-capture-complete-capability-model-output-in-explicit-maintenance-runs.md) 部分替代 | 2026-08-17 |
 
 > [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) 已补充连接地址身份：轨迹保存
 > 规范化 Base URL 的 SHA-256 revision，不保存完整 URL。

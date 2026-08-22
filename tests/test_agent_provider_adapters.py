@@ -145,6 +145,10 @@ def test_openai_agent_step_uses_native_function_call_over_fake_http(monkeypatch)
             return sdk_client
 
         monkeypatch.setattr("nbtriage.openai_adapter.AsyncOpenAI", fake_sdk_factory)
+        monkeypatch.setattr(
+            "nbtriage.openai_adapter.provider_http_client",
+            lambda **_kwargs: http_client,
+        )
         try:
             client = create_openai_responses_agent_step_client(
                 api_key="test-api-key",
@@ -159,7 +163,8 @@ def test_openai_agent_step_uses_native_function_call_over_fake_http(monkeypatch)
         assert sdk_options == {
             "api_key": "test-api-key",
             "timeout": 12,
-            "max_retries": 0,
+            "max_retries": 2,
+            "http_client": http_client,
         }
         assert response.action.kind == "request_evidence"
         assert response.provider_request_id == "resp_agent_fixture"
@@ -226,6 +231,10 @@ def test_anthropic_agent_step_uses_native_tool_use_over_fake_http(monkeypatch) -
             return sdk_client
 
         monkeypatch.setattr("nbtriage.anthropic_adapter.AsyncAnthropic", fake_sdk_factory)
+        monkeypatch.setattr(
+            "nbtriage.anthropic_adapter.provider_http_client",
+            lambda **_kwargs: http_client,
+        )
         try:
             client = create_anthropic_messages_agent_step_client(
                 api_key="test-api-key",
@@ -242,7 +251,8 @@ def test_anthropic_agent_step_uses_native_tool_use_over_fake_http(monkeypatch) -
         assert sdk_options == {
             "api_key": "test-api-key",
             "timeout": 12,
-            "max_retries": 0,
+            "max_retries": 2,
+            "http_client": http_client,
         }
         assert response.action.kind == "request_evidence"
         assert response.provider_request_id == "msg_agent_fixture"
@@ -417,6 +427,10 @@ def test_deepseek_agent_step_uses_bounded_native_function_call_over_fake_http(
         monkeypatch.setattr(
             "tools.nbtriage_maintainer.deepseek_adapter.AsyncOpenAI", fake_sdk_factory
         )
+        monkeypatch.setattr(
+            "tools.nbtriage_maintainer.deepseek_adapter.provider_http_client",
+            lambda **_kwargs: http_client,
+        )
         try:
             client = create_deepseek_responses_agent_step_client(
                 api_key="test-api-key",
@@ -434,7 +448,8 @@ def test_deepseek_agent_step_uses_bounded_native_function_call_over_fake_http(
             "api_key": "test-api-key",
             "base_url": "https://api.deepseek.com",
             "timeout": 12,
-            "max_retries": 0,
+            "max_retries": 2,
+            "http_client": http_client,
         }
         assert response.action.kind == "request_evidence"
         assert response.provider_request_id == "resp_deepseek_agent_fixture"
@@ -620,6 +635,10 @@ def test_opencode_go_agent_step_uses_chat_tools_over_fake_http(monkeypatch) -> N
             "support.opencode_go_backend.AsyncOpenAI",
             fake_sdk_factory,
         )
+        monkeypatch.setattr(
+            "support.opencode_go_backend.provider_http_client",
+            lambda **_kwargs: http_client,
+        )
         try:
             client = create_opencode_go_agent_step_client(
                 api_key="test-api-key",
@@ -637,7 +656,8 @@ def test_opencode_go_agent_step_uses_chat_tools_over_fake_http(monkeypatch) -> N
             "api_key": "test-api-key",
             "base_url": "https://opencode.ai/zen/go/v1",
             "timeout": 12,
-            "max_retries": 0,
+            "max_retries": 2,
+            "http_client": http_client,
         }
         assert response.action.kind == "request_evidence"
         assert response.provider_request_id == "chatcmpl_opencode_go_fixture"
@@ -654,13 +674,13 @@ def test_opencode_go_agent_step_uses_chat_tools_over_fake_http(monkeypatch) -> N
     assert captured["url"] == "https://opencode.ai/zen/go/v1/chat/completions"
     assert captured["authorization"] == "Bearer test-api-key"
     body = captured["body"]
-    assert body["thinking"] == {"type": "disabled"}
+    assert body["thinking"] == {"type": "enabled"}
     assert body["temperature"] == 0
     assert body["max_tokens"] == 500
     assert body["parallel_tool_calls"] is False
     assert body["tool_choice"] == "auto"
     assert "max_completion_tokens" not in body
-    assert "reasoning_effort" not in body
+    assert body["reasoning_effort"] == "high"
     assert "store" not in body
     assert [tool["function"]["name"] for tool in body["tools"]] == [AGENT_ACTION_TOOL_NAME]
     assert "strict" not in body["tools"][0]["function"]

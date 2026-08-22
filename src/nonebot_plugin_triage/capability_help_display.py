@@ -327,46 +327,30 @@ def _render_usages(
 
 
 def _annotation_description(annotation: CapabilityTeachingEntry) -> str:
-    clauses: list[str] = []
-    if annotation.summary:
-        clauses.append(annotation.summary)
-    clauses.extend(
-        item.text
-        for item in annotation.requirements
-        if item.kind is SemanticConstraintKind.ROLE and item.role is TeachingRole.CUSTOM
-    )
-    if any(item.kind is SemanticConstraintKind.ACCESS for item in annotation.requirements):
-        clauses.append("需授权")
-    clauses.extend(
-        item.text
-        for item in annotation.requirements
-        if item.kind is SemanticConstraintKind.RATE_LIMIT
-    )
-    return _join_clauses(tuple(clauses), max_length=400)
+    return _join_clauses((annotation.summary,), max_length=400)
 
 
 def _required_role(annotation: CapabilityTeachingEntry) -> TeachingRole | None:
-    roles = tuple(
-        item.role
-        for item in annotation.requirements
-        if item.kind is SemanticConstraintKind.ROLE and item.role is not None
+    permissions = tuple(
+        item for item in annotation.requirements if item.kind is SemanticConstraintKind.PERMISSION
     )
-    if not roles:
+    if len(permissions) != 1:
         return None
-    if TeachingRole.CUSTOM in roles:
-        return TeachingRole.CUSTOM
-    rank = {
-        TeachingRole.ADMIN: 0,
-        TeachingRole.OWNER: 1,
-        TeachingRole.SUPERUSER: 2,
-    }
-    return min(roles, key=rank.__getitem__)
+    alternatives = permissions[0].alternatives
+    if any(alternative.kind is not SemanticConstraintKind.ROLE for alternative in alternatives):
+        return None
+    roles = {alternative.role for alternative in alternatives}
+    if roles == {TeachingRole.SUPERUSER}:
+        return TeachingRole.SUPERUSER
+    if roles == {TeachingRole.ADMIN, TeachingRole.OWNER}:
+        return TeachingRole.ADMIN
+    return None
 
 
 def _migut_permission(role: TeachingRole | None) -> str | None:
     if role is TeachingRole.SUPERUSER:
         return "superuser"
-    if role in {TeachingRole.ADMIN, TeachingRole.OWNER}:
+    if role is TeachingRole.ADMIN:
         return "admin"
     return None
 

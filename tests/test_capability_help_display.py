@@ -20,10 +20,12 @@ from nbtriage.capability_analysis import (
     RateLimitScope,
     SemanticConstraintKind,
     TeachingRole,
+    TeachingScene,
 )
 from nbtriage.capability_annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
+    CapabilityTeachingPermissionAlternative,
     CapabilityTeachingRequirement,
 )
 from nonebot_plugin_triage.capability_help_display import (
@@ -299,11 +301,108 @@ def test_writer_projects_any_rate_limit_to_migut_help_cooldown_marker(
     command = yaml.safe_load(path.read_text(encoding="utf-8"))["commands"][0]
 
     assert command["has_cd"] is True
-    assert command["required_role"] == "custom"
+    assert "required_role" not in command
     assert "permission" not in command
-    assert command["description"] == (
-        "搜索图片出处；仅普通成员可用；需授权；每名用户连续使用需要等待冷却；全局并发达到上限时需要稍后再试"
+    assert command["description"] == "搜索图片出处"
+
+
+def test_writer_only_projects_lossless_native_permission_shapes(tmp_path: Path) -> None:
+    record = _record(
+        "plugin.manage:matcher",
+        module_name="plugin_manage",
+        command="管理",
     )
+    annotation = CapabilityTeachingAnnotation(
+        capability_id=record.capability_id,
+        request_fingerprint="5" * 64,
+        entries=(
+            CapabilityTeachingEntry(
+                entry_id="admin",
+                name="管理设置",
+                summary="调整管理设置。",
+                usages=("管理 设置",),
+                requirements=(
+                    CapabilityTeachingRequirement(
+                        kind=SemanticConstraintKind.PERMISSION,
+                        text="群管理员或群主可用。",
+                        alternatives=(
+                            CapabilityTeachingPermissionAlternative(
+                                kind=SemanticConstraintKind.ROLE,
+                                role=TeachingRole.ADMIN,
+                                text="群管理员可用。",
+                            ),
+                            CapabilityTeachingPermissionAlternative(
+                                kind=SemanticConstraintKind.ROLE,
+                                role=TeachingRole.OWNER,
+                                text="群主可用。",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            CapabilityTeachingEntry(
+                entry_id="mixed",
+                name="切换设置",
+                summary="切换当前会话设置。",
+                usages=("管理 切换",),
+                requirements=(
+                    CapabilityTeachingRequirement(
+                        kind=SemanticConstraintKind.PERMISSION,
+                        text="超级用户、私聊或群管理员满足任一条件即可。",
+                        alternatives=(
+                            CapabilityTeachingPermissionAlternative(
+                                kind=SemanticConstraintKind.ROLE,
+                                role=TeachingRole.SUPERUSER,
+                                text="超级用户可用。",
+                            ),
+                            CapabilityTeachingPermissionAlternative(
+                                kind=SemanticConstraintKind.SCENE,
+                                scene=TeachingScene.PRIVATE,
+                                text="私聊可用。",
+                            ),
+                            CapabilityTeachingPermissionAlternative(
+                                kind=SemanticConstraintKind.ROLE,
+                                role=TeachingRole.ADMIN,
+                                text="群管理员可用。",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            CapabilityTeachingEntry(
+                entry_id="channel",
+                name="频道设置",
+                summary="调整频道设置。",
+                usages=("管理 频道",),
+                requirements=(
+                    CapabilityTeachingRequirement(
+                        kind=SemanticConstraintKind.PERMISSION,
+                        text="频道管理员可用。",
+                        alternatives=(
+                            CapabilityTeachingPermissionAlternative(
+                                kind=SemanticConstraintKind.ROLE,
+                                role=TeachingRole.CHANNEL_ADMIN,
+                                text="频道管理员可用。",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    path = CapabilityHelpDisplayWriter(tmp_path).refresh(
+        CapabilitySnapshot.create((record,)),
+        lambda _capability_id: annotation,
+    )[0]
+    commands = {
+        item["display"]: item
+        for item in yaml.safe_load(path.read_text(encoding="utf-8"))["commands"]
+    }
+
+    assert commands["管理 设置"]["permission"] == "admin"
+    assert "permission" not in commands["管理 切换"]
+    assert "permission" not in commands["管理 频道"]
 
 
 def test_writer_rejects_case_insensitive_module_filename_collisions(tmp_path: Path) -> None:

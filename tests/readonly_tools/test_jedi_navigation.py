@@ -116,6 +116,50 @@ def test_go_to_definition_returns_revision_bound_dependency_location(
     }
 
 
+def test_compiled_definition_uses_unique_approved_package_stub(tmp_path: Path) -> None:
+    profile, project, dependency = _fixture_profile(tmp_path)
+    handler = project.path / "handler.py"
+    handler.write_text(
+        "from native_package import search\n\nsearch('term')\n",
+        encoding="utf-8",
+    )
+    package = dependency.path / "native_package"
+    package.mkdir()
+    stub = package / "__init__.pyi"
+    stub.write_text("def search(query: str) -> list[str]: ...\n", encoding="utf-8")
+    backend = _FakeJediBackend(
+        (
+            RawJediDefinition(
+                module_path=None,
+                name="search",
+                full_name="native_package.native_package.search",
+                kind="function",
+                line=None,
+                column=None,
+            ),
+        )
+    )
+
+    result = DefinitionNavigator(profile, backend=backend).go_to_definition(
+        GoToDefinitionRequest(
+            root_name="project",
+            relative_path="handler.py",
+            line=3,
+            column=1,
+            source_revision=source_revision(profile, "project", "handler.py"),
+        )
+    )
+
+    assert result.failure is None
+    assert len(result.definitions) == 1
+    definition = result.definitions[0]
+    assert definition.root_name == "dependencies"
+    assert definition.relative_path == "native_package/__init__.pyi"
+    assert definition.line == 1
+    assert definition.column == 4
+    assert definition.full_name == "native_package.native_package.search"
+
+
 def test_stale_source_revision_stops_before_jedi(tmp_path: Path) -> None:
     profile, project, _ = _fixture_profile(tmp_path)
     (project.path / "handler.py").write_text("target()\n", encoding="utf-8")

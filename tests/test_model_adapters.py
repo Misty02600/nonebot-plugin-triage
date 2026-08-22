@@ -297,7 +297,7 @@ def test_direct_adapter_enforces_single_call_budget() -> None:
         asyncio.run(client.generate(_request()))
 
 
-def test_openai_factory_binds_responses_model_and_disables_storage_and_retries(
+def test_openai_factory_binds_responses_model_and_uses_bounded_sdk_retries(
     monkeypatch,
 ) -> None:
     captured = {}
@@ -328,7 +328,7 @@ def test_openai_factory_binds_responses_model_and_disables_storage_and_retries(
     assert model.model_name == "gpt-4.1-mini"
     assert model.system == "openai"
     assert model.profile.get("supports_json_schema_output") is True
-    assert model.provider.client.max_retries == 0
+    assert model.provider.client.max_retries == 2
     assert captured["model_settings"] == {
         "openai_store": False,
         "max_tokens": 400,
@@ -407,6 +407,10 @@ def test_openai_factory_renders_native_responses_request_over_fake_http(monkeypa
             return sdk_client
 
         monkeypatch.setattr("nbtriage.openai_adapter.AsyncOpenAI", fake_sdk_factory)
+        monkeypatch.setattr(
+            "nbtriage.openai_adapter.provider_http_client",
+            lambda **_kwargs: http_client,
+        )
         try:
             client = create_openai_responses_b1_client(
                 api_key="test-api-key",
@@ -424,7 +428,8 @@ def test_openai_factory_renders_native_responses_request_over_fake_http(monkeypa
         assert sdk_options == {
             "api_key": "test-api-key",
             "timeout": 12,
-            "max_retries": 0,
+            "max_retries": 2,
+            "http_client": http_client,
         }
         assert response.provider_request_id == "resp_fixture"
         assert response.input_tokens == 10
@@ -448,7 +453,7 @@ def test_openai_factory_renders_native_responses_request_over_fake_http(monkeypa
     assert payload["case_input"]["case_id"] == "query-case"
 
 
-def test_deepseek_factory_binds_exact_responses_profile_and_non_thinking_mode(
+def test_deepseek_factory_binds_exact_responses_profile_and_sdk_retries(
     monkeypatch,
 ) -> None:
     captured = {}
@@ -488,7 +493,7 @@ def test_deepseek_factory_binds_exact_responses_profile_and_non_thinking_mode(
     assert model.profile.get("supports_json_schema_output") is True
     assert model.profile.get("supports_json_object_output") is True
     assert model.profile.get("openai_supports_strict_tool_definition") is False
-    assert model.provider.client.max_retries == 0
+    assert model.provider.client.max_retries == 2
     assert str(model.provider.client.base_url).rstrip("/") == "https://api.deepseek.com"
     assert captured["model_settings"] == {
         "temperature": 0,
@@ -603,6 +608,10 @@ def test_deepseek_factory_renders_native_responses_request_over_fake_http(
         monkeypatch.setattr(
             "tools.nbtriage_maintainer.deepseek_adapter.AsyncOpenAI", fake_sdk_factory
         )
+        monkeypatch.setattr(
+            "tools.nbtriage_maintainer.deepseek_adapter.provider_http_client",
+            lambda **_kwargs: http_client,
+        )
         try:
             client = create_deepseek_responses_b1_client(
                 api_key="test-api-key",
@@ -624,7 +633,8 @@ def test_deepseek_factory_renders_native_responses_request_over_fake_http(
             "api_key": "test-api-key",
             "base_url": "https://api.deepseek.com",
             "timeout": 12,
-            "max_retries": 0,
+            "max_retries": 2,
+            "http_client": http_client,
         }
         assert response.provider_request_id == "resp_deepseek_fixture"
         assert response.provider_name == "deepseek"
@@ -716,7 +726,9 @@ def test_deepseek_factory_does_not_retry_failed_fake_http_request(
     assert request_count == 1
 
 
-def test_anthropic_factory_binds_messages_model_and_disables_retries(monkeypatch) -> None:
+def test_anthropic_factory_binds_messages_model_and_uses_bounded_sdk_retries(
+    monkeypatch,
+) -> None:
     captured = {}
 
     async def fake_model_request(model, messages, **kwargs):
@@ -745,7 +757,7 @@ def test_anthropic_factory_binds_messages_model_and_disables_retries(monkeypatch
     assert model.model_name == "claude-sonnet-4-5"
     assert model.system == "anthropic"
     assert model.profile.get("supports_json_schema_output") is True
-    assert model.provider.client.max_retries == 0
+    assert model.provider.client.max_retries == 2
     assert captured["model_settings"] == {"max_tokens": 400, "timeout": 12}
     assert captured["instrument"] is False
 
@@ -806,6 +818,10 @@ def test_anthropic_factory_renders_native_messages_request_over_fake_http(
             return sdk_client
 
         monkeypatch.setattr("nbtriage.anthropic_adapter.AsyncAnthropic", fake_sdk_factory)
+        monkeypatch.setattr(
+            "nbtriage.anthropic_adapter.provider_http_client",
+            lambda **_kwargs: http_client,
+        )
         try:
             client = create_anthropic_messages_b1_client(
                 api_key="test-api-key",
@@ -823,7 +839,8 @@ def test_anthropic_factory_renders_native_messages_request_over_fake_http(
         assert sdk_options == {
             "api_key": "test-api-key",
             "timeout": 12,
-            "max_retries": 0,
+            "max_retries": 2,
+            "http_client": http_client,
         }
         assert response.provider_request_id == "msg_fixture"
         assert response.input_tokens == 10

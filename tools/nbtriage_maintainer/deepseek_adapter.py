@@ -9,6 +9,7 @@ from pydantic_ai.providers.deepseek import DeepSeekProvider
 
 from nbtriage.model_adapters import PydanticAIB1Client
 from nbtriage.model_contracts import B1ProviderError
+from nbtriage.provider_http_diagnostics import provider_http_client
 from nbtriage.pydantic_agent_adapter import PydanticAIAgentStepClient
 
 DEEPSEEK_RESPONSES_PROVIDER_ID = "deepseek-responses"
@@ -59,7 +60,7 @@ def create_deepseek_responses_agent_step_client(
     timeout_seconds: float = 60.0,
     max_calls: int = 1,
 ) -> PydanticAIAgentStepClient:
-    """构造固定为非思考模式、零 SDK 重试的 DeepSeek Agent 单步客户端。"""
+    """构造固定为非思考模式、由 SDK 处理有限网络重试的 DeepSeek Agent 客户端。"""
     pydantic_model = _create_model(
         api_key=api_key,
         model=model,
@@ -92,7 +93,8 @@ def _create_model(
         api_key=api_key,
         base_url=DEEPSEEK_RESPONSES_BASE_URL,
         timeout=timeout_seconds,
-        max_retries=0,
+        max_retries=2,
+        http_client=provider_http_client(timeout_seconds=timeout_seconds),
     )
     return OpenAIResponsesModel(
         model,

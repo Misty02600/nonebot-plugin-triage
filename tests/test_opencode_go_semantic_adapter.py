@@ -126,7 +126,8 @@ def test_opencode_go_semantic_client_uses_one_output_tool_and_parses_result(
     assert captured["url"] == f"{OPENCODE_GO_BASE_URL}/chat/completions"
     body = captured["body"]
     assert isinstance(body, dict)
-    assert body["thinking"] == {"type": "disabled"}
+    assert body["thinking"] == {"type": "enabled"}
+    assert body["reasoning_effort"] == "high"
     assert body["temperature"] == 0
     assert body["parallel_tool_calls"] is False
     assert body["tool_choice"] == "required"
@@ -288,7 +289,8 @@ def test_opencode_go_public_guidance_uses_one_output_tool_and_public_facts(
     assert captured["url"] == f"{OPENCODE_GO_BASE_URL}/chat/completions"
     body = captured["body"]
     assert isinstance(body, dict)
-    assert body["thinking"] == {"type": "disabled"}
+    assert body["thinking"] == {"type": "enabled"}
+    assert body["reasoning_effort"] == "high"
     assert body["temperature"] == 0
     assert body["parallel_tool_calls"] is False
     assert body["tool_choice"] == "required"

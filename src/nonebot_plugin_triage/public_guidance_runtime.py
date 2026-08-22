@@ -39,6 +39,10 @@ class PublicGuidanceTaskQualification:
     privacy_policy: str
     budget_profile: str
     evaluation: str | None
+    connection_revision: str = "provider-default"
+    settings_revision: str = "provider-default"
+    timeout_seconds: float = 60.0
+    max_output_tokens: int = PUBLIC_GUIDANCE_MAX_OUTPUT_TOKENS
     verified: bool = True
 
 
@@ -90,8 +94,12 @@ def create_public_guidance_client_factory(
         binding.provider,
         binding.model_name,
         binding.api_family,
+        binding.connection_revision,
+        binding.settings_revision,
     )
-    verified = qualification in qualified_tasks
+    verified = any(
+        _same_public_guidance_target(candidate, qualification) for candidate in qualified_tasks
+    )
     if not verified:
         logger.info(
             "NoneBot Triage public guidance is using an unverified model combination: {}",
@@ -120,15 +128,9 @@ def _public_guidance_qualification(
     provider: str,
     model: str,
     api_family: str,
+    connection_revision: str,
+    settings_revision: str,
 ) -> PublicGuidanceTaskQualification:
-    verified_profile = (
-        is_opencode_go_profile(config)
-        and provider == "opencode-go"
-        and api_family == "chat-completions"
-        and model == "deepseek-v4-flash"
-        and config.nbtriage_model_max_output_tokens == PUBLIC_GUIDANCE_MAX_OUTPUT_TOKENS
-        and config.nbtriage_model_timeout_seconds == 60.0
-    )
     return PublicGuidanceTaskQualification(
         provider=provider,
         api_family=api_family,
@@ -138,15 +140,37 @@ def _public_guidance_qualification(
         prompt_id=PUBLIC_GUIDANCE_PROMPT_ID,
         privacy_policy=PUBLIC_GUIDANCE_PRIVACY_POLICY,
         budget_profile=PUBLIC_GUIDANCE_BUDGET_PROFILE,
-        evaluation=(
-            PUBLIC_GUIDANCE_EVALUATION
-            if verified_profile
-            else unverified_evaluation_id(
-                task=PUBLIC_GUIDANCE_TASK,
-                prompt_id=PUBLIC_GUIDANCE_PROMPT_ID,
-            )
+        evaluation=unverified_evaluation_id(
+            task=PUBLIC_GUIDANCE_TASK,
+            prompt_id=PUBLIC_GUIDANCE_PROMPT_ID,
         ),
-        verified=verified_profile,
+        connection_revision=connection_revision,
+        settings_revision=settings_revision,
+        timeout_seconds=config.nbtriage_model_timeout_seconds,
+        max_output_tokens=config.nbtriage_model_max_output_tokens,
+        verified=False,
+    )
+
+
+def _same_public_guidance_target(
+    qualified: PublicGuidanceTaskQualification,
+    candidate: PublicGuidanceTaskQualification,
+) -> bool:
+    return (
+        qualified.provider == candidate.provider
+        and qualified.api_family == candidate.api_family
+        and qualified.model == candidate.model
+        and qualified.task == candidate.task
+        and qualified.schema_version == candidate.schema_version
+        and qualified.prompt_id == candidate.prompt_id
+        and qualified.privacy_policy == candidate.privacy_policy
+        and qualified.budget_profile == candidate.budget_profile
+        and qualified.connection_revision == candidate.connection_revision
+        and qualified.settings_revision == candidate.settings_revision
+        and qualified.timeout_seconds == candidate.timeout_seconds
+        and qualified.max_output_tokens == candidate.max_output_tokens
+        and qualified.verified
+        and qualified.evaluation is not None
     )
 
 
