@@ -14,7 +14,7 @@ from nbtriage.capability_annotations import (
     CapabilityTeachingAnnotation,
 )
 
-CAPABILITY_ANNOTATION_CACHE_SCHEMA_VERSION = 2
+CAPABILITY_ANNOTATION_CACHE_SCHEMA_VERSION = 3
 
 _MAX_CACHE_FILENAME_LENGTH = 180
 _MAX_UNITS_PER_PLUGIN = 4_096
@@ -144,44 +144,54 @@ class CapabilityAnnotationLastAttempt:
 class CapabilityAnnotationCacheUnit:
     analysis_unit_id: str
     last_good: CapabilityTeachingAnnotation | None = None
+    pending: CapabilityTeachingAnnotation | None = None
     last_attempt: CapabilityAnnotationLastAttempt | None = None
 
     def __post_init__(self) -> None:
         _require_bounded_safe_string(self.analysis_unit_id, "analysis unit ID", maximum=128)
-        if self.last_good is None and self.last_attempt is None:
-            raise CapabilityAnnotationCacheError("cache unit has neither last-good nor attempt")
+        if self.last_good is None and self.pending is None and self.last_attempt is None:
+            raise CapabilityAnnotationCacheError(
+                "cache unit has neither last-good, pending, nor attempt"
+            )
         if self.last_attempt is not None and not isinstance(
             self.last_attempt, CapabilityAnnotationLastAttempt
         ):
             raise CapabilityAnnotationCacheError("unit last attempt is invalid")
-        if self.last_good is not None:
-            if not isinstance(self.last_good, CapabilityTeachingAnnotation):
-                raise CapabilityAnnotationCacheError("unit last-good annotation is invalid")
-            if self.last_good.capability_id != self.analysis_unit_id:
+        for annotation, label in (
+            (self.last_good, "last-good"),
+            (self.pending, "pending"),
+        ):
+            if annotation is None:
+                continue
+            if not isinstance(annotation, CapabilityTeachingAnnotation):
+                raise CapabilityAnnotationCacheError(f"unit {label} annotation is invalid")
+            if annotation.capability_id != self.analysis_unit_id:
                 raise CapabilityAnnotationCacheError(
-                    "unit last-good capability ID does not match analysis unit ID"
+                    f"unit {label} capability ID does not match analysis unit ID"
                 )
         if self.last_attempt is not None and self.last_attempt.state != "failed":
-            if self.last_good is None:
+            annotation = self.pending or self.last_good
+            if annotation is None:
                 raise CapabilityAnnotationCacheError(
-                    "successful last attempt requires a last-good annotation"
+                    "successful last attempt requires a pending or last-good annotation"
                 )
-            if self.last_good.request_fingerprint != self.last_attempt.request_fingerprint:
+            if annotation.request_fingerprint != self.last_attempt.request_fingerprint:
                 raise CapabilityAnnotationCacheError(
-                    "successful last attempt does not match the last-good fingerprint"
+                    "successful last attempt does not match the candidate fingerprint"
                 )
-            if self.last_attempt.state == "generated" and not self.last_good.knowledge_enabled:
+            if self.last_attempt.state == "generated" and not annotation.knowledge_enabled:
                 raise CapabilityAnnotationCacheError(
-                    "generated last attempt requires enabled last-good knowledge"
+                    "generated last attempt requires enabled candidate knowledge"
                 )
-            if self.last_attempt.state == "disabled" and self.last_good.knowledge_enabled:
+            if self.last_attempt.state == "disabled" and annotation.knowledge_enabled:
                 raise CapabilityAnnotationCacheError(
-                    "disabled last attempt requires disabled last-good knowledge"
+                    "disabled last attempt requires disabled candidate knowledge"
                 )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "last_good": self.last_good.to_dict() if self.last_good is not None else None,
+            "pending": self.pending.to_dict() if self.pending is not None else None,
             "last_attempt": (
                 self.last_attempt.to_dict() if self.last_attempt is not None else None
             ),
@@ -193,7 +203,7 @@ class CapabilityAnnotationCacheUnit:
         analysis_unit_id: object,
         payload: object,
     ) -> CapabilityAnnotationCacheUnit:
-        _require_fields(payload, {"last_good", "last_attempt"}, "cache unit")
+        _require_fields(payload, {"last_good", "pending", "last_attempt"}, "cache unit")
         assert isinstance(payload, dict)
         unit_id = _require_bounded_safe_string(
             analysis_unit_id,
@@ -201,6 +211,7 @@ class CapabilityAnnotationCacheUnit:
             maximum=128,
         )
         raw_last_good = payload["last_good"]
+        raw_pending = payload["pending"]
         raw_last_attempt = payload["last_attempt"]
         try:
             last_good = (
@@ -208,11 +219,15 @@ class CapabilityAnnotationCacheUnit:
                 if raw_last_good is None
                 else CapabilityTeachingAnnotation.from_dict(raw_last_good)
             )
+            pending = (
+                None if raw_pending is None else CapabilityTeachingAnnotation.from_dict(raw_pending)
+            )
         except CapabilityAnnotationError as error:
-            raise CapabilityAnnotationCacheError("unit last-good annotation is invalid") from error
+            raise CapabilityAnnotationCacheError("unit annotation is invalid") from error
         return cls(
             analysis_unit_id=unit_id,
             last_good=last_good,
+            pending=pending,
             last_attempt=(
                 None
                 if raw_last_attempt is None
@@ -253,7 +268,7 @@ class CapabilityAnnotationPluginCache:
             item.last_good is not None for item in ordered
         ):
             raise CapabilityAnnotationCacheError(
-                "failure-only plugin cache must not contain last-good annotations"
+                "unpublished plugin cache must not contain last-good annotations"
             )
         object.__setattr__(self, "units", ordered)
 

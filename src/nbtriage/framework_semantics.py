@@ -126,7 +126,6 @@ def uninfo_permission_profile() -> PermissionSemanticProfile:
                 "GUILD",
                 PublicConstraintKind.SCENE,
                 "guild_or_channel",
-                teaching_scene=TeachingScene.GUILD_OR_CHANNEL,
             ),
         ),
     )
@@ -142,6 +141,30 @@ def nonebot_permission_profile() -> PermissionSemanticProfile:
                 PublicConstraintKind.ROLE,
                 "superuser",
                 TeachingRole.SUPERUSER,
+            ),
+        ),
+    )
+
+
+def onebot_v11_permission_profile() -> PermissionSemanticProfile:
+    return PermissionSemanticProfile(
+        component="nonebot-adapter-onebot-v11",
+        import_roots=(
+            "nonebot.adapters.onebot.v11",
+            "nonebot.adapters.onebot.v11.permission",
+        ),
+        permissions=(
+            PermissionSemantic(
+                "GROUP_ADMIN",
+                PublicConstraintKind.ROLE,
+                "administrator",
+                TeachingRole.ADMIN,
+            ),
+            PermissionSemantic(
+                "GROUP_OWNER",
+                PublicConstraintKind.ROLE,
+                "owner",
+                TeachingRole.OWNER,
             ),
         ),
     )
@@ -233,8 +256,32 @@ def uninfo_session_field_profile() -> FrameworkFieldSemanticProfile:
     )
 
 
+def nonebot_dependency_overload_profile() -> FrameworkFieldSemanticProfile:
+    return FrameworkFieldSemanticProfile(
+        component="nonebot2",
+        annotations=(
+            "Bot",
+            "Event",
+            "Matcher",
+            "MessageEvent",
+            "PrivateMessageEvent",
+            "GroupMessageEvent",
+            "NoticeEvent",
+            "RequestEvent",
+            "MetaEvent",
+        ),
+        fields=(
+            FrameworkFieldSemantic(
+                "typed dependency overload",
+                "NoneBot 依赖函数的 Bot、Event 和 Matcher 参数类型注解参与重载筛选；实际对象不匹配时不会执行该依赖函数。",
+            ),
+        ),
+    )
+
+
 _PUBLIC_PERMISSION_STATEMENTS = {
     (PublicConstraintKind.ROLE, "superuser"): "仅超级用户可用",
+    (PublicConstraintKind.ROLE, "administrator"): "仅群管理员可用",
     (
         PublicConstraintKind.ROLE,
         "not_administrator_or_owner",
@@ -243,7 +290,6 @@ _PUBLIC_PERMISSION_STATEMENTS = {
     (PublicConstraintKind.ROLE, "owner"): "仅群主可用",
     (PublicConstraintKind.SCENE, "private_chat"): "仅私聊可用",
     (PublicConstraintKind.SCENE, "group_chat"): "仅群聊可用",
-    (PublicConstraintKind.SCENE, "guild_or_channel"): "仅频道或子频道场景可用",
 }
 
 
@@ -260,7 +306,9 @@ __all__ = (
     "PermissionSemantic",
     "PermissionSemanticProfile",
     "PublicConstraintKind",
+    "nonebot_dependency_overload_profile",
     "nonebot_permission_profile",
+    "onebot_v11_permission_profile",
     "public_permission_statement",
     "uninfo_permission_profile",
     "uninfo_session_field_profile",

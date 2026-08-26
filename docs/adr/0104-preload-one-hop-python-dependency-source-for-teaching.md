@@ -54,6 +54,9 @@
 
 ## 替代关系
 
+- 第 5 项中 complete family 完全不开放源码工具的决定已由
+  [ADR-0118](0118-limit-eager-source-depth-and-let-families-navigate-selectively.md) 替代；一层外部函数预载与
+  不递归依赖边界继续有效。
 - 细化 [ADR-0059](0059-share-read-only-evidence-access-across-agent-flows.md) 的依赖导航合同：依赖根仍受共享
   只读门禁约束，但教学首包可预载一层唯一外部函数。
 

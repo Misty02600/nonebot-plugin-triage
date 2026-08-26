@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterator
 from contextlib import suppress
+from re import I
 from types import ModuleType, SimpleNamespace
 from uuid import uuid4
 
@@ -191,7 +192,7 @@ def test_command_uses_current_nonebot_prefixes_and_separators(
     assert _record_values(record, "invocation.header")
 
 
-def test_collects_literal_trigger_forms_but_keeps_regex_and_type_conservative(
+def test_collects_literal_and_regex_trigger_forms_but_keeps_type_conservative(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     matcher_cleanup: list[type[object]],
@@ -201,7 +202,7 @@ def test_collects_literal_trigger_forms_but_keeps_regex_and_type_conservative(
         "on_endswith": on_endswith("done"),
         "on_fullmatch": on_fullmatch(("yes", "no")),
         "on_keyword": on_keyword({"alpha", "beta"}),
-        "on_regex": on_regex(r"^item-(\d+)$"),
+        "on_regex": on_regex(r"^item-(\d+)$", flags=I),
         "on_type": on_type(MessageEvent),
     }
     matcher_cleanup.extend(matchers_by_factory.values())
@@ -210,11 +211,17 @@ def test_collects_literal_trigger_forms_but_keeps_regex_and_type_conservative(
     snapshot = build_capability_snapshot(plugins=[plugin])
     records = {_record_values(record, "trigger.factory")[0]: record for record in snapshot.records}
 
-    for factory in ("on_startswith", "on_endswith", "on_fullmatch", "on_keyword"):
+    for factory in (
+        "on_startswith",
+        "on_endswith",
+        "on_fullmatch",
+        "on_keyword",
+        "on_regex",
+    ):
         record = records[factory]
         assert AnalysisIssue.DYNAMIC_ENTRY not in record.analysis_issues
-        assert _record_values(record, "invocation.header")
-    assert AnalysisIssue.DYNAMIC_ENTRY in records["on_regex"].analysis_issues
+    assert _record_values(records["on_regex"], "invocation.header") == ()
+    assert _record_values(records["on_regex"], "trigger.regex_flags") == (["ignore_case"],)
     assert AnalysisIssue.DYNAMIC_ENTRY in records["on_type"].analysis_issues
     assert _record_values(records["on_type"], "trigger.entries") == (
         ["nonebot.adapters.onebot.v11.event.MessageEvent"],
@@ -227,6 +234,12 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     matcher_cleanup: list[type[object]],
 ) -> None:
     called = False
+
+    def shortcut_wrapper(slot, content, context):
+        nonlocal called
+        called = True
+        return slot
+
     command = Alconna(
         "image",
         Args["query#关键词", str]["tags", MultiVar(str)],
@@ -246,6 +259,15 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
         called = True
 
     matcher = on_alconna(command)
+    command.shortcut(
+        r"(?P<scope>今日|昨日)找图",
+        {
+            "command": "image",
+            "args": ["{scope}"],
+            "humanized": "<时间范围>找图",
+            "wrapper": shortcut_wrapper,
+        },
+    )
     matcher_cleanup.append(matcher)
     plugin = _plugin(tmp_path, monkeypatch, {matcher})
 
@@ -280,7 +302,52 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     components = _record_values(public_record, "command.components")[0]
     assert {item["name"] for item in components} >= {"--limit", "detail"}
     assert {item["name"] for item in components}.isdisjoint({"--help", "--comp", "--shortcut"})
+    assert _record_values(public_record, "command.shortcut_count") == (1,)
+    shortcuts = _record_values(public_record, "command.shortcuts")[0]
+    assert shortcuts == [
+        {
+            "pattern": r"(?P<scope>今日|昨日)找图",
+            "display": "<时间范围>找图",
+            "command": ["image"],
+            "arguments": ["{scope}"],
+            "prefixes": [],
+            "fuzzy": True,
+            "prefix": False,
+            "flags": 0,
+            "wrapper": None,
+            "opaque_values": False,
+        }
+    ]
     assert called is False
+    command_manager.delete(command)
+
+
+def test_alconna_shortcut_preserves_empty_command_prefix(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    command = Alconna(
+        ["", "/"],
+        "assist",
+        Args["value?", str],
+        namespace=f"snapshot-{uuid4().hex}",
+    )
+    matcher = on_alconna(command)
+    command.shortcut(
+        "enable",
+        {"command": "assist", "args": [""], "prefix": True},
+        compact=None,
+    )
+    matcher_cleanup.append(matcher)
+    plugin = _plugin(tmp_path, monkeypatch, {matcher})
+
+    (record,) = build_capability_snapshot(plugins=[plugin]).records
+
+    (shortcut,) = _record_values(record, "command.shortcuts")[0]
+    assert shortcut["prefixes"] == ["", "/"]
+    assert shortcut["arguments"] == [""]
+    assert shortcut["opaque_values"] is False
     command_manager.delete(command)
 
 
@@ -588,7 +655,7 @@ async def query_state():
         for record in snapshot.records
         if _record_values(record, "trigger.factory") == ("on_regex",)
     )
-    assert AnalysisIssue.DYNAMIC_ENTRY in query_record.analysis_issues
+    assert AnalysisIssue.DYNAMIC_ENTRY not in query_record.analysis_issues
 
 
 def test_explicit_command_is_not_folded_into_supporting_matcher(
@@ -869,6 +936,36 @@ second = create_matcher("二")
             0,
         )
     }
+
+
+def test_handler_reference_unwraps_bound_instance_method(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    plugin = _source_plugin(
+        tmp_path,
+        monkeypatch,
+        """\
+from nonebot import on_regex
+
+class Handlers:
+    async def run(self):
+        return "done"
+
+handlers = Handlers()
+matcher = on_regex(r"^(one|two)$", handlers=[handlers.run])
+""",
+    )
+    matcher_cleanup.extend(plugin.matcher)
+
+    snapshot = build_capability_snapshot(plugins=[plugin])
+
+    assert len(snapshot.records) == 1
+    references = _record_values(snapshot.records[0], "handler.references")[0]
+    assert [
+        (item["function"], item["qualname"], item["code_firstlineno"]) for item in references
+    ] == [("run", "Handlers.run", 4)]
 
 
 def test_handler_references_preserve_multiple_same_named_runtime_bindings(

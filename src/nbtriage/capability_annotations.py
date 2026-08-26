@@ -28,39 +28,22 @@ from nbtriage.capability_analysis import (
 )
 from nbtriage.capability_usage import (
     MAX_EXPLICIT_USAGE_ALTERNATIVES,
+    MAX_PUBLIC_USAGES,
     CapabilityUsageExpressionError,
     group_literal_expression_for_usage,
     validate_usage_selector,
 )
 
-CAPABILITY_ANNOTATION_SCHEMA_VERSION = 8
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v56-zh"
-CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v23"
+CAPABILITY_ANNOTATION_SCHEMA_VERSION = 11
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v90-zh"
+CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v50"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
 )
-CAPABILITY_ANNOTATION_BUDGET_PROFILE = "background-unit-concurrency10-8req-5read-navigation-tools-160line-120k-next-request-stop-16384out-0.05usd-schema8"
+CAPABILITY_ANNOTATION_BUDGET_PROFILE = "background-unit-concurrency10-10req-7read-navigation-tools-160line-160k-reserve-finalize-16384out-0.05usd-schema10"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-_IMPLEMENTATION_MARKERS = (
-    ".py",
-    "`",
-    "ast-grep",
-    "jedi",
-    "localstore",
-    "源码",
-    "源代码",
-    "代码实现",
-    "handler",
-    "limiter",
-    "matcher",
-    "permission",
-    "source code",
-    "工厂",
-    "证据",
-    "环境变量",
-    "配置项名",
-)
+_SEARCH_TERM_LIST_SEPARATOR = re.compile(r"[,，、;；|]")
 _REQUIREMENT_KIND_ORDER = {
     SemanticConstraintKind.PERMISSION: 0,
     SemanticConstraintKind.SCENE: 1,
@@ -180,6 +163,7 @@ class CapabilityTeachingRequirement:
     kind: SemanticConstraintKind
     text: str
     role: TeachingRole | None = None
+    allowed_scenes: tuple[TeachingScene, ...] = ()
     rate_limit_policy: RateLimitPolicy | None = None
     rate_limit_scope: RateLimitScope | None = None
     alternatives: tuple[CapabilityTeachingPermissionAlternative, ...] = ()
@@ -193,6 +177,16 @@ class CapabilityTeachingRequirement:
                 raise CapabilityAnnotationError("role requirement requires role metadata")
         elif self.role is not None:
             raise CapabilityAnnotationError("only role requirements may define role metadata")
+        if self.kind is SemanticConstraintKind.SCENE:
+            if (
+                not isinstance(self.allowed_scenes, tuple)
+                or not self.allowed_scenes
+                or len(self.allowed_scenes) != len(set(self.allowed_scenes))
+                or any(not isinstance(scene, TeachingScene) for scene in self.allowed_scenes)
+            ):
+                raise CapabilityAnnotationError("scene requirement requires unique allowed scenes")
+        elif self.allowed_scenes:
+            raise CapabilityAnnotationError("only scene requirements may define allowed scenes")
         if self.kind is SemanticConstraintKind.RATE_LIMIT:
             if not isinstance(self.rate_limit_policy, RateLimitPolicy) or not isinstance(
                 self.rate_limit_scope, RateLimitScope
@@ -221,6 +215,7 @@ class CapabilityTeachingRequirement:
             "kind": self.kind.value,
             "text": self.text,
             "role": self.role.value if self.role is not None else None,
+            "allowed_scenes": [scene.value for scene in self.allowed_scenes],
             "rate_limit_policy": (
                 self.rate_limit_policy.value if self.rate_limit_policy is not None else None
             ),
@@ -236,6 +231,7 @@ class CapabilityTeachingRequirement:
             "kind",
             "text",
             "role",
+            "allowed_scenes",
             "rate_limit_policy",
             "rate_limit_scope",
             "alternatives",
@@ -246,6 +242,7 @@ class CapabilityTeachingRequirement:
                 kind=SemanticConstraintKind(payload["kind"]),
                 text=payload["text"],
                 role=TeachingRole(payload["role"]) if payload["role"] is not None else None,
+                allowed_scenes=tuple(TeachingScene(scene) for scene in payload["allowed_scenes"]),
                 rate_limit_policy=(
                     RateLimitPolicy(payload["rate_limit_policy"])
                     if payload["rate_limit_policy"] is not None
@@ -282,6 +279,8 @@ class CapabilityTeachingEntry:
             ("behavior_boundaries", self.behavior_boundaries, 16),
         ):
             _public_text_tuple(values, name, limit=limit)
+        for search_term in self.search_terms:
+            validate_capability_search_term(search_term)
         if (
             not isinstance(self.requirements, tuple)
             or len(self.requirements) > 24
@@ -453,9 +452,13 @@ def capability_analysis_fingerprint(
                 "entry_id": item.entry_id,
                 "mode": item.mode.value,
                 "command_body": item.command_body,
+                "regex_pattern": item.regex_pattern,
+                "regex_flags": list(item.regex_flags),
                 "canonical_usages": list(item.canonical_usages),
                 "aliases": list(item.aliases),
                 "requires_mention": item.requires_mention,
+                "shortcut_count": item.shortcut_count,
+                "shortcut_evidence_ids": list(item.shortcut_evidence_ids),
             }
             for item in request.invocations
         ],
@@ -489,6 +492,7 @@ def capability_analysis_fingerprint(
                 "evidence_ids": list(item.evidence_ids),
                 "config_reference_ids": list(item.config_reference_ids),
                 "role": item.role.value if item.role is not None else None,
+                "allowed_scenes": [scene.value for scene in item.allowed_scenes],
                 "rate_limit_policy": (
                     item.rate_limit_policy.value if item.rate_limit_policy is not None else None
                 ),
@@ -647,10 +651,8 @@ def _project_teaching_entry(
     grouped: dict[SemanticClaimKind, list[str]] = {kind: [] for kind in SemanticClaimKind}
     for claim in output.claims:
         try:
-            statement = _validated_model_text(
+            statement = validate_capability_public_statement(
                 claim.statement,
-                request=request,
-                evidence_units=evidence_units,
             )
         except CapabilityAnnotationError as error:
             raise CapabilityAnnotationProjectionError(
@@ -663,6 +665,7 @@ def _project_teaching_entry(
                     statement,
                     target=target,
                     display_trigger=output.display_trigger,
+                    evidence_ids=claim.evidence_ids,
                 )
             except CapabilityAnnotationError as error:
                 raise CapabilityAnnotationProjectionError(
@@ -678,11 +681,11 @@ def _project_teaching_entry(
             "teaching entry requires exactly one name and summary claim",
         )
     usages = _ordered_unique(grouped[SemanticClaimKind.USAGE])
-    if len(usages) > MAX_EXPLICIT_USAGE_ALTERNATIVES:
+    if len(usages) > MAX_PUBLIC_USAGES:
         raise CapabilityAnnotationProjectionError(
             CapabilityAnnotationProjectionCode.USAGE,
             "teaching entry allows at most three usages; larger fixed alternatives "
-            "must use a concept slot",
+            "must be merged without changing their invocation structure",
         )
     try:
         requirements = tuple(
@@ -691,21 +694,18 @@ def _project_teaching_entry(
                     (
                         CapabilityTeachingRequirement(
                             kind=item.kind,
-                            text=_validated_model_text(
+                            text=validate_capability_public_statement(
                                 item.statement,
-                                request=request,
-                                evidence_units=evidence_units,
                             ),
                             role=item.role,
+                            allowed_scenes=item.allowed_scenes,
                             rate_limit_policy=item.rate_limit_policy,
                             rate_limit_scope=item.rate_limit_scope,
                             alternatives=tuple(
                                 CapabilityTeachingPermissionAlternative(
                                     kind=alternative.kind,
-                                    text=_validated_model_text(
+                                    text=validate_capability_public_statement(
                                         alternative.statement,
-                                        request=request,
-                                        evidence_units=evidence_units,
                                     ),
                                     role=alternative.role,
                                     scene=alternative.scene,
@@ -718,6 +718,7 @@ def _project_teaching_entry(
                     key=lambda item: (
                         _REQUIREMENT_KIND_ORDER[item.kind],
                         item.role.value if item.role is not None else "",
+                        tuple(scene.value for scene in item.allowed_scenes),
                         item.rate_limit_policy.value if item.rate_limit_policy is not None else "",
                         item.rate_limit_scope.value if item.rate_limit_scope is not None else "",
                         tuple(
@@ -790,10 +791,8 @@ def _reconciled_baseline_members(
     values = list(getattr(baseline, field.value)) if baseline is not None else []
     for change in (item for item in output.baseline_changes if item.field is field):
         try:
-            old_value = _validated_model_text(
+            old_value = validate_capability_public_statement(
                 change.old_value,
-                request=request,
-                evidence_units=evidence_units,
             )
         except CapabilityAnnotationError as error:
             raise CapabilityAnnotationProjectionError(
@@ -811,10 +810,8 @@ def _reconciled_baseline_members(
             continue
         assert change.new_value is not None
         try:
-            new_value = _validated_model_text(
+            new_value = validate_capability_public_statement(
                 change.new_value,
-                request=request,
-                evidence_units=evidence_units,
             )
         except CapabilityAnnotationError as error:
             raise CapabilityAnnotationProjectionError(
@@ -848,49 +845,12 @@ def _baseline_entry(
     )
 
 
-def _validated_model_text(
-    value: str,
-    *,
-    request: CapabilityAnalysisRequest,
-    evidence_units: tuple[CapabilityEvidenceUnit, ...],
-    allow_framework_terms: bool = False,
-) -> str:
-    normalized = validate_capability_public_statement(
-        value,
-        allow_framework_terms=allow_framework_terms,
-    )
-    lowered = normalized.casefold()
-    forbidden = {item.evidence_id.casefold() for item in evidence_units}
-    forbidden.update(item.source_symbol.casefold() for item in request.config_projections)
-    forbidden.update(item.source_symbol.casefold() for item in request.unknown_config)
-    for unit in evidence_units:
-        if unit.locator is None:
-            continue
-        forbidden.add(unit.locator.casefold())
-        parts = unit.locator.split(":")
-        if len(parts) >= 2 and ("_" in parts[-2] or parts[-2].startswith("handle")):
-            forbidden.add(parts[-2].casefold())
-    if any(token and token in lowered for token in forbidden):
-        raise CapabilityAnnotationError("model statement exposes an internal evidence symbol")
-    return normalized
-
-
 def validate_capability_public_statement(
     value: str,
-    *,
-    allow_framework_terms: bool = False,
 ) -> str:
-    """验证模型教学文字不包含实现层术语，并返回规范化文本。"""
+    """验证模型教学文字满足通用公开文本约束，并返回规范化文本。"""
     normalized = " ".join(value.split())
     _public_text(normalized, "model statement")
-    lowered = normalized.casefold()
-    if any(marker.casefold() in lowered for marker in _IMPLEMENTATION_MARKERS):
-        raise CapabilityAnnotationError("model statement exposes implementation details")
-    if not allow_framework_terms and re.search(
-        r"\b(?:OWNER|MEMBER|ADMIN|SUPERUSER|Permission|Rule|Matcher|Alconna|Option|Subcommand)\b",
-        normalized,
-    ):
-        raise CapabilityAnnotationError("model statement exposes framework terms")
     return normalized
 
 
@@ -912,7 +872,12 @@ def validate_capability_usage_pattern(
         raise CapabilityAnnotationError(
             "重复参数的省略号必须写在完整槽位之后，例如 <参数>... 或 [参数]..."
         )
-    if re.search(r"(?<![>\]])\.\.\.", normalized) or re.search(r"\.\.\.(?!\s|$)", normalized):
+    if re.search(r"(?<!\S)@(?=[<\[])", normalized):
+        raise CapabilityAnnotationError("mention 必须完整写入参数槽位，例如 <@用户> 或 [@用户]")
+    if re.search(r"(?<![>\]])\.\.\.", normalized) or re.search(
+        r"\.\.\.(?!\s|$)",
+        normalized,
+    ):
         raise CapabilityAnnotationError("省略号只能紧跟一个完整参数槽位")
     if not allow_verified_aliases:
         for opening, closing in (("[", "]"), ("(", ")"), ("<", ">")):
@@ -922,7 +887,7 @@ def validate_capability_usage_pattern(
             ):
                 if content.count("|") >= MAX_EXPLICIT_USAGE_ALTERNATIVES:
                     raise CapabilityAnnotationError(
-                        "同一用法槽位最多枚举三个备选值；超过三个时必须改用一个简短概念槽位，"
+                        "同一用法槽位最多枚举四个备选值；超过四个时必须改用一个简短概念槽位，"
                         "例如 <滤镜名>，不得继续列出成员"
                     )
     return normalized
@@ -1006,8 +971,10 @@ def _validated_usage(
     *,
     target: CapabilityInvocationTarget,
     display_trigger: str | None = None,
+    evidence_ids: tuple[str, ...] = (),
 ) -> str:
     normalized = validate_capability_usage_pattern(value)
+    shortcut_allowed = bool(set(target.shortcut_evidence_ids).intersection(evidence_ids))
     if target.canonical_usages:
         for template in target.canonical_usages:
             try:
@@ -1016,9 +983,16 @@ def _validated_usage(
                 continue
             break
         else:
-            raise CapabilityAnnotationError(
-                "usage must match a parser-provided structural template"
-            )
+            if not shortcut_allowed:
+                raise CapabilityAnnotationError(
+                    "usage must match a parser-provided structural template or cite registered "
+                    "shortcut Evidence"
+                )
+            if target.requires_mention and len(re.findall(r"(?<!\S)@bot(?=\s)", normalized)) != 1:
+                raise CapabilityAnnotationError(
+                    "mention-required shortcut usage must contain one @bot placeholder"
+                )
+            return normalized
         if (
             target.requires_mention
             and target.command_body is not None
@@ -1034,13 +1008,30 @@ def _validated_usage(
         )
     if target.mode is CapabilityInvocationMode.COMPLETE:
         validate_complete_aggregate_usage(normalized)
-        if target.requires_mention and len(re.findall(r"(?<!\S)@bot(?=\s)", normalized)) != 1:
-            raise CapabilityAnnotationError(
-                "usage for a mention-required aggregate must contain one @bot placeholder"
-            )
+    if (
+        target.mode
+        in {
+            CapabilityInvocationMode.COMPLETE,
+            CapabilityInvocationMode.REGEX,
+        }
+        and target.requires_mention
+        and len(re.findall(r"(?<!\S)@bot(?=\s)", normalized)) != 1
+    ):
+        raise CapabilityAnnotationError(
+            "usage for a mention-required non-anchored invocation must contain one @bot placeholder"
+        )
     if target.mode is CapabilityInvocationMode.ANCHORED:
         assert target.command_body is not None
         if len(re.findall(rf"(?<!\S){re.escape(target.command_body)}(?!\S)", normalized)) != 1:
+            if shortcut_allowed:
+                if (
+                    target.requires_mention
+                    and len(re.findall(r"(?<!\S)@bot(?=\s)", normalized)) != 1
+                ):
+                    raise CapabilityAnnotationError(
+                        "mention-required shortcut usage must contain one @bot placeholder"
+                    )
+                return normalized
             raise CapabilityAnnotationError(
                 "anchored usage must contain the deterministic command body exactly once"
             )
@@ -1118,6 +1109,15 @@ def _public_text(value: object, label: str) -> str:
     if any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in value):
         raise CapabilityAnnotationError(f"{label} contains unsafe characters")
     return value
+
+
+def validate_capability_search_term(value: str) -> str:
+    normalized = _public_text(value, "search_term")
+    if _SEARCH_TERM_LIST_SEPARATOR.search(normalized):
+        raise CapabilityAnnotationError(
+            "search_term must be one independent phrase, not a list of terms"
+        )
+    return normalized
 
 
 def _public_text_tuple(
@@ -1204,6 +1204,7 @@ __all__ = (
     "capability_analysis_fingerprint",
     "project_capability_annotation",
     "validate_capability_public_statement",
+    "validate_capability_search_term",
     "validate_capability_usage_pattern",
     "validate_capability_usage_template",
     "validate_complete_aggregate_usage",

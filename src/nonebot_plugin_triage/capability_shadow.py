@@ -6,6 +6,7 @@ import unicodedata
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, replace
 from pathlib import Path
+from time import monotonic_ns
 from typing import Protocol
 
 from nonebot import logger, require
@@ -28,7 +29,7 @@ from nbtriage.capabilities import (
     search_capability_index,
 )
 from nbtriage.capability_analysis import CapabilityAnalysisClient
-from nbtriage.capability_annotations import CapabilityTeachingAnnotation
+from nbtriage.capability_annotations import CapabilityTeachingAnnotation, CapabilityTeachingEntry
 from nbtriage.capability_deployment import (
     CapabilityDeployment,
     build_capability_deployment,
@@ -272,10 +273,19 @@ class CapabilityShadowService:
                 capability_index_public_records,
                 self._resolved_path(),
             )
+            annotation_lookup = (
+                self._annotation_service.get if self._annotation_service is not None else None
+            )
             capability_ids = tuple(
                 record.capability_id
                 for record in public_records
-                if _record_is_publicly_servable(record, adapter_type)
+                if _record_is_publicly_servable(
+                    record,
+                    adapter_type,
+                    annotation=(
+                        annotation_lookup(record.capability_id) if annotation_lookup else None
+                    ),
+                )
             )
             if not capability_ids:
                 return PublicCapabilitySearch((), partial=self._status.partial)
@@ -312,7 +322,17 @@ class CapabilityShadowService:
             )
             return None
         safe_hits = tuple(
-            hit for hit in hits if _record_is_publicly_servable(hit.record, adapter_type)
+            hit
+            for hit in hits
+            if _record_is_publicly_servable(
+                hit.record,
+                adapter_type,
+                annotation=(
+                    self._annotation_service.get(hit.record.capability_id)
+                    if self._annotation_service is not None
+                    else None
+                ),
+            )
         )
         annotations = ()
         annotation_capability_ids = ()
@@ -452,20 +472,28 @@ class CapabilityShadowService:
     async def refresh_teaching(
         self,
         plugin_module: str | None = None,
+        *,
+        force: bool = True,
     ) -> CapabilityTeachingRefreshResult:
-        """由已鉴权维护命令强制重分析，并原子发布可信的完整或 partial generation。"""
+        """由已鉴权维护入口刷新，并原子发布可信的完整或 partial generation。"""
         if self._annotation_service is None or self._teaching_output_writer is None:
             raise RuntimeError("capability teaching model is unavailable")
         async with self._teaching_refresh_lock:
+            refresh_started_ns = monotonic_ns()
+            snapshot_started_ns = refresh_started_ns
             await asyncio.to_thread(self.refresh_safely)
+            snapshot_finished_ns = monotonic_ns()
             snapshot = self._latest_snapshot
             if snapshot is None or snapshot.manifest.partial:
                 raise RuntimeError("capability snapshot is unavailable or partial")
+            annotation_started_ns = monotonic_ns()
             status = await self._annotation_service.refresh(
                 snapshot,
                 plugin_module=plugin_module,
-                force=True,
+                force=force,
             )
+            annotation_finished_ns = monotonic_ns()
+            publish_started_ns = annotation_finished_ns
             try:
                 publication = await asyncio.to_thread(
                     self._teaching_output_writer.publish,
@@ -479,10 +507,13 @@ class CapabilityShadowService:
             except Exception:
                 await self._annotation_service.discard_pending(status.refresh_id)
                 raise
+            publish_finished_ns = monotonic_ns()
+            commit_started_ns = publish_finished_ns
             await self._annotation_service.commit_pending(
                 status.refresh_id,
                 publication.generation,
             )
+            commit_finished_ns = monotonic_ns()
             paths = publication.paths
             logger.info(
                 "NoneBot Triage 教学知识已手动刷新：plugin={}, "
@@ -492,6 +523,16 @@ class CapabilityShadowService:
                 status.cached_count,
                 status.skipped_count,
                 len(paths),
+            )
+            logger.info(
+                "NoneBot Triage 教学知识手动刷新阶段耗时：plugin={}, snapshot_ms={}, "
+                "annotation_ms={}, publish_ms={}, commit_ms={}, total_ms={}",
+                plugin_module or "all",
+                _elapsed_ms(snapshot_started_ns, snapshot_finished_ns),
+                _elapsed_ms(annotation_started_ns, annotation_finished_ns),
+                _elapsed_ms(publish_started_ns, publish_finished_ns),
+                _elapsed_ms(commit_started_ns, commit_finished_ns),
+                _elapsed_ms(refresh_started_ns, commit_finished_ns),
             )
             return CapabilityTeachingRefreshResult(
                 plugin_module=plugin_module,
@@ -756,15 +797,20 @@ def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
     """只用公开字段把当前 adapter 的能力候选格式化为用户帮助。"""
     if result.partial is not False or result.stale:
         return ""
+    annotations = _annotations_by_capability(result)
     safe_hits = tuple(
-        hit for hit in result.hits if _record_is_publicly_servable_without_adapter(hit.record)
+        hit
+        for hit in result.hits
+        if _record_is_publicly_servable_without_adapter(
+            hit.record,
+            annotation=annotations.get(hit.record.capability_id),
+        )
     )
     if not safe_hits:
         return ""
     primary = safe_hits[0].record
-    annotations = _annotations_by_capability(result)
     annotation = annotations.get(primary.capability_id)
-    header = _public_capability_label(primary)
+    header = _public_capability_label(primary, annotation=annotation)
     if header is None:
         return ""
     lines = [header]
@@ -798,7 +844,12 @@ def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
         alternatives = [
             alternative
             for hit in safe_hits[1:]
-            if (alternative := _public_capability_label(hit.record))
+            if (
+                alternative := _public_capability_label(
+                    hit.record,
+                    annotation=annotations.get(hit.record.capability_id),
+                )
+            )
         ]
         if alternatives:
             lines.append(f"其他可能相关的功能：{'、'.join(alternatives)}。")
@@ -814,14 +865,22 @@ def build_public_guidance_request(
     """把当前公开 ServingView 投影成无路径、无配置、无受限记录的回答事实。"""
     if result.partial is not False or result.stale:
         return None
-    safe_hits = tuple(
-        hit for hit in result.hits if _record_is_publicly_servable_without_adapter(hit.record)
-    )
     annotations = _annotations_by_capability(result)
+    safe_hits = tuple(
+        hit
+        for hit in result.hits
+        if _record_is_publicly_servable_without_adapter(
+            hit.record,
+            annotation=annotations.get(hit.record.capability_id),
+        )
+    )
     facts: list[PublicGuidanceFact] = []
     for hit in safe_hits[:5]:
         record = hit.record
-        label = _public_capability_label(record)
+        label = _public_capability_label(
+            record,
+            annotation=annotations.get(record.capability_id),
+        )
         if label is None:
             continue
         _append_public_guidance_fact(
@@ -1003,40 +1062,78 @@ def _augment_hits_with_annotation_terms(
     *,
     limit: int,
 ) -> list[CapabilitySearchHit]:
-    """用公开搜索词补召回，不替代 runtime 公开能力门禁。"""
+    """把公开注释词并入候选排序，不替代 runtime 公开能力门禁。"""
     normalized_query = " ".join(query.casefold().split())
     if not normalized_query:
         return hits
-    accepted = {hit.record.capability_id for hit in hits}
-    accepted_units = {
-        annotation.capability_id
-        for hit in hits
-        if (annotation := annotation_lookup(hit.record.capability_id)) is not None
-    }
-    augmented = list(hits)
-    for record in records:
-        if record.capability_id in accepted:
-            continue
-        annotation = annotation_lookup(record.capability_id)
-        if annotation is None or annotation.capability_id in accepted_units:
-            continue
-        terms = tuple(
-            term
-            for entry in annotation.entries
-            for term in (entry.name, entry.summary, *entry.search_terms)
-        )
-        if not any(
-            (term_normalized := " ".join(term.casefold().split()))
-            and (term_normalized in normalized_query or normalized_query in term_normalized)
-            for term in terms
+
+    ranked_by_unit: dict[str, CapabilitySearchHit] = {}
+
+    def add(hit: CapabilitySearchHit) -> None:
+        annotation = annotation_lookup(hit.record.capability_id)
+        unit_id = annotation.capability_id if annotation is not None else hit.record.capability_id
+        current = ranked_by_unit.get(unit_id)
+        if (
+            current is None
+            or hit.score > current.score
+            or (
+                hit.score == current.score
+                and hit.record.capability_id < current.record.capability_id
+            )
         ):
+            ranked_by_unit[unit_id] = hit
+
+    for hit in hits:
+        add(hit)
+    for record in records:
+        annotation = annotation_lookup(record.capability_id)
+        if annotation is None:
             continue
-        augmented.append(CapabilitySearchHit(record=record, score=0.0))
-        accepted.add(record.capability_id)
-        accepted_units.add(annotation.capability_id)
-        if len(augmented) >= limit:
-            break
-    return augmented[:limit]
+        score = max(
+            (_annotation_retrieval_score(normalized_query, entry) for entry in annotation.entries),
+            default=0.0,
+        )
+        if score <= 0:
+            continue
+        add(CapabilitySearchHit(record=record, score=score))
+    return sorted(
+        ranked_by_unit.values(),
+        key=lambda item: (-item.score, item.record.capability_id),
+    )[:limit]
+
+
+def _annotation_retrieval_score(
+    normalized_query: str,
+    entry: CapabilityTeachingEntry,
+) -> float:
+    scores = [
+        _text_retrieval_score(normalized_query, entry.name, exact=80.0, partial=40.0),
+        *(
+            _text_retrieval_score(normalized_query, term, exact=70.0, partial=35.0)
+            for term in entry.search_terms
+        ),
+    ]
+    return max(
+        *scores,
+        _text_retrieval_score(normalized_query, entry.summary, exact=30.0, partial=15.0),
+    )
+
+
+def _text_retrieval_score(
+    normalized_query: str,
+    value: str,
+    *,
+    exact: float,
+    partial: float,
+) -> float:
+    normalized_value = " ".join(value.casefold().split())
+    if not normalized_value:
+        return 0.0
+    if normalized_value == normalized_query:
+        return exact
+    if normalized_value in normalized_query or normalized_query in normalized_value:
+        return partial
+    return 0.0
 
 
 def _collapse_annotation_families(
@@ -1073,8 +1170,12 @@ def _expand_small_annotation_family(
     members = tuple(
         record
         for record in records
-        if _record_is_publicly_servable(record, adapter_type)
-        and (annotation := annotation_lookup(record.capability_id)) is not None
+        if (annotation := annotation_lookup(record.capability_id)) is not None
+        and _record_is_publicly_servable(
+            record,
+            adapter_type,
+            annotation=annotation,
+        )
         and annotation.capability_id == primary_annotation.capability_id
     )
     if len(members) <= 1 or len(members) > 3:
@@ -1191,7 +1292,11 @@ def _query_exactly_selects_member(query: str, record: CapabilityRecord) -> bool:
     )
 
 
-def _public_capability_label(record: CapabilityRecord) -> str | None:
+def _public_capability_label(
+    record: CapabilityRecord,
+    *,
+    annotation: CapabilityTeachingAnnotation | None = None,
+) -> str | None:
     header = _observed_command_header(record.claims)
     if header is not None:
         return header
@@ -1211,29 +1316,35 @@ def _public_capability_label(record: CapabilityRecord) -> str | None:
     if factory == "on_fullmatch" and all(len(entry) <= 32 for entry in entries):
         suffix = " 等" if len(entries) > 4 else ""
         return f"完整匹配：{'、'.join(entries[:4])}{suffix}"
-    if factory == "on_regex" and len(entries) == 1:
-        return f"正则触发：{entries[0]}"
+    if factory == "on_regex" and annotation is not None and annotation.entries:
+        return annotation.entries[0].name
     return None
 
 
-def _record_is_publicly_servable_without_adapter(record: CapabilityRecord) -> bool:
+def _record_is_publicly_servable_without_adapter(
+    record: CapabilityRecord,
+    *,
+    annotation: CapabilityTeachingAnnotation | None = None,
+) -> bool:
     return (
         record.disclosure is Disclosure.PUBLIC
         and not record.analysis_issues
         and record.state in {RecordState.VERIFIED, RecordState.CANDIDATE}
         and record.platform_scope.kind is not PlatformScopeKind.UNKNOWN
-        and _public_capability_label(record) is not None
+        and _public_capability_label(record, annotation=annotation) is not None
     )
 
 
 def _record_is_publicly_servable(
     record: CapabilityRecord,
     adapter_type: type[object],
+    *,
+    annotation: CapabilityTeachingAnnotation | None = None,
 ) -> bool:
-    return _record_is_publicly_servable_without_adapter(record) and _record_supports_adapter(
+    return _record_is_publicly_servable_without_adapter(
         record,
-        adapter_type,
-    )
+        annotation=annotation,
+    ) and _record_supports_adapter(record, adapter_type)
 
 
 def _observed_trigger_factory(claims: tuple[Claim, ...]) -> str | None:
@@ -1329,6 +1440,10 @@ def _analysis_issue_label(issue: AnalysisIssue) -> str:
         AnalysisIssue.SENSITIVE_AMBIGUITY: "存在敏感披露歧义",
         AnalysisIssue.EVIDENCE_INSUFFICIENT: "现有证据不足",
     }[issue]
+
+
+def _elapsed_ms(started_ns: int, finished_ns: int) -> int:
+    return max(0, round((finished_ns - started_ns) / 1_000_000))
 
 
 __all__ = (

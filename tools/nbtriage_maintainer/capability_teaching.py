@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
-from contextlib import chdir
+from contextlib import chdir, suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from nbtriage.capability_analysis import (
@@ -13,7 +15,10 @@ from nbtriage.capability_analysis import (
     CapabilityAnalysisOutput,
     CapabilityAnalysisRequest,
 )
-from nbtriage.capability_model_adapter import PydanticAICapabilityAnalysisClient
+from nbtriage.capability_model_adapter import (
+    CapabilityModelAdapterError,
+    PydanticAICapabilityAnalysisClient,
+)
 
 _MODULE_NAME = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$", re.ASCII)
 
@@ -49,6 +54,7 @@ def analyze_capability_teaching(
     *,
     diagnostic_output: Path | None = None,
     unbounded: bool = False,
+    retry_failed: bool = False,
 ) -> CapabilityTeachingMaintenanceResult:
     """在临时 NoneBot 宿主中加载目标插件并调用现有单插件教学刷新 API。"""
     project_file = pyproject_path.resolve()
@@ -71,6 +77,7 @@ def analyze_capability_teaching(
             plugin_module,
             diagnostic_output=resolved_diagnostic_output,
             unbounded=unbounded,
+            retry_failed=retry_failed,
         )
 
 
@@ -79,37 +86,46 @@ def _analyze_in_host(
     *,
     diagnostic_output: Path | None,
     unbounded: bool,
+    retry_failed: bool,
 ) -> CapabilityTeachingMaintenanceResult:
     import nonebot
 
-    nonebot.init(driver="~none", log_level="INFO")
-    if nonebot.load_plugin(plugin_module) is None:
-        raise CapabilityTeachingMaintenanceError(
-            f"requested plugin failed to load: {plugin_module}"
+    with TemporaryDirectory(prefix="nbtriage-capability-teaching-") as temporary_directory:
+        localstore_root = Path(temporary_directory)
+        nonebot.init(
+            driver="~none",
+            log_level="INFO",
+            localstore_plugin_cache_dir={plugin_module: localstore_root / "cache"},
+            localstore_plugin_config_dir={plugin_module: localstore_root / "config"},
+            localstore_plugin_data_dir={plugin_module: localstore_root / "data"},
         )
-    if nonebot.load_plugin("nonebot_plugin_triage") is None:
-        raise CapabilityTeachingMaintenanceError("nonebot_plugin_triage failed to load")
+        if nonebot.load_plugin(plugin_module) is None:
+            raise CapabilityTeachingMaintenanceError(
+                f"requested plugin failed to load: {plugin_module}"
+            )
+        if nonebot.load_plugin("nonebot_plugin_triage") is None:
+            raise CapabilityTeachingMaintenanceError("nonebot_plugin_triage failed to load")
 
-    from nonebot_plugin_triage.handlers import plugin_runtime
+        from nonebot_plugin_triage.handlers import plugin_runtime
 
-    shadow = plugin_runtime.capability_shadow
-    if shadow is None:
-        raise CapabilityTeachingMaintenanceError("capability teaching runtime is unavailable")
-    capture = _install_model_output_capture(
-        shadow,
-        plugin_module=plugin_module,
-        diagnostic_output=diagnostic_output,
-        unbounded=unbounded,
-    )
-    try:
-        result = asyncio.run(shadow.refresh_teaching(plugin_module))
-    except Exception as error:
-        raise CapabilityTeachingMaintenanceError(
-            f"capability teaching refresh failed: {type(error).__name__}"
-        ) from error
-    finally:
-        if capture is not None:
-            capture.write()
+        shadow = plugin_runtime.capability_shadow
+        if shadow is None:
+            raise CapabilityTeachingMaintenanceError("capability teaching runtime is unavailable")
+        capture = _install_model_output_capture(
+            shadow,
+            plugin_module=plugin_module,
+            diagnostic_output=diagnostic_output,
+            unbounded=unbounded,
+        )
+        try:
+            result = asyncio.run(shadow.refresh_teaching(plugin_module, force=not retry_failed))
+        except Exception as error:
+            raise CapabilityTeachingMaintenanceError(
+                f"capability teaching refresh failed: {type(error).__name__}"
+            ) from error
+        finally:
+            if capture is not None:
+                capture.write()
     return CapabilityTeachingMaintenanceResult(
         plugin=plugin_module,
         units=result.unit_count,
@@ -140,12 +156,25 @@ class _CapturedCapabilityClient:
         self._sequence = sequence
 
     async def analyze(self, request: CapabilityAnalysisRequest) -> CapabilityAnalysisOutput:
+        outcome = "failed"
+        failure: dict[str, str] | None = None
         try:
-            return await self._inner.analyze(request)
+            result = await self._inner.analyze(request)
+            outcome = "succeeded"
+            return result
+        except Exception as error:
+            failure = {"error_type": type(error).__name__}
+            if isinstance(error, CapabilityModelAdapterError):
+                failure["reason"] = error.reason_code.value
+                if error.detail_code is not None:
+                    failure["detail_code"] = error.detail_code
+            raise
         finally:
             self._capture.append(
                 sequence=self._sequence,
                 unit_id=request.capability.capability_id,
+                outcome=outcome,
+                failure=failure,
                 trace=self._inner.diagnostic_trace,
                 provider_responses=self._inner.diagnostic_provider_responses,
                 provider_errors=self._inner.diagnostic_provider_errors,
@@ -155,9 +184,40 @@ class _CapturedCapabilityClient:
 class _ModelOutputCapture:
     def __init__(self, path: Path, *, plugin_module: str) -> None:
         self._path = path
+        self._journal_path = path.with_suffix(f"{path.suffix}.partial.jsonl")
         self._plugin_module = plugin_module
-        self._records: list[dict[str, Any]] = []
-        self._next_sequence = 1
+        self._records = self._recover_journal()
+        self._next_sequence = (
+            max(
+                (int(record["sequence"]) for record in self._records),
+                default=0,
+            )
+            + 1
+        )
+
+    def _recover_journal(self) -> list[dict[str, Any]]:
+        try:
+            lines = self._journal_path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return []
+        records: dict[int, dict[str, Any]] = {}
+        for line in lines:
+            try:
+                payload = json.loads(line)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if (
+                not isinstance(payload, dict)
+                or payload.get("schema_version") != 1
+                or payload.get("plugin_module") != self._plugin_module
+                or not isinstance(payload.get("capture"), dict)
+            ):
+                continue
+            record = payload["capture"]
+            sequence = record.get("sequence")
+            if isinstance(sequence, int) and sequence > 0:
+                records[sequence] = record
+        return [records[sequence] for sequence in sorted(records)]
 
     def wrap_factory(
         self,
@@ -180,33 +240,56 @@ class _ModelOutputCapture:
         *,
         sequence: int,
         unit_id: str,
+        outcome: str,
+        failure: dict[str, str] | None,
         trace: tuple[dict[str, Any], ...],
         provider_responses: tuple[dict[str, Any], ...],
         provider_errors: tuple[dict[str, Any], ...],
     ) -> None:
-        self._records.append(
-            {
-                "sequence": sequence,
-                "unit_id": unit_id,
-                "messages": trace,
-                "provider_responses": provider_responses,
-                "provider_errors": provider_errors,
-            }
-        )
+        record = {
+            "sequence": sequence,
+            "unit_id": unit_id,
+            "outcome": outcome,
+            "failure": failure,
+            "messages": trace,
+            "provider_responses": provider_responses,
+            "provider_errors": provider_errors,
+        }
+        self._records.append(record)
+        self._journal_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._journal_path.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "plugin_module": self._plugin_module,
+                        "capture": record,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                )
+            )
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
 
     def write(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "schema_version": 3,
+            "schema_version": 4,
             "plugin_module": self._plugin_module,
             "captures": sorted(self._records, key=lambda item: item["sequence"]),
         }
         temporary = self._path.with_suffix(f"{self._path.suffix}.tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
         temporary.replace(self._path)
+        with suppress(OSError):
+            self._journal_path.unlink(missing_ok=True)
 
 
 def _install_model_output_capture(

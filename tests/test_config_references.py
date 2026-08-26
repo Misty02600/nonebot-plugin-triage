@@ -77,6 +77,38 @@ def second():
     )
 
 
+def test_extracts_class_handler_config_alias_through_one_helper() -> None:
+    source = """\
+class Feature:
+    enabled = plugin_config.enabled
+
+    @staticmethod
+    async def settle():
+        if Feature.enabled:
+            await apply_change()
+
+    @staticmethod
+    async def handler():
+        await Feature.settle()
+"""
+
+    references = extract_config_references(
+        source,
+        "Feature.handler",
+        {"plugin_config": {"enabled": "FEATURE_ENABLED"}},
+    )
+
+    assert [
+        (
+            item.field_name,
+            item.config_key,
+            item.function_name,
+            item.helper_depth,
+        )
+        for item in references
+    ] == [("enabled", "feature_enabled", "settle", 1)]
+
+
 def test_rejects_dynamic_access_subscripts_and_unknown_objects() -> None:
     source = """\
 def handler():

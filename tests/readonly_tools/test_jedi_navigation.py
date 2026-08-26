@@ -315,3 +315,44 @@ def test_installed_jedi_goes_to_imported_dependency_definition(tmp_path: Path) -
         and item.name == "check"
         for item in result.definitions
     )
+
+
+def test_installed_jedi_reuses_project_for_same_navigation_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jedi = pytest.importorskip("jedi")
+    profile, project, _dependency = _fixture_profile(tmp_path)
+    handler = project.path / "handler.py"
+    handler.write_text("value = 1\nother = value\n", encoding="utf-8")
+    project_count = 0
+
+    class FakeProject:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            nonlocal project_count
+            project_count += 1
+
+    class FakeScript:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def goto(self, **_kwargs: object) -> tuple[object, ...]:
+            return ()
+
+    monkeypatch.setattr(jedi, "Project", FakeProject)
+    monkeypatch.setattr(jedi, "Script", FakeScript)
+    navigator = DefinitionNavigator(profile)
+    revision = source_revision(profile, "project", "handler.py")
+
+    for line, column in ((1, 1), (2, 9)):
+        navigator.go_to_definition(
+            GoToDefinitionRequest(
+                root_name="project",
+                relative_path="handler.py",
+                line=line,
+                column=column,
+                source_revision=revision,
+            )
+        )
+
+    assert project_count == 1

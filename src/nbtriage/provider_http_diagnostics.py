@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -45,10 +45,19 @@ async def record_provider_http_failure(response: httpx.Response) -> None:
     )
 
 
-def provider_http_client(*, timeout_seconds: float) -> httpx.AsyncClient:
+def provider_http_client(
+    *,
+    timeout_seconds: float,
+    request_hooks: Sequence[Callable[[httpx.Request], Awaitable[None]]] = (),
+) -> httpx.AsyncClient:
+    event_hooks: dict[str, list[Callable[..., Awaitable[None]]]] = {
+        "response": [record_provider_http_failure]
+    }
+    if request_hooks:
+        event_hooks["request"] = list(request_hooks)
     return httpx.AsyncClient(
         timeout=timeout_seconds,
-        event_hooks={"response": [record_provider_http_failure]},
+        event_hooks=event_hooks,
     )
 
 

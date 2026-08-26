@@ -19,9 +19,14 @@
 
 发送 `triage <求助内容>` 即可调用插件，`@Bot` 可选。`triage` 后可以直接写自然语言，例如询问功能用法或
 描述遇到的问题。回复近期消息时，插件还会尝试关联这条消息在本机产生的运行记录。
-只有 Reply、没有 `triage` 的消息不会触发该入口。首轮确实缺少用户可以补充的信息时，插件会在同一
-`适配器 + Bot + 会话 + 用户` 作用域保留一次补充机会；下一条显式 `triage` 无需 Reply 即可续接。第二轮
-无论是否解决都会关闭，之后的 `triage` 开启新 Thread。同一作用域正在处理时不会排队或并行执行。
+只有 Reply、没有 `triage` 的消息不会触发该入口。Guidance / Bug 等普通支持首轮确实缺少用户可以补充的
+信息时，插件会在同一 `适配器 + Bot + 会话 + 用户` 作用域保留一次补充机会；下一条显式 `triage` 无需 Reply
+即可续接。第二轮无论是否解决都会关闭，之后的 `triage` 开启新的短期 Support Thread。
+
+Behavior exploration 是明确的例外：通过 `SUPERUSER` 鉴权后，同一作用域使用一个可跨 Bot 重启延续的长期
+Behavior Thread。每条新消息仍是一次独立、会结束的 Agent Run，但 Run 结束不会关闭 Thread；明确的新
+Guidance、Bug 或 Feature 意图优先，只有含糊续问才会接回已有 Behavior Thread。同一作用域正在处理时不会
+排队或并行执行，维护者可用 `triage 行为重置` 删除整个长期工作区。
 Reply 不选择、恢复或延长 Thread；它的可见正文只在路由后帮助识别具体命令、操作或报错，message ID 则
 独立用于关联本机运行证据。
 
@@ -44,7 +49,11 @@ flowchart TD
     D -->|"不是 Bug"| N["纠正用法或返回安全结论"]
     D -->|"证据不足"| X["暂时无法判断"]
 
-    E --> S["模型外 SUPERUSER 鉴权<br/>受限取证仍在实施"]
+    E --> S["模型外 SUPERUSER 鉴权"]
+    S --> W["读取当前 Capability Shadow<br/>并重验证据 revision"]
+    W --> L["LangGraph 长期工作区<br/>Pydantic AI 只读 ReAct"]
+    L --> H["发布带依据、未知项和证据状态的解释"]
+    H -. "后续 triage 继续同一 Thread" .-> L
     F --> Q["识别建议<br/>暂不创建外部工单"]
 ```
 
@@ -71,6 +80,13 @@ NoneBot ORM 在一个事务中保存 Report、Occurrence、Problem 和首条 Dec
 重复 Report 幂等，有可复算的同一技术签名时会关联到已有 Problem。`not_bug` 和 `unknown` 不建立问题记录，
 也不会自动创建外部 Issue。当前日志证据只覆盖本插件 runtime hook 精确关联捕获的 Matcher / API 异常，
 不会搜索任意宿主文件日志。
+
+维护者的 Behavior exploration 使用另一套长期工作区：LangGraph Checkpointer 加密保存有界的安全摘要、
+Claim、Evidence Reference、Artifact revision、幂等窗口和投递状态，不保存用户问题原文、完整 Pydantic AI
+消息历史、工具正文、Provider 原始输入输出、配置值、日志或源码。当前首个证据纵切只读取 Capability Shadow
+白名单化后的结构事实，因此回答会诚实保留 `partial / stale / conflicted / unknown`；源码、配置和运行观察的
+多源取证尚未接入。SQLite 实现只支持单机单 writer，并设置 Thread checkpoint 容量硬上限；达到上限后需由
+维护者显式重置，不会偷偷丢弃旧状态。该 Agent 尚无独立真实 Provider held-out 质量资格，当前属于受控首切。
 
 ## 安装
 
@@ -129,10 +145,12 @@ uv run nb orm upgrade
 | `NBTRIAGE_KNOWLEDGE_PACK_AUTO_UPDATE` | `true` | 启动后后台检查项目维护的 stable catalog；先恢复本地 active 包，新包完整校验后才原子切换。断网、catalog / 下载 / 校验失败均继续使用旧包或降级为 no-knowledge，不阻止插件加载。设为 `false` 可关闭默认联网检查。 |
 | `NBTRIAGE_KNOWLEDGE_PACK_URL` | 未设置 | 与 SHA-256 成对固定经过发布审核的 HTTPS knowledge pack 资产，并覆盖 stable catalog；适合离线镜像或可复现实验。固定包安装仍在后台执行；URL / SHA 只配一项或格式非法时只禁用知识服务，不阻止 Bot 启动，也不会偷偷改用 stable catalog。 |
 | `NBTRIAGE_KNOWLEDGE_PACK_SHA256` | 未设置 | 与 URL 成对固定 knowledge pack 压缩包的 64 位十六进制 SHA-256；下载内容不匹配时拒绝安装。它校验制品身份，不表示制品来源或许可证已自动获准。 |
-| `NBTRIAGE_MODEL_NAME` | 未设置 | 使用 Pydantic AI 的 `provider:model` 选择 Provider、API 族和精确模型，例如 `alibaba:qwen-max`；任意 OpenAI-compatible Chat 服务使用 `openai-chat:<模型 ID>`。这是唯一的 transport 选择字段。held-out 只标记项目已经验证的精确组合，未评测模型不会因此被拒绝运行。未设置时插件仍能启动并提供确定性能力索引，但不会生成教学注释、执行语义分类或调用 Answer Agent。 |
+| `NBTRIAGE_MODEL_NAME` | 未设置 | 使用 Pydantic AI 的 `provider:model` 选择 Provider、API 族和精确模型，例如 `alibaba:qwen-max`；任意 OpenAI-compatible Chat 服务使用 `openai-chat:<模型 ID>`。这是唯一的 transport 选择字段。held-out 只标记项目已经验证的精确组合，未评测模型不会因此被拒绝运行。未设置时插件仍能启动并提供确定性能力索引，但不会生成教学注释、执行语义分类或调用 Answer / Behavior Agent。 |
 | `NBTRIAGE_MODEL_BASE_URL` | 未设置 | 可选覆盖所选 Provider 的部署端地址，例如中国大陆百炼或自建 OpenAI-compatible Chat endpoint。它不替代 `provider:model`；已知 Provider 保留其 ModelProfile，通用兼容服务应显式选择 `openai-chat:`。Provider 构造器不支持地址覆盖时失败关闭。外部地址必须为 HTTPS，HTTP 只允许本机 loopback，且 URL 不得携带凭据、query 或 fragment。 |
-| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 单次语义、公开能力回答或自动教学注释请求的最长等待时间。显式 Provider SDK 对瞬时连接、限流和 5xx 最多进行两次传输重试；教学层不会因此重跑整个 Agent，只保留输出 / 投影 correction。Bug Agent 使用独立的 120 秒任务上限。与已发布评测预算不同只会使组合显示为未验证，不会成为运行禁令。 |
+| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 单次语义、公开能力回答或自动教学注释请求的最长等待时间，也是 Behavior Agent 一轮 ReAct 的总 timeout。显式 Provider SDK 对瞬时连接、限流和 5xx 最多进行两次传输重试；教学层不会因此重跑整个 Agent，只保留输出 / 投影 correction。Bug Agent 使用独立的 120 秒任务上限。与已发布评测预算不同只会使组合显示为未验证，不会成为运行禁令。 |
 | `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 单次语义 assessment 与 Answer Agent 结构化输出的 token 上限。自动教学注释使用任务内固定的 16384 output token；Bug Agent 使用独立的 800 output token、最多 8 次请求、6 次实际证据读取和 0.50 美元单轮预算。它不限制用户输入长度；与已发布评测预算不同会使用新的未验证质量标签。 |
+| `NBTRIAGE_BEHAVIOR_MAX_OUTPUT_TOKENS` | `1200` | Behavior Agent 单次 Provider 响应的 output token 上限，范围 `256..8192`。每轮另有固定的最多 5 次模型请求、3 次只读证据检索、60000 total token 和 0.50 美元预算；该值不改变长期工作区的 6000 字投递与 64 KiB State 上限。 |
+| `NBTRIAGE_BEHAVIOR_MAX_CONCURRENCY` | `2` | 不同 Behavior Thread 同时占用模型的全局上限，范围 `1..16`；同一 Thread 始终只允许一个活动 Turn，第二个请求直接返回忙碌而不排队。它不把 SQLite saver 升级为多进程协调后端。 |
 | `NBTRIAGE_AGENT_TRACE_ENABLED` | `true` | 模型 transport 已配置时，把脱敏后的 Pydantic AI Agent / model / tool spans 写入本插件 LocalStore data 下的 `agent-traces.jsonl`；固定按 10 MiB、5 个备份轮转。文件只含调用结构、耗时、状态、Provider/model、token、费用、安全关联 ID，以及响应 part 类型和正文/工具参数长度等无内容形状，不含 Prompt、源码、模型原文、工具参数/结果或配置值。设为 `false` 时不解析路径、不创建文件。 |
 | `NBTRIAGE_CAPABILITY_ANNOTATION_MAX_CONCURRENCY` | `10` | 自动教学注释同时运行的教学单元数上限，范围 `1..32`；同一插件的不同单元也可以并行，设为 `1` 可恢复全局串行。它不改变单次请求 timeout，较慢 Provider 继续通过 `NBTRIAGE_MODEL_TIMEOUT_SECONDS` 调整。 |
 | `NBTRIAGE_RESTRICTED_CONFIG` | `[]` | JSON 数组，列出禁止把实际值交给能力分析模型的 NoneBot 顶层配置键；键名大小写不敏感，`FOO__BAR` 等嵌套写法按顶层 `foo` 整项限制。命中后在读取实际值前拒绝；它不会删除 NoneBot 配置、禁止分析公开 schema/源码，也不表示未列出的整份 `.env` 会被发送。 |
@@ -243,6 +261,10 @@ token。教学注释还会写入独立的无内容 response-shape span，记录�
 错误正文写入显式本地忽略路径；该文件不保存初始 Prompt、请求体、认证头或 API key，但 reasoning、工具
 返回与上游错误仍可能包含真实插件源码或其他敏感上下文，必须按敏感本地工件管理。配套 `--unbounded` 会移除
 项目侧请求、工具、token、输出和成本止损，但仍保留 Agent 超时与有限单元重试；不影响生产 trace 默认脱敏。
+同一 Prompt、request、源码和已发布 generation 下，维护者可加 `--retry-failed` 复用成功单元，只重新生成
+失败、缺失或 stale 单元；合同 revision 变化时旧成功缓存同样失效，因此首次运行新合同仍会全量生成。
+该维护命令会把目标插件自己的 LocalStore cache/config/data 重定向到本次临时目录，避免插件加载或旧数据迁移
+读写部署者真实数据；Triage 自己的教学 cache、generation 与诊断输出仍按宿主项目配置保存，便于复核结果。
 
 `NBTRIAGE_RESTRICTED_CONFIG` 的 JSON 数组格式示例：
 
@@ -278,6 +300,10 @@ Permission/Rule 定义，再按广度优先展开本地 helper。Jedi 唯一定�
 site-packages / dist-packages 中的直接外部函数时，首包会预载这一层完整函数，但不把外部函数继续加入 BFS；
 过长或无法切片的唯一定义只提供不可引用的精确读取目标。编译扩展仅有 `.pyi` 时只提供签名导航，不把签名
 当成业务行为 Evidence。
+注册 gate 若先指向目标插件模块级赋值，适配器会沿静态、唯一的绑定链保存相关语句，并按同一预算预载最终
+到达的一层外部函数；不会为权限库或插件编写专属解析器。初始与动态 Python Evidence 会给直接调用、装饰器
+和基类附带请求内位置句柄；Agent 只提交句柄，服务端用 Jedi 完成跳转、revision 复核和唯一目标的稳定读取，
+不再让模型计算行列或复制源码哈希。
 Handler 与自定义 gate 为深度 0，最多展开三层；单函数最多 8,000 字符，单教学单元的初始源码切片合计最多
 32,000 字符。动态分派、多定义和解释器根外位置不会被猜测成正式 Evidence；普通单元仍可由 Agent 使用现有只读
 工具沿精确位置按需调查。静态工厂 family 的 Handler 若访问成员 Callable 字段，且字段值唯一解析为目标插件
@@ -305,9 +331,11 @@ runtime 成功注册、插件源码与其他生成输入未变、动态证据 re
 落后、插件加载失败或本轮未观察到的能力都不会成为普通用户可见的“幽灵帮助”。插件文件
 直接使用安全的 `module_name.json`，不建立 hash fallback 或文件名映射；非法 module name 或同轮大小写折叠
 冲突只关闭相关插件的教学增强。未评测模型也可以生成，但仍须通过
-相同的模型外闭合检查，并以未验证质量标签记录。当前 schema 8 的公开 entry 只保存
+相同的模型外闭合检查，并以未验证质量标签记录。当前 schema 10 的公开 entry 只保存
 `name / summary / usages / search_terms / behavior_boundaries / requirements`。独立条件继续使用
 `role / scene / access / rate_limit`；一个 Permission 的组合资格使用带 OR alternatives 的单一 requirement。
+`role` 表示调用者本人身份，`access` 表示用户、群或场景已取得由高权限主体控制的脱敏使用资格，业务准备状态进入
+`behavior_boundary`。`platform_scope` 只由 Runtime 记录负责路由，不进入模型生成的公开注释。
 Migut Help 只把单一 `SUPERUSER`，或精确的 `admin OR owner` 管理员组合投影为原生 permission；含场景、
 频道管理员或 custom 的混合 OR 留给 Answer。Alconna 叶子仍可投影为多个模型外固定 ID 的 entry；模型不再生成
 自由 Answer Markdown，Help 与 Answer 都从同一结构合同确定性投影。同一位置的一至三项固定备选在 usage 显式枚举，
@@ -336,7 +364,7 @@ schema、Evidence 闭合、投影、安全、预算、工具和源码提取均�
 过窄 Oracle：自定义角色同义文案、`baseline_changes.replace.new_value` 已形成正确最终边界却仍被要求重复 claim，
 以及 `@值班员` 的正确详细改写未逐字等于期望；剩余一条是模型把按群名单限制错分为 `scene` 而非 `access`。
 v13 分数保持冻结，不用事后改 Oracle 冒充通过。
-当前 Prompt v56 / request v23 保留全部 family 成员调用事实，并把无损列式成员清单与唯一 Parser shapes 分离去重；Alconna 联合输入不会再退化为 `typing.Any`，Uniseg `At` 会作为直接 `@用户` 输入参与聚合 usage 完整性校验；七个及以上 family 成员只做简短类别概括，不在 summary 或行为边界重复完整成员名单；tool-mode 最终输出只向模型公开唯一的对象参数 `output`，兼容输入的 JSON 字符串仍会在内部按同一完整教学 Schema 校验；
+当前 Prompt v71 / request v35 保留全部 family 成员调用事实，并把无损列式成员清单与唯一 Parser shapes 分离去重；模型输入不再重复 Runtime 已拥有的 `platform_scope`。独立 scene requirement 携带完整原子 `allowed_scenes` 集合，同一注册表达式中的复合 Permission 只形成一个候选。真实限额允许在同一 requirement 中说明有 Evidence 支持的豁免对象，不再用公开短语黑名单误杀。现有 Evidence 不足以支持或否定拟公开事实时，Agent 可以从已知符号、路径或调用位置按需补证，不限定为配置或授权问题；定义导航和根内文本搜索分别负责理解符号与定位使用位置；初始和动态 Python Evidence 提供请求内位置句柄，唯一目标一次调用即完成 Jedi 跳转、revision 复核和可引用读取。role 按入口直接身份判断生成，access 按可配置权限、名单或开放资格查询生成；权限系统内部的角色预授权不反向展开为目标能力 role。Alconna 联合输入不会再退化为 `typing.Any`，Uniseg `At` 会作为直接 `@用户` 输入参与聚合 usage 完整性校验；七个及以上 family 成员只做简短类别概括，不在 summary 或行为边界重复完整成员名单；tool-mode 与 native-mode 都直接提交顶层教学分析对象，不接受 `output` 包装或 JSON 字符串；输出格式或投影错误只纠正一次；
 普通命令明确保持 anchor-only。合同继续移除 family 初始 Evidence 条目总数上限、过滤
 Alconna 内建辅助 Option，并把公开投影失败纳入一次定向纠错；展示继续采用 `≤3 / 4–6 / ≥7` 阈值。
 family 异构输入无法用一个词准确概括时使用由当前 Evidence 命名的概念槽位，Prompt 不提供固定成品词；四至六类在 summary 说明，七类及以上可以简单概括共同类别，但不逐类展开，
@@ -393,11 +421,12 @@ semantic v7 中文 Prompt 的 OpenCode Go 与国内 Alibaba Qwen3.6 Flash 精确
 | 指令                                              | 权限      | 说明                           |
 | ------------------------------------------------- | --------- | ------------------------------ |
 | `triage 某个功能怎么使用`                         | 所有人    | 说明当前平台确定公开的功能     |
-| 同一会话继续发送 `triage <补充>`                  | 所有人    | 首轮未解决时消费唯一一次补充机会；Reply 可选 |
+| 同一会话继续发送 `triage <补充>`                  | 所有人    | Guidance / Bug 首轮未解决时消费唯一一次补充机会；Reply 可选 |
 | `triage <公开能力问题>`                            | 所有人    | 检索当前平台可安全说明的能力   |
 | `triage 刷新帮助 [plugin_module]`                 | SUPERUSER | 强制刷新全部或指定插件模块的教学数据 |
 | `triage 这是不是 Bug`                             | 所有人    | 判断 Bug / 非 Bug / 未知；确认 Bug 时自动记录 |
-| `triage <内部行为探索问题>`                        | SUPERUSER | 鉴权后进入行为探索候选；完整取证仍在实施 |
+| `triage <内部行为探索问题>`                        | SUPERUSER | 在长期 Behavior Thread 中读取当前安全能力结构并给出证据式解释；多源取证仍在扩展 |
+| `triage 行为重置`                                  | SUPERUSER | 删除当前维护者在当前会话的整个长期 Behavior Thread |
 | `triage 报错查询`                                 | SUPERUSER | 列出当前所有待处理 Problem |
 | `triage 报错查询 <P-编号>`                        | SUPERUSER | 查看判断、报告/发生次数和状态 |
 | `triage 报错查询 <P-编号> <确认Bug/确认非Bug/解决>` | SUPERUSER | 追加人工 Decision 或标记已解决 |
@@ -438,9 +467,10 @@ just maintainer search-capabilities "搜图怎么用" \
 
 本地维护者已经在模型外确认自己有权查看当前部署的内部能力时，可以额外使用 `--include-restricted`。CLI
 开关只是声明带外授权，不自行检查身份；语义 router 选中行为探索后，私聊、群聊和频道中的 `triage` 都会
-对当前 Bot / Event 的请求者执行同一 NoneBot `SUPERUSER` 检查。behavior candidate 的鉴权已接入，但取证
-和解释编排仍未实现，因此当前只返回有界状态，不读取 restricted 索引；semantic v7 可以识别并鉴权该目标，
-但不能把鉴权成功写成已经完成源码解释。
+对当前 Bot / Event 的请求者执行同一 NoneBot `SUPERUSER` 检查。当前 Behavior 纵切会在每次读取前重新鉴权，
+只把 Capability Shadow 中白名单化、去路径和去配置值的安全结构事实交给 Agent，再由模型外 reconciler 校验
+Evidence ID、basis、revision 和披露边界。它不会把“已注册”写成“本次实际执行”，也不会把尚未接通的源码、
+配置或运行观察冒充成已完成取证。
 
 这条检索链不依赖模型、网络或向量服务。首次后台构建尚未发布可服务 generation 时，普通用户继续回退
 显式 Provider；发布后也只检索派生 ServingView 中符合上述条件的能力。

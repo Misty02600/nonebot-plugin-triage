@@ -4,6 +4,7 @@ import hashlib
 import importlib.metadata
 import inspect
 import json
+import re
 import sys
 import weakref
 from collections.abc import Collection, Iterable, Mapping, Sequence
@@ -11,7 +12,7 @@ from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from types import ModuleType
+from types import FunctionType, ModuleType
 from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
@@ -44,6 +45,8 @@ from nonebot_plugin_triage.config_references import (
 
 _MAX_TEXT_CHARS = 1_000
 _MAX_SOURCE_FILE_BYTES = 1 * 1024 * 1024
+_MAX_ALCONNA_SHORTCUTS = 16
+_MAX_ALCONNA_SHORTCUT_CHARS = 4_000
 
 
 class CapabilityKind(StrEnum):
@@ -128,6 +131,20 @@ class AlconnaComponent:
 
 
 @dataclass(frozen=True)
+class AlconnaShortcut:
+    pattern: str
+    display: str | None
+    command: tuple[str, ...]
+    arguments: tuple[str, ...]
+    prefixes: tuple[str, ...]
+    fuzzy: bool
+    prefix: bool
+    flags: int
+    wrapper: str | None
+    opaque_values: bool
+
+
+@dataclass(frozen=True)
 class CapabilityCandidate:
     candidate_id: str
     plugin_id: str
@@ -156,6 +173,9 @@ class CapabilityCandidate:
     evidence: tuple[SourceEvidence, ...]
     trigger_factory: str | None = None
     trigger_entries: tuple[str, ...] = ()
+    trigger_regex_flags: tuple[str, ...] = ()
+    shortcuts: tuple[AlconnaShortcut, ...] = ()
+    shortcut_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -482,8 +502,18 @@ def _candidate_from_matcher(
         kind=kind,
         superuser_only=superuser_only,
     )
-    factory, entries = _runtime_trigger(matcher)
-    if factory in {"on_endswith", "on_fullmatch", "on_keyword", "on_startswith"} and entries:
+    factory, entries, regex_flags = _runtime_trigger(matcher)
+    if (
+        factory
+        in {
+            "on_endswith",
+            "on_fullmatch",
+            "on_keyword",
+            "on_regex",
+            "on_startswith",
+        }
+        and entries
+    ):
         candidate = replace(
             candidate,
             confidence=CapabilityConfidence.MEDIUM,
@@ -493,10 +523,17 @@ def _candidate_from_matcher(
                 if issue is not AnalysisIssue.DYNAMIC_ENTRY
             ),
         )
-    return replace(candidate, trigger_factory=factory, trigger_entries=entries)
+    return replace(
+        candidate,
+        trigger_factory=factory,
+        trigger_entries=entries,
+        trigger_regex_flags=regex_flags,
+    )
 
 
-def _runtime_trigger(matcher: object) -> tuple[str | None, tuple[str, ...]]:
+def _runtime_trigger(
+    matcher: object,
+) -> tuple[str | None, tuple[str, ...], tuple[str, ...]]:
     for dependent in _safe_collection(getattr(getattr(matcher, "rule", None), "checkers", ())):
         call = getattr(dependent, "call", None)
         for class_name, factory in (
@@ -507,15 +544,16 @@ def _runtime_trigger(matcher: object) -> tuple[str | None, tuple[str, ...]]:
             if _object_has_base(call, "nonebot.rule", class_name):
                 entries = _safe_trigger_entries(getattr(call, "msg", ()))
                 if entries:
-                    return factory, entries
+                    return factory, entries, ()
         if _object_has_base(call, "nonebot.rule", "RegexRule"):
             value = getattr(call, "regex", None)
             if isinstance(value, str):
-                return "on_regex", (value,)
+                flags = getattr(call, "flags", 0)
+                return "on_regex", (value,), _regex_flag_names(flags)
         if _object_has_base(call, "nonebot.rule", "KeywordsRule"):
             entries = _safe_trigger_entries(getattr(call, "keywords", ()))
             if entries:
-                return "on_keyword", entries
+                return "on_keyword", entries, ()
         if _object_has_base(call, "nonebot.rule", "IsTypeRule"):
             entries = tuple(
                 sorted(
@@ -526,8 +564,24 @@ def _runtime_trigger(matcher: object) -> tuple[str | None, tuple[str, ...]]:
                     }
                 )
             )
-            return "on_type", entries
-    return None, ()
+            return "on_type", entries, ()
+    return None, (), ()
+
+
+def _regex_flag_names(value: object) -> tuple[str, ...]:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return ()
+    flags = re.RegexFlag(value)
+    known = (
+        (re.RegexFlag.ASCII, "ascii"),
+        (re.RegexFlag.IGNORECASE, "ignore_case"),
+        (re.RegexFlag.LOCALE, "locale"),
+        (re.RegexFlag.MULTILINE, "multiline"),
+        (re.RegexFlag.DOTALL, "dotall"),
+        (re.RegexFlag.UNICODE, "unicode"),
+        (re.RegexFlag.VERBOSE, "verbose"),
+    )
+    return tuple(name for flag, name in known if flags & flag)
 
 
 def _safe_trigger_entries(value: object) -> tuple[str, ...]:
@@ -549,6 +603,112 @@ def _alconna_command(matcher: object) -> object | None:
     if command is None or not _object_has_base(command, "arclet.alconna.core", "Alconna"):
         return None
     return command
+
+
+def _alconna_shortcuts(
+    command: object,
+    plugin_module_name: str,
+) -> tuple[tuple[AlconnaShortcut, ...], int]:
+    """提取当前已注册 shortcut 的有界 Runtime 事实，不执行 wrapper。"""
+    try:
+        registered = command_manager.get_shortcut(cast(Alconna[Any], command))
+    except (KeyError, TypeError, ValueError):
+        return (), 0
+    if not isinstance(registered, Mapping):
+        return (), 0
+
+    result: list[AlconnaShortcut] = []
+    encoded_chars = 0
+    items = sorted(
+        ((key, value) for key, value in registered.items() if isinstance(key, str)),
+        key=lambda item: item[0],
+    )
+    for display_key, value in items[:_MAX_ALCONNA_SHORTCUTS]:
+        pattern = _bounded_shortcut_text(getattr(value, "origin_key", None), limit=512)
+        if pattern is None:
+            continue
+        command_parts, command_opaque = _shortcut_atoms(getattr(value, "command", None))
+        arguments, arguments_opaque = _shortcut_atoms(getattr(value, "args", ()))
+        prefixes, prefixes_opaque = _shortcut_atoms(getattr(value, "prefixes", ()))
+        raw_flags = getattr(value, "flags", 0)
+        flags = int(raw_flags) if isinstance(raw_flags, int) else 0
+        wrapper = getattr(value, "wrapper", None)
+        wrapper_module = getattr(wrapper, "__module__", None)
+        wrapper_qualname = getattr(wrapper, "__qualname__", None)
+        wrapper_name = (
+            f"{wrapper_module}.{wrapper_qualname}"
+            if isinstance(wrapper_module, str)
+            and isinstance(wrapper_qualname, str)
+            and (
+                wrapper_module == plugin_module_name
+                or wrapper_module.startswith(f"{plugin_module_name}.")
+            )
+            else None
+        )
+        display = _bounded_shortcut_text(display_key, limit=160) if display_key != pattern else None
+        shortcut = AlconnaShortcut(
+            pattern=pattern,
+            display=display,
+            command=command_parts,
+            arguments=arguments,
+            prefixes=prefixes,
+            fuzzy=bool(getattr(value, "fuzzy", False)),
+            prefix=bool(getattr(value, "prefix", False)),
+            flags=flags,
+            wrapper=wrapper_name,
+            opaque_values=command_opaque or arguments_opaque or prefixes_opaque,
+        )
+        encoded = json.dumps(
+            asdict(shortcut),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if encoded_chars + len(encoded) > _MAX_ALCONNA_SHORTCUT_CHARS:
+            break
+        result.append(shortcut)
+        encoded_chars += len(encoded)
+    return tuple(result), len(registered)
+
+
+def _shortcut_atoms(value: object) -> tuple[tuple[str, ...], bool]:
+    if isinstance(value, str | int | float | bool):
+        values = (value,)
+    elif isinstance(value, Iterable) and not isinstance(value, bytes | Mapping):
+        values = tuple(value)
+    else:
+        values = ()
+    result: list[str] = []
+    opaque = False
+    for item in values:
+        if isinstance(item, str):
+            text = _bounded_shortcut_text(item, limit=160, allow_empty=True)
+        elif isinstance(item, bool | int | float):
+            text = json.dumps(item, ensure_ascii=False, allow_nan=False)
+        elif _qualified_type_name(item) == "nonebot_plugin_alconna.uniseg.segment.Text":
+            text = _bounded_shortcut_text(
+                getattr(item, "text", None),
+                limit=160,
+                allow_empty=True,
+            )
+        else:
+            text = None
+        if text is None:
+            opaque = True
+            continue
+        result.append(text)
+    return tuple(result), opaque
+
+
+def _bounded_shortcut_text(
+    value: object,
+    *,
+    limit: int,
+    allow_empty: bool = False,
+) -> str | None:
+    if not isinstance(value, str) or (not allow_empty and not value) or len(value) > limit:
+        return None
+    return value
 
 
 def _command_rules(matcher: object) -> tuple[object, ...]:
@@ -615,6 +775,7 @@ def _alconna_candidate(
     description = _safe_text(getattr(meta, "description", None))
     usage = _safe_text(getattr(meta, "usage", None))
     example = _safe_text(getattr(meta, "example", None))
+    shortcuts, shortcut_count = _alconna_shortcuts(command, plugin.module_name)
     candidate_id = _candidate_id(
         plugin.plugin_id,
         source,
@@ -647,6 +808,8 @@ def _alconna_candidate(
         handler_references=handler_references,
         config_references=config_references,
         evidence=(source,),
+        shortcuts=shortcuts,
+        shortcut_count=shortcut_count,
     )
 
 
@@ -850,8 +1013,8 @@ def _matcher_config_references(
     result: list[_ResolvedConfigReference] = []
     seen: set[tuple[str, str, str, str, int, int, int]] = set()
     for dependent in _safe_collection(getattr(matcher, "handlers", ())):
-        call = getattr(dependent, "call", None)
-        if not inspect.isfunction(call):
+        call = _python_handler_function(getattr(dependent, "call", None))
+        if call is None:
             continue
         module_name = _safe_text(getattr(call, "__module__", None))
         if module_name is None or not _module_belongs_to_plugin(module_name, plugin.module_name):
@@ -873,7 +1036,7 @@ def _matcher_config_references(
         if not bindings:
             continue
         try:
-            references = extract_config_references(source_text, call.__name__, bindings)
+            references = extract_config_references(source_text, call.__qualname__, bindings)
         except ConfigReferenceError:
             continue
         for reference in references:
@@ -923,8 +1086,8 @@ def _matcher_handler_references(
 ) -> tuple[dict[str, object], ...]:
     result: list[dict[str, object]] = []
     for binding_index, dependent in enumerate(_safe_collection(getattr(matcher, "handlers", ()))):
-        call = getattr(dependent, "call", None)
-        if not inspect.isfunction(call):
+        call = _python_handler_function(getattr(dependent, "call", None))
+        if call is None:
             continue
         module_name = _safe_text(getattr(call, "__module__", None))
         function_name = _safe_text(getattr(call, "__name__", None))
@@ -960,6 +1123,14 @@ def _matcher_handler_references(
             }
         )
     return tuple(result)
+
+
+def _python_handler_function(call: object) -> FunctionType | None:
+    if inspect.isfunction(call):
+        return cast(FunctionType, call)
+    if inspect.ismethod(call) and inspect.isfunction(call.__func__):
+        return cast(FunctionType, call.__func__)
+    return None
 
 
 def _module_config_bindings(
@@ -1467,6 +1638,23 @@ def _core_record(
     for field_name, value in observed_values:
         if value is not None and value != []:
             claims.append(Claim(field_name, value, ClaimBasis.OBSERVED, matcher_evidence))
+    if candidate.shortcut_count:
+        claims.extend(
+            (
+                Claim(
+                    "command.shortcut_count",
+                    candidate.shortcut_count,
+                    ClaimBasis.OBSERVED,
+                    matcher_evidence,
+                ),
+                Claim(
+                    "command.shortcuts",
+                    [asdict(item) for item in candidate.shortcuts],
+                    ClaimBasis.OBSERVED,
+                    matcher_evidence,
+                ),
+            )
+        )
     if candidate.trigger_factory is not None:
         claims.append(
             Claim(
@@ -1478,6 +1666,15 @@ def _core_record(
             Claim(
                 "trigger.entries",
                 list(candidate.trigger_entries),
+                ClaimBasis.OBSERVED,
+                matcher_evidence,
+            )
+        )
+    if candidate.trigger_regex_flags:
+        claims.append(
+            Claim(
+                "trigger.regex_flags",
+                list(candidate.trigger_regex_flags),
                 ClaimBasis.OBSERVED,
                 matcher_evidence,
             )

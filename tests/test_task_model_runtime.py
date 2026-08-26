@@ -8,7 +8,10 @@ from pytest import MonkeyPatch
 
 import nonebot_plugin_triage.task_model_runtime as task_model_runtime
 from nbtriage.opencode_go_contracts import OPENCODE_GO_THINKING_SETTINGS_REVISION
-from nbtriage.task_model_settings import ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
+from nbtriage.task_model_settings import (
+    ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION,
+    DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION,
+)
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.semantic_runtime import create_semantic_client_factory
 from nonebot_plugin_triage.task_model_runtime import (
@@ -158,6 +161,25 @@ def test_qwen36_binding_disables_thinking_for_structured_output_tools(
     assert binding.model_settings is not None
     assert binding.model_settings.get("extra_body") == {"enable_thinking": False}
     assert binding.model_settings.get("parallel_tool_calls") is False
+    assert binding.model_settings.get("temperature") == 0
+
+
+def test_native_deepseek_v4_binding_matches_high_thinking_contract(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-only-key")
+
+    binding = create_task_model_binding(
+        NBTriageConfig(nbtriage_model_name="deepseek:deepseek-v4-flash")
+    )
+
+    assert binding.provider == "deepseek"
+    assert binding.model_name == "deepseek-v4-flash"
+    assert binding.settings_revision == DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION
+    assert binding.model_settings is not None
+    assert binding.model_settings.get("openai_reasoning_effort") == "high"
+    assert binding.model_settings.get("parallel_tool_calls") is False
+    assert binding.model_settings.get("tool_choice") == "auto"
     assert binding.model_settings.get("temperature") == 0
 
 

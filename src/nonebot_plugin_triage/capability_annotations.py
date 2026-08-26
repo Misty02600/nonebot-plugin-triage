@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from time import perf_counter
+from time import monotonic_ns, perf_counter
 from uuid import uuid4
 
 from nonebot import logger
@@ -58,6 +58,9 @@ from nonebot_plugin_triage.capability_annotation_cache import (
     write_capability_annotation_plugin_cache,
 )
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
+
+_SLOW_PREPARATION_LOG_MS = 1_000
+_MAX_PREPARATION_CONCURRENCY = 4
 
 CapabilityAnalysisClientFactory = Callable[[], CapabilityAnalysisClient]
 CapabilityAnnotationEvidenceValidator = Callable[
@@ -240,6 +243,17 @@ class _PreparedAnalysis:
 
 
 @dataclass(frozen=True)
+class _PreparationPlan:
+    records: tuple[CapabilityRecord, ...]
+    expected_unit_id: str
+    regular: bool
+
+    @property
+    def plugin_module(self) -> str:
+        return _records_plugin_module(self.records)
+
+
+@dataclass(frozen=True)
 class _AnalysisAttempt:
     item: _PreparedAnalysis
     annotation: CapabilityTeachingAnnotation | None
@@ -248,6 +262,28 @@ class _AnalysisAttempt:
     detail_code: str | None = None
     attempts: int = 0
     global_stop: bool = False
+
+
+def _cache_last_attempt(attempt: _AnalysisAttempt) -> CapabilityAnnotationLastAttempt:
+    if attempt.annotation is not None:
+        return CapabilityAnnotationLastAttempt(
+            state="generated" if attempt.annotation.knowledge_enabled else "disabled",
+            stage=attempt.stage.value,
+            request_fingerprint=attempt.item.fingerprint,
+            attempts=attempt.attempts,
+        )
+    return CapabilityAnnotationLastAttempt(
+        state="failed",
+        stage=attempt.stage.value,
+        request_fingerprint=attempt.item.fingerprint,
+        reason=(
+            attempt.reason.value
+            if attempt.reason is not None
+            else CapabilityTeachingUnitReason.UNKNOWN.value
+        ),
+        detail_code=attempt.detail_code,
+        attempts=attempt.attempts,
+    )
 
 
 @dataclass(frozen=True)
@@ -318,9 +354,8 @@ class CapabilityAnnotationService:
             isinstance(max_analysis_concurrency, bool)
             or not isinstance(max_analysis_concurrency, int)
             or max_analysis_concurrency < 1
-            or max_analysis_concurrency > 32
         ):
-            raise ValueError("max_analysis_concurrency must be an integer between 1 and 32")
+            raise ValueError("max_analysis_concurrency must be a positive integer")
         if isinstance(cache_directory, Path):
             self._cache_directory: Path | None = cache_directory
             self._cache_directory_resolver: Callable[[], Path] | None = None
@@ -334,11 +369,12 @@ class CapabilityAnnotationService:
         self._source_revision_validator = source_revision_validator
         self._published_generation_resolver = published_generation_resolver
         self._max_analysis_concurrency = max_analysis_concurrency
-        self._source_slice_cache = CapabilitySourceSliceCache()
+        self._source_slice_caches: dict[str, CapabilitySourceSliceCache] = {}
         self._active_view = _ActiveAnnotationView({}, {}, {})
         self._published_generation: str | None = None
         self._pending: _PendingAnnotationRefresh | None = None
         self._refresh_lock = asyncio.Lock()
+        self._checkpoint_lock = asyncio.Lock()
         self._status = CapabilityAnnotationRefreshStatus()
 
     @property
@@ -440,6 +476,7 @@ class CapabilityAnnotationService:
         if not isinstance(snapshot, CapabilitySnapshot):
             raise TypeError("snapshot must be CapabilitySnapshot")
         async with self._refresh_lock:
+            refresh_started_ns = monotonic_ns()
             self._pending = None
             published_generation = self._resolve_published_generation()
             if published_generation != self._published_generation:
@@ -458,23 +495,21 @@ class CapabilityAnnotationService:
                 len(snapshot.records),
                 plugin_module or "all",
             )
-            prepared, skipped_units, skip_reasons = await asyncio.to_thread(
-                self._prepare,
+            planning_started_ns = monotonic_ns()
+            preparation_plans, skipped_units, skip_reasons = await asyncio.to_thread(
+                self._plan_preparation,
                 snapshot,
                 plugin_module,
             )
             skipped = list(skipped_units)
             skip_reason_counts = dict(skip_reasons)
             known_plugins = {
-                *(item.plugin_module for item in prepared),
+                *(item.plugin_module for item in preparation_plans),
                 *(item.plugin_module for item in skipped_units),
             }
             if plugin_module is not None and plugin_module not in known_plugins:
                 raise CapabilityAnalysisAdapterError("requested plugin has no teaching unit")
 
-            grouped_prepared: dict[str, list[_PreparedAnalysis]] = {}
-            for item in prepared:
-                grouped_prepared.setdefault(item.plugin_module, []).append(item)
             invalid_plugins: set[str] = set()
             filename_groups: dict[str, list[str]] = {}
             for module_name in sorted(known_plugins):
@@ -487,57 +522,27 @@ class CapabilityAnnotationService:
             for module_names in filename_groups.values():
                 if len(module_names) > 1:
                     invalid_plugins.update(module_names)
-            plugin_revisions: dict[str, str] = {}
-            for module_name, items in grouped_prepared.items():
-                if module_name in invalid_plugins:
-                    continue
-                revisions = {
-                    item.request.source_context.plugin_source_revision
-                    for item in items
-                    if item.request.source_context is not None
-                }
-                if (
-                    len(revisions) != 1
-                    or any(item.request.source_context is None for item in items)
-                    or not _valid_sha256_digest(next(iter(revisions), ""))
-                ):
-                    invalid_plugins.add(module_name)
-                    continue
-                plugin_revisions[module_name] = next(iter(revisions))
             if invalid_plugins:
-                retained: list[_PreparedAnalysis] = []
-                for item in prepared:
-                    if item.plugin_module not in invalid_plugins:
-                        retained.append(item)
+                retained_plans: list[_PreparationPlan] = []
+                for plan in preparation_plans:
+                    if plan.plugin_module not in invalid_plugins:
+                        retained_plans.append(plan)
                         continue
                     skipped.append(
-                        _unit_status(
-                            item,
-                            state=CapabilityTeachingUnitState.SKIPPED,
-                            stage=CapabilityTeachingUnitStage.CACHE_VALIDATION,
-                            reason=CapabilityTeachingUnitReason.SOURCE_ADAPTER,
-                            detail_code="invalid_plugin_cache_identity",
-                            attempts=0,
-                            annotation=None,
+                        _skipped_unit_status(
+                            plan.records,
+                            plan.expected_unit_id,
+                            CapabilityTeachingUnitReason.SOURCE_ADAPTER,
                         )
                     )
                     _increment_skip_reason(
                         skip_reason_counts,
                         CapabilityTeachingUnitReason.SOURCE_ADAPTER.value,
                     )
-                prepared = tuple(retained)
-
-            logger.info(
-                "NoneBot Triage 教学注释准备完成：refresh_id={}, eligible={}, skipped={}, "
-                "skip_reasons={}",
-                refresh_id,
-                len(prepared),
-                len(skipped),
-                json.dumps(skip_reason_counts, ensure_ascii=True, sort_keys=True),
-            )
+                preparation_plans = tuple(retained_plans)
 
             cache_by_plugin: dict[str, CapabilityAnnotationPluginCache] = {}
-            for module_name in sorted(plugin_revisions):
+            for module_name in sorted(known_plugins - invalid_plugins):
                 try:
                     cache = await asyncio.to_thread(
                         read_capability_annotation_plugin_cache,
@@ -558,7 +563,274 @@ class CapabilityAnnotationService:
                 module_name: {unit.analysis_unit_id: unit for unit in cache.units}
                 for module_name, cache in cache_by_plugin.items()
             }
+            planning_finished_ns = monotonic_ns()
+            logger.info(
+                "NoneBot Triage 教学注释规划完成：refresh_id={}, planned={}, skipped={}, "
+                "prepare_concurrency={}, analysis_concurrency={}, scope={}",
+                refresh_id,
+                len(preparation_plans),
+                len(skipped),
+                _MAX_PREPARATION_CONCURRENCY,
+                self._max_analysis_concurrency,
+                plugin_module or "all",
+            )
 
+            prepared_items: list[_PreparedAnalysis] = []
+            missing: list[_PreparedAnalysis] = []
+            attempt_results: list[_AnalysisAttempt] = []
+            plugin_revisions: dict[str, str] = {}
+            reusable_annotations: dict[str, CapabilityTeachingAnnotation] = {}
+            active_fallbacks: dict[str, CapabilityTeachingAnnotation] = {}
+            blocked_plugins: set[str] = set()
+            analysis_source_changed: dict[str, str] = {}
+            global_stop = asyncio.Event()
+            global_detail: list[str] = []
+            plugin_prepare_locks = {
+                module_name: asyncio.Lock() for module_name in known_plugins - invalid_plugins
+            }
+            plugin_source_pack_caches: dict[str, dict[str, CapabilitySourceEvidencePack]] = {
+                module_name: {} for module_name in known_plugins - invalid_plugins
+            }
+            plugin_source_slice_caches = {
+                module_name: self._source_slice_caches.setdefault(
+                    module_name,
+                    CapabilitySourceSliceCache(),
+                )
+                for module_name in known_plugins - invalid_plugins
+            }
+            prepare_semaphore = asyncio.Semaphore(_MAX_PREPARATION_CONCURRENCY)
+            analysis_semaphore = asyncio.Semaphore(self._max_analysis_concurrency)
+            pipeline_started_ns = monotonic_ns()
+
+            async def analyze_item(item: _PreparedAnalysis, revision: str) -> None:
+                async with analysis_semaphore:
+                    if item.plugin_module in blocked_plugins:
+                        return
+                    if item.plugin_module in analysis_source_changed:
+                        attempt_results.append(
+                            _AnalysisAttempt(
+                                item,
+                                None,
+                                CapabilityTeachingUnitStage.NOT_ATTEMPTED,
+                                CapabilityTeachingUnitReason.SOURCE_CHANGED,
+                                analysis_source_changed[item.plugin_module],
+                            )
+                        )
+                        return
+                    if global_stop.is_set():
+                        attempt_results.append(
+                            _AnalysisAttempt(
+                                item,
+                                None,
+                                CapabilityTeachingUnitStage.NOT_ATTEMPTED,
+                                CapabilityTeachingUnitReason.GLOBAL_STOP,
+                                global_detail[0] if global_detail else "global_stop",
+                                global_stop=True,
+                            )
+                        )
+                        return
+                    attempt = await self._analyze_one(item, refresh_id=refresh_id)
+                    if attempt.reason is CapabilityTeachingUnitReason.SOURCE_CHANGED:
+                        analysis_source_changed.setdefault(
+                            item.plugin_module,
+                            attempt.detail_code or "source_changed",
+                        )
+                    if attempt.global_stop:
+                        if not global_detail:
+                            global_detail.append(
+                                attempt.detail_code
+                                or (attempt.reason.value if attempt.reason else "unknown")
+                            )
+                        global_stop.set()
+                attempt_results.append(attempt)
+                await self._persist_attempt_checkpoint(
+                    attempt,
+                    plugin_source_revision=revision,
+                    published_generation=published_generation,
+                )
+
+            async def prepare_item(
+                plan: _PreparationPlan,
+                task_group: asyncio.TaskGroup,
+            ) -> None:
+                module_name = plan.plugin_module
+                async with plugin_prepare_locks[module_name]:
+                    if module_name in blocked_plugins:
+                        reason = CapabilityTeachingUnitReason.SOURCE_ADAPTER
+                        skipped.append(
+                            _skipped_unit_status(plan.records, plan.expected_unit_id, reason)
+                        )
+                        _increment_skip_reason(skip_reason_counts, reason.value)
+                        return
+                    try:
+                        async with prepare_semaphore:
+                            item = await asyncio.to_thread(
+                                self._prepare_one,
+                                plan,
+                                plugin_source_pack_caches[module_name],
+                                plugin_source_slice_caches[module_name],
+                            )
+                    except (
+                        CapabilityAnalysisAdapterError,
+                        CapabilityAnalysisError,
+                        CapabilityAnnotationError,
+                    ) as error:
+                        reason = _preparation_skip_reason(error)
+                        skipped.append(
+                            _skipped_unit_status(plan.records, plan.expected_unit_id, reason)
+                        )
+                        _increment_skip_reason(skip_reason_counts, reason.value)
+                        if _plugin_shared_preparation_failure(error):
+                            blocked_plugins.add(module_name)
+                        return
+
+                    source_context = item.request.source_context
+                    revision = (
+                        source_context.plugin_source_revision if source_context is not None else ""
+                    )
+                    previous_revision = plugin_revisions.get(module_name)
+                    if not _valid_sha256_digest(revision) or (
+                        previous_revision is not None and previous_revision != revision
+                    ):
+                        blocked_plugins.add(module_name)
+                        reason = CapabilityTeachingUnitReason.SOURCE_ADAPTER
+                        skipped.append(
+                            _skipped_unit_status(plan.records, plan.expected_unit_id, reason)
+                        )
+                        _increment_skip_reason(skip_reason_counts, reason.value)
+                        return
+                    plugin_revisions[module_name] = revision
+
+                    unit_id = item.request.capability.capability_id
+                    previous_annotation: CapabilityTeachingAnnotation | None = None
+                    reusable_annotation: CapabilityTeachingAnnotation | None = None
+                    retry_unit = False
+                    cache = cache_by_plugin.get(module_name)
+                    cached_unit = cache_units_by_plugin.get(module_name, {}).get(unit_id)
+                    if cached_unit is not None:
+                        previous_annotation = cached_unit.last_good
+                    if (
+                        cache is not None
+                        and cached_unit is not None
+                        and cache.plugin_source_revision == revision
+                    ):
+                        if cached_unit.pending is not None:
+                            previous_annotation = cached_unit.pending
+                        if (
+                            cached_unit.pending is not None
+                            and cached_unit.pending.request_fingerprint == item.fingerprint
+                            and self._cached_evidence_is_current(
+                                item.request,
+                                cached_unit.pending,
+                            )
+                        ):
+                            reusable_annotation = cached_unit.pending
+                        elif (
+                            cache.published_generation is not None
+                            and cache.published_generation == published_generation
+                            and cached_unit.last_good is not None
+                            and cached_unit.last_good.request_fingerprint == item.fingerprint
+                            and self._cached_evidence_is_current(
+                                item.request,
+                                cached_unit.last_good,
+                            )
+                        ):
+                            reusable_annotation = cached_unit.last_good
+                        retry_unit = (
+                            cached_unit.last_attempt is not None
+                            and cached_unit.last_attempt.state == "failed"
+                            and cached_unit.last_attempt.request_fingerprint == item.fingerprint
+                        )
+
+                    active_annotation = self._active_view.annotations.get(unit_id)
+                    if active_annotation is not None:
+                        previous_annotation = active_annotation
+                        if (
+                            active_annotation.request_fingerprint == item.fingerprint
+                            and self._cached_evidence_is_current(
+                                item.request,
+                                active_annotation,
+                            )
+                        ):
+                            active_fallbacks[unit_id] = active_annotation
+                            if (
+                                cache is not None
+                                and cache.plugin_source_revision == revision
+                                and cache.published_generation is not None
+                                and cache.published_generation == published_generation
+                                and cached_unit is not None
+                                and cached_unit.last_good != active_annotation
+                            ):
+                                retry_unit = False
+
+                    if reusable_annotation is not None:
+                        reusable_annotations[unit_id] = reusable_annotation
+                    prepared_items.append(item)
+                    if not (force or reusable_annotation is None or retry_unit):
+                        return
+                    analysis_item = (
+                        replace(
+                            item,
+                            request=replace(
+                                item.request,
+                                previous_annotation=_analysis_baseline(previous_annotation),
+                            ),
+                        )
+                        if previous_annotation is not None
+                        else item
+                    )
+                    missing.append(analysis_item)
+                    task_group.create_task(analyze_item(analysis_item, revision))
+
+            async with asyncio.TaskGroup() as task_group:
+                for plan in preparation_plans:
+                    task_group.create_task(prepare_item(plan, task_group))
+
+            pipeline_finished_ns = monotonic_ns()
+            if blocked_plugins:
+                retained_items: list[_PreparedAnalysis] = []
+                blocked_unit_ids: set[str] = set()
+                for item in prepared_items:
+                    if item.plugin_module not in blocked_plugins:
+                        retained_items.append(item)
+                        continue
+                    blocked_unit_ids.add(item.request.capability.capability_id)
+                    reason = CapabilityTeachingUnitReason.SOURCE_ADAPTER
+                    skipped.append(
+                        _unit_status(
+                            item,
+                            state=CapabilityTeachingUnitState.SKIPPED,
+                            stage=CapabilityTeachingUnitStage.PREPARE,
+                            reason=reason,
+                            detail_code="plugin_shared_source_failure",
+                            attempts=0,
+                            annotation=None,
+                        )
+                    )
+                    _increment_skip_reason(skip_reason_counts, reason.value)
+                prepared_items = retained_items
+                missing = [item for item in missing if item.plugin_module not in blocked_plugins]
+                attempt_results = [
+                    attempt
+                    for attempt in attempt_results
+                    if attempt.item.plugin_module not in blocked_plugins
+                ]
+                for unit_id in blocked_unit_ids:
+                    reusable_annotations.pop(unit_id, None)
+                    active_fallbacks.pop(unit_id, None)
+                for module_name in blocked_plugins:
+                    plugin_revisions.pop(module_name, None)
+
+            prepared = tuple(
+                sorted(
+                    prepared_items,
+                    key=lambda item: (
+                        item.plugin_module,
+                        item.request.capability.capability_id,
+                    ),
+                )
+            )
+            attempts = tuple(attempt_results)
             current_fingerprints = {
                 item.request.capability.capability_id: item.fingerprint for item in prepared
             }
@@ -567,119 +839,40 @@ class CapabilityAnnotationService:
                 for item in prepared
                 for capability_id in item.member_capability_ids
             }
-            previous_annotations: dict[str, CapabilityTeachingAnnotation] = {}
-            reusable_annotations: dict[str, CapabilityTeachingAnnotation] = {}
-            retry_units: set[str] = set()
-            for item in prepared:
-                unit_id = item.request.capability.capability_id
-                cache = cache_by_plugin.get(item.plugin_module)
-                if cache is None:
-                    continue
-                unit = cache_units_by_plugin[item.plugin_module].get(unit_id)
-                if unit is None:
-                    continue
-                if unit.last_good is not None:
-                    previous_annotations[unit_id] = unit.last_good
-                if (
-                    cache.plugin_source_revision != plugin_revisions[item.plugin_module]
-                    or cache.published_generation is None
-                    or cache.published_generation != published_generation
-                ):
-                    continue
-                if (
-                    unit.last_good is not None
-                    and unit.last_good.request_fingerprint == item.fingerprint
-                    and self._cached_evidence_is_current(
-                        item.request,
-                        unit.last_good,
-                    )
-                ):
-                    reusable_annotations[unit_id] = unit.last_good
-                if (
-                    unit.last_attempt is not None
-                    and unit.last_attempt.state == "failed"
-                    and unit.last_attempt.request_fingerprint == item.fingerprint
-                ):
-                    retry_units.add(unit_id)
-
-            active_fallbacks: dict[str, CapabilityTeachingAnnotation] = {}
-            for item in prepared:
-                unit_id = item.request.capability.capability_id
-                annotation = self._active_view.annotations.get(unit_id)
-                if annotation is None:
-                    continue
-                previous_annotations[unit_id] = annotation
-                if (
-                    annotation.request_fingerprint == item.fingerprint
-                    and self._cached_evidence_is_current(
-                        item.request,
-                        annotation,
-                    )
-                ):
-                    active_fallbacks[unit_id] = annotation
-                    cache = cache_by_plugin.get(item.plugin_module)
-                    cached_unit = cache_units_by_plugin.get(item.plugin_module, {}).get(unit_id)
-                    if (
-                        cache is not None
-                        and cache.plugin_source_revision == plugin_revisions[item.plugin_module]
-                        and cache.published_generation is not None
-                        and cache.published_generation == published_generation
-                        and cached_unit is not None
-                        and cached_unit.last_good != annotation
-                    ):
-                        retry_units.discard(unit_id)
-
             # Cache 是候选加速层，不能覆盖已经由 current.json 发布的内存视图。
             base_annotations = {**reusable_annotations, **active_fallbacks}
-
-            active_view = _annotation_view(
+            self._active_view = _annotation_view(
                 current_fingerprints,
                 active_fallbacks,
                 capability_to_unit,
             )
-            # 已确认 stale 的旧注释立即退出运行时视图；模型新结果仍要等输出发布成功。
-            self._active_view = active_view
-            missing = [
-                item
-                for item in prepared
-                if (
-                    force
-                    or item.request.capability.capability_id not in reusable_annotations
-                    or item.request.capability.capability_id in retry_units
-                )
-            ]
-            missing = [
-                replace(
-                    item,
-                    request=replace(
-                        item.request,
-                        previous_annotation=_analysis_baseline(previous_annotations[unit_id]),
-                    ),
-                )
-                if (unit_id := item.request.capability.capability_id) in previous_annotations
-                else item
-                for item in missing
-            ]
             logger.info(
-                "NoneBot Triage 教学注释刷新开始：refresh_id={}, eligible={}, cached={}, "
-                "pending={}, plugin_groups={}, max_analysis_concurrency={}, scope={}",
+                "NoneBot Triage 教学注释流水线完成：refresh_id={}, eligible={}, cached={}, "
+                "analyzed={}, skipped={}, skip_reasons={}, plugin_groups={}",
                 refresh_id,
                 len(prepared),
                 len(base_annotations),
                 len(missing),
+                len(skipped),
+                json.dumps(skip_reason_counts, ensure_ascii=True, sort_keys=True),
                 len({item.plugin_module for item in missing}),
-                self._max_analysis_concurrency,
-                plugin_module or "all",
             )
-            attempts = await self._analyze_missing(missing, refresh_id=refresh_id)
+
             source_changed_plugins = {
                 attempt.item.plugin_module
                 for attempt in attempts
                 if attempt.reason is CapabilityTeachingUnitReason.SOURCE_CHANGED
             }
+            source_revalidation_started_ns = monotonic_ns()
             source_changed_plugins.update(
                 await self._final_source_changed_plugins(plugin_revisions)
             )
+            await self._restore_source_changed_checkpoints(
+                source_changed_plugins | blocked_plugins,
+                cache_by_plugin,
+            )
+            source_revalidation_finished_ns = monotonic_ns()
+            finalize_started_ns = source_revalidation_finished_ns
 
             evidence_changed_fallbacks: set[str] = set()
             for item in prepared:
@@ -971,61 +1164,118 @@ class CapabilityAnnotationService:
                 len({item.plugin_module for item in missing}),
                 self._max_analysis_concurrency,
             )
+            refresh_finished_ns = monotonic_ns()
+            logger.info(
+                "NoneBot Triage 教学注释阶段耗时：refresh_id={}, planning_ms={}, "
+                "pipeline_ms={}, source_revalidation_ms={}, finalize_ms={}, total_ms={}",
+                refresh_id,
+                _elapsed_ms(planning_started_ns, planning_finished_ns),
+                _elapsed_ms(pipeline_started_ns, pipeline_finished_ns),
+                _elapsed_ms(
+                    source_revalidation_started_ns,
+                    source_revalidation_finished_ns,
+                ),
+                _elapsed_ms(finalize_started_ns, refresh_finished_ns),
+                _elapsed_ms(refresh_started_ns, refresh_finished_ns),
+            )
             return self._status
 
-    async def _analyze_missing(
+    async def _persist_attempt_checkpoint(
         self,
-        missing: list[_PreparedAnalysis],
+        attempt: _AnalysisAttempt,
         *,
-        refresh_id: str,
-    ) -> tuple[_AnalysisAttempt, ...]:
-        semaphore = asyncio.Semaphore(self._max_analysis_concurrency)
-        global_stop = asyncio.Event()
-        global_detail: list[str] = []
-        source_changed: dict[str, str] = {}
-
-        async def analyze_item(item: _PreparedAnalysis) -> _AnalysisAttempt:
-            async with semaphore:
-                if item.plugin_module in source_changed:
-                    return _AnalysisAttempt(
-                        item,
-                        None,
-                        CapabilityTeachingUnitStage.NOT_ATTEMPTED,
-                        CapabilityTeachingUnitReason.SOURCE_CHANGED,
-                        source_changed[item.plugin_module],
+        plugin_source_revision: str,
+        published_generation: str | None,
+    ) -> None:
+        """持久化已完成单元；候选仍需插件整体发布后才进入 active view。"""
+        if attempt.attempts == 0 or attempt.reason is CapabilityTeachingUnitReason.SOURCE_CHANGED:
+            return
+        item = attempt.item
+        module_name = item.plugin_module
+        async with self._checkpoint_lock:
+            try:
+                cache_directory = self._resolved_cache_directory()
+                try:
+                    current = await asyncio.to_thread(
+                        read_capability_annotation_plugin_cache,
+                        cache_directory,
+                        module_name,
                     )
-                if global_stop.is_set():
-                    return _AnalysisAttempt(
-                        item,
-                        None,
-                        CapabilityTeachingUnitStage.NOT_ATTEMPTED,
-                        CapabilityTeachingUnitReason.GLOBAL_STOP,
-                        global_detail[0] if global_detail else "global_stop",
-                        global_stop=True,
-                    )
-                attempt = await self._analyze_one(
-                    item,
-                    refresh_id=refresh_id,
+                except (UnicodeError, CapabilityAnnotationCacheError):
+                    current = None
+                units = (
+                    {unit.analysis_unit_id: unit for unit in current.units}
+                    if current is not None
+                    and current.plugin_source_revision == plugin_source_revision
+                    else {}
                 )
-                if attempt.reason is CapabilityTeachingUnitReason.SOURCE_CHANGED:
-                    source_changed.setdefault(
-                        item.plugin_module,
-                        attempt.detail_code or "source_changed",
-                    )
-                if attempt.global_stop:
-                    if not global_detail:
-                        global_detail.append(
-                            attempt.detail_code
-                            or (attempt.reason.value if attempt.reason else "unknown")
-                        )
-                    global_stop.set()
-                return attempt
+                previous = units.get(item.request.capability.capability_id)
+                last_good = (
+                    previous.last_good
+                    if previous is not None
+                    and current is not None
+                    and current.published_generation == published_generation
+                    else None
+                )
+                pending = (
+                    attempt.annotation
+                    if attempt.annotation is not None
+                    else (previous.pending if previous is not None else None)
+                )
+                units[item.request.capability.capability_id] = CapabilityAnnotationCacheUnit(
+                    analysis_unit_id=item.request.capability.capability_id,
+                    last_good=last_good,
+                    pending=pending,
+                    last_attempt=_cache_last_attempt(attempt),
+                )
+                checkpoint = CapabilityAnnotationPluginCache(
+                    module_name=module_name,
+                    plugin_source_revision=plugin_source_revision,
+                    published_generation=published_generation,
+                    units=tuple(units.values()),
+                )
+                await asyncio.to_thread(
+                    write_capability_annotation_plugin_cache,
+                    cache_directory,
+                    checkpoint,
+                )
+            except Exception as error:
+                logger.warning(
+                    "NoneBot Triage 教学注释单元断点写入失败；继续当前刷新："
+                    "plugin_module={}, unit_id={}, error_type={}",
+                    _safe_log_identifier(module_name),
+                    _safe_log_identifier(item.request.capability.capability_id),
+                    type(error).__name__,
+                )
 
-        return tuple(
-            await asyncio.gather(
-                *(analyze_item(item) for item in missing),
-            )
-        )
+    async def _restore_source_changed_checkpoints(
+        self,
+        module_names: set[str],
+        previous_caches: dict[str, CapabilityAnnotationPluginCache],
+    ) -> None:
+        if not module_names:
+            return
+        async with self._checkpoint_lock:
+            cache_directory = self._resolved_cache_directory()
+            for module_name in sorted(module_names):
+                try:
+                    previous = previous_caches.get(module_name)
+                    if previous is not None:
+                        await asyncio.to_thread(
+                            write_capability_annotation_plugin_cache,
+                            cache_directory,
+                            previous,
+                        )
+                    else:
+                        path = cache_directory / capability_annotation_cache_filename(module_name)
+                        await asyncio.to_thread(path.unlink, missing_ok=True)
+                except Exception as error:
+                    logger.warning(
+                        "NoneBot Triage 教学注释源码变化后的断点回滚失败："
+                        "plugin_module={}, error_type={}",
+                        _safe_log_identifier(module_name),
+                        type(error).__name__,
+                    )
 
     async def _analyze_one(
         self,
@@ -1164,25 +1414,9 @@ class CapabilityAnnotationService:
         for module_name, items in sorted(grouped.items()):
             revision = plugin_revisions[module_name]
             previous_cache = previous_caches.get(module_name)
-            plugin_attempted = any(
-                (attempt := attempts.get(item.request.capability.capability_id)) is not None
-                and attempt.attempts > 0
-                for item in items
-            )
-            if not plugin_attempted and (
-                previous_cache is None
-                or previous_cache.plugin_source_revision != revision
-                or previous_cache.published_generation is None
-                or previous_cache.published_generation != published_generation
-            ):
-                # 未在本轮范围内生成的 stale 插件保留旧分片，仅供下轮 previous baseline 使用。
-                continue
             previous_units = (
                 {unit.analysis_unit_id: unit for unit in previous_cache.units}
-                if previous_cache is not None
-                and previous_cache.plugin_source_revision == revision
-                and previous_cache.published_generation is not None
-                and previous_cache.published_generation == published_generation
+                if previous_cache is not None and previous_cache.plugin_source_revision == revision
                 else {}
             )
             units: list[CapabilityAnnotationCacheUnit] = []
@@ -1201,34 +1435,14 @@ class CapabilityAnnotationService:
                     # 当前 active 比 shard 更新时，不把旧的成功 attempt 冒充为新结果的尝试。
                     last_attempt = None
                 if attempt is not None and attempt.attempts > 0:
-                    if attempt.annotation is not None:
-                        last_attempt = CapabilityAnnotationLastAttempt(
-                            state=(
-                                "generated" if attempt.annotation.knowledge_enabled else "disabled"
-                            ),
-                            stage=attempt.stage.value,
-                            request_fingerprint=item.fingerprint,
-                            attempts=attempt.attempts,
-                        )
-                    else:
-                        last_attempt = CapabilityAnnotationLastAttempt(
-                            state="failed",
-                            stage=attempt.stage.value,
-                            request_fingerprint=item.fingerprint,
-                            reason=(
-                                attempt.reason.value
-                                if attempt.reason is not None
-                                else CapabilityTeachingUnitReason.UNKNOWN.value
-                            ),
-                            detail_code=attempt.detail_code,
-                            attempts=attempt.attempts,
-                        )
+                    last_attempt = _cache_last_attempt(attempt)
                 if last_good is None and last_attempt is None:
                     continue
                 units.append(
                     CapabilityAnnotationCacheUnit(
                         analysis_unit_id=unit_id,
                         last_good=last_good,
+                        pending=None,
                         last_attempt=last_attempt,
                     )
                 )
@@ -1260,14 +1474,27 @@ class CapabilityAnnotationService:
                 continue
             previous_cache = previous_caches.get(module_name)
             revision = plugin_revisions[module_name]
-            units = (
-                {unit.analysis_unit_id: unit for unit in previous_cache.units}
-                if previous_cache is not None
-                and previous_cache.plugin_source_revision == revision
-                and previous_cache.published_generation is not None
-                and previous_cache.published_generation == published_generation
-                else {}
-            )
+            units: dict[str, CapabilityAnnotationCacheUnit] = {}
+            if previous_cache is not None and previous_cache.plugin_source_revision == revision:
+                keep_last_good = previous_cache.published_generation == published_generation
+                for unit in previous_cache.units:
+                    last_good = unit.last_good if keep_last_good else None
+                    last_attempt = unit.last_attempt
+                    if (
+                        last_attempt is not None
+                        and last_attempt.state != "failed"
+                        and unit.pending is None
+                        and last_good is None
+                    ):
+                        last_attempt = None
+                    if last_good is None and unit.pending is None and last_attempt is None:
+                        continue
+                    units[unit.analysis_unit_id] = CapabilityAnnotationCacheUnit(
+                        analysis_unit_id=unit.analysis_unit_id,
+                        last_good=last_good,
+                        pending=unit.pending,
+                        last_attempt=last_attempt,
+                    )
             for item in items:
                 unit_id = item.request.capability.capability_id
                 active = active_annotations.get(unit_id)
@@ -1277,6 +1504,7 @@ class CapabilityAnnotationService:
                 units[unit_id] = CapabilityAnnotationCacheUnit(
                     analysis_unit_id=unit_id,
                     last_good=active,
+                    pending=previous.pending if previous is not None else None,
                     last_attempt=previous.last_attempt if previous is not None else None,
                 )
             changed = False
@@ -1286,7 +1514,6 @@ class CapabilityAnnotationService:
                 if (
                     attempt is None
                     or attempt.attempts == 0
-                    or attempt.annotation is not None
                     or attempt.reason is CapabilityTeachingUnitReason.SOURCE_CHANGED
                 ):
                     continue
@@ -1294,18 +1521,12 @@ class CapabilityAnnotationService:
                 units[unit_id] = CapabilityAnnotationCacheUnit(
                     analysis_unit_id=unit_id,
                     last_good=previous.last_good if previous is not None else None,
-                    last_attempt=CapabilityAnnotationLastAttempt(
-                        state="failed",
-                        stage=attempt.stage.value,
-                        request_fingerprint=item.fingerprint,
-                        reason=(
-                            attempt.reason.value
-                            if attempt.reason is not None
-                            else CapabilityTeachingUnitReason.UNKNOWN.value
-                        ),
-                        detail_code=attempt.detail_code,
-                        attempts=attempt.attempts,
+                    pending=(
+                        attempt.annotation
+                        if attempt.annotation is not None
+                        else (previous.pending if previous is not None else None)
                     ),
+                    last_attempt=_cache_last_attempt(attempt),
                 )
                 changed = True
             if changed:
@@ -1318,19 +1539,17 @@ class CapabilityAnnotationService:
                 )
         return tuple(updates)
 
-    def _prepare(
+    def _plan_preparation(
         self,
         snapshot: CapabilitySnapshot,
         plugin_module: str | None = None,
     ) -> tuple[
-        tuple[_PreparedAnalysis, ...],
+        tuple[_PreparationPlan, ...],
         tuple[CapabilityTeachingUnitStatus, ...],
         tuple[tuple[str, int], ...],
     ]:
-        prepared: list[_PreparedAnalysis] = []
         skipped_units: list[CapabilityTeachingUnitStatus] = []
         skip_reasons: dict[str, int] = {}
-        source_pack_cache: dict[str, CapabilitySourceEvidencePack] = {}
         scoped_records = (
             snapshot.records
             if plugin_module is None
@@ -1379,90 +1598,88 @@ class CapabilityAnnotationService:
                 )
                 _increment_skip_reason(skip_reasons, reason.value)
 
-        analysis_groups: list[tuple[tuple[CapabilityRecord, ...], str]] = [
-            ((record,), record.capability_id) for record in regular_records
+        plans = [
+            _PreparationPlan((record,), record.capability_id, True) for record in regular_records
         ]
-        analysis_groups.extend(
-            (tuple(records), identity.analysis_unit_id)
+        plans.extend(
+            _PreparationPlan(tuple(records), identity.analysis_unit_id, False)
             for identity, records in family_records.items()
         )
-        blocked_plugins: set[str] = set()
-        for records, expected_unit_id in analysis_groups:
-            members = tuple(sorted(record.capability_id for record in records))
-            expected_plugin = _records_plugin_module(records)
-            if expected_plugin in blocked_plugins:
-                reason = CapabilityTeachingUnitReason.SOURCE_ADAPTER
-                skipped_units.append(_skipped_unit_status(records, expected_unit_id, reason))
-                _increment_skip_reason(skip_reasons, reason.value)
-                continue
-            try:
-                request = (
-                    build_capability_analysis_request(
-                        records[0],
-                        self._config_policy,
-                        source_pack_cache=source_pack_cache,
-                        source_slice_cache=self._source_slice_cache,
-                    )
-                    if len(records) == 1 and records[0] in regular_records
-                    else build_parameterized_family_analysis_request(
-                        tuple(records),
-                        self._config_policy,
-                        source_pack_cache=source_pack_cache,
-                        source_slice_cache=self._source_slice_cache,
-                    )
-                )
-                fingerprint = capability_analysis_fingerprint(
-                    request,
-                    analysis_revision=self._analysis_revision,
-                )
-            except (
-                CapabilityAnalysisAdapterError,
-                CapabilityAnalysisError,
-                CapabilityAnnotationError,
-            ) as error:
-                reason = _preparation_skip_reason(error)
-                skipped_units.append(_skipped_unit_status(records, expected_unit_id, reason))
-                _increment_skip_reason(skip_reasons, reason.value)
-                if _plugin_shared_preparation_failure(error):
-                    blocked_plugins.add(expected_plugin)
-                    previously_prepared = tuple(
-                        item for item in prepared if item.plugin_module == expected_plugin
-                    )
-                    prepared[:] = [
-                        item for item in prepared if item.plugin_module != expected_plugin
-                    ]
-                    for item in previously_prepared:
-                        skipped_units.append(
-                            _unit_status(
-                                item,
-                                state=CapabilityTeachingUnitState.SKIPPED,
-                                stage=CapabilityTeachingUnitStage.PREPARE,
-                                reason=CapabilityTeachingUnitReason.SOURCE_ADAPTER,
-                                detail_code="plugin_shared_source_failure",
-                                attempts=0,
-                                annotation=None,
-                            )
-                        )
-                        _increment_skip_reason(
-                            skip_reasons,
-                            CapabilityTeachingUnitReason.SOURCE_ADAPTER.value,
-                        )
-                continue
-            module_name = (
-                request.source_context.module_name
-                if request.source_context
-                else request.capability.owner
+        return tuple(plans), tuple(skipped_units), tuple(sorted(skip_reasons.items()))
+
+    def _prepare_one(
+        self,
+        plan: _PreparationPlan,
+        source_pack_cache: dict[str, CapabilitySourceEvidencePack],
+        source_slice_cache: CapabilitySourceSliceCache,
+    ) -> _PreparedAnalysis:
+        records = plan.records
+        expected_plugin = plan.plugin_module
+        members = tuple(sorted(record.capability_id for record in records))
+        unit_started_ns = monotonic_ns()
+        source_pack_cache_hit = expected_plugin in source_pack_cache
+        preparation_timings: dict[str, int] = {}
+        request_started_ns = monotonic_ns()
+        request = (
+            build_capability_analysis_request(
+                records[0],
+                self._config_policy,
+                source_pack_cache=source_pack_cache,
+                source_slice_cache=source_slice_cache,
+                preparation_timings=preparation_timings,
             )
-            prepared.append(
-                _PreparedAnalysis(
-                    request,
-                    fingerprint,
-                    module_name,
-                    _records_label(records),
-                    members,
-                )
+            if plan.regular
+            else build_parameterized_family_analysis_request(
+                records,
+                self._config_policy,
+                source_pack_cache=source_pack_cache,
+                source_slice_cache=source_slice_cache,
+                preparation_timings=preparation_timings,
             )
-        return tuple(prepared), tuple(skipped_units), tuple(sorted(skip_reasons.items()))
+        )
+        request_finished_ns = monotonic_ns()
+        fingerprint_started_ns = request_finished_ns
+        fingerprint = capability_analysis_fingerprint(
+            request,
+            analysis_revision=self._analysis_revision,
+        )
+        fingerprint_finished_ns = monotonic_ns()
+        unit_duration_ms = _elapsed_ms(unit_started_ns, fingerprint_finished_ns)
+        if unit_duration_ms >= _SLOW_PREPARATION_LOG_MS:
+            request_duration_ms = _elapsed_ms(request_started_ns, request_finished_ns)
+            attributed_ms = sum(preparation_timings.values())
+            preparation_timings["unattributed"] = max(
+                0,
+                request_duration_ms - attributed_ms,
+            )
+            logger.info(
+                "NoneBot Triage 教学注释单元准备耗时：plugin_module={}, "
+                "unit_label={}, unit_id={}, source_pack_cache_hit={}, request_ms={}, "
+                "request_stages_ms={}, fingerprint_ms={}, evidence_units={}, "
+                "evidence_chars={}, total_ms={}",
+                _safe_log_identifier(expected_plugin),
+                _safe_public_log_label(_records_label(records)),
+                _safe_log_identifier(plan.expected_unit_id),
+                source_pack_cache_hit,
+                request_duration_ms,
+                json.dumps(preparation_timings, ensure_ascii=True, sort_keys=True),
+                _elapsed_ms(fingerprint_started_ns, fingerprint_finished_ns),
+                len(request.evidence_units),
+                sum(len(item.content) for item in request.evidence_units),
+                unit_duration_ms,
+            )
+        module_name = (
+            request.source_context.module_name
+            if request.source_context
+            else request.capability.owner
+        )
+        return _PreparedAnalysis(
+            request,
+            fingerprint,
+            module_name,
+            _records_label(records),
+            members,
+        )
 
     def _cached_evidence_is_current(
         self,
@@ -1480,6 +1697,10 @@ class CapabilityAnnotationService:
             return self._evidence_validator(request, annotation.evidence_manifest)
         except Exception:
             return False
+
+
+def _elapsed_ms(started_ns: int, finished_ns: int) -> int:
+    return max(0, round((finished_ns - started_ns) / 1_000_000))
 
 
 def _annotation_view(
@@ -1748,15 +1969,37 @@ def _eligible_record(record: CapabilityRecord) -> bool:
         and record.platform_scope.kind is not PlatformScopeKind.UNKNOWN
         and not record.analysis_issues
         and record.state in {RecordState.VERIFIED, RecordState.CANDIDATE}
-        and any(
-            claim.field in {"invocation.header", "command.header"}
-            and claim.basis is ClaimBasis.OBSERVED
-            and isinstance(claim.value, str)
-            and bool(claim.value)
-            for claim in record.claims
-        )
+        and _has_observed_teaching_invocation(record)
         and not any(issue is AnalysisIssue.SENSITIVE_AMBIGUITY for issue in record.analysis_issues)
     )
+
+
+def _has_observed_teaching_invocation(record: CapabilityRecord) -> bool:
+    if any(
+        claim.field in {"invocation.header", "command.header"}
+        and claim.basis is ClaimBasis.OBSERVED
+        and isinstance(claim.value, str)
+        and bool(claim.value)
+        for claim in record.claims
+    ):
+        return True
+    factories = {
+        claim.value
+        for claim in record.claims
+        if claim.field == "trigger.factory"
+        and claim.basis is ClaimBasis.OBSERVED
+        and isinstance(claim.value, str)
+    }
+    patterns = tuple(
+        value
+        for claim in record.claims
+        if claim.field == "trigger.entries"
+        and claim.basis is ClaimBasis.OBSERVED
+        and isinstance(claim.value, list)
+        for value in claim.value
+        if isinstance(value, str) and value
+    )
+    return factories == {"on_regex"} and len(patterns) == 1
 
 
 def _has_declared_teaching(record: CapabilityRecord) -> bool:

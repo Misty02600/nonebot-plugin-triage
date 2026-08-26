@@ -64,17 +64,28 @@ def test_root_alternation_is_grouped_before_embedding_in_usage() -> None:
     )
 
 
-def test_public_selector_lists_at_most_three_fixed_values() -> None:
-    three = ("摸摸", "亲亲", "贴贴")
-    four = (*three, "白底")
+def test_public_selector_lists_at_most_four_fixed_values() -> None:
+    four = ("摸摸", "亲亲", "贴贴", "白底")
+    five = (*four, "旋转")
 
-    exact = deterministic_usage_selector(three)
+    exact = deterministic_usage_selector(four)
     assert exact is not None
-    assert set(expand_literal_expression(exact)) == set(three)
-    assert deterministic_usage_selector(four, concept_name="模板") == "<模板>"
-    assert validate_usage_selector("<模板>", four) == "<模板>"
+    assert set(expand_literal_expression(exact)) == set(four)
+    assert deterministic_usage_selector(five) is None
     with pytest.raises(CapabilityUsageExpressionError):
-        validate_usage_selector("(摸摸|亲亲|贴贴|白底)", four)
+        validate_usage_selector("(摸摸|亲亲|贴贴|白底|旋转)", five)
+
+
+def test_public_selector_accepts_more_than_four_expansions_after_local_factoring() -> None:
+    literals = ("禁言", "禁他", "禁她", "口他", "口她", "踩他", "踩她")
+    expression = "(禁言|(禁|口|踩)(他|她))"
+
+    assert validate_usage_selector(expression, literals) == expression
+
+
+def test_public_selector_rejects_non_executable_concept_for_aliases() -> None:
+    with pytest.raises(CapabilityUsageExpressionError):
+        validate_usage_selector("<指令>", ("禁言", "口他", "禁他", "口她", "禁她"))
 
 
 def test_family_usage_accepts_repeating_image_or_text_inputs() -> None:

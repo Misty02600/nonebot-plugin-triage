@@ -67,6 +67,7 @@ def _inject_semantic_assessment(
     *,
     goals: tuple[str, ...] = (),
     reported_observation: bool = False,
+    status: str | None = None,
 ) -> None:
     from nbtriage.support_semantics import (
         SUPPORT_SEMANTIC_SCHEMA_VERSION,
@@ -78,13 +79,18 @@ def _inject_semantic_assessment(
     )
     from nonebot_plugin_triage import handlers
 
-    assessment = SupportSemanticAssessment(
-        schema_version=SUPPORT_SEMANTIC_SCHEMA_VERSION,
-        status=(
+    assessment_status = (
+        SupportAssessmentStatus(status)
+        if status is not None
+        else (
             SupportAssessmentStatus.ASSESSED
             if goals or reported_observation
             else SupportAssessmentStatus.NEEDS_CLARIFICATION
-        ),
+        )
+    )
+    assessment = SupportSemanticAssessment(
+        schema_version=SUPPORT_SEMANTIC_SCHEMA_VERSION,
+        status=assessment_status,
         goals=tuple(SupportGoal(item) for item in goals),
         reported_observation=reported_observation,
     )
@@ -139,6 +145,125 @@ def _install_isolated_support_threads(monkeypatch: pytest.MonkeyPatch) -> Any:
     )
     monkeypatch.setattr(handlers, "plugin_runtime", runtime)
     monkeypatch.setattr(runtime.support_rate_limiter, "allow", lambda *_: True)
+    return runtime
+
+
+class _BehaviorServiceProbe:
+    available = True
+
+    def __init__(self, *, active: bool = False, delete_result: bool = True) -> None:
+        self.active = active
+        self.delete_result = delete_result
+        self.active_checks: list[Any] = []
+        self.explorations: list[Any] = []
+        self.begin_calls: list[dict[str, Any]] = []
+        self.finish_calls: list[dict[str, Any]] = []
+        self.abandon_calls: list[dict[str, Any]] = []
+        self.delete_calls: list[Any] = []
+
+    async def startup(self) -> None:
+        return None
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def has_active_inquiry(
+        self,
+        scope: Any,
+        authorization_guard: Any,
+    ) -> bool:
+        assert await authorization_guard()
+        self.active_checks.append(scope)
+        return self.active
+
+    async def explore(self, request: Any) -> Any:
+        from nbtriage.behavior_exploration import BehaviorDeliveryStatus
+        from nonebot_plugin_triage.behavior_exploration_runtime import (
+            BehaviorExecutionStatus,
+            BehaviorExplorationOutcome,
+        )
+
+        assert await request.authorization_guard()
+        self.explorations.append(request)
+        sequence = len(self.explorations)
+        return BehaviorExplorationOutcome(
+            BehaviorExecutionStatus.COMPLETED,
+            answer=f"行为解释 {sequence}",
+            turn_id=f"turn-{sequence}",
+            delivery_token=f"delivery-{sequence}",
+            delivery_status=BehaviorDeliveryStatus.PENDING,
+        )
+
+    async def begin_delivery(
+        self,
+        scope: Any,
+        *,
+        turn_id: str,
+        delivery_token: str,
+        authorization_guard: Any,
+    ) -> bool:
+        authorized = bool(await authorization_guard())
+        self.begin_calls.append(
+            {
+                "scope": scope,
+                "turn_id": turn_id,
+                "delivery_token": delivery_token,
+                "authorized": authorized,
+            }
+        )
+        return authorized
+
+    async def finish_delivery(
+        self,
+        scope: Any,
+        *,
+        turn_id: str,
+        delivery_token: str,
+        receipt_reference: str,
+    ) -> bool:
+        self.finish_calls.append(
+            {
+                "scope": scope,
+                "turn_id": turn_id,
+                "delivery_token": delivery_token,
+                "receipt_reference": receipt_reference,
+            }
+        )
+        return True
+
+    async def abandon_delivery(
+        self,
+        scope: Any,
+        *,
+        turn_id: str,
+        delivery_token: str,
+        platform_call_started: bool,
+    ) -> None:
+        self.abandon_calls.append(
+            {
+                "scope": scope,
+                "turn_id": turn_id,
+                "delivery_token": delivery_token,
+                "platform_call_started": platform_call_started,
+            }
+        )
+
+    async def delete(self, scope: Any, authorization_guard: Any) -> bool:
+        assert await authorization_guard()
+        self.delete_calls.append(scope)
+        return self.delete_result
+
+
+def _install_behavior_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    probe: _BehaviorServiceProbe,
+) -> Any:
+    from nonebot_plugin_triage import handlers
+
+    runtime = _install_isolated_support_threads(monkeypatch)
+    runtime = replace(runtime, behavior_exploration_service=cast(Any, probe))
+    monkeypatch.setattr(handlers, "plugin_runtime", runtime)
+    monkeypatch.setattr(handlers.plugin_runtime.support_rate_limiter, "allow", lambda *_: True)
     return runtime
 
 
@@ -1884,7 +2009,28 @@ async def test_private_semantic_guidance_uses_common_routing(
     from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
 
     from nonebot_plugin_triage import handlers
+    from nonebot_plugin_triage.support_intake import PublicCapability
 
+    async def fixed_capabilities(*_: object, **__: object) -> tuple[PublicCapability, ...]:
+        return (
+            PublicCapability(
+                header="triage",
+                description="说明功能用法、纠正指令或受理故障",
+                usage="triage <求助内容>",
+                example=None,
+            ),
+        )
+
+    monkeypatch.setattr(
+        handlers,
+        "plugin_runtime",
+        replace(handlers.plugin_runtime, capability_shadow=None),
+    )
+    monkeypatch.setattr(
+        handlers,
+        "collect_visible_alconna_capabilities",
+        fixed_capabilities,
+    )
     _inject_semantic_assessment(monkeypatch, goals=("guidance",))
     incident_count = len(handlers.plugin_runtime.incidents)
     text = "triage 某个功能怎么使用"
@@ -1917,6 +2063,249 @@ async def test_private_semantic_guidance_uses_common_routing(
     assert len(handlers.plugin_runtime.incidents) == incident_count
 
 
+async def test_explicit_behavior_route_commits_delivery_state_after_send(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    probe = _BehaviorServiceProbe()
+    _install_behavior_probe(monkeypatch, probe)
+    _inject_semantic_assessment(monkeypatch, goals=("behavior_exploration",))
+    authorization_events: list[Any] = []
+    resolved_receipts: list[object] = []
+
+    async def authorized(_bot: object, event: object) -> bool:
+        authorization_events.append(event)
+        return True
+
+    def resolve_receipt(
+        value: object,
+        *,
+        bot: object,
+        expected_target: object,
+    ) -> str:
+        del bot, expected_target
+        resolved_receipts.append(value)
+        return "outgoing-message-2601"
+
+    monkeypatch.setattr(handlers, "SUPERUSER", authorized)
+    monkeypatch.setattr(handlers, "resolve_outgoing_receipt", resolve_receipt)
+    event = fake_group_message_event_v11(
+        message_id=2_601,
+        user_id=200,
+        message=Message("triage 为什么当前插件没有触发"),
+        original_message=Message("triage 为什么当前插件没有触发"),
+        raw_message="triage 为什么当前插件没有触发",
+        to_me=False,
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(event, Message("行为解释 1"), result=None)
+        ctx.should_finished(handlers.support_matcher)
+
+    assert len(probe.explorations) == 1
+    request = probe.explorations[0]
+    assert request.question == "为什么当前插件没有触发"
+    assert request.event_reference == "message_id:2601"
+    assert request.scope.bot_scope == "1"
+    assert request.scope.actor_scope == "200"
+    assert probe.begin_calls == [
+        {
+            "scope": request.scope,
+            "turn_id": "turn-1",
+            "delivery_token": "delivery-1",
+            "authorized": True,
+        }
+    ]
+    assert probe.finish_calls == [
+        {
+            "scope": request.scope,
+            "turn_id": "turn-1",
+            "delivery_token": "delivery-1",
+            "receipt_reference": "outgoing-message-2601",
+        }
+    ]
+    assert probe.abandon_calls == []
+    assert len(resolved_receipts) == 1
+    assert len(authorization_events) >= 5
+
+
+@pytest.mark.parametrize("semantic_status", ["needs_clarification", "unsupported"])
+async def test_active_behavior_inquiry_continues_unresolved_or_out_of_scope_text(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+    semantic_status: str,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    probe = _BehaviorServiceProbe(active=True)
+    _install_behavior_probe(monkeypatch, probe)
+    _inject_semantic_assessment(monkeypatch, status=semantic_status)
+
+    async def authorized(*_: object, **__: object) -> bool:
+        return True
+
+    monkeypatch.setattr(handlers, "SUPERUSER", authorized)
+    monkeypatch.setattr(
+        handlers,
+        "resolve_outgoing_receipt",
+        lambda *_args, **_kwargs: "outgoing-message-2602",
+    )
+    event = fake_group_message_event_v11(
+        message_id=2_602,
+        user_id=200,
+        message=Message("triage 那配置覆盖之后呢"),
+        original_message=Message("triage 那配置覆盖之后呢"),
+        raw_message="triage 那配置覆盖之后呢",
+        to_me=False,
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(event, Message("行为解释 1"), result=None)
+        ctx.should_finished(handlers.support_matcher)
+
+    assert len(probe.active_checks) == 1
+    assert len(probe.explorations) == 1
+    assert probe.active_checks[0] == probe.explorations[0].scope
+    assert probe.explorations[0].question == "那配置覆盖之后呢"
+    assert len(probe.finish_calls) == 1
+    assert probe.abandon_calls == []
+
+
+@pytest.mark.parametrize("explicit_route", ["bug", "feature", "guidance"])
+async def test_explicit_short_routes_are_not_hijacked_by_active_behavior_inquiry(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+    explicit_route: str,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    probe = _BehaviorServiceProbe(active=True)
+    _install_behavior_probe(monkeypatch, probe)
+
+    if explicit_route == "feature":
+        _inject_semantic_assessment(monkeypatch, goals=("feature_feedback",))
+        expected = (
+            "我识别到这是一项功能建议；反馈生命周期还未接通，本轮不会建立故障记录或外部工单。"
+        )
+    elif explicit_route == "guidance":
+        _inject_semantic_assessment(monkeypatch, goals=("guidance",))
+
+        async def fixed_guidance(*_: object, **__: object) -> object:
+            return handlers._GuidanceResult("公开教学", ())
+
+        monkeypatch.setattr(handlers, "_capability_guidance_result", fixed_guidance)
+        expected = "公开教学"
+    else:
+        from nbtriage.bug_assessment import (
+            BugAssessmentDecision,
+            BugDecisionSource,
+            BugOccurrence,
+            BugReason,
+            BugResponsibility,
+            BugVerdict,
+            format_bug_assessment_reply,
+        )
+        from nonebot_plugin_triage.bug_assessment_runtime import (
+            BugAssessmentRuntimeOutcome,
+        )
+
+        _inject_semantic_assessment(
+            monkeypatch,
+            goals=("bug_assessment",),
+            reported_observation=True,
+        )
+        decision = BugAssessmentDecision(
+            verdict=BugVerdict.NOT_BUG,
+            occurrence=BugOccurrence.SINGLE_OBSERVED,
+            responsibility_candidates=(BugResponsibility.INTENTIONAL_CONFIGURATION,),
+            reason=BugReason.INTENTIONAL_CONFIGURATION,
+            evidence_ids=("test-evidence",),
+            missing_evidence=(),
+            source=BugDecisionSource.AGENT,
+        )
+
+        async def assessed(*_: object, **__: object) -> BugAssessmentRuntimeOutcome:
+            return BugAssessmentRuntimeOutcome(decision)
+
+        monkeypatch.setattr(handlers, "_bug_assessment_decision", assessed)
+        expected = format_bug_assessment_reply(decision)
+
+    async def forbidden_behavior_permission(*_: object, **__: object) -> bool:
+        raise AssertionError("explicit short routes must not inspect Behavior authorization")
+
+    monkeypatch.setattr(handlers, "SUPERUSER", forbidden_behavior_permission)
+    text = f"triage explicit {explicit_route} request"
+    event = fake_group_message_event_v11(
+        message_id=2_610 + len(explicit_route),
+        user_id=301,
+        message=Message(text),
+        original_message=Message(text),
+        raw_message=text,
+        to_me=False,
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(event, Message(expected), result=None)
+        ctx.should_finished(handlers.support_matcher)
+
+    assert probe.active_checks == []
+    assert probe.explorations == []
+    assert probe.begin_calls == []
+
+
+async def test_behavior_reset_permission_precedes_scoped_workspace_delete(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    probe = _BehaviorServiceProbe(active=True)
+    _install_behavior_probe(monkeypatch, probe)
+    denied = fake_group_message_event_v11(
+        message_id=2_620,
+        user_id=201,
+        message=Message("triage 行为重置"),
+        original_message=Message("triage 行为重置"),
+        raw_message="triage 行为重置",
+        to_me=False,
+    )
+    allowed = fake_group_message_event_v11(
+        message_id=2_621,
+        user_id=200,
+        message=Message("triage 行为重置"),
+        original_message=Message("triage 行为重置"),
+        raw_message="triage 行为重置",
+        to_me=False,
+    )
+
+    async with app.test_matcher(handlers.behavior_reset_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, denied)
+        ctx.should_not_pass_permission(handlers.behavior_reset_matcher)
+        assert probe.delete_calls == []
+        ctx.receive_event(bot, allowed)
+        ctx.should_pass_permission(handlers.behavior_reset_matcher)
+        ctx.should_call_send(
+            allowed,
+            Message("已删除当前维护者在当前会话的长期行为工作区。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.behavior_reset_matcher)
+
+    assert len(probe.delete_calls) == 1
+    deleted_scope = probe.delete_calls[0]
+    assert deleted_scope.bot_scope == "1"
+    assert deleted_scope.actor_scope == "200"
+
+
 @pytest.mark.parametrize(
     ("goals", "authorized", "expected"),
     [
@@ -1945,8 +2334,16 @@ async def test_semantic_candidate_routes_have_specific_zero_side_effect_response
     expected: str,
 ) -> None:
     from nonebot_plugin_triage import handlers
+    from nonebot_plugin_triage.behavior_exploration_runtime import (
+        UnavailableBehaviorExplorationService,
+    )
 
     _inject_semantic_assessment(monkeypatch, goals=goals)
+    runtime = replace(
+        handlers.plugin_runtime,
+        behavior_exploration_service=UnavailableBehaviorExplorationService(),
+    )
+    monkeypatch.setattr(handlers, "plugin_runtime", runtime)
     if authorized is None:
 
         async def unexpected_permission(*_: object, **__: object) -> bool:

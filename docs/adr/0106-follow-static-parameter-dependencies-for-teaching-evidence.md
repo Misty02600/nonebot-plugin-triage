@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-21 |
+| 已采纳；参数默认值形式由 [ADR-0117](0117-follow-default-depends-parameter-providers.md) 补充 | 2026-08-21 |
 
 ## 背景
 
@@ -28,5 +28,7 @@ NoneBot Handler 常用类型别名把依赖注入藏在参数注解中，例如
 
 ## 相关文档
 
+- [ADR-0118：限制首包源码深度并允许 family 选择性导航](0118-limit-eager-source-depth-and-let-families-navigate-selectively.md)
 - [ADR-0104](0104-preload-one-hop-python-dependency-source-for-teaching.md)
+- [ADR-0117](0117-follow-default-depends-parameter-providers.md)
 - [能力影子索引流程](../architecture/flows/capability-shadow-index.md)

@@ -80,7 +80,8 @@ partial / opaque 边界。官方直接 `on_*` 入口均可形成源码锚点；`
 
 宿主安装 Uninfo 时，静态首包还会临时解析 Permission 表达式的 import 绑定，把已确认来自 NoneBot 的
 `SUPERUSER`，以及来自 Uninfo 的 `MEMBER / ADMIN / OWNER` 与 `PRIVATE / GROUP / GUILD`，投影为同一个
-`permission` requirement 的 OR alternatives；场景分别使用 `private / group / guild_or_channel` 元数据。
+`permission` requirement 的 OR alternatives；场景使用 `private / group / guild / channel_text /
+channel_category / channel_voice` 原子元数据，`GUILD` 确定性展开为频道与三种 channel 分支。
 Uninfo 0.11.1 的 `ADMIN()` 精确展开为 `admin OR owner`；`CHANNEL_ADMINISTRATOR` 只有在实际角色 ID 或
 `ROLE_IN(...)` 字面集合提供 Evidence 时才映射为 `channel_admin`，不会根据 `role.level` 或 Adapter 猜测补齐。
 同一表达式仍有未知自定义分支时，已知分支不会被单独发布成 fixed AND。

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import ModuleType
+from typing import cast
 
 import pytest
 
@@ -10,8 +11,32 @@ from nonebot_plugin_triage.evidence_access import (
     EvidenceAccessError,
     EvidenceTaskKind,
     LocalStoreRootPaths,
+    _installed_package_map,
     build_evidence_access_profiles,
 )
+
+
+def test_installed_package_map_is_cached_per_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def package_map() -> dict[str, list[str]]:
+        nonlocal calls
+        calls += 1
+        return {"demo": ["demo-dist"]}
+
+    _installed_package_map.cache_clear()
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.evidence_access.metadata.packages_distributions",
+        package_map,
+    )
+    try:
+        assert cast(dict[str, list[str]], _installed_package_map()) == {"demo": ["demo-dist"]}
+        assert cast(dict[str, list[str]], _installed_package_map()) == {"demo": ["demo-dist"]}
+        assert calls == 1
+    finally:
+        _installed_package_map.cache_clear()
 
 
 def _host_fixture(tmp_path: Path) -> tuple[Path, str, ModuleType]:

@@ -84,6 +84,7 @@ def test_plugin_cache_round_trip_and_atomic_file_replace(tmp_path: Path) -> None
     assert CapabilityAnnotationPluginCache.from_json(document) == cache
     assert list(json.loads(document)["units"]) == ["capability:bar", "capability:foo"]
     assert '"last_good"' in document
+    assert '"pending"' in document
     assert '"annotation"' not in document
 
     path = write_capability_annotation_plugin_cache(tmp_path, cache)
@@ -166,7 +167,7 @@ def test_cache_unit_requires_last_good_or_real_generation_attempt() -> None:
             attempts=1,
         )
 
-    with pytest.raises(CapabilityAnnotationCacheError, match="last-good"):
+    with pytest.raises(CapabilityAnnotationCacheError, match="pending or last-good"):
         CapabilityAnnotationCacheUnit(
             "capability:foo",
             last_attempt=_generated_attempt(),
@@ -195,14 +196,15 @@ def test_plugin_cache_rejects_legacy_or_loose_json_schema() -> None:
         CapabilityAnnotationPluginCache.from_json(json.dumps(payload))
 
 
-def test_only_failure_only_cache_may_have_no_published_generation() -> None:
+def test_unpublished_cache_may_keep_pending_but_not_last_good() -> None:
+    pending = _enabled_annotation()
     failed = CapabilityAnnotationCacheUnit(
         analysis_unit_id="capability:foo",
+        pending=pending,
         last_attempt=CapabilityAnnotationLastAttempt(
-            state="failed",
-            stage="agent_run",
+            state="generated",
+            stage="output_projection",
             request_fingerprint=_FINGERPRINT,
-            reason="provider_identity",
             attempts=1,
         ),
     )
@@ -214,7 +216,7 @@ def test_only_failure_only_cache_may_have_no_published_generation() -> None:
     )
 
     assert CapabilityAnnotationPluginCache.from_json(cache.to_json()) == cache
-    with pytest.raises(CapabilityAnnotationCacheError, match="failure-only"):
+    with pytest.raises(CapabilityAnnotationCacheError, match="unpublished"):
         CapabilityAnnotationPluginCache(
             module_name="nonebot_plugin_example",
             plugin_source_revision=_SOURCE_REVISION,

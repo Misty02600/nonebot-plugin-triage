@@ -11,6 +11,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from time import monotonic_ns
 from types import ModuleType
 
 from nbtriage.capabilities import CapabilityRecord, ClaimBasis, Disclosure
@@ -42,7 +43,9 @@ from nbtriage.capability_source_evidence import (
 from nbtriage.framework_semantics import (
     FrameworkFieldSemanticProfile,
     PermissionSemanticProfile,
+    nonebot_dependency_overload_profile,
     nonebot_permission_profile,
+    onebot_v11_permission_profile,
     uninfo_permission_profile,
     uninfo_session_field_profile,
 )
@@ -74,7 +77,18 @@ _MAX_FILE_CHARS = 1_000_000
 _MAX_AST_NODES = 50_000
 _MAX_FUNCTION_CHARS = 8_000
 _MAX_INITIAL_SOURCE_CHARS = 32_000
-_MAX_SOURCE_SLICE_DEPTH = 3
+_MAX_SOURCE_SLICE_DEPTH = 2
+_MAX_GATE_BINDING_DEPTH = 3
+
+
+def _record_preparation_timing(
+    timings: dict[str, int] | None,
+    stage: str,
+    started_ns: int,
+) -> None:
+    if timings is not None:
+        elapsed_ms = max(0, round((monotonic_ns() - started_ns) / 1_000_000))
+        timings[stage] = timings.get(stage, 0) + elapsed_ms
 
 
 class CapabilityAnalysisAdapterError(ValueError):
@@ -87,7 +101,9 @@ class CapabilitySourceSliceCache:
     def __init__(self) -> None:
         self._functions: dict[_SourceSliceCacheKey, _FunctionSlice] = {}
         self._definitions: dict[_DefinitionCacheKey, DefinitionLocation | None] = {}
+        self._gate_definitions: dict[_DefinitionCacheKey, DefinitionLocation | None] = {}
         self._annotation_dependencies: dict[_DefinitionCacheKey, _CallSite] = {}
+        self._navigations: dict[tuple[str, tuple[Path, bool]], _SourceSliceNavigation] = {}
 
 
 class AnalysisSourcePolicy(StrEnum):
@@ -164,6 +180,13 @@ class _FunctionSlice:
     @property
     def identity(self) -> tuple[str, str, int]:
         return self.root_name, self.relative_path, self.line
+
+
+@dataclass(frozen=True)
+class _ModuleBindingSlice:
+    definition: DefinitionLocation
+    content: str
+    calls: tuple[_CallSite, ...]
 
 
 @dataclass(frozen=True)
@@ -302,6 +325,7 @@ def build_capability_analysis_request(
     source_pack_cache: dict[str, CapabilitySourceEvidencePack] | None = None,
     source_slice_cache: CapabilitySourceSliceCache | None = None,
     permission_semantic_profiles: tuple[PermissionSemanticProfile, ...] | None = None,
+    preparation_timings: dict[str, int] | None = None,
 ) -> CapabilityAnalysisRequest:
     """从运行时能力记录装配确定性 Evidence Pack 与工具准入上下文。
 
@@ -316,6 +340,7 @@ def build_capability_analysis_request(
         source_pack_cache: 同一插件多条能力共享的进程内源码结构缓存。
         source_slice_cache: 按源码 revision 与函数定义身份复用的进程内切片缓存。
         permission_semantic_profiles: Triage 维护的稳定便捷权限语义；省略时使用内置语义表。
+        preparation_timings: 可选的模型外阶段耗时收集器，仅用于维护诊断日志。
 
     Returns:
         可交给能力分析服务的一次性请求。
@@ -337,6 +362,7 @@ def build_capability_analysis_request(
     config_references = _config_references(record)
     module_root = _plugin_module_root(record)
     source_root = _plugin_source_root(module_root)
+    stage_started_ns = monotonic_ns()
     source_pack = _source_evidence_pack(
         module_root,
         source_root,
@@ -347,8 +373,10 @@ def build_capability_analysis_request(
             else permission_semantic_profiles
         ),
     )
+    _record_preparation_timing(preparation_timings, "source_pack", stage_started_ns)
     if not _source_inventory_complete(source_pack.partial_errors):
         raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
+    stage_started_ns = monotonic_ns()
     handler_identities = _handler_code_identities(module_root, handler_references)
     targets = _analysis_targets(module_root, handler_references, config_references)
     parsed_modules: dict[str, _ParsedModule] = {}
@@ -363,10 +391,18 @@ def build_capability_analysis_request(
     }
     if resolved_handler_identities != set(handler_identities):
         raise CapabilityAnalysisAdapterError("capability has no readable bounded handler evidence")
+    _record_preparation_timing(preparation_timings, "target_resolution", stage_started_ns)
+    stage_started_ns = monotonic_ns()
     handler_sources = tuple(
         item.source for item in resolved_targets if item.handler_identity is not None
     )
-    invocations = _invocation_targets(record, source_pack, handler_sources)
+    runtime_evidence = _runtime_fact_evidence(record)
+    invocations = _invocation_targets(
+        record,
+        source_pack,
+        handler_sources,
+        runtime_evidence_id=runtime_evidence.evidence_id,
+    )
     structure_evidence = _source_structure_evidence(
         record,
         source_pack,
@@ -378,9 +414,11 @@ def build_capability_analysis_request(
         selected_registrations,
         invocations,
     )
+    _record_preparation_timing(preparation_timings, "runtime_projection", stage_started_ns)
+    stage_started_ns = monotonic_ns()
     gate_names = frozenset(item.symbol.rpartition(".")[2] for item in gate_symbols)
     evidence_units: list[CapabilityEvidenceUnit] = [
-        _runtime_fact_evidence(record),
+        runtime_evidence,
         structure_evidence,
     ]
     accepted_targets: set[tuple[str, str]] = set()
@@ -422,7 +460,9 @@ def build_capability_analysis_request(
 
     if not accepted_targets:
         raise CapabilityAnalysisAdapterError("capability has no readable bounded handler evidence")
+    _record_preparation_timing(preparation_timings, "initial_evidence", stage_started_ns)
 
+    stage_started_ns = monotonic_ns()
     _append_bounded_source_slices(
         evidence_units,
         analysis_unit_id=record.capability_id,
@@ -440,7 +480,9 @@ def build_capability_analysis_request(
         cache=source_slice_cache,
     )
     _append_framework_semantics_evidence(evidence_units)
+    _record_preparation_timing(preparation_timings, "source_slices", stage_started_ns)
 
+    stage_started_ns = monotonic_ns()
     projections, unknown = _project_referenced_config(
         config_references,
         accepted_targets=accepted_targets,
@@ -448,6 +490,7 @@ def build_capability_analysis_request(
         module_root=module_root,
         policy=policy,
     )
+    _record_preparation_timing(preparation_timings, "config_projection", stage_started_ns)
     return CapabilityAnalysisRequest(
         capability=CapabilityIdentity(
             capability_id=record.capability_id,
@@ -515,6 +558,7 @@ def build_parameterized_family_analysis_request(
     source_pack_cache: dict[str, CapabilitySourceEvidencePack] | None = None,
     source_slice_cache: CapabilitySourceSliceCache | None = None,
     permission_semantic_profiles: tuple[PermissionSemanticProfile, ...] | None = None,
+    preparation_timings: dict[str, int] | None = None,
 ) -> CapabilityAnalysisRequest:
     """把执行同一段闭包 Handler 代码的公开 Runtime Matcher 合并分析。"""
     if not records:
@@ -533,6 +577,7 @@ def build_parameterized_family_analysis_request(
         raise CapabilityAnalysisAdapterError("family records have different owners")
 
     source_root = _plugin_source_root(identity.module_root)
+    stage_started_ns = monotonic_ns()
     source_pack = _source_evidence_pack(
         identity.module_root,
         source_root,
@@ -543,8 +588,10 @@ def build_parameterized_family_analysis_request(
             else permission_semantic_profiles
         ),
     )
+    _record_preparation_timing(preparation_timings, "source_pack", stage_started_ns)
     if not _source_inventory_complete(source_pack.partial_errors):
         raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
+    stage_started_ns = monotonic_ns()
     parsed = _load_parsed_module(identity.module, identity.module_root, source_root)
     if parsed is None or parsed.revision != identity.source_revision:
         raise CapabilityAnalysisAdapterError("parameterized handler source is unavailable")
@@ -556,11 +603,13 @@ def build_parameterized_family_analysis_request(
     )
     if handler is None:
         raise CapabilityAnalysisAdapterError("parameterized handler source is ambiguous")
-    content = _function_source(parsed.source, handler)
+    content = _function_source(parsed.source, handler, include_decorators=True)
     handler_source = _function_source_span(parsed, handler)
     if content is None or handler_source is None or len(content) > _MAX_FUNCTION_CHARS:
         raise CapabilityAnalysisAdapterError("parameterized handler source is unavailable")
+    _record_preparation_timing(preparation_timings, "target_resolution", stage_started_ns)
 
+    stage_started_ns = monotonic_ns()
     gate_projection = _family_gate_projection(
         records,
         source_pack,
@@ -578,6 +627,8 @@ def build_parameterized_family_analysis_request(
             requires_mention=gate_projection.requires_mention,
         ),
     )
+    _record_preparation_timing(preparation_timings, "runtime_projection", stage_started_ns)
+    stage_started_ns = monotonic_ns()
     evidence_units: list[CapabilityEvidenceUnit] = []
     declared = _declared_teaching_evidence(representative, identity.analysis_unit_id)
     if declared is not None:
@@ -673,10 +724,12 @@ def build_parameterized_family_analysis_request(
     if source_chars + callable_chars <= _MAX_INITIAL_SOURCE_CHARS:
         evidence_units.extend(callable_units)
         source_chars += callable_chars
+    _record_preparation_timing(preparation_timings, "initial_evidence", stage_started_ns)
 
     source_file_revisions = {item.source.locator: item.source.digest for item in source_pack.files}
     gate_names = frozenset(item.symbol.rpartition(".")[2] for item in gate_projection.gate_symbols)
     active_source_slice_cache = source_slice_cache or CapabilitySourceSliceCache()
+    stage_started_ns = monotonic_ns()
     _validate_common_family_gate_definitions(
         module_root=identity.module_root,
         source_root=source_root,
@@ -701,6 +754,8 @@ def build_parameterized_family_analysis_request(
         cache=active_source_slice_cache,
     )
     _append_framework_semantics_evidence(evidence_units)
+    _record_preparation_timing(preparation_timings, "source_slices", stage_started_ns)
+    stage_started_ns = monotonic_ns()
     projections, unknown = _project_referenced_config(
         config_references,
         accepted_targets=accepted_targets,
@@ -708,6 +763,7 @@ def build_parameterized_family_analysis_request(
         module_root=identity.module_root,
         policy=policy,
     )
+    _record_preparation_timing(preparation_timings, "config_projection", stage_started_ns)
     return CapabilityAnalysisRequest(
         capability=CapabilityIdentity(
             capability_id=identity.analysis_unit_id,
@@ -744,7 +800,12 @@ def _family_member_invocations(
     ] = []
     shapes: dict[str, dict[str, object]] = {}
     for record in sorted(records, key=lambda item: item.capability_id):
-        invocations = _invocation_targets(record, pack, handler_sources)
+        invocations = _invocation_targets(
+            record,
+            pack,
+            handler_sources,
+            runtime_evidence_id=None,
+        )
         shape = _family_parser_shape(record, invocations)
         shape_id: str | None = None
         if shape is not None:
@@ -813,13 +874,22 @@ def _family_member_invocations(
         "l": "literal_exact",
         "o": "open_tail",
         "p": "parser_exact",
+        "r": "regex_exact",
     }
     syntax_code_by_value = {value: key for key, value in syntax_codes.items()}
     member_rows = tuple(
         (
             capability_id,
             [
-                [[invocation.command_body, list(invocation.aliases)] for invocation in invocations],
+                [
+                    [
+                        invocation.command_body,
+                        list(invocation.aliases),
+                        invocation.regex_pattern,
+                        list(invocation.regex_flags),
+                    ]
+                    for invocation in invocations
+                ],
                 shape_indexes.get(shape_id) if shape_id is not None else None,
                 syntax_code_by_value[syntax_fidelity],
                 hints,
@@ -831,7 +901,7 @@ def _family_member_invocations(
         "scope": "current_runtime_family_members",
         "format": "columns-v2",
         "columns": ["invocations", "shape", "syntax", "hints"],
-        "invocation_columns": ["command", "aliases"],
+        "invocation_columns": ["command", "aliases", "regex", "regex_flags"],
         "hint_columns": ["field", "value", "basis"],
         "syntax_codes": syntax_codes,
         "member_count": len(member_rows),
@@ -983,6 +1053,8 @@ def _family_syntax_fidelity(record: CapabilityRecord) -> str:
         return "literal_exact"
     if factories == {"on_startswith"}:
         return "open_tail"
+    if factories == {"on_regex"}:
+        return "regex_exact"
     return "anchor_only"
 
 
@@ -993,6 +1065,7 @@ def _family_member_hints(record: CapabilityRecord) -> list[list[object]]:
         "command.force_whitespace",
         "trigger.factory",
         "trigger.entries",
+        "trigger.regex_flags",
         "description",
         "usage",
         "example",
@@ -1013,9 +1086,13 @@ def _invocation_payload(item: CapabilityInvocationTarget) -> dict[str, object]:
         "entry_id": item.entry_id,
         "mode": item.mode.value,
         "command_body": item.command_body,
+        "regex_pattern": item.regex_pattern,
+        "regex_flags": list(item.regex_flags),
         "canonical_usages": list(item.canonical_usages),
         "aliases": list(item.aliases),
         "requires_mention": item.requires_mention,
+        "shortcut_count": item.shortcut_count,
+        "shortcut_evidence_ids": list(item.shortcut_evidence_ids),
     }
 
 
@@ -1346,7 +1423,50 @@ def _invocation_targets(
     record: CapabilityRecord,
     source_pack: CapabilitySourceEvidencePack,
     handler_sources: tuple[SourceSpan, ...],
+    *,
+    runtime_evidence_id: str | None,
 ) -> tuple[CapabilityInvocationTarget, ...]:
+    selected_registrations = _selected_registrations(record, source_pack, handler_sources)
+    requires_mention = _requires_mention(source_pack, selected_registrations)
+    trigger_factories = {
+        value
+        for value in _claim_values(record, "trigger.factory", evidence_kind="matcher_source")
+        if isinstance(value, str) and value
+    }
+    regex_patterns = tuple(
+        value
+        for raw in _claim_values(record, "trigger.entries", evidence_kind="matcher_source")
+        for value in (raw if isinstance(raw, list) else ())
+        if isinstance(value, str) and value
+    )
+    if trigger_factories == {"on_regex"}:
+        if len(regex_patterns) != 1:
+            raise CapabilityAnalysisAdapterError(
+                "regex capability has no unique deterministic pattern"
+            )
+        raw_flags = tuple(
+            value
+            for value in _claim_values(
+                record,
+                "trigger.regex_flags",
+                evidence_kind="matcher_source",
+            )
+            if isinstance(value, list)
+        )
+        if len(raw_flags) > 1:
+            raise CapabilityAnalysisAdapterError("regex capability has conflicting flags")
+        regex_flags = tuple(
+            value for value in (raw_flags[0] if raw_flags else ()) if isinstance(value, str)
+        )
+        return (
+            CapabilityInvocationTarget(
+                entry_id="root",
+                mode=CapabilityInvocationMode.REGEX,
+                regex_pattern=regex_patterns[0],
+                regex_flags=regex_flags,
+                requires_mention=requires_mention,
+            ),
+        )
     headers = tuple(
         value
         for field in ("invocation.header", "command.header")
@@ -1373,8 +1493,6 @@ def _invocation_targets(
             key=lambda item: (item.casefold(), item),
         )
     )
-    selected_registrations = _selected_registrations(record, source_pack, handler_sources)
-    requires_mention = _requires_mention(source_pack, selected_registrations)
     arguments = tuple(
         value
         for value in _claim_values(record, "command.arguments", evidence_kind="matcher_source")
@@ -1391,6 +1509,23 @@ def _invocation_targets(
         raise CapabilityAnalysisAdapterError("capability has conflicting command components")
     command_arguments = arguments[0] if arguments else []
     command_components = components[0] if components else []
+    shortcut_counts = tuple(
+        value
+        for value in _claim_values(
+            record,
+            "command.shortcut_count",
+            evidence_kind="matcher_source",
+        )
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0
+    )
+    if len(set(shortcut_counts)) > 1:
+        raise CapabilityAnalysisAdapterError("capability has conflicting shortcut counts")
+    if shortcut_counts and runtime_evidence_id is not None:
+        shortcut_count = shortcut_counts[0]
+        shortcut_evidence_ids = (runtime_evidence_id,)
+    else:
+        shortcut_count = 0
+        shortcut_evidence_ids = ()
     subcommands = _subcommand_leaves(command_components)
     if not subcommands:
         canonical = _structured_usage(
@@ -1408,6 +1543,8 @@ def _invocation_targets(
                 canonical_usages=(canonical,) if canonical is not None else (),
                 aliases=aliases,
                 requires_mention=requires_mention,
+                shortcut_count=shortcut_count,
+                shortcut_evidence_ids=shortcut_evidence_ids,
             ),
         )
     return tuple(
@@ -1420,6 +1557,8 @@ def _invocation_targets(
             else (),
             aliases=tuple(" ".join((alias, *path)) for alias in aliases),
             requires_mention=requires_mention,
+            shortcut_count=shortcut_count,
+            shortcut_evidence_ids=shortcut_evidence_ids,
         )
         for path, component in subcommands
         for canonical in (
@@ -1657,17 +1796,34 @@ def _gate_candidates(
 ) -> tuple[CapabilityGateCandidate, ...]:
     entry_ids = tuple(item.entry_id for item in invocations)
     candidates: list[CapabilityGateCandidate] = []
+    grouped_symbols: dict[
+        tuple[str, SourceSpan, StructuralSymbolKind],
+        list[str],
+    ] = {}
     for item in gate_symbols:
+        grouped_symbols.setdefault(
+            (item.owner, item.owner_source, item.kind),
+            [],
+        ).append(item.symbol)
+    for (owner, _owner_source, symbol_kind), symbols in sorted(
+        grouped_symbols.items(),
+        key=lambda item: (
+            item[0][0],
+            item[0][1].locator,
+            item[0][1].line,
+            item[0][2].value,
+        ),
+    ):
         gate_kind = (
             CapabilityGateKind.PERMISSION
-            if item.kind is StructuralSymbolKind.PERMISSION
+            if symbol_kind is StructuralSymbolKind.PERMISSION
             else CapabilityGateKind.RULE
         )
         candidates.append(
             _gate_candidate(
                 gate_kind,
-                item.owner,
-                item.symbol,
+                owner,
+                "|".join(sorted(set(symbols))),
                 entry_ids,
                 structure_evidence.evidence_id,
             )
@@ -1944,22 +2100,57 @@ def _source_evidence_pack(
 
 
 def _permission_semantic_profiles() -> tuple[PermissionSemanticProfile, ...]:
-    return (nonebot_permission_profile(), uninfo_permission_profile())
+    return (
+        nonebot_permission_profile(),
+        onebot_v11_permission_profile(),
+        uninfo_permission_profile(),
+    )
 
 
 def _append_framework_semantics_evidence(
     evidence_units: list[CapabilityEvidenceUnit],
 ) -> None:
-    profile = uninfo_session_field_profile()
-    if not _python_evidence_uses_framework_annotation(evidence_units, profile):
-        return
+    profiles = (
+        (
+            nonebot_dependency_overload_profile(),
+            "NoneBot official dependency injection and overload documentation",
+            "2.5.0",
+            "framework:nonebot2/dependency-overload",
+        ),
+        (
+            uninfo_session_field_profile(),
+            "nonebot-plugin-uninfo official README",
+            "0.11.1",
+            "framework:nonebot-plugin-uninfo/Session",
+        ),
+    )
+    for profile, documentation, source_reviewed_version, locator in profiles:
+        if not _python_evidence_uses_framework_annotation(evidence_units, profile):
+            continue
+        _append_framework_semantic_profile(
+            evidence_units,
+            profile,
+            documentation=documentation,
+            source_reviewed_version=source_reviewed_version,
+            locator=locator,
+        )
+
+
+def _append_framework_semantic_profile(
+    evidence_units: list[CapabilityEvidenceUnit],
+    profile: FrameworkFieldSemanticProfile,
+    *,
+    documentation: str,
+    source_reviewed_version: str,
+    locator: str,
+) -> None:
     content = json.dumps(
         {
             "component": profile.component,
             "contract": "public framework model and API semantics",
             "provenance": {
-                "documentation": "nonebot-plugin-uninfo official README",
-                "source_reviewed_version": "0.11.1",
+                "documentation": documentation,
+                "source_reviewed_version": source_reviewed_version,
             },
             "facts": [
                 {"symbol": item.symbol, "statement": item.statement} for item in profile.fields
@@ -1976,7 +2167,7 @@ def _append_framework_semantics_evidence(
             source_kind="framework_semantics",
             content=content,
             revision=profile.revision,
-            locator="framework:nonebot-plugin-uninfo/Session",
+            locator=locator,
         )
     )
 
@@ -2005,12 +2196,25 @@ def _python_evidence_uses_framework_annotation(
                 if argument.annotation is None:
                     continue
                 try:
-                    annotation = ast.unparse(argument.annotation)
+                    annotation_symbols = _annotation_symbols(argument.annotation)
                 except ValueError:
                     continue
-                if annotation in annotations:
+                if annotation_symbols.intersection(annotations):
                     return True
     return False
+
+
+def _annotation_symbols(annotation: ast.expr) -> frozenset[str]:
+    symbols: set[str] = set()
+    for node in ast.walk(annotation):
+        if isinstance(node, ast.Name):
+            symbols.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            symbols.add(node.attr)
+            symbols.add(ast.unparse(node))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            symbols.add(node.value)
+    return frozenset(symbols)
 
 
 def _runtime_fact_evidence(record: CapabilityRecord) -> CapabilityEvidenceUnit:
@@ -2027,7 +2231,6 @@ def _runtime_fact_evidence(record: CapabilityRecord) -> CapabilityEvidenceUnit:
     payload = {
         "claims": claims,
         "constraints": sorted(constraints, key=_canonical_json_sort_key),
-        "platform_scope": record.platform_scope.to_dict(),
         "state": record.state.value,
         "disclosure": record.disclosure.value,
     }
@@ -2055,8 +2258,11 @@ def _runtime_fact_claims(record: CapabilityRecord) -> list[dict[str, object]]:
         "command.enabled",
         "command.arguments",
         "command.components",
+        "command.shortcut_count",
+        "command.shortcuts",
         "trigger.factory",
         "trigger.entries",
+        "trigger.regex_flags",
         "description",
         "usage",
         "example",
@@ -2534,7 +2740,11 @@ def _resolve_analysis_targets(
         function = _select_reference_function(parsed, target)
         if function is None:
             continue
-        content = _function_source(parsed.source, function)
+        content = _function_source(
+            parsed.source,
+            function,
+            include_decorators=target.binding_index is not None,
+        )
         source = _function_source_span(parsed, function)
         if content is None or source is None or len(content) > _MAX_FUNCTION_CHARS:
             continue
@@ -2572,14 +2782,14 @@ def _append_bounded_source_slices(
     source_chars: int,
     cache: CapabilitySourceSliceCache | None,
 ) -> None:
-    """按 BFS 追加插件函数，并预载一层唯一定位的依赖函数。"""
+    """按两层普通调用 BFS 追加插件函数，并预载一层唯一定位的依赖函数。"""
     if source_chars >= _MAX_INITIAL_SOURCE_CHARS or not seeds:
         return
+    active_cache = cache or CapabilitySourceSliceCache()
     try:
-        navigation = _source_slice_navigation(module_root, source_root)
+        navigation = _cached_source_slice_navigation(active_cache, module_root, source_root)
     except (OSError, PythonNavigationError, ReadOnlyToolsError):
         return
-    active_cache = cache or CapabilitySourceSliceCache()
     queued: deque[tuple[_FunctionSlice, int]] = deque()
     known: set[tuple[str, str, int]] = set()
     for target in seeds:
@@ -2610,8 +2820,22 @@ def _append_bounded_source_slices(
         gate_names,
         source_file_revisions,
     ):
-        definition = _cached_call_definition(active_cache, navigation, call)
+        definition = _cached_gate_definition(active_cache, navigation, call)
         if definition is None:
+            continue
+        if definition.kind == "statement":
+            source_chars, binding_functions, exhausted = _append_gate_binding_chain(
+                evidence_units,
+                analysis_unit_id=analysis_unit_id,
+                navigation=navigation,
+                cache=active_cache,
+                definition=definition,
+                known=known,
+                source_chars=source_chars,
+            )
+            if exhausted:
+                return
+            queued.extend((item, 0) for item in binding_functions)
             continue
         source_chars, resolved, external, exhausted = _append_call_definition(
             evidence_units,
@@ -2645,11 +2869,6 @@ def _append_bounded_source_slices(
             definition = _cached_call_definition(active_cache, navigation, call)
             if definition is None:
                 continue
-            if depth >= _MAX_SOURCE_SLICE_DEPTH and _definition_belongs_to_plugin(
-                navigation,
-                definition,
-            ):
-                continue
             source_chars, resolved, external, exhausted = _append_call_definition(
                 evidence_units,
                 analysis_unit_id=analysis_unit_id,
@@ -2664,6 +2883,8 @@ def _append_bounded_source_slices(
                 return
             if resolved is not None and not external and depth < _MAX_SOURCE_SLICE_DEPTH:
                 queued.append((resolved, depth + 1))
+        if depth >= _MAX_SOURCE_SLICE_DEPTH:
+            continue
         for call in sorted(
             current.calls,
             key=lambda item: (
@@ -2675,11 +2896,6 @@ def _append_bounded_source_slices(
         ):
             definition = _cached_call_definition(active_cache, navigation, call)
             if definition is None:
-                continue
-            if depth >= _MAX_SOURCE_SLICE_DEPTH and _definition_belongs_to_plugin(
-                navigation,
-                definition,
-            ):
                 continue
             source_chars, resolved, external, exhausted = _append_call_definition(
                 evidence_units,
@@ -2874,7 +3090,7 @@ def _validate_common_family_gate_definitions(
     if not gate_names:
         return
     try:
-        navigation = _source_slice_navigation(module_root, source_root)
+        navigation = _cached_source_slice_navigation(cache, module_root, source_root)
     except (OSError, PythonNavigationError, ReadOnlyToolsError) as error:
         raise CapabilityAnalysisAdapterError(
             "parameterized family gate definitions are unavailable"
@@ -2902,7 +3118,7 @@ def _validate_common_family_gate_definitions(
             )
         for name, named_calls in calls_by_name.items():
             for call in named_calls:
-                definition = _cached_call_definition(cache, navigation, call)
+                definition = _cached_gate_definition(cache, navigation, call)
                 if definition is None:
                     raise CapabilityAnalysisAdapterError(
                         "parameterized family gate definitions are unavailable"
@@ -3111,6 +3327,203 @@ def _cached_call_definition(
     return definition
 
 
+def _cached_gate_definition(
+    cache: CapabilitySourceSliceCache,
+    navigation: _SourceSliceNavigation,
+    call: _CallSite,
+) -> DefinitionLocation | None:
+    key = _DefinitionCacheKey(
+        navigation.root.path,
+        tuple((root.name, root.path) for root in navigation.roots),
+        call,
+    )
+    if key in cache._gate_definitions:
+        cached = cache._gate_definitions[key]
+        if cached is None or _definition_is_current(navigation, cached):
+            return cached
+        cache._gate_definitions.pop(key, None)
+    try:
+        result = navigation.navigator.go_to_definition(
+            GoToDefinitionRequest(
+                root_name=navigation.root.name,
+                relative_path=call.relative_path,
+                line=call.line,
+                column=call.column,
+                source_revision=call.source_revision,
+            )
+        )
+    except PythonNavigationError:
+        cache._gate_definitions[key] = None
+        return None
+    unique_definitions = {
+        (item.root_name, item.relative_path, item.line, item.column): item
+        for item in result.definitions
+        if item.kind in {"function", "statement"}
+    }
+    definition = next(iter(unique_definitions.values())) if len(unique_definitions) == 1 else None
+    cache._gate_definitions[key] = definition
+    return definition
+
+
+def _append_gate_binding_chain(
+    evidence_units: list[CapabilityEvidenceUnit],
+    *,
+    analysis_unit_id: str,
+    navigation: _SourceSliceNavigation,
+    cache: CapabilitySourceSliceCache,
+    definition: DefinitionLocation,
+    known: set[tuple[str, str, int]],
+    source_chars: int,
+) -> tuple[int, tuple[_FunctionSlice, ...], bool]:
+    pending: deque[tuple[DefinitionLocation, int]] = deque(((definition, 0),))
+    resolved_functions: list[_FunctionSlice] = []
+    while pending:
+        current, depth = pending.popleft()
+        if not _definition_belongs_to_plugin(navigation, current):
+            continue
+        identity = (current.root_name, current.relative_path, current.line)
+        if identity in known:
+            continue
+        binding = _module_binding_slice(navigation, current)
+        if binding is None:
+            continue
+        known.add(identity)
+        if source_chars + len(binding.content) > _MAX_INITIAL_SOURCE_CHARS:
+            return source_chars, tuple(resolved_functions), True
+        evidence_units.append(_module_binding_evidence(analysis_unit_id, navigation, binding))
+        source_chars += len(binding.content)
+        for call in binding.calls:
+            child = _cached_gate_definition(cache, navigation, call)
+            if child is None:
+                continue
+            if child.kind == "statement":
+                if depth < _MAX_GATE_BINDING_DEPTH:
+                    pending.append((child, depth + 1))
+                continue
+            source_chars, resolved, external, exhausted = _append_call_definition(
+                evidence_units,
+                analysis_unit_id=analysis_unit_id,
+                navigation=navigation,
+                cache=cache,
+                call=call,
+                definition=child,
+                known=known,
+                source_chars=source_chars,
+            )
+            if exhausted:
+                return source_chars, tuple(resolved_functions), True
+            if resolved is not None and not external:
+                resolved_functions.append(resolved)
+    return source_chars, tuple(resolved_functions), False
+
+
+def _module_binding_slice(
+    navigation: _SourceSliceNavigation,
+    definition: DefinitionLocation,
+) -> _ModuleBindingSlice | None:
+    root = navigation.approved_root(definition.root_name)
+    if root is None or definition.kind != "statement":
+        return None
+    path = root.path.joinpath(*definition.relative_path.split("/"))
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if hashlib.sha256(raw).hexdigest() != definition.source_revision:
+        raise CapabilityAnalysisAdapterError("source changed during analysis preparation")
+    try:
+        source = raw.decode("utf-8")
+        tree = ast.parse(source)
+    except (UnicodeError, SyntaxError, ValueError, RecursionError):
+        return None
+    if sum(1 for _ in ast.walk(tree)) > _MAX_AST_NODES:
+        return None
+    candidates = tuple(
+        statement
+        for statement in tree.body
+        if statement.lineno == definition.line and _statement_binds_name(statement, definition.name)
+    )
+    if len(candidates) != 1:
+        return None
+    statement = candidates[0]
+    content = ast.get_source_segment(source, statement)
+    value = statement.value if isinstance(statement, ast.Assign | ast.AnnAssign) else None
+    if content is None or value is None or len(content) > _MAX_FUNCTION_CHARS:
+        return None
+    return _ModuleBindingSlice(
+        definition=definition,
+        content=content,
+        calls=_binding_call_sites(
+            definition.relative_path,
+            source,
+            definition.source_revision,
+            value,
+        ),
+    )
+
+
+def _statement_binds_name(statement: ast.stmt, name: str) -> bool:
+    if isinstance(statement, ast.Assign):
+        return any(
+            isinstance(target, ast.Name) and target.id == name for target in statement.targets
+        )
+    return (
+        isinstance(statement, ast.AnnAssign)
+        and isinstance(statement.target, ast.Name)
+        and statement.target.id == name
+    )
+
+
+def _binding_call_sites(
+    relative_path: str,
+    source: str,
+    source_revision: str,
+    value: ast.expr,
+) -> tuple[_CallSite, ...]:
+    parents = {
+        child: parent for parent in ast.walk(value) for child in ast.iter_child_nodes(parent)
+    }
+    calls: dict[tuple[int, int], _CallSite] = {}
+    for node in ast.walk(value):
+        if not isinstance(node, ast.Name | ast.Attribute) or not isinstance(node.ctx, ast.Load):
+            continue
+        parent = parents.get(node)
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(parent, ast.Attribute)
+            and parent.value is node
+        ):
+            continue
+        call = _navigation_call_site(relative_path, source, source_revision, node)
+        if call is not None:
+            calls.setdefault((call.line, call.column), call)
+    return tuple(calls[key] for key in sorted(calls))
+
+
+def _module_binding_evidence(
+    analysis_unit_id: str,
+    navigation: _SourceSliceNavigation,
+    binding: _ModuleBindingSlice,
+) -> CapabilityEvidenceUnit:
+    definition = binding.definition
+    relative_path = _source_slice_relative_path(
+        definition.relative_path,
+        navigation.source_root,
+    )
+    return CapabilityEvidenceUnit(
+        evidence_id=_binding_evidence_id(
+            analysis_unit_id,
+            definition.relative_path,
+            definition.name,
+            definition.line,
+        ),
+        source_kind="python_gate_binding",
+        content=binding.content,
+        revision=f"sha256:{definition.source_revision}",
+        locator=_target_plugin_locator(relative_path, definition.name, definition.line),
+    )
+
+
 def _cached_annotation_dependency_provider(
     cache: CapabilitySourceSliceCache,
     navigation: _SourceSliceNavigation,
@@ -3271,6 +3684,19 @@ def _source_slice_navigation(
         )
     )
     return _SourceSliceNavigation(navigator, root, roots, source_root)
+
+
+def _cached_source_slice_navigation(
+    cache: CapabilitySourceSliceCache,
+    module_root: str,
+    source_root: tuple[Path, bool],
+) -> _SourceSliceNavigation:
+    key = (module_root, source_root)
+    navigation = cache._navigations.get(key)
+    if navigation is None:
+        navigation = _source_slice_navigation(module_root, source_root)
+        cache._navigations[key] = navigation
+    return navigation
 
 
 def _cached_function_slice(
@@ -3437,25 +3863,72 @@ def _function_parameter_dependencies(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[_ParameterDependency, ...]:
     dependencies: dict[tuple[int, int], _ParameterDependency] = {}
-    arguments = (
+    positional_arguments = (
         *function.args.posonlyargs,
         *function.args.args,
-        *function.args.kwonlyargs,
+    )
+    arguments = (*positional_arguments, *function.args.kwonlyargs)
+    defaults: dict[str, ast.expr] = {
+        argument.arg: default
+        for argument, default in zip(
+            positional_arguments[len(positional_arguments) - len(function.args.defaults) :],
+            function.args.defaults,
+            strict=True,
+        )
+    }
+    defaults.update(
+        {
+            argument.arg: default
+            for argument, default in zip(
+                function.args.kwonlyargs,
+                function.args.kw_defaults,
+                strict=True,
+            )
+            if default is not None
+        }
     )
     for argument in arguments:
         annotation = argument.annotation
-        if annotation is None:
+        if annotation is not None:
+            provider = _annotated_dependency_provider(annotation)
+            target = provider or annotation
+            if isinstance(target, ast.Name | ast.Attribute):
+                call = _navigation_call_site(relative_path, source, source_revision, target)
+                if call is not None:
+                    dependencies.setdefault(
+                        (call.line, call.column),
+                        _ParameterDependency(call=call, is_alias=provider is None),
+                    )
+        provider = _depends_provider(defaults.get(argument.arg))
+        if provider is None:
             continue
-        provider = _annotated_dependency_provider(annotation)
-        target = provider or annotation
-        if not isinstance(target, ast.Name | ast.Attribute):
-            continue
-        call = _navigation_call_site(relative_path, source, source_revision, target)
+        call = _navigation_call_site(relative_path, source, source_revision, provider)
         if call is not None:
             dependencies.setdefault(
                 (call.line, call.column),
-                _ParameterDependency(call=call, is_alias=provider is None),
+                _ParameterDependency(call=call, is_alias=False),
             )
+    for decorator in function.decorator_list:
+        if not isinstance(decorator, ast.Call):
+            continue
+        for keyword_argument in decorator.keywords:
+            if keyword_argument.arg != "parameterless":
+                continue
+            for node in ast.walk(keyword_argument.value):
+                provider = _depends_provider(node if isinstance(node, ast.expr) else None)
+                if provider is None:
+                    continue
+                call = _navigation_call_site(
+                    relative_path,
+                    source,
+                    source_revision,
+                    provider,
+                )
+                if call is not None:
+                    dependencies.setdefault(
+                        (call.line, call.column),
+                        _ParameterDependency(call=call, is_alias=False),
+                    )
     return tuple(dependencies[key] for key in sorted(dependencies))
 
 
@@ -3482,6 +3955,17 @@ def _annotated_dependency_provider(
         if isinstance(provider, ast.Name | ast.Attribute):
             providers.append(provider)
     return providers[0] if len(providers) == 1 else None
+
+
+def _depends_provider(expression: ast.expr | None) -> ast.Name | ast.Attribute | None:
+    if (
+        not isinstance(expression, ast.Call)
+        or _expression_terminal_name(expression.func) != "Depends"
+        or len(expression.args) != 1
+    ):
+        return None
+    provider = expression.args[0]
+    return provider if isinstance(provider, ast.Name | ast.Attribute) else None
 
 
 def _function_call_sites(
@@ -3671,7 +4155,38 @@ def _select_reference_function(
             qualname=reference.qualname,
             firstlineno=reference.code_firstlineno,
         )
-    return _select_function(parsed.functions, reference.function, reference.line)
+    selected = _select_function(parsed.functions, reference.function, reference.line)
+    if selected is not None or reference.line is None:
+        return selected
+    return _unique_containing_function(
+        parsed.tree,
+        function_name=reference.function,
+        line=reference.line,
+    )
+
+
+def _unique_containing_function(
+    tree: ast.Module,
+    *,
+    function_name: str,
+    line: int,
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    candidates = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.name == function_name
+        and node.lineno <= line <= (node.end_lineno or node.lineno)
+    ]
+    if not candidates:
+        return None
+    shortest_span = min((node.end_lineno or node.lineno) - node.lineno for node in candidates)
+    matches = [
+        node
+        for node in candidates
+        if (node.end_lineno or node.lineno) - node.lineno == shortest_span
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _exact_runtime_function(
@@ -3707,6 +4222,8 @@ def _exact_runtime_function(
 def _function_source(
     source: str,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    include_decorators: bool = False,
 ) -> str | None:
     end_line = function.end_lineno
     if end_line is None or end_line < function.lineno:
@@ -3714,7 +4231,12 @@ def _function_source(
     lines = source.splitlines(keepends=True)
     if end_line > len(lines):
         return None
-    content = textwrap.dedent("".join(lines[function.lineno - 1 : end_line])).rstrip()
+    start_line = (
+        min((function.lineno, *(item.lineno for item in function.decorator_list)))
+        if include_decorators
+        else function.lineno
+    )
+    content = textwrap.dedent("".join(lines[start_line - 1 : end_line])).rstrip()
     return content or None
 
 
@@ -3852,6 +4374,17 @@ def _evidence_id(capability_id: str, module: str, function: str) -> str:
     payload = "\0".join((capability_id, module, function))
     digest = hashlib.sha256(payload.encode("utf-8", errors="surrogatepass")).hexdigest()
     return f"evidence:function:{digest}"
+
+
+def _binding_evidence_id(
+    capability_id: str,
+    relative_path: str,
+    name: str,
+    line: int,
+) -> str:
+    payload = "\0".join((capability_id, relative_path, name, str(line)))
+    digest = hashlib.sha256(payload.encode("utf-8", errors="surrogatepass")).hexdigest()
+    return f"evidence:binding:{digest}"
 
 
 __all__ = (

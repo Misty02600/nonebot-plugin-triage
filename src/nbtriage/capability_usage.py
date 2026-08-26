@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 
-MAX_EXPLICIT_USAGE_ALTERNATIVES = 3
+MAX_EXPLICIT_USAGE_ALTERNATIVES = 4
 MAX_SUMMARY_USAGE_ALTERNATIVES = 6
-_CONCEPT_SLOT_RE = re.compile(r"^<[^<>\[\]()|{}]{1,20}>$")
+MAX_PUBLIC_USAGES = 3
 
 
 class CapabilityUsageExpressionError(ValueError):
@@ -19,10 +18,12 @@ class _LiteralExpressionParser:
         *,
         max_depth: int,
         max_expansions: int,
+        max_alternatives: int | None,
     ) -> None:
         self._value = value
         self._max_depth = max_depth
         self._max_expansions = max_expansions
+        self._max_alternatives = max_alternatives
         self._index = 0
 
     def parse(self) -> tuple[str, ...]:
@@ -35,8 +36,14 @@ class _LiteralExpressionParser:
 
     def _expression(self, *, depth: int, closing: str | None) -> tuple[str, ...]:
         alternatives = list(self._sequence(depth=depth, closing=closing))
+        alternative_count = 1
         while self._peek() == "|":
             self._index += 1
+            alternative_count += 1
+            if self._max_alternatives is not None and alternative_count > self._max_alternatives:
+                raise CapabilityUsageExpressionError(
+                    f"单个固定备选位置最多允许 {self._max_alternatives} 项"
+                )
             alternatives.extend(self._sequence(depth=depth, closing=closing))
             self._check_budget(alternatives)
         if closing is not None:
@@ -88,6 +95,7 @@ def expand_literal_expression(
     *,
     max_depth: int = 4,
     max_expansions: int = 16,
+    max_alternatives: int | None = None,
     max_length: int = 256,
 ) -> tuple[str, ...]:
     """展开只含固定文字、`|` 与圆括号的命令别名表达式。"""
@@ -101,17 +109,24 @@ def expand_literal_expression(
         value,
         max_depth=max_depth,
         max_expansions=max_expansions,
+        max_alternatives=max_alternatives,
     ).parse()
 
 
 def validate_literal_expression(
     value: str,
     expected_literals: Sequence[str],
+    *,
+    max_alternatives: int | None = None,
 ) -> str:
     expected = tuple(dict.fromkeys(expected_literals))
     if not expected or len(expected) != len(expected_literals):
         raise CapabilityUsageExpressionError("Runtime 命令集合无效")
-    actual = expand_literal_expression(value, max_expansions=len(expected))
+    actual = expand_literal_expression(
+        value,
+        max_expansions=len(expected),
+        max_alternatives=max_alternatives,
+    )
     missing = sorted(set(expected).difference(actual), key=lambda item: (item.casefold(), item))
     unexpected = sorted(set(actual).difference(expected), key=lambda item: (item.casefold(), item))
     if missing or unexpected:
@@ -137,31 +152,26 @@ def deterministic_literal_expression(literals: Sequence[str]) -> str | None:
 
 def deterministic_usage_selector(
     literals: Sequence[str],
-    *,
-    concept_name: str = "指令",
 ) -> str | None:
-    """按统一展示边界生成固定值枚举或概念槽位。"""
+    """在单个备选位置的展示预算内生成确定性固定入口枚举。"""
     unique = tuple(dict.fromkeys(literals))
     if not unique:
         return None
     if len(unique) <= MAX_EXPLICIT_USAGE_ALTERNATIVES:
         return deterministic_literal_expression(unique)
-    candidate = f"<{concept_name}>"
-    return candidate if _CONCEPT_SLOT_RE.fullmatch(candidate) else None
+    return None
 
 
 def validate_usage_selector(value: str, expected_literals: Sequence[str]) -> str:
-    """验证三项以内精确枚举、超过三项使用单一概念槽。"""
+    """验证固定入口表达式无损展开，且每个备选位置不超过展示上限。"""
     expected = tuple(dict.fromkeys(expected_literals))
     if not expected or len(expected) != len(expected_literals):
         raise CapabilityUsageExpressionError("Runtime 命令集合无效")
-    if len(expected) <= MAX_EXPLICIT_USAGE_ALTERNATIVES:
-        return validate_literal_expression(value, expected)
-    if not isinstance(value, str) or _CONCEPT_SLOT_RE.fullmatch(value) is None:
-        raise CapabilityUsageExpressionError(
-            "超过三个固定值时必须使用一个简短必填概念槽位，例如 <指令>"
-        )
-    return value
+    return validate_literal_expression(
+        value,
+        expected,
+        max_alternatives=MAX_EXPLICIT_USAGE_ALTERNATIVES,
+    )
 
 
 def group_literal_expression_for_usage(value: str) -> str:
@@ -179,6 +189,7 @@ def group_literal_expression_for_usage(value: str) -> str:
 
 __all__ = (
     "MAX_EXPLICIT_USAGE_ALTERNATIVES",
+    "MAX_PUBLIC_USAGES",
     "MAX_SUMMARY_USAGE_ALTERNATIVES",
     "CapabilityUsageExpressionError",
     "deterministic_literal_expression",

@@ -6,7 +6,8 @@ import sysconfig
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from importlib import import_module
+from functools import cache
+from importlib import import_module, metadata
 from pathlib import Path
 from types import ModuleType
 from typing import Protocol, cast
@@ -58,6 +59,14 @@ _BOT_ROOT_DENIED_PATTERNS = (
     "**/*.pyi",
 )
 _PYTHON_SOURCE_PATTERNS = ("*.py", "*.pyi", "**/*.py", "**/*.pyi")
+
+
+@cache
+def _installed_package_map() -> Mapping[str, Sequence[str]]:
+    try:
+        return metadata.packages_distributions()
+    except Exception:
+        return {}
 
 
 class EvidenceAccessError(RuntimeError):
@@ -125,7 +134,9 @@ def build_evidence_access_profiles(
         pyproject_path=pyproject_path,
         loaded_modules=loaded_modules,
         distribution_lookup=distribution_lookup,
-        package_distributions=package_distributions,
+        package_distributions=(
+            package_distributions if package_distributions is not None else _installed_package_map()
+        ),
     )
     plugin_root = _required_plugin_root(source_resolution)
     localstore = (localstore_resolver or _default_localstore_roots)(target_module)

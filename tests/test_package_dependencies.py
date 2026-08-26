@@ -20,6 +20,16 @@ def test_model_control_plane_is_a_base_dependency() -> None:
     assert "pydantic-ai-slim==2.28.0" in dependencies
 
 
+def test_behavior_checkpoint_runtime_is_a_base_dependency() -> None:
+    dependencies = set(_project_metadata()["dependencies"])
+
+    assert "aiosqlite==0.22.1" in dependencies
+    assert "langgraph==1.2.11" in dependencies
+    assert "langgraph-checkpoint==4.2.0" in dependencies
+    assert "langgraph-checkpoint-sqlite==3.1.1" in dependencies
+    assert "pycryptodome==3.23.0" in dependencies
+
+
 def test_provider_extras_do_not_own_nonebot_adapters() -> None:
     project = _project_metadata()
     optional = project["optional-dependencies"]

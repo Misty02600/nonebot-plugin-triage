@@ -48,7 +48,10 @@ class TeachingRole(StrEnum):
 class TeachingScene(StrEnum):
     PRIVATE = "private"
     GROUP = "group"
-    GUILD_OR_CHANNEL = "guild_or_channel"
+    GUILD = "guild"
+    CHANNEL_TEXT = "channel_text"
+    CHANNEL_CATEGORY = "channel_category"
+    CHANNEL_VOICE = "channel_voice"
 
 
 class RateLimitPolicy(StrEnum):
@@ -71,6 +74,7 @@ class CapabilityInvocationMode(StrEnum):
     """区分确定入口与需要模型完整概括的参数化入口。"""
 
     ANCHORED = "anchored"
+    REGEX = "regex"
     COMPLETE = "complete"
 
 
@@ -170,6 +174,10 @@ class CapabilityInvocationTarget:
     canonical_usages: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
     requires_mention: bool = False
+    shortcut_count: int = 0
+    shortcut_evidence_ids: tuple[str, ...] = ()
+    regex_pattern: str | None = None
+    regex_flags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _bounded_text(self.entry_id, "invocation entry_id", max_length=128)
@@ -180,7 +188,21 @@ class CapabilityInvocationTarget:
                 raise CapabilityAnalysisError("anchored invocation requires command_body")
             _bounded_text(self.command_body, "invocation command_body", max_length=256)
         elif self.command_body is not None:
-            raise CapabilityAnalysisError("complete invocation must not define command_body")
+            raise CapabilityAnalysisError("non-anchored invocation must not define command_body")
+        if self.mode is CapabilityInvocationMode.REGEX:
+            if self.regex_pattern is None:
+                raise CapabilityAnalysisError("regex invocation requires regex_pattern")
+            _bounded_text(self.regex_pattern, "invocation regex_pattern", max_length=4_000)
+        elif self.regex_pattern is not None:
+            raise CapabilityAnalysisError("only regex invocation may define regex_pattern")
+        if not isinstance(self.regex_flags, tuple) or len(self.regex_flags) > 8:
+            raise CapabilityAnalysisError("regex_flags must be a bounded tuple")
+        if len(self.regex_flags) != len(set(self.regex_flags)):
+            raise CapabilityAnalysisError("regex_flags must not contain duplicates")
+        for flag in self.regex_flags:
+            _bounded_text(flag, "invocation regex flag", max_length=32)
+        if self.regex_flags and self.mode is not CapabilityInvocationMode.REGEX:
+            raise CapabilityAnalysisError("only regex invocation may define regex_flags")
         if not isinstance(self.canonical_usages, tuple) or len(self.canonical_usages) > 4:
             raise CapabilityAnalysisError("canonical_usages must be a bounded tuple")
         if len(self.canonical_usages) != len(set(self.canonical_usages)):
@@ -201,6 +223,19 @@ class CapabilityInvocationTarget:
             raise CapabilityAnalysisError("only anchored invocations may define aliases")
         if not isinstance(self.requires_mention, bool):
             raise CapabilityAnalysisError("requires_mention must be a boolean")
+        if (
+            not isinstance(self.shortcut_count, int)
+            or isinstance(self.shortcut_count, bool)
+            or not 0 <= self.shortcut_count <= 1_000
+        ):
+            raise CapabilityAnalysisError("shortcut_count must be a bounded integer")
+        _optional_evidence_ids(self.shortcut_evidence_ids, "shortcut_evidence_ids")
+        if bool(self.shortcut_count) != bool(self.shortcut_evidence_ids):
+            raise CapabilityAnalysisError(
+                "shortcut_count and shortcut_evidence_ids must be present together"
+            )
+        if self.shortcut_count and self.mode is not CapabilityInvocationMode.ANCHORED:
+            raise CapabilityAnalysisError("only anchored invocations may define shortcuts")
 
 
 @dataclass(frozen=True)
@@ -451,6 +486,7 @@ class SemanticClaim:
     statement: str
     evidence_ids: tuple[str, ...]
     config_reference_ids: tuple[str, ...] = ()
+    gate_candidate_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SemanticClaimKind):
@@ -458,6 +494,16 @@ class SemanticClaim:
         _bounded_text(self.statement, "claim statement", max_length=1_000)
         _evidence_ids(self.evidence_ids, "claim evidence_ids")
         _config_reference_ids(self.config_reference_ids, "claim config_reference_ids")
+        _bounded_text_tuple(
+            self.gate_candidate_ids,
+            "claim gate_candidate_ids",
+            max_items=16,
+            max_length=128,
+        )
+        if self.gate_candidate_ids and self.kind is not SemanticClaimKind.BEHAVIOR_BOUNDARY:
+            raise CapabilityAnalysisError(
+                "only behavior-boundary claims may reference gate candidates"
+            )
 
 
 @dataclass(frozen=True)
@@ -526,6 +572,7 @@ class SemanticConstraint:
     evidence_ids: tuple[str, ...]
     config_reference_ids: tuple[str, ...] = ()
     role: TeachingRole | None = None
+    allowed_scenes: tuple[TeachingScene, ...] = ()
     rate_limit_policy: RateLimitPolicy | None = None
     rate_limit_scope: RateLimitScope | None = None
     gate_candidate_ids: tuple[str, ...] = ()
@@ -545,6 +592,12 @@ class SemanticConstraint:
         )
         if self.role is not None and not isinstance(self.role, TeachingRole):
             raise CapabilityAnalysisError("constraint role is invalid")
+        if not isinstance(self.allowed_scenes, tuple) or any(
+            not isinstance(scene, TeachingScene) for scene in self.allowed_scenes
+        ):
+            raise CapabilityAnalysisError("constraint allowed_scenes is invalid")
+        if len(self.allowed_scenes) != len(set(self.allowed_scenes)):
+            raise CapabilityAnalysisError("constraint allowed_scenes must be unique")
         if self.rate_limit_policy is not None and not isinstance(
             self.rate_limit_policy, RateLimitPolicy
         ):
@@ -558,6 +611,11 @@ class SemanticConstraint:
                 raise CapabilityAnalysisError("role constraint requires role metadata")
         elif self.role is not None:
             raise CapabilityAnalysisError("only role constraints may define role metadata")
+        if self.kind is SemanticConstraintKind.SCENE:
+            if not self.allowed_scenes:
+                raise CapabilityAnalysisError("scene constraint requires allowed scenes")
+        elif self.allowed_scenes:
+            raise CapabilityAnalysisError("only scene constraints may define allowed scenes")
         if self.kind is SemanticConstraintKind.RATE_LIMIT:
             if self.rate_limit_policy is None or self.rate_limit_scope is None:
                 raise CapabilityAnalysisError("rate-limit constraint requires policy and scope")
@@ -917,17 +975,25 @@ def _validate_gate_resolutions(
             "analysis output must resolve every gate candidate exactly once"
         )
 
-    constraints_by_candidate: dict[str, list[tuple[str, SemanticConstraint]]] = {}
+    public_owners_by_candidate: dict[str, dict[str, str]] = {}
+
+    def register_public_owner(candidate_id: str, entry_id: str, owner: str) -> None:
+        if candidate_id not in candidates:
+            raise CapabilityAnalysisError(f"{owner} references an unavailable gate candidate")
+        owners = public_owners_by_candidate.setdefault(candidate_id, {})
+        if entry_id in owners:
+            raise CapabilityAnalysisError(
+                "gate candidate must have exactly one public owner per affected entry"
+            )
+        owners[entry_id] = owner
+
     for entry in output.entries:
+        for claim in entry.claims:
+            for candidate_id in claim.gate_candidate_ids:
+                register_public_owner(candidate_id, entry.entry_id, "behavior boundary")
         for constraint in entry.constraints:
             for candidate_id in constraint.gate_candidate_ids:
-                if candidate_id not in candidates:
-                    raise CapabilityAnalysisError(
-                        "constraint references an unavailable gate candidate"
-                    )
-                constraints_by_candidate.setdefault(candidate_id, []).append(
-                    (entry.entry_id, constraint)
-                )
+                register_public_owner(candidate_id, entry.entry_id, "constraint")
 
     for candidate_id, candidate in candidates.items():
         resolution = resolutions[candidate_id]
@@ -944,16 +1010,16 @@ def _validate_gate_resolutions(
             raise CapabilityAnalysisError(
                 "resolved gate candidate requires definition, framework, or config evidence"
             )
-        linked = constraints_by_candidate.get(candidate_id, [])
+        linked_entries = set(public_owners_by_candidate.get(candidate_id, {}))
         if resolution.outcome is CapabilityGateResolutionKind.CONSTRAINT:
-            linked_entries = {entry_id for entry_id, _constraint in linked}
             if not set(candidate.entry_ids).issubset(linked_entries):
                 raise CapabilityAnalysisError(
-                    "constraint gate resolution must link every affected entry"
+                    "constraint gate resolution must link every affected entry to a public "
+                    "constraint or behavior boundary"
                 )
-        elif linked:
+        elif linked_entries:
             raise CapabilityAnalysisError(
-                "only constraint gate resolutions may be linked from public constraints"
+                "only constraint gate resolutions may be linked from public teaching facts"
             )
 
     if output.knowledge_enabled and any(

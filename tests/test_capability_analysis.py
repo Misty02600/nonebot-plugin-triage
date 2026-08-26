@@ -247,6 +247,7 @@ def test_output_has_only_semantic_fields_and_evidence_ids() -> None:
         "statement",
         "evidence_ids",
         "config_reference_ids",
+        "gate_candidate_ids",
     }
     assert set(SemanticConstraint.__dataclass_fields__) == {
         "kind",
@@ -254,6 +255,7 @@ def test_output_has_only_semantic_fields_and_evidence_ids() -> None:
         "evidence_ids",
         "config_reference_ids",
         "role",
+        "allowed_scenes",
         "rate_limit_policy",
         "rate_limit_scope",
         "gate_candidate_ids",
@@ -318,6 +320,74 @@ def test_service_accepts_gate_proven_to_have_no_constraint() -> None:
 
     assert result == expected
     assert client.requests == [request]
+
+
+def test_service_accepts_business_state_gate_owned_by_behavior_boundary() -> None:
+    request = replace(
+        _request(),
+        evidence_units=(
+            *_request().evidence_units,
+            CapabilityEvidenceUnit(
+                evidence_id="ev-definition",
+                source_kind="approved_python_definition",
+                content="def game_started(group_id): return group_id in active_games",
+                revision="sha256:definition",
+            ),
+        ),
+        gate_candidates=(
+            CapabilityGateCandidate(
+                "gate:game-started",
+                CapabilityGateKind.PERMISSION,
+                ("root",),
+                ("ev-handler",),
+            ),
+        ),
+    )
+    base_output = _output()
+    expected = replace(
+        base_output,
+        entries=(
+            replace(
+                base_output.entries[0],
+                claims=(
+                    *base_output.entries[0].claims,
+                    SemanticClaim(
+                        SemanticClaimKind.BEHAVIOR_BOUNDARY,
+                        "使用前需先开始当前业务流程",
+                        ("ev-handler", "ev-definition"),
+                        gate_candidate_ids=("gate:game-started",),
+                    ),
+                ),
+            ),
+        ),
+        gate_resolutions=(
+            CapabilityGateResolution(
+                "gate:game-started",
+                CapabilityGateResolutionKind.CONSTRAINT,
+                ("ev-handler", "ev-definition"),
+            ),
+        ),
+    )
+
+    result = asyncio.run(
+        CapabilityAnalysisService(FakeCapabilityAnalysisClient(expected)).analyze(request)
+    )
+
+    assert result == expected
+    assert result.entries[0].constraints == ()
+
+
+def test_claim_rejects_gate_candidate_link_outside_behavior_boundary() -> None:
+    with pytest.raises(
+        CapabilityAnalysisError,
+        match="only behavior-boundary claims",
+    ):
+        SemanticClaim(
+            SemanticClaimKind.SUMMARY,
+            "查找图片来源",
+            ("ev-handler",),
+            gate_candidate_ids=("gate:state",),
+        )
 
 
 def test_service_closes_only_after_gate_remains_unresolved() -> None:

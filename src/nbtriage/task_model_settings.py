@@ -5,6 +5,7 @@ from pydantic_ai.settings import ModelSettings
 
 PROVIDER_DEFAULT_SETTINGS_REVISION = "provider-default"
 ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION = "alibaba-qwen3.6-non-thinking-v2"
+DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION = "deepseek-v4-thinking-high-v1"
 OPENAI_RESPONSES_PRIVACY_SETTINGS_REVISION = "openai-responses-no-store-v1"
 
 
@@ -35,6 +36,19 @@ def task_model_settings(model: Model) -> tuple[ModelSettings | None, str]:
             settings_revision,
         )
 
+    if settings_revision == DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION:
+        from pydantic_ai.models.openai import OpenAIChatModelSettings
+
+        return (
+            OpenAIChatModelSettings(
+                parallel_tool_calls=False,
+                tool_choice="auto",
+                temperature=0,
+                openai_reasoning_effort="high",
+            ),
+            settings_revision,
+        )
+
     if model.system == "openai":
         try:
             from pydantic_ai.models.openai import (
@@ -56,6 +70,8 @@ def task_model_settings(model: Model) -> tuple[ModelSettings | None, str]:
 def task_model_settings_revision(provider: str, model_name: str) -> str:
     if provider == "alibaba" and _is_qwen36(model_name):
         return ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
+    if provider == "deepseek" and model_name.startswith("deepseek-v4-"):
+        return DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION
     return PROVIDER_DEFAULT_SETTINGS_REVISION
 
 
@@ -66,6 +82,7 @@ def _is_qwen36(model_name: str) -> bool:
 
 __all__ = (
     "ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION",
+    "DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION",
     "OPENAI_RESPONSES_PRIVACY_SETTINGS_REVISION",
     "PROVIDER_DEFAULT_SETTINGS_REVISION",
     "task_model_settings",

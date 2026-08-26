@@ -255,8 +255,11 @@ async def test_startup_callback_schedules_refresh_without_waiting_for_scan(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("force", "expected_force"), [(True, True), (False, False)])
 async def test_manual_nonpublishable_teaching_refresh_preserves_last_good_view(
     tmp_path: Path,
+    force: bool,
+    expected_force: bool,
 ) -> None:
     class ExistingAnnotationView:
         def __init__(self) -> None:
@@ -270,7 +273,7 @@ async def test_manual_nonpublishable_teaching_refresh_preserves_last_good_view(
             force: bool = False,
         ) -> CapabilityAnnotationRefreshStatus:
             assert plugin_module is None
-            assert force is True
+            assert force is expected_force
             return CapabilityAnnotationRefreshStatus(
                 refresh_id="refresh-failed",
                 global_failure_reason="provider_identity",
@@ -305,7 +308,7 @@ async def test_manual_nonpublishable_teaching_refresh_preserves_last_good_view(
     )
 
     with pytest.raises(CapabilityTeachingOutputError, match="not publishable"):
-        await service.refresh_teaching()
+        await service.refresh_teaching(force=force)
 
     assert annotations.active is True
     assert annotations.get("command:image") is not None
@@ -1215,6 +1218,82 @@ def test_family_name_and_summary_can_recall_one_runtime_member(query: str) -> No
     assert [item.record.capability_id for item in augmented] == ["command:member-0"]
 
 
+def test_annotation_terms_join_runtime_hits_in_weighted_order() -> None:
+    import nonebot_plugin_triage.capability_shadow as capability_shadow_module
+
+    records = tuple(
+        CapabilityRecord(
+            capability_id=capability_id,
+            owner="steam-plugin",
+            kind="command",
+            disclosure=Disclosure.PUBLIC,
+            state=RecordState.VERIFIED,
+            platform_scope=PlatformScope.all(),
+            claims=(Claim("command.header", header, ClaimBasis.OBSERVED),),
+        )
+        for capability_id, header in (
+            ("command:runtime", "好友代码说明"),
+            ("command:name", "steam-name"),
+            ("command:term", "steam-term"),
+            ("command:summary", "steam-summary"),
+        )
+    )
+    annotations = {
+        "command:name": CapabilityTeachingAnnotation(
+            capability_id="command:name",
+            request_fingerprint="a" * 64,
+            entries=(
+                CapabilityTeachingEntry(
+                    "root",
+                    name="Steam 好友代码",
+                    summary="查询 Steam 信息",
+                    usages=("steam-name",),
+                ),
+            ),
+        ),
+        "command:term": CapabilityTeachingAnnotation(
+            capability_id="command:term",
+            request_fingerprint="b" * 64,
+            entries=(
+                CapabilityTeachingEntry(
+                    "root",
+                    name="Steam 绑定",
+                    summary="绑定 Steam 信息",
+                    usages=("steam-term",),
+                    search_terms=("Steam 好友代码",),
+                ),
+            ),
+        ),
+        "command:summary": CapabilityTeachingAnnotation(
+            capability_id="command:summary",
+            request_fingerprint="c" * 64,
+            entries=(
+                CapabilityTeachingEntry(
+                    "root",
+                    name="Steam 查询",
+                    summary="Steam 好友代码",
+                    usages=("steam-summary",),
+                ),
+            ),
+        ),
+    }
+
+    ranked = capability_shadow_module._augment_hits_with_annotation_terms(
+        [CapabilitySearchHit(record=records[0], score=100.0)],
+        records,
+        "Steam 好友代码",
+        annotations.get,
+        limit=4,
+    )
+
+    assert [(item.record.capability_id, item.score) for item in ranked] == [
+        ("command:runtime", 100.0),
+        ("command:name", 80.0),
+        ("command:term", 70.0),
+        ("command:summary", 30.0),
+    ]
+
+
 @pytest.mark.parametrize(
     "basis",
     [ClaimBasis.DECLARED, ClaimBasis.DOCUMENTED, ClaimBasis.INFERRED],
@@ -1416,7 +1495,6 @@ def test_public_guidance_rejects_conflicting_observed_command_headers() -> None:
         ("on_endswith", ["完成"], "结尾触发：完成"),
         ("on_fullmatch", ["你好"], "完整匹配：你好"),
         ("on_keyword", ["提醒", "备忘"], "关键词：提醒、备忘"),
-        ("on_regex", [r"^谁艾特我$"], r"正则触发：^谁艾特我$"),
     ],
 )
 def test_public_guidance_projects_observed_non_command_triggers(
@@ -1480,7 +1558,9 @@ async def test_public_search_excludes_unprojectable_trigger_before_returning_hit
 
 
 @pytest.mark.asyncio
-async def test_public_search_returns_safely_projectable_trigger(tmp_path: Path) -> None:
+async def test_public_search_requires_teaching_annotation_for_regex_trigger(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "capabilities.sqlite3"
     record = CapabilityRecord(
         capability_id="message:regex",
@@ -1495,17 +1575,46 @@ async def test_public_search_returns_safely_projectable_trigger(tmp_path: Path) 
             Claim("description", "查询谁艾特过我", ClaimBasis.DECLARED),
         ),
     )
-    service = _service(
+    service_without_annotation = _service(
         path,
         snapshot_builder=lambda **_: _aligned_snapshot((record,)),
     )
-    service.refresh()
+    service_without_annotation.refresh()
 
-    result = await service.search_public("谁艾特我", object)
+    result = await service_without_annotation.search_public("谁艾特我", object)
 
     assert result is not None
-    assert [hit.record.capability_id for hit in result.hits] == ["message:regex"]
-    assert format_public_capability_guidance(result).startswith(r"正则触发：^谁艾特我$")
+    assert result.hits == ()
+
+    annotation = CapabilityTeachingAnnotation(
+        capability_id="message:regex",
+        request_fingerprint="a" * 64,
+        entries=(
+            CapabilityTeachingEntry(
+                "root",
+                name="查询谁艾特过我",
+                summary="查询最近艾特过当前用户的成员。",
+                usages=("谁艾特我",),
+            ),
+        ),
+    )
+
+    class AnnotationView:
+        def get(self, capability_id: str) -> CapabilityTeachingAnnotation | None:
+            return annotation if capability_id == record.capability_id else None
+
+    service_with_annotation = _service(
+        tmp_path / "annotated-capabilities.sqlite3",
+        snapshot_builder=lambda **_: _aligned_snapshot((record,)),
+        annotation_service=cast(CapabilityAnnotationService, AnnotationView()),
+    )
+    service_with_annotation.refresh()
+
+    annotated_result = await service_with_annotation.search_public("谁艾特我", object)
+
+    assert annotated_result is not None
+    assert [hit.record.capability_id for hit in annotated_result.hits] == ["message:regex"]
+    assert format_public_capability_guidance(annotated_result).startswith("查询谁艾特过我\n")
 
 
 @pytest.mark.parametrize(

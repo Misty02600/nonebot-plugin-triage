@@ -94,19 +94,31 @@
 | [ADR-0091](0091-use-pydantic-ai-model-ids-as-the-public-transport-selector.md) | 已采纳；兼容迁移部分由 ADR-0092 替代 | 直接以 Pydantic AI `provider:model` 选择 transport；Base URL 连接兼容服务 |
 | [ADR-0092](0092-remove-legacy-model-backend-configuration.md) | 已采纳；已实现 | 删除旧 backend 字段、专用 runtime 分支和 OpenCode 密钥别名；旧配置明确失败并迁移到唯一的 `provider:model` 入口 |
 | [ADR-0093](0093-shard-capability-annotation-cache-by-plugin.md) | 已采纳 | 教学注释按插件 JSON 分片、文件内按 teaching unit 保存 `last_good / last_attempt`，以内存 staging 和全局原子 pointer 支持单元部分发布 |
-| [ADR-0094](0094-simplify-the-public-capability-teaching-contract.md) | 已采纳；family 展示与 Help description 分别被 ADR-0095、ADR-0100 部分替代 | 公开 entry 收敛为 name / summary / usages / search terms / behavior boundaries / requirements，requirement 只保留 role / scene / access / rate limit |
+| [ADR-0094](0094-simplify-the-public-capability-teaching-contract.md) | 已采纳；family 展示、Help description 与字段所有权分别被 ADR-0095、ADR-0100、ADR-0113 部分替代 | 公开 entry 收敛为 name / summary / usages / search terms / behavior boundaries / requirements，requirement 只保留 role / scene / access / rate limit |
 | [ADR-0095](0095-preserve-family-member-invocations-and-compress-only-display.md) | 已采纳；请求表示由 ADR-0098、聚合参数展示由 ADR-0102 细化 | family 请求保留全部 Runtime 成员调用事实，参数异构不再关闭共同知识；固定备选改用 `≤3 / 4–6 / ≥7` 展示边界，查询按 family 去重并为精确成员补完整 usage |
-| [ADR-0096](0096-bound-capability-annotation-concurrency-by-unit.md) | 已采纳 | 所有待生成 teaching unit 共用全局有限并发池；同插件单元可并行，缓存与原子发布边界不变 |
+| [ADR-0096](0096-bound-capability-annotation-concurrency-by-unit.md) | 固定 `1..32` 配置范围被 ADR-0120、仅分析阶段并发被 ADR-0122 替代 | teaching unit 调度边界、失败停止与原子发布原则继续有效 |
 | [ADR-0097](0097-capture-complete-capability-model-output-in-explicit-maintenance-runs.md) | 已采纳 | 显式单插件维护运行可把完整模型输出写入本地诊断文件，生产 trace 仍保持脱敏 |
 | [ADR-0098](0098-deduplicate-complete-family-member-manifests.md) | 已采纳 | family 仍向模型提供全部成员，但命令清单与 Parser shape 分离去重；普通命令明确保持 anchor-only，不伪造参数结构 |
 | [ADR-0099](0099-separate-parser-structure-from-public-slot-names.md) | 已采纳；family 聚合槽位由 ADR-0102、联合输入传递由 ADR-0111 细化 | Parser 锁定参数结构，模型依据 Evidence 命名匿名槽位；确定性精确成员回退只使用类型能保证的保守名称 |
 | [ADR-0100](0100-keep-migut-help-descriptions-minimal.md) | 已采纳 | Migut Help description 只显示 summary；标准权限和冷却继续使用原生字段，其他公开事实留给 Answer |
+| [ADR-0101](0101-use-langgraph-checkpoints-for-long-running-behavior-inquiries.md) | 已采纳；首个纵向切片已实现，真实模型质量资格待补 | 以加密 LangGraph checkpoint 保存单 scope 长期 Behavior 工作区；Store、复杂控制面和跨 Thread Memory 后置 |
 | [ADR-0102](0102-keep-family-aggregate-parameters-actionable.md) | 已采纳 | family 聚合槽位必须覆盖全部 shape；公开槽位不再预设成品词，七类以上不逐类解释，“参数”不设专门门禁 |
 | [ADR-0103](0103-enable-opencode-go-thinking-and-capture-maintenance-reasoning.md) | 已采纳 | OpenCode Go Agent 任务启用 high thinking，显式维护诊断保存 ThinkingPart，普通生产 trace 继续脱敏 |
-| [ADR-0104](0104-preload-one-hop-python-dependency-source-for-teaching.md) | 已采纳 | 教学首包预载一层唯一 Python 依赖函数；过长实现或编译扩展 stub 只给精确导航目标，不递归枚举依赖树 |
-| [ADR-0106](0106-follow-static-parameter-dependencies-for-teaching-evidence.md) | 已采纳 | 教学源码切片沿静态 `Annotated[..., Depends(provider)]` 参数依赖补齐 provider Evidence，不根据符号名猜语义 |
+| [ADR-0104](0104-preload-one-hop-python-dependency-source-for-teaching.md) | 已采纳；family 零工具边界由 ADR-0118 替代 | 教学首包预载一层唯一 Python 依赖函数；过长实现或编译扩展 stub 只给精确导航目标，不递归枚举依赖树 |
+| [ADR-0106](0106-follow-static-parameter-dependencies-for-teaching-evidence.md) | 已采纳；参数默认值形式由 ADR-0117 补充，普通调用深度由 ADR-0118 收敛 | 教学源码切片沿静态参数依赖补齐 provider Evidence，不根据符号名猜语义 |
 | [ADR-0107](0107-capture-provider-http-errors-in-explicit-maintenance-diagnostics.md) | 已采纳 | 显式维护诊断保存有界脱敏的 Provider HTTP 错误元数据与正文，生产 trace 继续不保存正文 |
 | [ADR-0108](0108-preserve-permission-disjunctions-in-teaching-requirements.md) | 已采纳 | 一个 Permission 用带 OR alternatives 的 requirement 保存；Migut Help 只投影单一 SUPERUSER 或精确 `admin OR owner` 组合 |
 | [ADR-0109](0109-delegate-transient-http-retries-to-provider-sdks.md) | 已采纳 | Provider SDK 最多进行两次传输重试，教学层不再因网络错误重跑整个 Agent；维护诊断记录内部失败尝试 |
 | [ADR-0110](0110-preload-static-family-member-callables.md) | 已采纳 | Family 初始 Evidence 有界预载静态工厂表中唯一可解析的本地 Callable，不递归展开或逐成员运行 Agent |
 | [ADR-0111](0111-preserve-alconna-union-input-types-in-family-shapes.md) | 已采纳 | Alconna 联合输入类型完整进入 family shape；Uniseg At 作为直接 `@用户` 输入不能在聚合 usage 中丢失 |
+| [ADR-0112](0112-do-not-blacklist-dynamic-source-symbols-in-public-teaching-text.md) | 已采纳 | 公开教学文字由 Prompt 约束，不再根据 Evidence、locator、配置或函数符号动态生成子串黑名单；保密继续由输入准入和结构投影负责 |
+| [ADR-0113](0113-separate-routing-authorization-and-business-readiness-in-teaching.md) | 已采纳；role/access 分类已被 ADR-0116 收紧 | `platform_scope` 留在确定性 Runtime，业务准备状态进入 behavior boundary；role/access 按当前替代关系解释 |
+| [ADR-0114](0114-follow-static-gate-bindings-and-bind-jedi-to-request-evidence.md) | 已采纳；模型坐标接口被 ADR-0115、普通调用深度被 ADR-0118 局部替代 | 教学首包沿唯一模块级 gate 绑定补入一层外部函数；静态绑定与一层依赖边界继续有效 |
+| [ADR-0115](0115-open-python-definitions-through-request-bound-navigation-handles.md) | 已采纳 | 初始和动态 Python Evidence 提供请求内位置句柄；模型一次调用即可完成 Jedi 跳转、稳定读取并取得可引用 Evidence |
+| [ADR-0116](0116-classify-role-and-access-by-the-executed-gate.md) | 已采纳 | 直接身份判断属于 role，可配置资格查询属于 access；权限系统内部预授权不反向展开为目标能力角色要求 |
+| [ADR-0117](0117-follow-default-depends-parameter-providers.md) | 已采纳 | 参数默认值中的直接 `Depends(provider)` 与 `Annotated` 依赖使用相同的唯一定位和有界 Evidence 规则 |
+| [ADR-0118](0118-limit-eager-source-depth-and-let-families-navigate-selectively.md) | 已采纳 | 普通调用首包只展开两层且边界不再白跑 Jedi；family 仅以有限预算选择性打开已标注定义 |
+| [ADR-0119](0119-store-direct-scene-requirements-as-atomic-sets.md) | 已采纳 | 直接场景要求保存完整原子场景集合；Permission 的场景 OR 分支继续保持单个原子值 |
+| [ADR-0120](0120-remove-the-fixed-capability-annotation-concurrency-ceiling.md) | 已采纳 | 教学单元并发只要求为正整数，不再由项目固定上限；部署者按 Provider 与连接容量设置 |
+| [ADR-0121](0121-checkpoint-completed-teaching-units-before-atomic-publication.md) | 已采纳 | 单元完成后持久化未发布候选和维护诊断；插件仍经单一 generation 原子发布，中断后只补缺失单元 |
+| [ADR-0122](0122-pipeline-capability-evidence-preparation-and-analysis.md) | 已采纳 | Evidence 以内部有界准备池逐单元进入模型池；同插件共享准备缓存保持串行，分析与 checkpoint 继续并发 |

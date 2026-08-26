@@ -2,6 +2,8 @@
 
 > 后续关系：[ADR-0096](0096-bound-capability-annotation-concurrency-by-unit.md) 替代本 ADR 沿用的“不同插件并发、
 > 同一插件内顺序分析”调度边界；本 ADR 的插件 cache shard、单元状态、staging 与全局原子 pointer 继续有效。
+> [ADR-0121](0121-checkpoint-completed-teaching-units-before-atomic-publication.md) 进一步允许把已完成但未发布的
+> 单元候选作为 cache checkpoint 持久化；本 ADR 的活动指针与原子发布边界不变。
 
 | 状态 | 决策日期 |
 |---|---|

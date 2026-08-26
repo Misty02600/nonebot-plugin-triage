@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-20 |
+| 已替代 | 2026-08-20 |
 
 ## 背景
 
@@ -46,6 +46,13 @@ ADR-0088 把并发槽位分配给插件，并要求同一插件内的教学单�
 本 ADR 替代 ADR-0088 中“并发槽位按插件分配”“同一插件内顺序执行”和“单插件手动刷新不发生内部并发”的
 决定。ADR-0088 的全局锁、有限并发、复用通用 timeout 和模型内预算原则继续有效；ADR-0093 的缓存、staging
 和原子发布边界不变。
+
+本 ADR 对配置值施加 `1..32` 固定范围的决定已被
+[ADR-0120](0120-remove-the-fixed-capability-annotation-concurrency-ceiling.md) 替代；按 teaching unit 使用同一个
+全局 semaphore 的调度边界继续有效。
+
+本 ADR 第 5 项中“并发只覆盖单元分析阶段”的边界已被
+[ADR-0122](0122-pipeline-capability-evidence-preparation-and-analysis.md) 替代；缓存与原子发布边界继续有效。
 
 ## 落实与确认
 

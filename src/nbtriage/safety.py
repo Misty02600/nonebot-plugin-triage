@@ -66,7 +66,6 @@ CODE_IDENTIFIER_SECRET_VALUE = re.compile(
     r"^(?:self|token|request|context|ctx|config|settings)\."
     r"[A-Za-z_][A-Za-z0-9_.]*$"
 )
-
 _PERSISTED_ASSIGNMENT = re.compile(
     r"(?i)(?<![A-Za-z0-9_-])(?P<label>[A-Za-z][A-Za-z0-9_-]{0,127})"
     r"\s*[:=]\s*['\"]?(?P<value>[^\s,'\";\]}]{4,})"
@@ -87,6 +86,11 @@ _PERSISTED_SECRET_PATTERNS = (
     ),
     re.compile(r"(?i)https?://[^/@\s:]+:[^/@\s]+@"),
 )
+_WINDOWS_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]")
+_UNC_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9:])(?:\\\\|//)(?:\?\\)?[^\\/\s]+[\\/][^\\/\s]+")
+_POSIX_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9:/])/(?!/)(?:[^\s/]+(?:/|$))")
+_HOME_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9])~[\\/]")
+_FILE_URI = re.compile(r"(?i)\bfile:///")
 
 
 def detect_case_safety_risks(case: dict[str, Any]) -> list[str]:
@@ -185,6 +189,22 @@ def _is_secret_assignment_label(label: str) -> bool:
     if _SECRET_LABEL_COMPONENTS.intersection(components):
         return True
     return any(pair in pairwise(components) for pair in _SECRET_LABEL_PAIRS)
+
+
+def contains_absolute_local_path(text: str) -> bool:
+    """判断自由文本是否包含不应持久化或外发的本机绝对路径。"""
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    return any(
+        pattern.search(text) is not None
+        for pattern in (
+            _WINDOWS_ABSOLUTE_PATH,
+            _UNC_ABSOLUTE_PATH,
+            _POSIX_ABSOLUTE_PATH,
+            _HOME_ABSOLUTE_PATH,
+            _FILE_URI,
+        )
+    )
 
 
 def _string(value: Any) -> str:

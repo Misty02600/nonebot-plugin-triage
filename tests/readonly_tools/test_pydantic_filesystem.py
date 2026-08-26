@@ -178,7 +178,6 @@ def test_installed_harness_exposes_only_prefixed_read_tools(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     "tool_arguments",
     (
-        {"path": "sample.py", "limit": 161},
         {"path": "sample.py", "limit": 0},
         {"path": "sample.py", "offset": -1, "limit": 20},
     ),
@@ -224,6 +223,55 @@ def test_read_file_rejects_out_of_range_line_arguments_before_harness(
     Agent(model, toolsets=cast(Any, list(bundle.toolsets)), retries=1).run_sync("Read sample.py")
 
     assert observed_retry is True
+
+
+def test_read_file_clamps_an_oversized_line_limit(tmp_path: Path) -> None:
+    pytest.importorskip("pydantic_ai_harness")
+    from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+    from pydantic_ai.profiles import ModelProfile
+
+    content = "".join(f"line {number}\n" for number in range(1, 201))
+    (tmp_path / "sample.py").write_text(content, encoding="utf-8")
+    profile = ReadOnlyTaskProfile(
+        task_id="harness.clamped-range",
+        roots=(ReadOnlyRoot("project", tmp_path),),
+    )
+    bundle = build_read_only_file_toolsets(profile)
+    tool_result = ""
+    calls = 0
+
+    def respond(messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls, tool_result
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "project_read_file",
+                        {"path": "sample.py", "limit": 200},
+                        "clamped-read",
+                    )
+                ]
+            )
+        for message in messages:
+            if not isinstance(message, ModelRequest):
+                continue
+            for part in message.parts:
+                if isinstance(part, ToolReturnPart) and isinstance(part.content, str):
+                    tool_result = part.content
+        return ModelResponse(parts=[TextPart("done")], finish_reason="stop")
+
+    model = FunctionModel(
+        respond,
+        model_name="fixture-model",
+        profile=ModelProfile(supports_tools=True),
+    )
+    Agent(model, toolsets=cast(Any, list(bundle.toolsets))).run_sync("Read sample.py")
+
+    assert "   160\tline 160" in tool_result
+    assert "\tline 161" not in tool_result
 
 
 def test_read_file_uses_160_line_default_when_limit_is_omitted(tmp_path: Path) -> None:

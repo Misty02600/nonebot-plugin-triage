@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；family 边界被 [ADR-0095](0095-preserve-family-member-invocations-and-compress-only-display.md) 替代；真实插件诊断范围被 [ADR-0097](0097-capture-complete-capability-model-output-in-explicit-maintenance-runs.md) 部分替代；Migut Help description 边界被 [ADR-0100](0100-keep-migut-help-descriptions-minimal.md) 替代 | 2026-08-19 |
+| 已采纳；family 边界被 [ADR-0095](0095-preserve-family-member-invocations-and-compress-only-display.md) 替代；真实插件诊断范围被 [ADR-0097](0097-capture-complete-capability-model-output-in-explicit-maintenance-runs.md) 部分替代；Migut Help description 边界被 [ADR-0100](0100-keep-migut-help-descriptions-minimal.md) 替代；路由、授权与业务准备状态的字段所有权被 [ADR-0113](0113-separate-routing-authorization-and-business-readiness-in-teaching.md) 部分替代 | 2026-08-19 |
 
 ## 当时遇到了什么
 
@@ -48,7 +48,8 @@ catalog` 等专属字段，需要在通用查询层解决“小集合明确列�
    不能删除或放宽。
 5. `gate_resolutions` 只用于证明每个 gate candidate 已被解释为 `constraint / no_constraint / unresolved`；
    `baseline_changes` 只用于对上一版非证据编辑基线提交 `keep / replace / remove`。两者都是生成协议，不是
-   Help、Answer 或 Bug 消费者可见的公开知识。
+   Help、Answer 或 Bug 消费者可见的公开知识。上一版 `requirements` 不作为生成文字回送模型；角色、场景、
+   访问资格和限流每轮只按当前 gate、Runtime 与源码 Evidence 重建，避免未经本轮验证的授权措辞被直接沿用。
 6. `access` 只保存脱敏后的可观察效果，例如“需授权”或“可能只对部分用户、群或场景开放”。不得公开黑白名单
    成员、ID、配置键，也不得仅凭该字段断言当前用户或群一定命中名单。纯黑名单仍可生成保守的“使用资格
    可能受限”，以便后续流程知道失败不一定是命令写错。
@@ -85,7 +86,18 @@ catalog` 等专属字段，需要在通用查询层解决“小集合明确列�
     历史报告，不能继承资格，也不能修改后重新冒充 forward-heldout；正式质量结论必须使用全新冻结 fixture。
 14. 默认运行时遥测继续遵循 ADR-0089，不保存 Prompt、源码或模型正文。仅维护者显式开启、且运行完整精确
     官方合成 fixture 时，评测器可把失败或经过 correction 的 assistant 输出、tool call/result 和稳定错误码
-    写入本地 ignored 诊断文件。该文件不得包含 API key、初始 Prompt 或真实插件私有源码，也不进入仓库。
+   写入本地 ignored 诊断文件。该文件不得包含 API key、初始 Prompt 或真实插件私有源码，也不进入仓库。
+
+### Alconna shortcut 是调用 Evidence，不是 alias
+
+15. 标准 Parser usage 与 shortcut 分开保存生成职责：
+    - `canonical_usages` 继续锁定标准命令头、参数顺序、必选性、Option 和重复性，模型必须保留；
+    - 当前 Runtime 已注册的 shortcut 以有界 Evidence 提供其原始 pattern、显式 `humanized`、目标命令、固定
+      参数、prefix/fuzzy 标志和本地 wrapper 符号；不得把它压成只替换命令头的 alias；
+    - 模型可以结合 pattern、改写参数和源码理解生成额外的可读 usage，但必须引用 shortcut Evidence，不得
+      执行 wrapper、公开原始正则或内部符号；Evidence 不足时只省略 shortcut，不影响标准 usage 与知识开放；
+    - 标准 usage 与 shortcut usage 共用公开条目的三条显式 usage 上限。最终公开 Schema 不增加 `shortcuts`
+      字段，所有可展示形式仍归入普通 `usages`。
 
 ## 为什么这样选
 
@@ -128,6 +140,7 @@ entry 提供。
 - 有利：Help、Answer 与 Bug 预检消费同一公开合同，自由 Markdown 不会成为旁路；
 - 有利：白名单或其他访问范围可以安全表达“需授权”，又不泄露成员或武断判断当前主体；
 - 有利：family 和普通 Matcher 的固定备选共享同一四项展示规则；
+- 有利：Alconna shortcut 可以进入教学知识，同时不放宽 Parser 对标准用法的结构安全下限；
 - 代价：真实但无法映射到四类的执行 gate 会失败关闭，直到有跨插件案例证明需要新增通用类别；
 - 代价：schema 6 缓存全部重生成，历史 Provider 质量结论不能继承；
 - 代价：大 family 的 Answer 只拥有聚合知识与当前召回的具体成员，不把全部成员细节永久塞入模型上下文。
@@ -135,6 +148,8 @@ entry 提供。
 ## 落实与确认
 
 - `capability_analysis.py`、`capability_annotations.py` 与 `capability_model_adapter.py` 实现新内部和公开合同；
+- `capability_snapshot.py` 只读取已注册 shortcut 的有界结构事实，不执行 wrapper；request v29 将这些事实绑定
+  到普通 Matcher invocation，并使旧 baseline requirements 不再进入模型 payload；
 - `capability_usage.py` 统一实现四项有限枚举及概念槽位校验；
 - `capability_shadow.py` 从当前 Runtime 索引有界组合小 family 成员，不保存新成员目录；
 - `capability_help_display.py` 与 `capability_teaching_outputs.py` 分别做 Help 有损投影和 Answer Markdown

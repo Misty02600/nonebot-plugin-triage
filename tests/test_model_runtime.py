@@ -20,7 +20,9 @@ def test_model_config_uses_only_pydantic_ai_model_identity() -> None:
     assert config.nbtriage_model_base_url is None
     assert config.nbtriage_model_timeout_seconds == 60
     assert config.nbtriage_model_max_output_tokens == 240
-    assert config.nbtriage_capability_annotation_max_concurrency == 4
+    assert config.nbtriage_behavior_max_output_tokens == 1_200
+    assert config.nbtriage_behavior_max_concurrency == 2
+    assert config.nbtriage_capability_annotation_max_concurrency == 10
 
     with pytest.raises(ValidationError, match="was removed"):
         NBTriageConfig.model_validate({"nbtriage_model_enabled": True})
@@ -34,10 +36,21 @@ def test_model_config_uses_only_pydantic_ai_model_identity() -> None:
     assert configured.nbtriage_model_name == "openai-chat:gpt-test"
 
 
-@pytest.mark.parametrize("value", (0, 33))
-def test_capability_annotation_concurrency_is_bounded(value: int) -> None:
+def test_capability_annotation_concurrency_must_be_positive() -> None:
     with pytest.raises(ValidationError):
-        NBTriageConfig(nbtriage_capability_annotation_max_concurrency=value)
+        NBTriageConfig(nbtriage_capability_annotation_max_concurrency=0)
+
+
+def test_capability_annotation_concurrency_has_no_fixed_upper_bound() -> None:
+    config = NBTriageConfig(nbtriage_capability_annotation_max_concurrency=10_000)
+
+    assert config.nbtriage_capability_annotation_max_concurrency == 10_000
+
+
+@pytest.mark.parametrize("value", (0, 17))
+def test_behavior_concurrency_is_bounded(value: int) -> None:
+    with pytest.raises(ValidationError):
+        NBTriageConfig(nbtriage_behavior_max_concurrency=value)
 
 
 def test_model_config_rejects_secret_without_echoing_value() -> None:

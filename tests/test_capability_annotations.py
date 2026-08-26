@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,6 +42,7 @@ from nbtriage.capability_analysis import (
     SemanticConstraint,
     SemanticConstraintKind,
     TeachingRole,
+    TeachingScene,
 )
 from nbtriage.capability_annotations import (
     CapabilityAnnotationError,
@@ -48,6 +50,7 @@ from nbtriage.capability_annotations import (
     CapabilityAnnotationProjectionCode,
     CapabilityAnnotationProjectionError,
     CapabilityTeachingAnnotation,
+    CapabilityTeachingEntry,
     CapabilityTeachingRequirement,
     capability_analysis_fingerprint,
     project_capability_annotation,
@@ -64,6 +67,7 @@ from nonebot_plugin_triage.capability_analysis_adapter import (
 )
 from nonebot_plugin_triage.capability_annotation_cache import (
     CapabilityAnnotationPluginCache,
+    read_capability_annotation_plugin_cache,
 )
 from nonebot_plugin_triage.capability_annotation_runtime import (
     CAPABILITY_ANNOTATION_EVALUATION,
@@ -297,6 +301,12 @@ def test_annotation_preserves_usage_order_and_typed_requirements() -> None:
                         role=TeachingRole.CUSTOM,
                     ),
                     SemanticConstraint(
+                        SemanticConstraintKind.SCENE,
+                        "仅群聊可用。",
+                        ("evidence-handler",),
+                        allowed_scenes=(TeachingScene.GROUP,),
+                    ),
+                    SemanticConstraint(
                         SemanticConstraintKind.RATE_LIMIT,
                         "每名用户连续使用需要等待冷却。",
                         ("evidence-handler",),
@@ -316,6 +326,9 @@ def test_annotation_preserves_usage_order_and_typed_requirements() -> None:
         next(item for item in entry.requirements if item.kind is SemanticConstraintKind.ROLE).role
         is TeachingRole.CUSTOM
     )
+    assert next(
+        item for item in entry.requirements if item.kind is SemanticConstraintKind.SCENE
+    ).allowed_scenes == (TeachingScene.GROUP,)
     assert CapabilityTeachingAnnotation.from_dict(annotation.to_dict()) == annotation
 
 
@@ -373,6 +386,17 @@ def test_annotation_carries_forward_omitted_baseline_members_and_adds_new_claims
     entry = annotation.entries[0]
     assert entry.search_terms == ("反向搜图", "图片", "查找图片")
     assert entry.behavior_boundaries == ("支持回复图片", "需要提供图片")
+
+
+def test_teaching_entry_rejects_multiple_search_terms_in_one_string() -> None:
+    with pytest.raises(CapabilityAnnotationError, match="one independent phrase"):
+        CapabilityTeachingEntry(
+            "root",
+            name="Steam 绑定",
+            summary="绑定 Steam 账号",
+            usages=("steambind <Steam ID|好友代码>",),
+            search_terms=("绑定steam、steam绑定、Steam ID、Steam好友代码",),
+        )
 
 
 def test_annotation_applies_explicit_baseline_remove_and_replace() -> None:
@@ -523,33 +547,33 @@ def test_parser_owned_usage_allows_slot_naming_but_rejects_structure_changes() -
     assert alternative_annotation.entries[0].usages == ("随机表情 [图片|文字|@用户]...",)
 
 
-def test_parser_owned_usage_requires_a_public_name_instead_of_a_source_symbol() -> None:
+def test_projection_does_not_blacklist_runtime_source_symbols() -> None:
     base_request = _request()
     request = replace(
         base_request,
-        evidence_units=(
-            replace(base_request.evidence_units[0], locator="plugin.memes:meme_name:12"),
-        ),
+        evidence_units=(replace(base_request.evidence_units[0], locator="plugin.course:_:12"),),
         invocations=(
             CapabilityInvocationTarget(
                 "root",
                 CapabilityInvocationMode.ANCHORED,
-                "表情搜索",
-                ("表情搜索 <slot:0>",),
+                "show_today",
             ),
         ),
     )
     base_entry = _entry()
-    valid_entry = replace(
-        base_entry,
-        claims=tuple(
-            replace(claim, statement="表情搜索 <表情名>")
-            if claim.kind is SemanticClaimKind.USAGE
-            else claim
-            for claim in base_entry.claims
-        ),
+    output = CapabilityAnalysisOutput(
+        entries=(
+            replace(
+                base_entry,
+                claims=tuple(
+                    replace(claim, statement="show_today")
+                    if claim.kind is SemanticClaimKind.USAGE
+                    else claim
+                    for claim in base_entry.claims
+                ),
+            ),
+        )
     )
-    output = CapabilityAnalysisOutput(entries=(valid_entry,))
 
     annotation = project_capability_annotation(
         request,
@@ -557,45 +581,7 @@ def test_parser_owned_usage_requires_a_public_name_instead_of_a_source_symbol() 
         analysis_revision="analysis-v1",
     )
 
-    assert annotation.entries[0].usages == ("表情搜索 <表情名>",)
-
-    invalid_output = CapabilityAnalysisOutput(
-        entries=(
-            replace(
-                valid_entry,
-                claims=tuple(
-                    replace(claim, statement="表情搜索 <meme_name>")
-                    if claim.kind is SemanticClaimKind.USAGE
-                    else claim
-                    for claim in valid_entry.claims
-                ),
-            ),
-        )
-    )
-
-    with pytest.raises(CapabilityAnnotationError, match="internal evidence symbol"):
-        project_capability_annotation(request, invalid_output, analysis_revision="analysis-v1")
-
-
-def test_public_annotation_rejects_framework_permission_terms() -> None:
-    for statement in ("仅 MEMBER 可用。", "-q 与 --quiet 是同一个 Option。"):
-        output = CapabilityAnalysisOutput(
-            entries=(
-                _entry(
-                    constraints=(
-                        SemanticConstraint(
-                            SemanticConstraintKind.ROLE,
-                            statement,
-                            ("evidence-handler",),
-                            role=TeachingRole.CUSTOM,
-                        ),
-                    ),
-                ),
-            )
-        )
-
-        with pytest.raises(CapabilityAnnotationError, match="framework terms"):
-            project_capability_annotation(_request(), output, analysis_revision="analysis-v1")
+    assert annotation.entries[0].usages == ("show_today",)
 
 
 def test_complete_usage_requires_bounded_member_selector() -> None:
@@ -668,7 +654,7 @@ def test_complete_usage_requires_bounded_member_selector() -> None:
     ).entries[0].usages == ("(复古|锐化|黑白) [图片]",)
 
 
-def test_annotation_replaces_verified_command_body_with_alias_expression() -> None:
+def test_annotation_replaces_verified_command_body_with_factored_alias_expression() -> None:
     request = replace(
         _request(),
         invocations=(
@@ -702,14 +688,14 @@ def test_annotation_replaces_verified_command_body_with_alias_expression() -> No
                         ("evidence-handler",),
                     ),
                 ),
-                display_trigger="<指令>",
+                display_trigger="(禁言|(禁|口|踩)(他|她))",
             ),
         )
     )
 
     annotation = project_capability_annotation(request, output, analysis_revision="analysis-v1")
 
-    assert annotation.entries[0].usages == ("<指令> <用户>",)
+    assert annotation.entries[0].usages == ("(禁言|(禁|口|踩)(他|她)) <用户>",)
 
 
 def test_annotation_groups_root_alias_alternation_before_usage_suffix() -> None:
@@ -768,6 +754,12 @@ def test_usage_repetition_requires_ellipsis_after_complete_slot(usage: str) -> N
 def test_usage_repetition_accepts_required_and_optional_slots() -> None:
     assert validate_capability_usage_pattern("批量 <图片>...") == "批量 <图片>..."
     assert validate_capability_usage_pattern("批量 [图片]...") == "批量 [图片]..."
+    assert validate_capability_usage_pattern("添加名单 <名字>... <@用户>...") == (
+        "添加名单 <名字>... <@用户>..."
+    )
+    for invalid in ("添加名单 @用户...", "添加名单 @<用户>...", "添加名单 @bot..."):
+        with pytest.raises(CapabilityAnnotationError):
+            validate_capability_usage_pattern(invalid)
 
 
 def test_public_text_allows_plain_at_mentions_without_treating_them_as_message_segments() -> None:
@@ -868,11 +860,11 @@ def test_runtime_marks_changed_annotation_prompt_unverified_until_new_evaluation
     qualification = OPENCODE_GO_CAPABILITY_ANNOTATION_QUALIFICATION
 
     assert qualification.evaluation == CAPABILITY_ANNOTATION_EVALUATION
-    assert qualification.prompt_id == "capability-teaching-annotation-v5-prompt-v56-zh"
-    assert qualification.request_revision == "capability-teaching-request-v23"
+    assert qualification.prompt_id == "capability-teaching-annotation-v5-prompt-v90-zh"
+    assert qualification.request_revision == "capability-teaching-request-v50"
     assert qualification.evaluation == (
         "unverified:capability-teaching-annotation-agent-v4:"
-        "capability-teaching-annotation-v5-prompt-v56-zh"
+        "capability-teaching-annotation-v5-prompt-v90-zh"
     )
     assert qualification.verified is False
     assert frozenset() == QUALIFIED_CAPABILITY_ANNOTATION_TASKS
@@ -891,6 +883,8 @@ def test_runtime_uses_independent_annotation_output_budget() -> None:
     )()
 
     assert vars(client)["_max_output_tokens"] == CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS == 16_384
+    assert vars(client)["_max_requests"] == 10
+    assert vars(client)["_max_tool_calls"] == 7
 
 
 def test_annotation_revision_isolated_by_custom_endpoint_without_exposing_url() -> None:
@@ -1062,7 +1056,8 @@ async def test_prepare_error_skips_only_the_invalid_teaching_unit(
     assert status.generated_count == 1
     assert service.get("command:invalid") is None
     assert service.get("command:valid") is not None
-    assert logger.infos[1][1][-1] == '{"request_validation": 1}'
+    pipeline_log = next(item for item in logger.infos if "教学注释流水线完成" in item[0])
+    assert pipeline_log[1][-2] == '{"request_validation": 1}'
 
 
 @pytest.mark.asyncio
@@ -1436,11 +1431,12 @@ async def test_late_common_source_failure_discards_previously_prepared_plugin_un
     )
 
     assert built == ["command:first", "command:second"]
-    assert analyzed is False
+    assert analyzed is True
     assert status.eligible_count == 0
     assert status.skipped_count == 2
     assert all(item.state is CapabilityTeachingUnitState.SKIPPED for item in status.units)
     assert service.get("command:first") is None
+    assert not (tmp_path / "annotations.json" / "plugin.image.json").exists()
 
 
 @pytest.mark.asyncio
@@ -1508,6 +1504,98 @@ async def test_corrupt_plugin_cache_rebuilds_only_that_plugin(
     assert calls == ["command:a"]
     assert service.get("command:a") is not None
     assert service.get("command:b") is not None
+
+
+@pytest.mark.asyncio
+async def test_interrupted_refresh_reuses_completed_unpublished_unit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "2" * 64),
+        )
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    cache_directory = tmp_path / "annotations"
+    snapshot = CapabilitySnapshot.create(
+        (
+            _record("command:first", Disclosure.PUBLIC),
+            _record("command:second", Disclosure.PUBLIC),
+        )
+    )
+    release_second = asyncio.Event()
+
+    class InterruptibleClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            if request.capability.capability_id == "command:second":
+                await release_second.wait()
+            return _output()
+
+    interrupted_service = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=InterruptibleClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+        max_analysis_concurrency=2,
+    )
+    refresh_task = asyncio.create_task(interrupted_service.refresh(snapshot))
+    for _ in range(100):
+        cache = read_capability_annotation_plugin_cache(cache_directory, "plugin.image")
+        if cache is not None and any(
+            unit.analysis_unit_id == "command:first" and unit.pending is not None
+            for unit in cache.units
+        ):
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("completed unit checkpoint was not persisted")
+    refresh_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await refresh_task
+    assert interrupted_service.get("command:first") is None
+
+    calls: list[str] = []
+
+    class RecordingClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            calls.append(request.capability.capability_id)
+            return _output()
+
+    restarted = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=RecordingClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+        max_analysis_concurrency=2,
+    )
+    status = await restarted.refresh(snapshot)
+
+    assert calls == ["command:second"]
+    assert restarted.get("command:first") is None
+    assert restarted.get_pending("command:first") is not None
+    assert restarted.get_pending("command:second") is not None
+    await _commit_refresh(restarted, status)
+    assert restarted.get("command:first") is not None
+    assert restarted.get("command:second") is not None
+    cache = read_capability_annotation_plugin_cache(cache_directory, "plugin.image")
+    assert cache is not None
+    assert all(unit.pending is None for unit in cache.units)
 
 
 @pytest.mark.asyncio
@@ -1686,7 +1774,11 @@ async def test_generated_annotation_stays_pending_until_output_commit(
     assert status.publishable is True
     assert service.get("command:pending") is None
     assert service.get_pending("command:pending") is not None
-    assert not (cache_directory / "plugin.module.json").exists()
+    checkpoint = read_capability_annotation_plugin_cache(cache_directory, "plugin.module")
+    assert checkpoint is not None
+    assert checkpoint.published_generation is None
+    assert checkpoint.units[0].last_good is None
+    assert checkpoint.units[0].pending is not None
 
     await service.commit_pending(status.refresh_id, _PUBLISHED_GENERATION)
 
@@ -2000,13 +2092,13 @@ async def test_plugin_source_revision_change_regenerates_that_whole_plugin_only(
     snapshot = CapabilitySnapshot.create(records)
     first = await service.refresh(snapshot)
     await _commit_refresh(service, first)
-    assert calls == ["command:a-1", "command:a-2", "command:b-1"]
+    assert set(calls) == {"command:a-1", "command:a-2", "command:b-1"}
 
     calls.clear()
     revisions["plugin.a"] = "2" * 64
     second = await service.refresh(snapshot)
 
-    assert calls == ["command:a-1", "command:a-2"]
+    assert set(calls) == {"command:a-1", "command:a-2"}
     assert {item.unit_id: item.state for item in second.units} == {
         "command:a-1": CapabilityTeachingUnitState.GENERATED,
         "command:a-2": CapabilityTeachingUnitState.GENERATED,
@@ -2251,13 +2343,22 @@ async def test_global_model_contract_failure_does_not_publish_earlier_success(
     assert status.global_failure_reason == reason_code.value
     assert service.get("command:a-success") is None
     assert service.get_pending("command:a-success") is None
-    assert not (cache_directory / "plugin.contract.json").exists()
+    checkpoint = read_capability_annotation_plugin_cache(cache_directory, "plugin.contract")
+    assert checkpoint is not None
+    assert (
+        next(
+            unit for unit in checkpoint.units if unit.analysis_unit_id == "command:a-success"
+        ).pending
+        is not None
+    )
     with pytest.raises(RuntimeError, match="not publishable"):
         await service.commit_pending(status.refresh_id, _PUBLISHED_GENERATION)
     await service.discard_pending(status.refresh_id)
     payload = json.loads((cache_directory / "plugin.contract.json").read_text(encoding="utf-8"))
     assert payload["published_generation"] is None
-    assert set(payload["units"]) == {"command:b-stop"}
+    assert set(payload["units"]) == {"command:a-success", "command:b-stop"}
+    assert payload["units"]["command:a-success"]["last_good"] is None
+    assert payload["units"]["command:a-success"]["pending"] is not None
     assert payload["units"]["command:b-stop"]["last_good"] is None
     assert payload["units"]["command:b-stop"]["last_attempt"]["state"] == "failed"
     assert payload["units"]["command:b-stop"]["last_attempt"]["reason"] == reason_code.value
@@ -2431,9 +2532,8 @@ async def test_annotations_run_units_from_the_same_plugin_concurrently(
         max_analysis_concurrency=2,
     )
     records = tuple(
-        replace(_record(f"command:{plugin}-{index}", Disclosure.PUBLIC), owner=f"plugin.{plugin}")
-        for plugin in ("a", "b", "c")
-        for index in (1, 2)
+        replace(_record(f"command:a-{index}", Disclosure.PUBLIC), owner="plugin.a")
+        for index in range(1, 5)
     )
 
     refresh = asyncio.create_task(service.refresh(CapabilitySnapshot.create(records)))
@@ -2445,14 +2545,76 @@ async def test_annotations_run_units_from_the_same_plugin_concurrently(
     tracker.release.set()
     status = await asyncio.wait_for(refresh, timeout=2)
 
-    assert status.generated_count == 6
+    assert status.generated_count == 4
     assert status.failed_count == 0
     assert tracker.max_active_total == 2
     assert tracker.max_active_by_plugin["plugin.a"] == 2
-    for plugin in ("a", "b", "c"):
-        assert [
-            capability_id for owner, capability_id in tracker.started if owner == f"plugin.{plugin}"
-        ] == [f"command:{plugin}-1", f"command:{plugin}-2"]
+    assert [capability_id for _owner, capability_id in tracker.started] == [
+        "command:a-1",
+        "command:a-2",
+        "command:a-3",
+        "command:a-4",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_analysis_starts_before_later_unit_finishes_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second_preparation_started = threading.Event()
+    release_second_preparation = threading.Event()
+    first_analysis_started = asyncio.Event()
+
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        if record.capability_id == "command:second":
+            second_preparation_started.set()
+            if not release_second_preparation.wait(timeout=2):
+                raise AssertionError("second preparation was not released")
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "1" * 64),
+        )
+
+    class RecordingClient:
+        async def analyze(
+            self,
+            request: CapabilityAnalysisRequest,
+        ) -> CapabilityAnalysisOutput:
+            if request.capability.capability_id == "command:first":
+                first_analysis_started.set()
+            return _output()
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations",
+        client_factory=RecordingClient,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    snapshot = CapabilitySnapshot.create(
+        tuple(
+            replace(_record(f"command:{name}", Disclosure.PUBLIC), owner="plugin.pipeline")
+            for name in ("first", "second")
+        )
+    )
+
+    refresh = asyncio.create_task(service.refresh(snapshot))
+    assert await asyncio.to_thread(second_preparation_started.wait, 1)
+    await asyncio.wait_for(first_analysis_started.wait(), timeout=1)
+    release_second_preparation.set()
+    status = await asyncio.wait_for(refresh, timeout=2)
+
+    assert status.generated_count == 2
+    assert status.failed_count == 0
 
 
 @pytest.mark.asyncio
@@ -2585,25 +2747,28 @@ async def test_failed_teaching_unit_log_has_safe_location_and_reason(
         ),
     )
     assert logger.infos[1] == (
-        "NoneBot Triage 教学注释准备完成：refresh_id={}, eligible={}, skipped={}, skip_reasons={}",
+        "NoneBot Triage 教学注释规划完成：refresh_id={}, planned={}, skipped={}, "
+        "prepare_concurrency={}, analysis_concurrency={}, scope={}",
         (
             "0123456789abcdef0123456789abcdef",
             1,
             0,
-            "{}",
+            4,
+            10,
+            "all",
         ),
     )
     assert logger.infos[2] == (
-        "NoneBot Triage 教学注释刷新开始：refresh_id={}, eligible={}, cached={}, "
-        "pending={}, plugin_groups={}, max_analysis_concurrency={}, scope={}",
+        "NoneBot Triage 教学注释流水线完成：refresh_id={}, eligible={}, cached={}, "
+        "analyzed={}, skipped={}, skip_reasons={}, plugin_groups={}",
         (
             "0123456789abcdef0123456789abcdef",
             1,
             0,
             1,
+            0,
+            "{}",
             1,
-            10,
-            "all",
         ),
     )
     assert logger.warnings == [

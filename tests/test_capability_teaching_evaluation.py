@@ -23,7 +23,6 @@ from tools.nbtriage_maintainer.capability_teaching_evaluation import (
     _expected_qualification_contract,
     _fixture_bundle_sha256,
     _prepare_case,
-    _validate_expected_request_contract,
     _validate_fixture,
     evaluate_capability_teaching,
 )
@@ -351,13 +350,6 @@ def test_frozen_v13_fixture_bundle_remains_valid_historical_data() -> None:
     fixture_raw = _CURRENT_FIXTURE.read_bytes()
     payload = json.loads(fixture_raw)
     cases = _validate_fixture(payload)
-    prepared = tuple(_prepare_case(_CURRENT_FIXTURE, case) for case in cases)
-
-    for case, prepared_case in zip(cases, prepared, strict=True):
-        _validate_expected_request_contract(
-            cast(dict[str, object], case["expected"]),
-            prepared_case.request,
-        )
 
     assert payload["fixture_set_id"] == CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID
     assert payload["qualification_contract"] != _expected_qualification_contract()
@@ -372,7 +364,7 @@ def test_frozen_v13_fixture_bundle_remains_valid_historical_data() -> None:
         == CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256
     )
     assert len(cases) == 20
-    assert sum(item.input_kind == "adapter_source" for item in prepared) == 12
+    assert sum(case.get("adapter_case") is not None for case in cases) == 12
 
 
 def test_v34_development_bundle_prepares_as_historical_regression_data() -> None:

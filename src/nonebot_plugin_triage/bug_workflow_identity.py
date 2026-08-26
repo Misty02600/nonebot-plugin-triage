@@ -36,6 +36,15 @@ class BugWorkflowIdentity:
         ).encode("utf-8")
         return hmac.new(self._load_key(), payload, hashlib.sha256).hexdigest()
 
+    def derive_key(self, purpose: str) -> bytes:
+        """为另一个本地持久化用途派生独立的 256-bit 子密钥。"""
+        payload = json.dumps(
+            {"purpose": f"key:{purpose}", "parts": ()},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hmac.new(self._load_key(), payload, hashlib.sha256).digest()
+
     def _load_key(self) -> bytes:
         if self._key is not None:
             return self._key

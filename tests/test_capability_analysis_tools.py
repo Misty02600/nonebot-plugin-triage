@@ -15,6 +15,7 @@ from pydantic_ai.profiles import ModelProfile
 from nbtriage.capability_analysis import (
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
+    CapabilityFamilyMember,
     CapabilityIdentity,
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
@@ -23,9 +24,16 @@ from nbtriage.capability_analysis import (
 from nbtriage.capability_annotations import CapabilityAnnotationEvidenceRef
 from nbtriage.capability_source_evidence import CapabilitySourceEvidencePack
 from nbtriage.knowledge_index import KnowledgeEvidence
-from nbtriage.readonly_tools import ReadOnlyRoot, ReadOnlyTaskProfile
+from nbtriage.readonly_tools import (
+    DefinitionNavigator,
+    PythonNavigationProfile,
+    ReadOnlyRoot,
+    ReadOnlyTaskProfile,
+)
 from nonebot_plugin_triage.capability_analysis_tools import (
     CapabilityTeachingToolProvider,
+    _EvidenceCapture,
+    _NavigationRegistry,
     _with_target_plugin_alias,
 )
 from nonebot_plugin_triage.evidence_access import EvidenceAccessProfiles
@@ -169,13 +177,105 @@ def test_single_file_plugin_shared_roots_keep_their_runtime_scope(tmp_path: Path
     assert local_aliased.navigation_profile.root("target_plugin") is None
 
 
+def test_teaching_tool_provider_reuses_profiles_for_same_source_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profiles = _profiles(tmp_path)
+    calls = 0
+
+    def build_profiles(*_args: object, **_kwargs: object) -> EvidenceAccessProfiles:
+        nonlocal calls
+        calls += 1
+        return profiles
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_analysis_tools.build_evidence_access_profiles",
+        build_profiles,
+    )
+    provider = CapabilityTeachingToolProvider(pyproject_path=tmp_path / "pyproject.toml")
+
+    assert provider.create_runtime(_request("plugin-revision-v1")) is not None
+    assert provider.create_runtime(_request("plugin-revision-v1")) is not None
+    assert calls == 1
+
+    assert provider.create_runtime(_request("plugin-revision-v2")) is not None
+    assert calls == 2
+
+
+def test_family_teaching_runtime_exposes_only_selective_definition_navigation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profiles = _profiles(tmp_path)
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_analysis_tools.build_evidence_access_profiles",
+        lambda *_args, **_kwargs: profiles,
+    )
+    base = _request("plugin-revision-v1")
+    request = replace(
+        base,
+        capability=CapabilityIdentity("family:demo", "demo_plugin", "command_family"),
+        invocations=(
+            CapabilityInvocationTarget(
+                entry_id="family",
+                mode=CapabilityInvocationMode.COMPLETE,
+            ),
+        ),
+        family_members=(
+            CapabilityFamilyMember(
+                capability_id="command:demo",
+                invocations=(
+                    CapabilityInvocationTarget(
+                        entry_id="root",
+                        mode=CapabilityInvocationMode.ANCHORED,
+                        command_body="demo",
+                    ),
+                ),
+                evidence_ids=("evidence:runtime",),
+            ),
+        ),
+    )
+    runtime = CapabilityTeachingToolProvider(
+        pyproject_path=tmp_path / "pyproject.toml"
+    ).create_runtime(request)
+    assert runtime is not None
+    observed_tools: set[str] = set()
+    observed_instruction = ""
+
+    def respond(_messages, info: AgentInfo) -> ModelResponse:
+        nonlocal observed_instruction
+        observed_tools.update(tool.name for tool in info.function_tools)
+        observed_instruction = info.instructions or ""
+        return ModelResponse(parts=[TextPart("done")], finish_reason="stop")
+
+    agent = Agent(
+        FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
+        toolsets=cast(Any, list(runtime.toolsets)),
+    )
+    asyncio.run(agent.run("Inspect the family selectively."))
+
+    assert observed_tools == {"python_open_definition"}
+    assert "工具预算有限" in observed_instruction
+    assert "不得逐成员打开定义" in observed_instruction
+
+
 def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     profiles = _profiles(tmp_path)
+    dependency = profiles.navigation_profile.root("python_purelib")
+    assert dependency is not None
+    (dependency.path / "demo_dependency.py").write_text(
+        "def helper():\n    return 1\n",
+        encoding="utf-8",
+    )
     handler = profiles.plugin_source_root.path / "handler.py"
-    handler.write_text("def handle():\n    return limiter.allow()\n", encoding="utf-8")
+    handler.write_text(
+        "from demo_dependency import helper\n\ndef handle():\n    return helper()\n",
+        encoding="utf-8",
+    )
     revision = "plugin-revision-v1"
     monkeypatch.setattr(
         "nonebot_plugin_triage.capability_analysis_tools.build_evidence_access_profiles",
@@ -190,6 +290,7 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
     assert runtime is not None
     observed_tools: set[str] = set()
     tool_descriptions: dict[str, str] = {}
+    tool_schemas: dict[str, dict[str, object]] = {}
     tool_result: dict[str, object] = {}
     calls = 0
 
@@ -200,6 +301,9 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
         tool_descriptions.update(
             {tool.name: tool.description or "" for tool in info.function_tools}
         )
+        tool_schemas.update(
+            {tool.name: tool.parameters_json_schema for tool in info.function_tools}
+        )
         if calls == 1:
             return ModelResponse(
                 parts=[
@@ -207,6 +311,30 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
                         "target_plugin_read_file",
                         {"path": "handler.py", "offset": 0, "limit": 20},
                         "call-read",
+                    )
+                ]
+            )
+        if calls == 2:
+            navigation_ref = next(
+                target["navigation_ref"]
+                for message in messages
+                if isinstance(message, ModelRequest)
+                for part in message.parts
+                if isinstance(part, ToolReturnPart)
+                and isinstance(part.content, dict)
+                and part.content.get("citable") is True
+                for target in cast(
+                    tuple[dict[str, object], ...],
+                    part.content.get("navigation_targets", ()),
+                )
+                if target.get("display") == "helper"
+            )
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "python_open_definition",
+                        {"navigation_ref": navigation_ref},
+                        "call-definition",
                     )
                 ]
             )
@@ -228,24 +356,52 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
     assert "target_plugin_search_files" in observed_tools
     assert "bot_project_read_file" not in observed_tools
     assert "bot_project_search_files" not in observed_tools
-    assert "python_purelib_read_file" in observed_tools
+    assert "python_purelib_read_file" not in observed_tools
+    assert "python_purelib_file_info" not in observed_tools
     assert "python_purelib_search_files" not in observed_tools
+    assert "localstore_config_read_file" not in observed_tools
+    assert "localstore_data_file_info" not in observed_tools
     assert "只在 target_plugin 根内做纯文本搜索" in tool_descriptions["target_plugin_search_files"]
-    assert "python_go_to_definition" in tool_descriptions["target_plugin_search_files"]
-    assert "可跨批准的插件、宿主与依赖源码根" in tool_descriptions["python_go_to_definition"]
+    assert "python_open_definition" in tool_descriptions["target_plugin_search_files"]
+    assert "Evidence 标注" in tool_descriptions["python_open_definition"]
+    assert (
+        'python_open_definition(navigation_ref="nav:abc")'
+        in tool_descriptions["python_open_definition"]
+    )
+    assert "不要把依赖" in tool_descriptions["python_open_definition"]
+    assert "`file_info`" in tool_descriptions["python_open_definition"]
+    assert (
+        "path 必须是相对此根的具体文件，例如 module.py"
+        in tool_descriptions["target_plugin_file_info"]
+    )
+    assert (
+        "已知 Python 符号的定义位置应使用 python_open_definition"
+        in tool_descriptions["target_plugin_file_info"]
+    )
+    assert set(cast(dict[str, object], tool_schemas["python_open_definition"]["properties"])) == {
+        "navigation_ref"
+    }
+    assert tool_result["resolved"] is True
+    assert cast(
+        str,
+        cast(dict[str, object], tool_result["definition"])["name"],
+    ).endswith("helper")
     assert tool_result["citable"] is True
     evidence = runtime.evidence_units()
-    assert len(evidence) == 1
-    assert tool_result["evidence_id"] == evidence[0].evidence_id
-    assert evidence[0].locator == "target_plugin/handler.py"
+    assert len(evidence) == 2
+    assert {item.locator for item in evidence} == {
+        "target_plugin/handler.py",
+        "python_purelib/demo_dependency.py",
+    }
     assert runtime.validate_source_context() is True
 
+    target_evidence = next(item for item in evidence if item.locator == "target_plugin/handler.py")
     manifest = (
         CapabilityAnnotationEvidenceRef(
-            evidence_id=evidence[0].evidence_id,
-            source_kind=evidence[0].source_kind,
-            locator=evidence[0].locator or "",
-            revision=evidence[0].revision,
+            evidence_id=target_evidence.evidence_id,
+            source_kind=target_evidence.source_kind,
+            locator=target_evidence.locator or "",
+            revision=target_evidence.revision,
         ),
     )
     assert provider.evidence_is_current(_request(revision), manifest) is True
@@ -273,6 +429,165 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
     assert provider.evidence_is_current(dependency_request, ()) is True
     dependency_file.write_text("def lookup():\n    return 2\n", encoding="utf-8")
     assert provider.evidence_is_current(dependency_request, ()) is False
+
+
+def test_teaching_file_tools_return_recovery_for_repeated_directory_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profiles = _profiles(tmp_path)
+    revision = "plugin-revision-v1"
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_analysis_tools.build_evidence_access_profiles",
+        lambda *_args, **_kwargs: profiles,
+    )
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_analysis_tools.build_capability_source_evidence",
+        lambda *_args, **_kwargs: _source_pack(revision),
+    )
+    runtime = CapabilityTeachingToolProvider(
+        pyproject_path=tmp_path / "pyproject.toml"
+    ).create_runtime(_request(revision))
+    assert runtime is not None
+    results: list[dict[str, object]] = []
+    calls = 0
+
+    def respond(messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        for message in messages:
+            if not isinstance(message, ModelRequest):
+                continue
+            for part in message.parts:
+                if (
+                    isinstance(part, ToolReturnPart)
+                    and isinstance(part.content, dict)
+                    and part.content.get("ok") is False
+                    and part.content not in results
+                ):
+                    results.append(cast(dict[str, object], part.content))
+        if calls <= 2:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "target_plugin_file_info",
+                        {"path": "."},
+                        f"invalid-file-{calls}",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("done")], finish_reason="stop")
+
+    agent = Agent(
+        FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
+        toolsets=cast(Any, list(runtime.toolsets)),
+    )
+    asyncio.run(agent.run("Inspect a known file."))
+
+    assert [item["error_code"] for item in results] == [
+        "expected_regular_file",
+        "duplicate_invalid_file_attempt",
+    ]
+    assert all(item["retryable_with_same_tool"] is False for item in results)
+    assert results[0]["path_kind"] == "directory"
+    assert results[1]["suggested_tools"] == ["python_open_definition"]
+
+
+def test_initial_python_evidence_exposes_request_bound_navigation_handles(
+    tmp_path: Path,
+) -> None:
+    profiles = _with_target_plugin_alias(_profiles(tmp_path))
+    source = "def helper():\n    return 1\n\ndef handle():\n    return helper()\n"
+    handler = profiles.plugin_source_root.path / "handler.py"
+    handler.write_text(source, encoding="utf-8")
+    revision = hashlib.sha256(handler.read_bytes()).hexdigest()
+    evidence = CapabilityEvidenceUnit(
+        "evidence:function:handle",
+        "python_function",
+        "def handle():\n    return helper()",
+        f"sha256:{revision}",
+        "target_plugin/handler.py:handle:4",
+    )
+    access = profiles.navigation_profile
+    navigator = DefinitionNavigator(
+        PythonNavigationProfile(
+            access=access,
+            project_root_name="target_plugin",
+            source_root_names=tuple(root.name for root in access.roots),
+        )
+    )
+    registry = _NavigationRegistry(
+        access=access,
+        navigator=navigator,
+        capture=_EvidenceCapture("command:demo"),
+    )
+
+    sidecar = registry.initial_sidecar((evidence,))
+
+    target = next(
+        item
+        for item in cast(tuple[dict[str, object], ...], sidecar[0]["navigation_targets"])
+        if item["display"] == "helper"
+    )
+    result = registry.open_definition(cast(str, target["navigation_ref"]))
+    assert result["resolved"] is True
+    assert result["citable"] is True
+    assert "def helper" in cast(str, result["content"])
+
+    handler.write_text("def helper():\n    return 2\n", encoding="utf-8")
+    stale = registry.open_definition(cast(str, target["navigation_ref"]))
+    assert stale == {"resolved": False, "failure": "stale_navigation_ref"}
+
+
+def test_initial_python_evidence_exposes_imported_annotation_navigation_handle(
+    tmp_path: Path,
+) -> None:
+    profiles = _with_target_plugin_alias(_profiles(tmp_path))
+    dependency = profiles.navigation_profile.root("python_purelib")
+    assert dependency is not None
+    (dependency.path / "demo_dependency.py").write_text(
+        "class Target:\n    pass\n",
+        encoding="utf-8",
+    )
+    source = (
+        "from demo_dependency import Target\n\n"
+        "async def handle(target: Target):\n"
+        "    return target\n"
+    )
+    handler = profiles.plugin_source_root.path / "handler.py"
+    handler.write_text(source, encoding="utf-8")
+    revision = hashlib.sha256(handler.read_bytes()).hexdigest()
+    evidence = CapabilityEvidenceUnit(
+        "evidence:function:handle",
+        "python_function",
+        "async def handle(target: Target):\n    return target",
+        f"sha256:{revision}",
+        "target_plugin/handler.py:handle:3",
+    )
+    access = profiles.navigation_profile
+    registry = _NavigationRegistry(
+        access=access,
+        navigator=DefinitionNavigator(
+            PythonNavigationProfile(
+                access=access,
+                project_root_name="target_plugin",
+                source_root_names=tuple(root.name for root in access.roots),
+            )
+        ),
+        capture=_EvidenceCapture("command:demo"),
+    )
+
+    sidecar = registry.initial_sidecar((evidence,))
+
+    target = next(
+        item
+        for item in cast(tuple[dict[str, object], ...], sidecar[0]["navigation_targets"])
+        if item["display"] == "Target"
+    )
+    assert target["kind"] == "imported_symbol"
+    result = registry.open_definition(cast(str, target["navigation_ref"]))
+    assert result["resolved"] is True
+    assert "class Target" in cast(str, result["content"])
 
 
 def test_teaching_tools_keep_bot_project_tools_for_local_project_plugin(

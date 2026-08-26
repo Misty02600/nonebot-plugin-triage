@@ -399,6 +399,9 @@ def _top_level_stub_locations(
 
 
 class _JediBackend:
+    def __init__(self) -> None:
+        self._projects: dict[tuple[str, str, tuple[str, ...]], object] = {}
+
     def go_to_definition(
         self,
         *,
@@ -416,13 +419,21 @@ class _JediBackend:
             script_type = jedi.Script
         except (AttributeError, ImportError) as error:
             raise _BackendUnavailableError from error
-        project = project_type(
-            path=str(project_root),
-            environment_path=str(python_executable),
-            load_unsafe_extensions=False,
-            added_sys_path=[str(item) for item in added_sys_path],
-            smart_sys_path=False,
+        project_key = (
+            str(project_root),
+            str(python_executable),
+            tuple(str(item) for item in added_sys_path),
         )
+        project = self._projects.get(project_key)
+        if project is None:
+            project = project_type(
+                path=project_key[0],
+                environment_path=project_key[1],
+                load_unsafe_extensions=False,
+                added_sys_path=list(project_key[2]),
+                smart_sys_path=False,
+            )
+            self._projects[project_key] = project
         script = script_type(code=code, path=str(path), project=project)
         definitions: list[RawJediDefinition] = []
         for item in script.goto(

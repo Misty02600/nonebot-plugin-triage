@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
+import httpx
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
@@ -45,7 +47,7 @@ OPENCODE_GO_MODEL_PROFILE = OpenAIModelProfile(
     default_structured_output_mode="tool",
     openai_chat_supports_multiple_system_messages=False,
     openai_supports_strict_tool_definition=False,
-    openai_supports_tool_choice_required=True,
+    openai_supports_tool_choice_required=False,
     openai_chat_supports_max_completion_tokens=False,
 )
 
@@ -207,13 +209,46 @@ def create_opencode_go_chat_model(
         base_url=OPENCODE_GO_BASE_URL,
         timeout=timeout_seconds,
         max_retries=2,
-        http_client=provider_http_client(timeout_seconds=timeout_seconds),
+        http_client=provider_http_client(
+            timeout_seconds=timeout_seconds,
+            request_hooks=(_place_model_first,),
+        ),
     )
     return OpenCodeGoChatModel(
         model,
         provider=OpenCodeGoProvider(openai_client=sdk_client),
         profile=OPENCODE_GO_MODEL_PROFILE,
     )
+
+
+async def _place_model_first(request: httpx.Request) -> None:
+    """兼容 OpenCode Go 路由对 Chat 请求顶层字段顺序的临时要求。
+
+    OpenAI SDK 会先序列化 ``messages``，而 OpenCode Go 在 2026-08-23 的
+    路由版本中会因此把后续 ``model`` 误读为空。这里只重排 JSON 对象的
+    顶层字段，不修改请求语义；非 Chat、非 JSON 或缺少 model 的请求保持原样。
+
+    Args:
+        request: 即将由 OpenCode Go 专用 HTTP 客户端发送的请求。
+    """
+    if not request.url.path.endswith("/chat/completions"):
+        return
+    try:
+        payload = json.loads(request.content)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return
+    if not isinstance(payload, dict) or "model" not in payload:
+        return
+    if next(iter(payload), None) == "model":
+        return
+    model = payload.pop("model")
+    content = json.dumps(
+        {"model": model, **payload},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    request.stream = httpx.ByteStream(content)
+    request.headers["content-length"] = str(len(content))
 
 
 def opencode_go_model_settings() -> OpenAIChatModelSettings:

@@ -745,6 +745,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Remove project-side request, tool, token, output, and cost limits for diagnostics.",
     )
+    capability_teaching_parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help=(
+            "Reuse valid successful units and regenerate only failed, missing, or stale units "
+            "for the current teaching contract."
+        ),
+    )
     return parser
 
 
@@ -828,6 +836,7 @@ def _run_analyze_capability_teaching(args: argparse.Namespace) -> int:
             args.plugin,
             diagnostic_output=args.capture_model_output,
             unbounded=args.unbounded,
+            retry_failed=args.retry_failed,
         )
     except CapabilityTeachingMaintenanceError as error:
         print(f"capability teaching analysis failed: {error}", file=sys.stderr)

@@ -21,7 +21,9 @@ Semantic assessment（只接收当前文字）
    │            → public teaching contract → bounded Bug Agent
    │            → runtime / log / conversation / source / design / deployment
    │            → deterministic reconciliation → bug / not_bug / unknown
-   ├─ BEHAVIOR_EXPLORATION → 模型外 SUPERUSER 鉴权；受限取证尚未接通
+   ├─ BEHAVIOR_EXPLORATION → 模型外 SUPERUSER 鉴权
+   │            → 长期 LangGraph Thread → Capability Shadow 安全事实
+   │            → Pydantic AI 只读 ReAct → 模型外证据协调 → 解释卡
    ├─ FEATURE_FEEDBACK → 有界状态；尚不创建外部工单
    ├─ unresolved / task unavailable → CLARIFY
    └─ policy blocked / unsupported → REFUSE / OUT_OF_SCOPE
@@ -56,6 +58,27 @@ Reply 仍有两个与 Thread 独立的作用：可见正文供路由后的 Guida
 解析本机 runtime correlation。OneBot Bug Provider 另按当前 Bot 与群读取一次最新历史，不依赖 Reply 锚点；
 历史窗口中的消息 / Reply / 发言人 ID 可以作为会话关系事实进入 Bug Agent，但不改变 Thread 或工具 scope。
 未知或过期 Reply 不妨碍创建新 Thread，也不会恢复旧 Thread。
+
+### Behavior 的长期 Thread 例外
+
+上述“一次补充”只属于普通 Support Thread。Behavior exploration 在鉴权后使用单独的长期工作区：同一
+`adapter + Bot + conversation + actor` 经用途隔离 HMAC 派生一个不对外暴露的 LangGraph `thread_id`，每条
+新消息在该 Thread 上开启一次新的 graph invocation。一次 Run 完成会发布本轮解释，但不会关闭 Thread；工作区
+可以跨进程重启恢复，直到维护者执行 `triage 行为重置` 或达到容量硬上限。
+
+普通跟进不使用 `interrupt()`。只有当前 Semantic 结果为 `ASSESSMENT_UNRESOLVED` 的 `CLARIFY` 或
+`OUT_OF_SCOPE`，并且请求者重新通过 `SUPERUSER`、同 scope 已存在 Behavior 工作区时，才把含糊文字接回
+长期 Thread。明确 Guidance、Bug、Feature 或 Refuse 仍优先，旧工作区不会劫持新意图。
+
+Checkpoint 是首版 Behavior 工作区的持久真值，但不是完整聊天归档：State 只保存有界安全摘要、Claim、
+Evidence Reference、Artifact revision、稳定事件摘要和投递状态。用户原文只存在于当前 runtime context；
+Pydantic AI message history、工具正文、Provider 原始输入输出、源码、配置值、日志、绝对路径和凭据均不进入
+checkpoint。每轮重新取得当前 evidence generation，旧 Claim 不匹配时降为 `stale / conflicted / unknown`。
+
+首个证据纵切只投影 Capability Shadow 中白名单化的结构事实，统一标记 `partial`；它能说明当前记录到的能力
+结构和静态推断，但不能证明某次请求实际执行，也尚不能回答需要源码正文、配置值或运行观察的完整问题。
+SQLite saver 仅支持单机、单进程、单 writer；进程锁阻止第二实例共用数据库，同 Thread 的并发 Turn 返回
+`BUSY`。State 与 checkpoint 数都有硬上限，首版不自动裁剪、不启用跨 Thread Store。
 
 ## Semantic v7 与确定性路由
 
@@ -142,7 +165,8 @@ revision 的精确组合，匹配部署配置与密钥后才建立真实 Bug Age
 
 ## 安全与数据不变量
 
-- 所有 `triage` 轮次共用同一入口限流；scope Thread 不提供跨进程协调或费用预算；
+- 所有 `triage` 轮次共用同一入口限流；普通 scope Thread 不提供跨进程协调或费用预算；Behavior 另有
+  单 writer 进程锁、同 Thread admission 和全局模型并发预算，但仍不支持多 worker；
 - Reply / Thread /聊天、插件元数据、源码和文档都是不可信证据，不能升级为工具参数、权限或副作用；
 - `SUPERUSER` 只在 router 已选中 behavior exploration 后模型外鉴权，不扩大 Semantic / Guidance / Bug payload；
 - public guidance 不返回 restricted、隐藏、停用、平台不匹配、blocking issue 或 stale 的能力；
@@ -175,5 +199,6 @@ revision 的精确组合，匹配部署配置与密钥后才建立真实 Bug Age
 - [ADR-0075：把问题维护注册为 triage 子命令](../../adr/0075-register-problem-maintenance-under-triage-subcommand.md)
 - [ADR-0078：在可记录性合同确定前不持久化 unknown](../../adr/0078-defer-persisting-unknown-bug-assessments.md)
 - [ADR-0079：用无编号的 triage 报错查询列出待处理问题](../../adr/0079-list-pending-problems-with-triage-query.md)
+- [ADR-0101：用 LangGraph Checkpoint 保存长期开发者行为讨论](../../adr/0101-use-langgraph-checkpoints-for-long-running-behavior-inquiries.md)
 - [Alconna 能力与解析回执](alconna-capability-and-parse-receipts.md)
 - [运行观察入口](runtime-observation-intake.md)

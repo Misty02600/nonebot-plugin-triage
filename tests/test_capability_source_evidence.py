@@ -12,6 +12,7 @@ from nbtriage.capability_source_evidence import (
 from nbtriage.framework_semantics import (
     PublicConstraintKind,
     nonebot_permission_profile,
+    onebot_v11_permission_profile,
     uninfo_permission_profile,
 )
 
@@ -94,7 +95,12 @@ def test_extracts_handlers_keyword_and_common_alconna_literal(tmp_path: Path) ->
 def process():
     pass
 
-first = on_shell_command("run", handlers=[process])
+first = on_shell_command(
+    "run",
+    handlers=[
+        process,  # handler for the command
+    ],
+)
 second = on_alconna(Alconna("triage"))
 third = on_command(("root", "sub"))
 
@@ -235,14 +241,40 @@ def test_uninfo_permission_profile_has_a_stable_revision() -> None:
     assert current.revision == uninfo_permission_profile().revision
 
 
+def test_resolves_onebot_v11_builtin_group_roles(tmp_path: Path) -> None:
+    source = _write(
+        tmp_path / "plugin.py",
+        """\
+from nonebot.adapters.onebot.v11 import GROUP_ADMIN, GROUP_OWNER
+
+matcher = on_command("manage", permission=GROUP_ADMIN | GROUP_OWNER)
+""",
+    )
+    profile = onebot_v11_permission_profile()
+
+    pack = build_capability_source_evidence(
+        "example_plugin",
+        source,
+        permission_semantic_profiles=(profile,),
+    )
+
+    assert {
+        (item.operation, item.teaching_role, item.symbol) for item in pack.permission_constraints
+    } == {
+        ("administrator", TeachingRole.ADMIN, "GROUP_ADMIN"),
+        ("owner", TeachingRole.OWNER, "GROUP_OWNER"),
+    }
+    assert pack.semantic_revisions == (profile.revision,)
+
+
 def test_projects_known_permission_expression_as_one_or_group(tmp_path: Path) -> None:
     source = _write(
         tmp_path / "plugin.py",
         """\
 from nonebot.permission import SUPERUSER
-from nonebot_plugin_uninfo import ADMIN, PRIVATE
+from nonebot_plugin_uninfo import ADMIN, GUILD, PRIVATE
 
-matcher = on_command("manage", permission=SUPERUSER | PRIVATE | ADMIN())
+matcher = on_command("manage", permission=SUPERUSER | PRIVATE | GUILD | ADMIN())
 """,
     )
     pack = build_capability_source_evidence(
@@ -268,6 +300,10 @@ matcher = on_command("manage", permission=SUPERUSER | PRIVATE | ADMIN())
         (SemanticConstraintKind.ROLE, TeachingRole.ADMIN, None),
         (SemanticConstraintKind.ROLE, TeachingRole.OWNER, None),
         (SemanticConstraintKind.SCENE, None, TeachingScene.PRIVATE),
+        (SemanticConstraintKind.SCENE, None, TeachingScene.GUILD),
+        (SemanticConstraintKind.SCENE, None, TeachingScene.CHANNEL_TEXT),
+        (SemanticConstraintKind.SCENE, None, TeachingScene.CHANNEL_CATEGORY),
+        (SemanticConstraintKind.SCENE, None, TeachingScene.CHANNEL_VOICE),
     }
 
 

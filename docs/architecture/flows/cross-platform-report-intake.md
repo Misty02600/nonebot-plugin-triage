@@ -18,13 +18,19 @@
               ├─ task 未资格 / 请求期失败 → abstain → 唯一一次澄清
               ├─ Guidance → public facts + 路由后 Reply / Thread context → UniMessage
               ├─ Bug / observation → reviewed catalog / bounded Agent → 三值结论
-              └─ Behavior → 模型外 SUPERUSER 鉴权；受限取证尚未接通
+              └─ Behavior → 模型外 SUPERUSER 鉴权 → 长期 LangGraph Thread
+                           → Capability Shadow 安全结构证据 → 解释卡
 ```
 
 续问仍通过同一个 Alconna `triage` 入口。只有首轮未解决时，独立 HMAC Thread 协调器才在
 `adapter + Bot + conversation + actor` 作用域等待下一条显式 `triage`；不要求 Reply，且最多消费一次补充。
 新回答成功发送即可提交等待状态，不再依赖 Receipt message ID。并发 Claim 返回 `BUSY`，处理、取消、发送
 失败、TTL 或第二轮结束都会关闭 Thread。
+
+这段一次补充合同只描述普通 Support Thread。Behavior 另有同 scope 的长期 Thread：每条显式 `triage`
+创建一次新 Run，Run 结束不关闭工作区，重启后可继续；同 Thread 并发 Turn 仍返回 `BUSY`。明确的新
+Guidance、Bug、Feature 或 Refuse 意图优先，只有 unresolved / out-of-scope 且已重新鉴权的含糊消息会接回
+已有 Behavior 上下文。`triage 行为重置` 会删除整个长期工作区。
 
 `@Bot` 由 NoneBot / 适配器预处理，入口本身不要求 `to_me()`。`triage` 在每轮都必选，所以插件不会把普通
 群聊或任何只有 Reply 的消息交给意图层。Reply 不选择 Thread，只在 router 选出 action 后提供可见上下文。
@@ -40,8 +46,10 @@ ADR-0028 已经部分替代分类前统一拒绝私聊的入口边界：当前�
 澄清可以原路回复。已采纳的行为探索目标要求在读取
 restricted 证据前，先对当前 Bot / Event 的请求者执行模型外 `SUPERUSER` 鉴权；鉴权后可在原始提问会话
 返回完整解释，不检查其他参与者，也不要求房间 allowlist 或强制转私聊，但仍执行秘密过滤、文本净化和
-模型外发授权。当前 router 已能产生 behavior candidate，Matcher 会在分类后鉴权并按结果给出有界回执；
-restricted 取证与解释编排尚未实现。分类本身不消费身份。
+模型外发授权。当前 router 会产生 behavior candidate，Matcher 在分类后鉴权并进入加密 LangGraph
+Checkpoint 工作区；Pydantic AI Agent 首切只读取 Capability Shadow 的白名单安全结构事实，模型外校验证据
+闭包、basis、revision 与 `partial / stale / conflicted / unknown`。源码、配置和运行观察的多源工具尚未接入。
+分类本身不消费身份。
 
 这项决定没有开放私聊报障：即使 router 未来签发 `OPEN_INCIDENT` 授权，`LiveReportService` 仍按当前合同
 拒绝私聊。报障服务自己的私聊场景检查继续保留。
@@ -57,6 +65,7 @@ restricted 取证与解释编排尚未实现。分类本身不消费身份。
 | 回复入站消息并关联 | 支持 | exporter 可提供 target 与 message ID 时支持 |
 | 回复 Bot 输出并关联运行证据 | 当前支持群发送 | 尚未实现运行证据出站 Provider |
 | 同 scope 下一条 `triage` 补充 | 群聊 / 私聊合同测试通过；Reply 可选；每轮重新限流 | 领域合同与 Adapter 无关；真实网关待 smoke |
+| Behavior 长期 Thread | OneBot V11 Handler 合同覆盖鉴权、续接、投递与重置；工作区关闭并重启后的恢复由 runtime 测试覆盖 | 依赖 Adapter 提供稳定 message ID；SQLite 纵切不提供多进程协调，其他真实网关待 smoke |
 | 路由后直接 Reply 正文 | OneBot V11 事件模型已覆盖 | 取决于 UniSeg Builder 是否提供 Reply 正文；不可用时明确降级 |
 | Bug 最新聊天窗口 | NapCat 群历史 Provider 已实现；省略 `message_seq` 一次读取最新最多 30 条；精确 Reply 独立预装 | 尚无跨 Adapter 历史 Provider；不暴露历史工具，只使用当前请求、可用的精确 Reply 和其他证据 |
 | 公开结果发送 | `UniMessage` 支持 | 由对应 exporter 转换 |
@@ -87,7 +96,7 @@ restricted 取证与解释编排尚未实现。分类本身不消费身份。
 | `triage` Matcher、每轮 assessment / routing 与公开能力组件 | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support_intake.py`、`src/nonebot_plugin_triage/runtime.py` |
 | 版本化 assessment 请求投影、需求信号与失败状态合同 | `src/nbtriage/support_semantics.py` |
 | OpenCode Go `Agent(output_type=SupportSemanticAssessment)` 单 output-tool client、一次性失败关闭与确定性 action 路由；旧 `LiveReportRequest` 授权仅为当前 live semantic 不可达的兼容领域能力 | `src/nbtriage/opencode_go_semantic_adapter.py`、`src/nbtriage/support_semantic_model_adapter.py`、`src/nonebot_plugin_triage/semantic_runtime.py`、`src/nonebot_plugin_triage/semantic_assessment.py`、`src/nbtriage/support_routing.py` |
-| SUPERUSER 鉴权后的行为探索候选（取证待接） | `src/nonebot_plugin_triage/handlers.py` |
+| SUPERUSER 鉴权后的长期 Behavior Thread、LangGraph Checkpoint、只读 Agent 与 Capability Shadow 安全证据 | `src/nbtriage/behavior_exploration.py`、`src/nbtriage/behavior_agent.py`、`src/nonebot_plugin_triage/behavior_exploration_runtime.py`、`src/nonebot_plugin_triage/handlers.py` |
 | 通用入站引用与 Target scope | `src/nonebot_plugin_triage/universal_references.py` |
 | OneBot V11 运行证据出站引用 Provider | `src/nonebot_plugin_triage/onebot_v11_references.py` |
 | scope Thread、一次补充与发送成功结算 | `src/nbtriage/support_threads.py`、`src/nonebot_plugin_triage/thread_references.py`、`src/nonebot_plugin_triage/support_responses.py` |
@@ -116,3 +125,4 @@ restricted 取证与解释编排尚未实现。分类本身不消费身份。
 - [ADR-0061：为 Bug 判断读取当前会话最新有界聊天窗口](../../adr/0061-read-latest-bounded-conversation-window-for-bug-assessment.md)
 - [ADR-0064：收窄 Bug 会话证据与结论合同](../../adr/0064-refine-bug-conversation-evidence-and-verdict-contract.md)
 - [ADR-0065：只为明确支持的平台提供 Bug 会话历史工具](../../adr/0065-only-expose-conversation-history-for-supported-platforms.md)
+- [ADR-0101：用 LangGraph Checkpoint 保存长期开发者行为讨论](../../adr/0101-use-langgraph-checkpoints-for-long-running-behavior-inquiries.md)

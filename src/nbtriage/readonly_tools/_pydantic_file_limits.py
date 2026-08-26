@@ -98,8 +98,10 @@ def _validate_read_arguments(
     limit = arguments.get("limit")
     if limit is None:
         return
-    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= max_read_lines:
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise ModelRetry(f"read_file limit must be an integer between 1 and {max_read_lines}")
+    if limit > max_read_lines:
+        arguments["limit"] = max_read_lines
 
 
 __all__ = ("bounded_read_file_toolset",)

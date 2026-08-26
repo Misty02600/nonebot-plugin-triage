@@ -269,6 +269,20 @@ def _permission_fact_alternatives(
                 role=TeachingRole.OWNER,
             ),
         )
+    if fact.kind is PublicConstraintKind.SCENE and fact.operation == "guild_or_channel":
+        return tuple(
+            PermissionAlternative(
+                kind=SemanticConstraintKind.SCENE,
+                statement=statement,
+                scene=scene,
+            )
+            for scene, statement in (
+                (TeachingScene.GUILD, "频道场景可用"),
+                (TeachingScene.CHANNEL_TEXT, "频道文字场景可用"),
+                (TeachingScene.CHANNEL_CATEGORY, "频道分类场景可用"),
+                (TeachingScene.CHANNEL_VOICE, "频道语音场景可用"),
+            )
+        )
     return (
         PermissionAlternative(
             kind=(
@@ -849,7 +863,9 @@ def _handler_names(expression: SgNode | None) -> tuple[tuple[str, ...], bool]:
         return (), False
     if expression.kind() not in {"list", "tuple", "set"}:
         return (), True
-    values = [child for child in expression.children() if child.is_named()]
+    values = [
+        child for child in expression.children() if child.is_named() and child.kind() != "comment"
+    ]
     names: list[str] = []
     for item in values:
         if item.kind() != "identifier":

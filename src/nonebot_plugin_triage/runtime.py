@@ -24,6 +24,10 @@ from nbtriage.support_threads import (
     SupportThreadTurnCoordinator,
 )
 from nonebot_plugin_triage.agent_telemetry_runtime import create_agent_telemetry_runtime
+from nonebot_plugin_triage.behavior_exploration_runtime import (
+    BehaviorExplorationServiceLike,
+    create_behavior_exploration_service,
+)
 from nonebot_plugin_triage.bug_assessment_runtime import (
     BugAssessmentServiceLike,
     create_bug_assessment_runtime_service,
@@ -208,6 +212,7 @@ class NBTriagePluginRuntime:
     bug_log_buffer: CorrelatedBugLogBuffer
     bug_workflow_repository: NoneBotORMBugWorkflowRepository
     bug_workflow_identity: BugWorkflowIdentity
+    behavior_exploration_service: BehaviorExplorationServiceLike
     bug_assessment_service: BugAssessmentServiceLike
     query_service: IncidentQueryService
     incidents: LiveIncidentBuffer
@@ -321,6 +326,12 @@ def create_plugin_runtime(
     )
     bug_workflow_repository = NoneBotORMBugWorkflowRepository()
     bug_workflow_identity = BugWorkflowIdentity()
+    behavior_exploration_service = create_behavior_exploration_service(
+        config,
+        identity=bug_workflow_identity,
+        capability_shadow=capability_shadow,
+    )
+    _register_behavior_exploration_lifecycle(behavior_exploration_service)
     bug_assessment_service = create_bug_assessment_runtime_service(
         config,
         capability_shadow=capability_shadow,
@@ -341,6 +352,7 @@ def create_plugin_runtime(
         bug_log_buffer=bug_log_buffer,
         bug_workflow_repository=bug_workflow_repository,
         bug_workflow_identity=bug_workflow_identity,
+        behavior_exploration_service=behavior_exploration_service,
         bug_assessment_service=bug_assessment_service,
         query_service=query_service,
         incidents=incident_buffer,
@@ -351,6 +363,31 @@ def create_plugin_runtime(
         knowledge_pack=knowledge_pack,
         config_value_policy=config_value_policy,
     )
+
+
+def _register_behavior_exploration_lifecycle(
+    service: BehaviorExplorationServiceLike,
+) -> None:
+    async def startup() -> None:
+        try:
+            await service.startup()
+        except Exception as error:
+            logger.warning(
+                "NoneBot Triage behavior exploration is unavailable at startup ({})",
+                type(error).__name__,
+            )
+
+    async def shutdown() -> None:
+        try:
+            await service.shutdown()
+        except Exception as error:
+            logger.warning(
+                "NoneBot Triage behavior exploration shutdown failed ({})",
+                type(error).__name__,
+            )
+
+    get_driver().on_startup(startup)
+    get_driver().on_shutdown(shutdown)
 
 
 __all__ = ("NBTriagePluginRuntime", "create_plugin_runtime")

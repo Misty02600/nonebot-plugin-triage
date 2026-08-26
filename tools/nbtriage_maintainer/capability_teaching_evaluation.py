@@ -320,16 +320,9 @@ async def evaluate_capability_teaching(
     ):
         raise CapabilityTeachingEvaluationError("evaluation target identity must not be empty")
 
-    prepared_cases = tuple(_prepare_case(fixtures_path, raw_case) for raw_case in cases)
-    for prepared in prepared_cases:
-        _validate_expected_request_contract(
-            _required_dict(prepared.raw, "expected"),
-            prepared.request,
-        )
     preflight_checks = _qualification_checks(
         payload,
         cases=cases,
-        prepared_cases=prepared_cases,
         fixture_sha256=fixture_sha256,
         diagnostic_mode=diagnostic_mode,
         provider=provider,
@@ -348,6 +341,12 @@ async def evaluate_capability_teaching(
             raise CapabilityTeachingEvaluationError(
                 "capability teaching qualification preflight failed: " + ", ".join(failed_checks)
             )
+    prepared_cases = tuple(_prepare_case(fixtures_path, raw_case) for raw_case in cases)
+    for prepared in prepared_cases:
+        _validate_expected_request_contract(
+            _required_dict(prepared.raw, "expected"),
+            prepared.request,
+        )
     diagnostic_cases: list[dict[str, Any]] = []
     if diagnostic_output_path is not None:
         diagnostic_required = (
@@ -523,8 +522,8 @@ async def evaluate_capability_teaching(
             and response is not None
             and cost_microusd is not None
             and requests is not None
-            and 1 <= requests <= 8
-            and usage.tool_calls <= 6
+            and 1 <= requests <= 10
+            and usage.tool_calls <= 8
             and provider_identity_valid
             and response_id_present
         )
@@ -939,6 +938,18 @@ def _constraint_matches(
             isinstance(contains, str)
             and any(contains.casefold() in item.statement.casefold() for item in alternatives)
         )
+    expected_scene = expected.get("scene")
+    if expected_scene is not None and (
+        not isinstance(expected_scene, str)
+        or all(scene.value != expected_scene for scene in actual.allowed_scenes)
+    ):
+        return False
+    expected_allowed_scenes = expected.get("allowed_scenes")
+    if expected_allowed_scenes is not None and (
+        not isinstance(expected_allowed_scenes, list)
+        or [scene.value for scene in actual.allowed_scenes] != expected_allowed_scenes
+    ):
+        return False
     for key in ("kind", "role", "rate_limit_policy", "rate_limit_scope"):
         expected_value = expected.get(key)
         if expected_value is None:
@@ -1061,6 +1072,7 @@ def _candidate_payload(output: CapabilityAnalysisOutput | None) -> dict[str, obj
                         "evidence_ids": list(item.evidence_ids),
                         "config_reference_ids": list(item.config_reference_ids),
                         "role": item.role.value if item.role is not None else None,
+                        "allowed_scenes": [scene.value for scene in item.allowed_scenes],
                         "rate_limit_policy": (
                             item.rate_limit_policy.value
                             if item.rate_limit_policy is not None
@@ -1177,6 +1189,16 @@ def _parse_request(raw: dict[str, object]) -> CapabilityAnalysisRequest:
                     item.get("requires_mention", False),
                     "requires_mention",
                 ),
+                shortcut_count=_nonnegative_int(
+                    item.get("shortcut_count", 0),
+                    "shortcut_count",
+                ),
+                shortcut_evidence_ids=tuple(
+                    _string_list(
+                        item.get("shortcut_evidence_ids", []),
+                        "shortcut_evidence_ids",
+                    )
+                ),
             )
             for item in _dict_list(raw.get("invocations"), "invocations")
         ),
@@ -1194,6 +1216,8 @@ def _parse_request(raw: dict[str, object]) -> CapabilityAnalysisRequest:
 
 def _parse_fixed_constraint(raw: dict[str, object]) -> SemanticConstraint:
     role = raw.get("role")
+    scene = raw.get("scene")
+    allowed_scenes = raw.get("allowed_scenes")
     rate_limit_policy = raw.get("rate_limit_policy")
     rate_limit_scope = raw.get("rate_limit_scope")
     return SemanticConstraint(
@@ -1204,6 +1228,11 @@ def _parse_fixed_constraint(raw: dict[str, object]) -> SemanticConstraint:
             _string_list(raw.get("config_reference_ids", []), "config_reference_ids")
         ),
         role=TeachingRole(role) if isinstance(role, str) else None,
+        allowed_scenes=(
+            tuple(TeachingScene(item) for item in _string_list(allowed_scenes, "allowed_scenes"))
+            if allowed_scenes is not None
+            else ((TeachingScene(scene),) if isinstance(scene, str) else ())
+        ),
         rate_limit_policy=(
             RateLimitPolicy(rate_limit_policy) if isinstance(rate_limit_policy, str) else None
         ),
@@ -1882,7 +1911,8 @@ def _validate_adapter_request_audit(
         "required_python_functions",
     ):
         function = _adapter_function(environment, raw_function, "request audit")
-        if function.content.replace("\r\n", "\n").replace("\r", "\n") not in python_evidence:
+        expected_content = function.content.replace("\r\n", "\n").replace("\r", "\n")
+        if not any(expected_content in content for content in python_evidence):
             raise CapabilityTeachingEvaluationError(
                 "adapter_case request audit missed Python function "
                 f"{function.module}:{function.qualname}; available={python_evidence_labels!r}"
@@ -2441,7 +2471,6 @@ def _qualification_checks(
     payload: dict[str, object],
     *,
     cases: list[dict[str, object]],
-    prepared_cases: tuple[_PreparedCase, ...],
     fixture_sha256: str,
     diagnostic_mode: bool,
     provider: str,
@@ -2458,9 +2487,10 @@ def _qualification_checks(
         value for raw_case in cases for value in _string_list(raw_case.get("coverage"), "coverage")
     }
     source_case_count = sum(
-        item.input_kind in {"source", "adapter_source"} for item in prepared_cases
+        raw_case.get("source_case") is not None or raw_case.get("adapter_case") is not None
+        for raw_case in cases
     )
-    adapter_source_case_count = sum(item.input_kind == "adapter_source" for item in prepared_cases)
+    adapter_source_case_count = sum(raw_case.get("adapter_case") is not None for raw_case in cases)
     return {
         "full_fixture_run": not diagnostic_mode,
         "held_out_split": payload.get("split") == "held_out",

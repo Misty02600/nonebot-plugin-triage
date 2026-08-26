@@ -11,6 +11,7 @@ from pydantic_ai import models
 from nbtriage.opencode_go_semantic_adapter import (
     OPENCODE_GO_BASE_URL,
     OPENCODE_GO_MODEL_PROFILE,
+    _place_model_first,
     create_opencode_go_public_guidance_client,
     create_opencode_go_support_semantic_client,
 )
@@ -33,6 +34,33 @@ def test_opencode_go_declares_structured_output_support_in_pydantic_ai_profile()
     assert OPENCODE_GO_MODEL_PROFILE.get("supports_tools") is True
     assert OPENCODE_GO_MODEL_PROFILE.get("supports_json_schema_output") is False
     assert OPENCODE_GO_MODEL_PROFILE.get("default_structured_output_mode") == "tool"
+    assert OPENCODE_GO_MODEL_PROFILE.get("openai_supports_tool_choice_required") is False
+
+
+def test_opencode_go_places_model_before_messages_for_router_compatibility() -> None:
+    async def exercise() -> tuple[httpx.Request, bytes]:
+        request = httpx.Request(
+            "POST",
+            f"{OPENCODE_GO_BASE_URL}/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hello"}],
+                "model": "deepseek-v4-flash",
+                "stream": False,
+            },
+        )
+        await _place_model_first(request)
+        content = b"".join([chunk async for chunk in request.stream])
+        return request, content
+
+    request, content = asyncio.run(exercise())
+    raw_body = content.decode("utf-8")
+    assert raw_body.startswith('{"model":"deepseek-v4-flash","messages":')
+    assert json.loads(raw_body) == {
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "hello"}],
+        "stream": False,
+    }
+    assert request.headers["content-length"] == str(len(content))
 
 
 def test_opencode_go_semantic_client_uses_one_output_tool_and_parses_result(
@@ -130,7 +158,7 @@ def test_opencode_go_semantic_client_uses_one_output_tool_and_parses_result(
     assert body["reasoning_effort"] == "high"
     assert body["temperature"] == 0
     assert body["parallel_tool_calls"] is False
-    assert body["tool_choice"] == "required"
+    assert body["tool_choice"] == "auto"
     assert len(body["tools"]) == 1
     output_tool = body["tools"][0]["function"]
     assert output_tool["name"] == "final_result"
@@ -293,7 +321,7 @@ def test_opencode_go_public_guidance_uses_one_output_tool_and_public_facts(
     assert body["reasoning_effort"] == "high"
     assert body["temperature"] == 0
     assert body["parallel_tool_calls"] is False
-    assert body["tool_choice"] == "required"
+    assert body["tool_choice"] == "auto"
     assert len(body["tools"]) == 1
     output_tool = body["tools"][0]["function"]
     assert output_tool["name"] == "final_result"
