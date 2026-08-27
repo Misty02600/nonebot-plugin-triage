@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -326,6 +326,8 @@ class _PendingAnnotationRefresh:
     cache_updates: tuple[_PluginCacheUpdate, ...]
     failure_cache_updates: tuple[_PluginCacheUpdate, ...]
     publishable: bool
+    previous_active_view: _ActiveAnnotationView | None = None
+    replaced_unit_ids: frozenset[str] = frozenset()
 
 
 class CapabilityAnnotationService:
@@ -394,12 +396,16 @@ class CapabilityAnnotationService:
         self,
         refresh_id: str | None,
         published_generation: str,
+        *,
+        preserved_plugin_modules: Collection[str] = (),
     ) -> None:
         """在教学输出原子切换成功后激活候选，并持久化可重建缓存。"""
         if not isinstance(refresh_id, str) or not refresh_id:
             raise ValueError("refresh_id must be a non-empty string")
         if not _valid_sha256_digest(published_generation):
             raise ValueError("published_generation must be a lowercase SHA-256 digest")
+        if any(not isinstance(item, str) or not item for item in preserved_plugin_modules):
+            raise ValueError("preserved_plugin_modules must contain non-empty strings")
         async with self._refresh_lock:
             pending = self._pending
             if pending is None or pending.refresh_id != refresh_id:
@@ -411,12 +417,27 @@ class CapabilityAnnotationService:
                 and self._resolve_published_generation() != published_generation
             ):
                 raise RuntimeError("published generation does not match the active output pointer")
-            self._active_view = pending.candidate_view
+            previous_generation = self._published_generation
+            self._active_view = (
+                _merge_scoped_annotation_view(
+                    pending.previous_active_view,
+                    pending.candidate_view,
+                    pending.replaced_unit_ids,
+                )
+                if pending.previous_active_view is not None
+                else pending.candidate_view
+            )
             self._published_generation = published_generation
             self._pending = None
             await self._persist_cache_updates(
                 pending.cache_updates,
                 published_generation=published_generation,
+            )
+            await self._rebind_preserved_plugin_caches(
+                preserved_plugin_modules,
+                previous_generation=previous_generation,
+                published_generation=published_generation,
+                updated_modules={item.module_name for item in pending.cache_updates},
             )
 
     async def discard_pending(self, refresh_id: str | None) -> None:
@@ -465,6 +486,47 @@ class CapabilityAnnotationService:
                     type(error).__name__,
                 )
 
+    async def _rebind_preserved_plugin_caches(
+        self,
+        module_names: Collection[str],
+        *,
+        previous_generation: str | None,
+        published_generation: str,
+        updated_modules: set[str],
+    ) -> None:
+        if previous_generation is None or previous_generation == published_generation:
+            return
+        try:
+            cache_directory = self._resolved_cache_directory()
+        except Exception as error:
+            logger.warning(
+                "NoneBot Triage 教学注释缓存目录不可用；保留插件缓存未重绑定："
+                "error_type={}",
+                type(error).__name__,
+            )
+            return
+        for module_name in sorted(set(module_names) - updated_modules):
+            try:
+                cache = await asyncio.to_thread(
+                    read_capability_annotation_plugin_cache,
+                    cache_directory,
+                    module_name,
+                )
+                if cache is None or cache.published_generation != previous_generation:
+                    continue
+                await asyncio.to_thread(
+                    write_capability_annotation_plugin_cache,
+                    cache_directory,
+                    replace(cache, published_generation=published_generation),
+                )
+            except Exception as error:
+                logger.warning(
+                    "NoneBot Triage 教学注释保留插件缓存重绑定失败；"
+                    "plugin_module={}, error_type={}",
+                    _safe_log_identifier(module_name),
+                    type(error).__name__,
+                )
+
     async def refresh(
         self,
         snapshot: CapabilitySnapshot,
@@ -482,6 +544,7 @@ class CapabilityAnnotationService:
             if published_generation != self._published_generation:
                 self._active_view = _ActiveAnnotationView({}, {}, {})
             self._published_generation = published_generation
+            previous_active_view = self._active_view
             refresh_id = uuid4().hex
             if snapshot.manifest.partial:
                 self._status = CapabilityAnnotationRefreshStatus(
@@ -841,11 +904,12 @@ class CapabilityAnnotationService:
             }
             # Cache 是候选加速层，不能覆盖已经由 current.json 发布的内存视图。
             base_annotations = {**reusable_annotations, **active_fallbacks}
-            self._active_view = _annotation_view(
-                current_fingerprints,
-                active_fallbacks,
-                capability_to_unit,
-            )
+            if plugin_module is None:
+                self._active_view = _annotation_view(
+                    current_fingerprints,
+                    active_fallbacks,
+                    capability_to_unit,
+                )
             logger.info(
                 "NoneBot Triage 教学注释流水线完成：refresh_id={}, eligible={}, cached={}, "
                 "analyzed={}, skipped={}, skip_reasons={}, plugin_groups={}",
@@ -959,7 +1023,8 @@ class CapabilityAnnotationService:
                 active_fallbacks,
                 capability_to_unit,
             )
-            self._active_view = active_view
+            if plugin_module is None:
+                self._active_view = active_view
             global_failure = next(
                 (
                     attempt.detail_code or (attempt.reason.value if attempt.reason else "unknown")
@@ -1128,12 +1193,21 @@ class CapabilityAnnotationService:
                 active_fallbacks,
                 published_generation,
             )
+            replaced_unit_ids = frozenset(current_fingerprints)
+            if plugin_module is not None and (
+                previous_plugin_cache := cache_by_plugin.get(plugin_module)
+            ) is not None:
+                replaced_unit_ids = replaced_unit_ids.union(
+                    item.analysis_unit_id for item in previous_plugin_cache.units
+                )
             self._pending = _PendingAnnotationRefresh(
                 refresh_id,
                 candidate_view,
                 cache_updates,
                 failure_cache_updates,
                 global_failure is None,
+                previous_active_view=(previous_active_view if plugin_module is not None else None),
+                replaced_unit_ids=replaced_unit_ids,
             )
             if disabled_items:
                 labels = [
@@ -1713,6 +1787,33 @@ def _annotation_view(
         dict(annotations),
         dict(capability_to_unit),
     )
+
+
+def _merge_scoped_annotation_view(
+    previous: _ActiveAnnotationView,
+    current: _ActiveAnnotationView,
+    replaced_unit_ids: Collection[str],
+) -> _ActiveAnnotationView:
+    replaced = set(replaced_unit_ids)
+    fingerprints = {
+        unit_id: fingerprint
+        for unit_id, fingerprint in previous.fingerprints.items()
+        if unit_id not in replaced
+    }
+    annotations = {
+        unit_id: annotation
+        for unit_id, annotation in previous.annotations.items()
+        if unit_id not in replaced
+    }
+    capability_to_unit = {
+        capability_id: unit_id
+        for capability_id, unit_id in previous.capability_to_unit.items()
+        if unit_id not in replaced
+    }
+    fingerprints.update(current.fingerprints)
+    annotations.update(current.annotations)
+    capability_to_unit.update(current.capability_to_unit)
+    return _annotation_view(fingerprints, annotations, capability_to_unit)
 
 
 def _valid_sha256_digest(value: object) -> bool:

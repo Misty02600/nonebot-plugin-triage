@@ -2041,6 +2041,63 @@ async def test_restart_does_not_reuse_shard_from_older_published_generation(
 
 
 @pytest.mark.asyncio
+async def test_scoped_commit_preserves_other_active_annotations_and_caches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_generation = "a" * 64
+    new_generation = "b" * 64
+    cache_directory = tmp_path / "annotations"
+
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        return replace(
+            _request(record.capability_id),
+            capability=CapabilityIdentity(record.capability_id, record.owner, "command"),
+            source_context=CapabilitySourceContext(record.owner, "c" * 64),
+        )
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    service = CapabilityAnnotationService(
+        cache_directory,
+        client_factory=lambda: FakeCapabilityAnalysisClient(_output()),
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    records = (
+        replace(_record("command:target", Disclosure.PUBLIC), owner="plugin.target"),
+        replace(_record("command:other", Disclosure.PUBLIC), owner="plugin.other"),
+    )
+    snapshot = CapabilitySnapshot.create(records)
+    first = await service.refresh(snapshot)
+    await service.commit_pending(first.refresh_id, old_generation)
+
+    scoped = await service.refresh(
+        snapshot,
+        plugin_module="plugin.target",
+        force=True,
+    )
+    assert service.get_pending("command:other") is None
+    await service.commit_pending(
+        scoped.refresh_id,
+        new_generation,
+        preserved_plugin_modules=("plugin.other",),
+    )
+
+    rebound = read_capability_annotation_plugin_cache(cache_directory, "plugin.other")
+    assert rebound is not None
+    assert rebound.published_generation == new_generation
+    assert service.get("command:target") is not None
+    assert service.get("command:other") is not None
+
+
+@pytest.mark.asyncio
 async def test_plugin_source_revision_change_regenerates_that_whole_plugin_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

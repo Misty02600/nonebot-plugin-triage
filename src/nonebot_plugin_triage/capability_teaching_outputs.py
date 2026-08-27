@@ -54,6 +54,7 @@ class CapabilityTeachingOutputError(ValueError):
 class CapabilityTeachingOutputPublication:
     generation: str
     paths: tuple[Path, ...]
+    preserved_plugin_modules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,8 @@ class CapabilityTeachingOutputWriter:
         snapshot: CapabilitySnapshot,
         annotation_lookup: CapabilityAnnotationLookup,
         refresh_status: CapabilityAnnotationRefreshStatus | None = None,
+        *,
+        plugin_module: str | None = None,
     ) -> CapabilityTeachingOutputPublication:
         if not isinstance(snapshot, CapabilitySnapshot):
             raise TypeError("snapshot must be a CapabilitySnapshot")
@@ -114,6 +117,8 @@ class CapabilityTeachingOutputWriter:
                 raise CapabilityTeachingOutputError("teaching refresh is not publishable")
         if snapshot.manifest.partial:
             raise CapabilityTeachingOutputError("partial snapshot is not publishable")
+        if plugin_module is not None and (not isinstance(plugin_module, str) or not plugin_module):
+            raise TypeError("plugin_module must be a non-empty string or None")
 
         coverage = _plugin_coverage(refresh_status)
         help_plugins = build_capability_help_displays(snapshot, annotation_lookup)
@@ -169,6 +174,36 @@ class CapabilityTeachingOutputWriter:
         plugin_manifest = {
             module_name: item.to_dict() for module_name, item in sorted(coverage.items())
         }
+        preserved_plugin_modules: tuple[str, ...] = ()
+        if plugin_module is not None:
+            previous = self._read_current_generation()
+            if previous is not None:
+                previous_help, previous_answer, previous_units, previous_plugins = previous
+                target_help = _safe_module_filename(plugin_module)
+                if target_help is not None:
+                    previous_help.pop(target_help, None)
+                    previous_answer.pop(f"{target_help.removesuffix('.yml')}.md", None)
+                previous_help.update(help_documents)
+                previous_answer.update(answer_documents)
+                help_documents = previous_help
+                answer_documents = previous_answer
+                unit_manifest = [
+                    item
+                    for item in previous_units
+                    if item.get("plugin_module") != plugin_module
+                ] + unit_manifest
+                previous_plugins.pop(plugin_module, None)
+                preserved_plugin_modules = tuple(sorted(previous_plugins))
+                previous_plugins.update(plugin_manifest)
+                plugin_manifest = previous_plugins
+                help_documents = _without_casefold_collisions(
+                    help_documents,
+                    protected_names=active_help_filenames,
+                )
+                answer_documents = _without_casefold_collisions(
+                    answer_documents,
+                    protected_names=active_answer_filenames,
+                )
         generation = _generation_digest(
             help_documents,
             answer_documents,
@@ -183,7 +218,10 @@ class CapabilityTeachingOutputWriter:
             "generation": generation,
             "help_files": sorted(help_documents),
             "answer_files": sorted(answer_documents),
-            "partial": any(item.partial for item in coverage.values()),
+            "partial": any(
+                isinstance(item, dict) and item.get("partial") is True
+                for item in plugin_manifest.values()
+            ),
             "plugins": plugin_manifest,
             "units": unit_manifest,
         }
@@ -217,7 +255,72 @@ class CapabilityTeachingOutputWriter:
             [destination / _HELP_DIRECTORY_NAME / name for name in sorted(help_documents)]
             + [destination / _ANSWER_DIRECTORY_NAME / name for name in sorted(answer_documents)]
         )
-        return CapabilityTeachingOutputPublication(generation, paths)
+        return CapabilityTeachingOutputPublication(
+            generation,
+            paths,
+            preserved_plugin_modules,
+        )
+
+    def _read_current_generation(
+        self,
+    ) -> tuple[
+        dict[str, str],
+        dict[str, str],
+        list[dict[str, object]],
+        dict[str, dict[str, object]],
+    ] | None:
+        generation = self.current_generation()
+        if generation is None:
+            return None
+        root = self._resolved_root() / _OBJECTS_DIRECTORY_NAME / generation
+        try:
+            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise CapabilityTeachingOutputError(
+                "current teaching generation is unavailable"
+            ) from error
+        if (
+            not isinstance(manifest, dict)
+            or set(manifest)
+            != {
+                "schema_version",
+                "generation",
+                "help_files",
+                "answer_files",
+                "partial",
+                "plugins",
+                "units",
+            }
+            or manifest.get("schema_version") != 2
+            or manifest.get("generation") != generation
+        ):
+            raise CapabilityTeachingOutputError("current teaching manifest is invalid")
+        _validate_staged_generation(root, manifest)
+        help_files = manifest["help_files"]
+        answer_files = manifest["answer_files"]
+        units = manifest["units"]
+        plugins = manifest["plugins"]
+        if (
+            not isinstance(help_files, list)
+            or not isinstance(answer_files, list)
+            or not isinstance(units, list)
+            or any(not isinstance(item, dict) for item in units)
+            or not isinstance(plugins, dict)
+            or any(
+                not isinstance(module_name, str) or not isinstance(item, dict)
+                for module_name, item in plugins.items()
+            )
+        ):
+            raise CapabilityTeachingOutputError("current teaching manifest is invalid")
+        return (
+            _read_generation_documents(root / _HELP_DIRECTORY_NAME, help_files, ".yml"),
+            _read_generation_documents(root / _ANSWER_DIRECTORY_NAME, answer_files, ".md"),
+            [cast(dict[str, object], item) for item in units],
+            {
+                module_name: cast(dict[str, object], item)
+                for module_name, item in plugins.items()
+            },
+        )
 
     def current_generation(self) -> str | None:
         try:
@@ -477,6 +580,28 @@ def _write_documents(directory: Path, documents: dict[str, str]) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     for name, document in documents.items():
         _write_text(directory / name, document)
+
+
+def _read_generation_documents(
+    directory: Path,
+    names: list[object],
+    suffix: str,
+) -> dict[str, str]:
+    documents: dict[str, str] = {}
+    for name in names:
+        if (
+            not isinstance(name, str)
+            or Path(name).name != name
+            or not name.endswith(suffix)
+        ):
+            raise CapabilityTeachingOutputError("current teaching manifest is invalid")
+        try:
+            documents[name] = (directory / name).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            raise CapabilityTeachingOutputError(
+                "current teaching generation is unavailable"
+            ) from error
+    return documents
 
 
 def _write_text(path: Path, document: str) -> None:

@@ -500,6 +500,7 @@ class CapabilityShadowService:
                     snapshot,
                     self._annotation_service.get_pending,
                     status,
+                    plugin_module=plugin_module,
                 )
             except CapabilityTeachingOutputError:
                 await self._annotation_service.discard_pending(status.refresh_id)
@@ -512,6 +513,7 @@ class CapabilityShadowService:
             await self._annotation_service.commit_pending(
                 status.refresh_id,
                 publication.generation,
+                preserved_plugin_modules=publication.preserved_plugin_modules,
             )
             commit_finished_ns = monotonic_ns()
             paths = publication.paths
@@ -592,6 +594,7 @@ class CapabilityShadowService:
                 await self._annotation_service.commit_pending(
                     status.refresh_id,
                     publication.generation,
+                    preserved_plugin_modules=publication.preserved_plugin_modules,
                 )
                 paths = publication.paths
                 logger.info(

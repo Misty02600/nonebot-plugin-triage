@@ -144,7 +144,7 @@ def test_generation_validation_supports_long_child_paths(tmp_path: Path) -> None
     short = tmp_path / "short"
     help_name = "nonebot_plugin_course_schedule.yml"
     answer_name = "nonebot_plugin_course_schedule.md"
-    manifest = {
+    manifest: dict[str, object] = {
         "help_files": [help_name],
         "answer_files": [answer_name],
     }
@@ -288,6 +288,88 @@ def test_partial_generation_persists_unit_states_and_plugin_coverage(
     assert "active_count: 1" in help_text
     assert "eligible_count: 2" in help_text
     assert "目前可说明以下功能（1/2）" in answer_text
+
+
+def test_scoped_publish_replaces_only_target_plugin(tmp_path: Path) -> None:
+    target = _record()
+    other = replace(
+        target,
+        capability_id="command:other",
+        owner="plugin.other",
+        claims=(
+            Claim("plugin.module_name", "plugin_other", ClaimBasis.OBSERVED),
+            Claim("command.header", "查图", ClaimBasis.OBSERVED),
+            Claim("plugin.metadata", {"name": "其他功能"}, ClaimBasis.DECLARED),
+        ),
+    )
+    snapshot = CapabilitySnapshot.create((target, other))
+    root = tmp_path / "capability-teaching"
+    writer = CapabilityTeachingOutputWriter(root)
+    initial_status = CapabilityAnnotationRefreshStatus(
+        refresh_id="refresh-all",
+        eligible_count=2,
+        generated_count=2,
+        units=(
+            CapabilityTeachingUnitStatus(
+                unit_id=target.capability_id,
+                plugin_module="plugin_image",
+                label="搜图",
+                state=CapabilityTeachingUnitState.GENERATED,
+                stage=CapabilityTeachingUnitStage.OUTPUT_PROJECTION,
+                request_fingerprint="1" * 64,
+                attempts=1,
+                member_capability_ids=(target.capability_id,),
+            ),
+            CapabilityTeachingUnitStatus(
+                unit_id=other.capability_id,
+                plugin_module="plugin_other",
+                label="查图",
+                state=CapabilityTeachingUnitState.GENERATED,
+                stage=CapabilityTeachingUnitStage.OUTPUT_PROJECTION,
+                request_fingerprint="2" * 64,
+                attempts=1,
+                member_capability_ids=(other.capability_id,),
+            ),
+        ),
+    )
+    initial_annotations = {
+        target.capability_id: _annotation("旧目标说明。"),
+        other.capability_id: replace(
+            _annotation("保留说明。"),
+            capability_id=other.capability_id,
+        ),
+    }
+    writer.publish(snapshot, initial_annotations.get, initial_status)
+    target_status = CapabilityAnnotationRefreshStatus(
+        refresh_id="refresh-target",
+        eligible_count=1,
+        generated_count=1,
+        units=(initial_status.units[0],),
+    )
+
+    publication = writer.publish(
+        snapshot,
+        lambda capability_id: (
+            _annotation("新目标说明。") if capability_id == target.capability_id else None
+        ),
+        target_status,
+        plugin_module="plugin_image",
+    )
+
+    generation_root = root / "objects" / publication.generation
+    manifest = json.loads((generation_root / "manifest.json").read_text(encoding="utf-8"))
+    assert publication.preserved_plugin_modules == ("plugin_other",)
+    assert set(manifest["plugins"]) == {"plugin_image", "plugin_other"}
+    assert {item["plugin_module"] for item in manifest["units"]} == {
+        "plugin_image",
+        "plugin_other",
+    }
+    assert "新目标说明" in (
+        generation_root / "answer-knowledge" / "plugin_image.md"
+    ).read_text(encoding="utf-8")
+    assert "保留说明" in (
+        generation_root / "answer-knowledge" / "plugin_other.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_all_failed_units_publish_state_only_generation_without_stale_annotations(
