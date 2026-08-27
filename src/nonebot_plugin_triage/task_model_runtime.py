@@ -15,6 +15,7 @@ from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_SEMANTIC_MODELS,
     OPENCODE_GO_THINKING_SETTINGS_REVISION,
 )
+from nbtriage.provider_http_diagnostics import provider_http_client
 from nbtriage.task_model_settings import task_model_settings
 from nonebot_plugin_triage.config import NBTriageConfig
 
@@ -83,7 +84,18 @@ def create_task_model_binding(
                 settings_revision=OPENCODE_GO_THINKING_SETTINGS_REVISION,
             )
 
-        if config.nbtriage_model_base_url is None:
+        if (
+            config.nbtriage_model_base_url is None
+            and configured_model.split(":", 1)[0] == "deepseek"
+        ):
+            model = infer_model(
+                configured_model,
+                provider_factory=_deepseek_provider_factory(
+                    timeout_seconds=config.nbtriage_model_timeout_seconds,
+                    api_key=environment.get("DEEPSEEK_API_KEY"),
+                ),
+            )
+        elif config.nbtriage_model_base_url is None:
             model = infer_model(configured_model)
         else:
             model = infer_model(
@@ -135,6 +147,26 @@ def _base_url_provider_factory(base_url: str) -> Callable[[str], Provider[Any]]:
             raise TaskModelRuntimeConfigurationError(
                 f"provider {provider_name} does not support a base URL override"
             ) from error
+
+    return create_provider
+
+
+def _deepseek_provider_factory(
+    *,
+    timeout_seconds: float,
+    api_key: str | None,
+) -> Callable[[str], Provider[Any]]:
+    def create_provider(provider_name: str) -> Provider[Any]:
+        if provider_name != "deepseek":
+            raise TaskModelRuntimeConfigurationError(
+                f"unexpected provider for DeepSeek transport: {provider_name}"
+            )
+        from pydantic_ai.providers.deepseek import DeepSeekProvider
+
+        return DeepSeekProvider(
+            api_key=api_key,
+            http_client=provider_http_client(timeout_seconds=timeout_seconds),
+        )
 
     return create_provider
 

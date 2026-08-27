@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+
+import httpx
 import pytest
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models.function import FunctionModel
@@ -168,19 +171,37 @@ def test_native_deepseek_v4_binding_matches_high_thinking_contract(
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-only-key")
+    observed_timeouts: list[float] = []
+    clients: list[httpx.AsyncClient] = []
 
-    binding = create_task_model_binding(
-        NBTriageConfig(nbtriage_model_name="deepseek:deepseek-v4-flash")
-    )
+    def create_http_client(*, timeout_seconds: float) -> httpx.AsyncClient:
+        observed_timeouts.append(timeout_seconds)
+        client = httpx.AsyncClient(timeout=timeout_seconds)
+        clients.append(client)
+        return client
 
-    assert binding.provider == "deepseek"
-    assert binding.model_name == "deepseek-v4-flash"
-    assert binding.settings_revision == DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION
-    assert binding.model_settings is not None
-    assert binding.model_settings.get("openai_reasoning_effort") == "high"
-    assert binding.model_settings.get("parallel_tool_calls") is False
-    assert binding.model_settings.get("tool_choice") == "auto"
-    assert binding.model_settings.get("temperature") == 0
+    monkeypatch.setattr(task_model_runtime, "provider_http_client", create_http_client)
+
+    try:
+        binding = create_task_model_binding(
+            NBTriageConfig(
+                nbtriage_model_name="deepseek:deepseek-v4-flash",
+                nbtriage_model_timeout_seconds=300,
+            )
+        )
+
+        assert binding.provider == "deepseek"
+        assert binding.model_name == "deepseek-v4-flash"
+        assert binding.settings_revision == DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION
+        assert binding.model_settings is not None
+        assert binding.model_settings.get("openai_reasoning_effort") == "high"
+        assert binding.model_settings.get("parallel_tool_calls") is False
+        assert binding.model_settings.get("tool_choice") == "auto"
+        assert binding.model_settings.get("temperature") == 0
+        assert observed_timeouts == [300]
+    finally:
+        for client in clients:
+            asyncio.run(client.aclose())
 
 
 def test_alibaba_model_with_custom_endpoint_requires_standard_provider_key(

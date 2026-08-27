@@ -5,8 +5,10 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
+from time import monotonic_ns
 from typing import Annotated, Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -88,7 +90,9 @@ from nbtriage.capability_usage import (
 )
 from nbtriage.provider_http_diagnostics import (
     ProviderHTTPFailure,
+    ProviderHTTPLifecycleEvent,
     capture_provider_http_failures,
+    capture_provider_http_lifecycle,
 )
 from nbtriage.safety import contains_credential_exposure
 
@@ -832,6 +836,13 @@ class _MaintenanceResponseCaptureModel(WrapperModel):
         self.response_request_indexes: list[int] = []
         self.errors: list[dict[str, Any]] = []
         self._request_index = 0
+        self._lifecycle_sink: Callable[[dict[str, Any]], None] | None = None
+
+    def set_lifecycle_sink(
+        self,
+        sink: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        self._lifecycle_sink = sink
 
     async def request(
         self,
@@ -840,29 +851,116 @@ class _MaintenanceResponseCaptureModel(WrapperModel):
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
         self._request_index += 1
-        with capture_provider_http_failures() as transport_failures:
+        request_index = self._request_index
+        started_ns = monotonic_ns()
+        self._emit_lifecycle(
+            {
+                "phase": "provider_request_started",
+                "recorded_at": _diagnostic_utc_now(),
+                "request_index": request_index,
+            }
+        )
+        with (
+            capture_provider_http_failures() as transport_failures,
+            capture_provider_http_lifecycle(
+                lambda event: self._emit_http_lifecycle(request_index, event)
+            ),
+        ):
             try:
                 response = await super().request(
                     messages,
                     model_settings,
                     model_request_parameters,
                 )
+            except asyncio.CancelledError:
+                self._emit_lifecycle(
+                    {
+                        "phase": "provider_request_cancelled",
+                        "recorded_at": _diagnostic_utc_now(),
+                        "request_index": request_index,
+                        "duration_ms": _diagnostic_elapsed_ms(started_ns),
+                    }
+                )
+                raise
             except ModelHTTPError as error:
                 if not transport_failures:
-                    self.errors.append(_diagnostic_http_error(self._request_index, error))
+                    self.errors.append(_diagnostic_http_error(request_index, error))
+                self._emit_lifecycle(
+                    {
+                        "phase": "provider_request_failed",
+                        "recorded_at": _diagnostic_utc_now(),
+                        "request_index": request_index,
+                        "duration_ms": _diagnostic_elapsed_ms(started_ns),
+                        "error_type": type(error).__name__,
+                        "status_code": error.status_code,
+                    }
+                )
+                raise
+            except BaseException as error:
+                self._emit_lifecycle(
+                    {
+                        "phase": "provider_request_failed",
+                        "recorded_at": _diagnostic_utc_now(),
+                        "request_index": request_index,
+                        "duration_ms": _diagnostic_elapsed_ms(started_ns),
+                        "error_type": type(error).__name__,
+                    }
+                )
                 raise
             finally:
                 self.errors.extend(
                     _diagnostic_sdk_http_error(
-                        self._request_index,
+                        request_index,
                         attempt_index,
                         failure,
                     )
                     for attempt_index, failure in enumerate(transport_failures, start=1)
                 )
         self.responses.append(response)
-        self.response_request_indexes.append(self._request_index)
+        self.response_request_indexes.append(request_index)
+        self._emit_lifecycle(
+            {
+                "phase": "provider_request_completed",
+                "recorded_at": _diagnostic_utc_now(),
+                "request_index": request_index,
+                "duration_ms": _diagnostic_elapsed_ms(started_ns),
+                "provider_name": response.provider_name,
+                "model_name": response.model_name,
+                "provider_response_id": response.provider_response_id,
+                "finish_reason": response.finish_reason,
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+            }
+        )
         return response
+
+    def _emit_http_lifecycle(
+        self,
+        request_index: int,
+        event: ProviderHTTPLifecycleEvent,
+    ) -> None:
+        self._emit_lifecycle(
+            {
+                "phase": f"http_{event.phase}",
+                "recorded_at": event.recorded_at,
+                "request_index": request_index,
+                "sdk_attempt_index": event.attempt_index,
+                "method": event.method,
+                "path": event.path,
+                "duration_ms": event.duration_ms,
+                "status_code": event.status_code,
+                "response_headers": dict(event.response_headers),
+            }
+        )
+
+    def _emit_lifecycle(self, event: dict[str, Any]) -> None:
+        sink = self._lifecycle_sink
+        if sink is None:
+            return
+        try:
+            sink(event)
+        except Exception:
+            return
 
 
 class _NextRequestTotalTokenLimits(UsageLimits):
@@ -1213,6 +1311,21 @@ class PydanticAICapabilityAnalysisClient:
     def diagnostic_provider_errors(self) -> tuple[dict[str, Any], ...]:
         model = self._diagnostic_model
         return tuple(model.errors) if model is not None else ()
+
+    @property
+    def diagnostic_timeout_seconds(self) -> float:
+        return self._timeout_seconds
+
+    def set_maintenance_lifecycle_sink(
+        self,
+        sink: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        model = self._diagnostic_model
+        if model is None:
+            raise CapabilityModelAdapterError(
+                "maintenance diagnostics must be enabled before setting a lifecycle sink"
+            )
+        model.set_lifecycle_sink(sink)
 
     def enable_maintenance_diagnostics(self, *, unbounded: bool = False) -> None:
         """在首次调用前启用本地维护诊断，并可移除项目侧用量止损。"""
@@ -1949,7 +2062,7 @@ def _diagnostic_sdk_http_error(
         retry_after_seconds = None
     return {
         "request_index": request_index,
-        "sdk_attempt_index": attempt_index,
+        "sdk_attempt_index": failure.attempt_index or attempt_index,
         "status_code": failure.status_code,
         "model_name": None,
         "retry_after_seconds": retry_after_seconds,
@@ -1960,6 +2073,14 @@ def _diagnostic_sdk_http_error(
             "truncated": body_truncated,
         },
     }
+
+
+def _diagnostic_utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _diagnostic_elapsed_ms(started_ns: int) -> int:
+    return max(0, round((monotonic_ns() - started_ns) / 1_000_000))
 
 
 def _redact_diagnostic_http_value(value: Any) -> Any:

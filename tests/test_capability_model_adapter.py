@@ -477,6 +477,31 @@ def test_opt_in_diagnostic_trace_includes_thinking_but_excludes_prompt() -> None
     assert "PRIVATE_THINKING" in provider_document
 
 
+def test_maintenance_diagnostics_emit_provider_request_lifecycle() -> None:
+    events: list[dict[str, object]] = []
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(
+            lambda _messages, _info: _native_response(),
+            model_name="fixture-model",
+            profile=_NATIVE_PROFILE,
+        ),
+        max_output_tokens=240,
+    )
+    client.enable_maintenance_diagnostics()
+    client.set_maintenance_lifecycle_sink(events.append)
+
+    asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert [event["phase"] for event in events] == [
+        "provider_request_started",
+        "provider_request_completed",
+    ]
+    assert events[0]["request_index"] == 1
+    assert events[1]["request_index"] == 1
+    assert events[1]["finish_reason"] == "stop"
+    assert isinstance(events[1]["duration_ms"], int)
+
+
 def test_unbounded_maintenance_diagnostics_remove_request_limit() -> None:
     provider_calls = 0
 
@@ -1985,20 +2010,27 @@ def test_length_finish_reason_is_classified_as_output_truncated() -> None:
 
 def test_request_timeout_is_classified_separately_from_transport_failure() -> None:
     async def respond(_messages: object, _info: AgentInfo) -> ModelResponse:
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.5)
         return _native_response()
 
     client = PydanticAICapabilityAnalysisClient(
         FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
         max_output_tokens=240,
-        timeout_seconds=0.001,
+        timeout_seconds=0.1,
     )
+    lifecycle: list[dict[str, object]] = []
+    client.enable_maintenance_diagnostics()
+    client.set_maintenance_lifecycle_sink(lifecycle.append)
 
     with pytest.raises(CapabilityModelAdapterError) as error_info:
         asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
 
     assert error_info.value.reason_code is CapabilityModelAdapterReason.TIMEOUT
     assert "timed out" in str(error_info.value)
+    assert [event["phase"] for event in lifecycle] == [
+        "provider_request_started",
+        "provider_request_cancelled",
+    ]
 
 
 def test_disabled_output_contains_no_entries() -> None:

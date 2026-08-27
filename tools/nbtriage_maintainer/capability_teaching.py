@@ -6,8 +6,10 @@ import os
 import re
 from contextlib import chdir, suppress
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import monotonic_ns
 from typing import Any
 
 from nbtriage.capability_analysis import (
@@ -158,10 +160,48 @@ class _CapturedCapabilityClient:
     async def analyze(self, request: CapabilityAnalysisRequest) -> CapabilityAnalysisOutput:
         outcome = "failed"
         failure: dict[str, str] | None = None
+        unit_id = request.capability.capability_id
+        started_ns = monotonic_ns()
+        self._capture.append_lifecycle(
+            sequence=self._sequence,
+            unit_id=unit_id,
+            event={
+                "phase": "unit_started",
+                "recorded_at": _utc_now(),
+            },
+        )
+        set_lifecycle_sink = getattr(self._inner, "set_maintenance_lifecycle_sink", None)
+        if callable(set_lifecycle_sink):
+            set_lifecycle_sink(
+                lambda event: self._capture.append_lifecycle(
+                    sequence=self._sequence,
+                    unit_id=unit_id,
+                    event=event,
+                )
+            )
+        watchdog: asyncio.Task[None] | None = None
+        timeout_seconds = getattr(self._inner, "diagnostic_timeout_seconds", None)
+        current_task = asyncio.current_task()
+        if (
+            current_task is not None
+            and isinstance(timeout_seconds, (int, float))
+            and timeout_seconds > 0
+        ):
+            watchdog = asyncio.create_task(
+                self._record_deadline_overrun(
+                    current_task,
+                    unit_id=unit_id,
+                    timeout_seconds=float(timeout_seconds),
+                )
+            )
         try:
             result = await self._inner.analyze(request)
             outcome = "succeeded"
             return result
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            failure = {"error_type": "CancelledError"}
+            raise
         except Exception as error:
             failure = {"error_type": type(error).__name__}
             if isinstance(error, CapabilityModelAdapterError):
@@ -170,9 +210,26 @@ class _CapturedCapabilityClient:
                     failure["detail_code"] = error.detail_code
             raise
         finally:
+            if watchdog is not None:
+                watchdog.cancel()
+                with suppress(asyncio.CancelledError):
+                    await watchdog
+            if callable(set_lifecycle_sink):
+                set_lifecycle_sink(None)
+            self._capture.append_lifecycle(
+                sequence=self._sequence,
+                unit_id=unit_id,
+                event={
+                    "phase": "unit_finished",
+                    "recorded_at": _utc_now(),
+                    "duration_ms": _elapsed_ms(started_ns),
+                    "outcome": outcome,
+                    "failure": failure,
+                },
+            )
             self._capture.append(
                 sequence=self._sequence,
-                unit_id=request.capability.capability_id,
+                unit_id=unit_id,
                 outcome=outcome,
                 failure=failure,
                 trace=self._inner.diagnostic_trace,
@@ -180,11 +237,38 @@ class _CapturedCapabilityClient:
                 provider_errors=self._inner.diagnostic_provider_errors,
             )
 
+    async def _record_deadline_overrun(
+        self,
+        task: asyncio.Task[Any],
+        *,
+        unit_id: str,
+        timeout_seconds: float,
+    ) -> None:
+        await asyncio.sleep(timeout_seconds + 1.0)
+        self._capture.append_lifecycle(
+            sequence=self._sequence,
+            unit_id=unit_id,
+            event={
+                "phase": "unit_deadline_overrun",
+                "recorded_at": _utc_now(),
+                "timeout_seconds": timeout_seconds,
+                "task_stack": [
+                    {
+                        "file": Path(frame.f_code.co_filename).name,
+                        "function": frame.f_code.co_name,
+                        "line": frame.f_lineno,
+                    }
+                    for frame in task.get_stack(limit=16)
+                ],
+            },
+        )
+
 
 class _ModelOutputCapture:
     def __init__(self, path: Path, *, plugin_module: str) -> None:
         self._path = path
         self._journal_path = path.with_suffix(f"{path.suffix}.partial.jsonl")
+        self._lifecycle_journal_path = path.with_suffix(f"{path.suffix}.lifecycle.jsonl")
         self._plugin_module = plugin_module
         self._records = self._recover_journal()
         self._next_sequence = (
@@ -274,6 +358,35 @@ class _ModelOutputCapture:
             stream.flush()
             os.fsync(stream.fileno())
 
+    def append_lifecycle(
+        self,
+        *,
+        sequence: int,
+        unit_id: str,
+        event: dict[str, Any],
+    ) -> None:
+        record = {
+            "sequence": sequence,
+            "unit_id": unit_id,
+            **event,
+        }
+        self._lifecycle_journal_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lifecycle_journal_path.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "plugin_module": self._plugin_module,
+                        "event": record,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                )
+            )
+            stream.write("\n")
+            stream.flush()
+
     def write(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -290,6 +403,14 @@ class _ModelOutputCapture:
         temporary.replace(self._path)
         with suppress(OSError):
             self._journal_path.unlink(missing_ok=True)
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _elapsed_ms(started_ns: int) -> int:
+    return max(0, round((monotonic_ns() - started_ns) / 1_000_000))
 
 
 def _install_model_output_capture(
