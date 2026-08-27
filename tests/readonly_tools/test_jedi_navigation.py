@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier, Lock
 from typing import cast
 
 import pytest
@@ -356,3 +359,57 @@ def test_installed_jedi_reuses_project_for_same_navigation_profile(
         )
 
     assert project_count == 1
+
+
+def test_installed_jedi_serializes_script_access_across_navigators(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jedi = pytest.importorskip("jedi")
+    profile, project, _dependency = _fixture_profile(tmp_path)
+    handler = project.path / "handler.py"
+    handler.write_text("value = 1\nother = value\n", encoding="utf-8")
+    active = 0
+    maximum_active = 0
+    counter_lock = Lock()
+    start = Barrier(2)
+
+    class FakeProject:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    class FakeScript:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def goto(self, **_kwargs: object) -> tuple[object, ...]:
+            nonlocal active, maximum_active
+            with counter_lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            time.sleep(0.03)
+            with counter_lock:
+                active -= 1
+            return ()
+
+    monkeypatch.setattr(jedi, "Project", FakeProject)
+    monkeypatch.setattr(jedi, "Script", FakeScript)
+    revision = source_revision(profile, "project", "handler.py")
+    navigators = (DefinitionNavigator(profile), DefinitionNavigator(profile))
+
+    def navigate(index: int) -> None:
+        start.wait()
+        navigators[index].go_to_definition(
+            GoToDefinitionRequest(
+                root_name="project",
+                relative_path="handler.py",
+                line=2,
+                column=9,
+                source_revision=revision,
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        tuple(executor.map(navigate, range(2)))
+
+    assert maximum_active == 1

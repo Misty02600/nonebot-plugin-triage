@@ -9,6 +9,7 @@ from enum import StrEnum
 from importlib import import_module
 from io import BytesIO
 from pathlib import Path
+from threading import RLock
 from tokenize import detect_encoding
 from typing import Protocol
 
@@ -21,6 +22,7 @@ from .models import (
 )
 
 _PYTHON_SUFFIXES = frozenset({".py", ".pyi"})
+_JEDI_API_LOCK = RLock()
 
 
 class PythonNavigationError(ValueError):
@@ -413,48 +415,53 @@ class _JediBackend:
         python_executable: Path,
         added_sys_path: tuple[Path, ...],
     ) -> Sequence[RawJediDefinition]:
-        try:
-            jedi = import_module("jedi")
-            project_type = jedi.Project
-            script_type = jedi.Script
-        except (AttributeError, ImportError) as error:
-            raise _BackendUnavailableError from error
-        project_key = (
-            str(project_root),
-            str(python_executable),
-            tuple(str(item) for item in added_sys_path),
-        )
-        project = self._projects.get(project_key)
-        if project is None:
-            project = project_type(
-                path=project_key[0],
-                environment_path=project_key[1],
-                load_unsafe_extensions=False,
-                added_sys_path=list(project_key[2]),
-                smart_sys_path=False,
+        # Jedi 0.20 的默认 fast_parser 会跨 Script 复用可变的 parso module；
+        # 上游明确说明此模式不支持并发 Script/definition 访问。
+        with _JEDI_API_LOCK:
+            try:
+                jedi = import_module("jedi")
+                project_type = jedi.Project
+                script_type = jedi.Script
+            except (AttributeError, ImportError) as error:
+                raise _BackendUnavailableError from error
+            project_key = (
+                str(project_root),
+                str(python_executable),
+                tuple(str(item) for item in added_sys_path),
             )
-            self._projects[project_key] = project
-        script = script_type(code=code, path=str(path), project=project)
-        definitions: list[RawJediDefinition] = []
-        for item in script.goto(
-            line=line,
-            column=column,
-            follow_imports=True,
-            follow_builtin_imports=False,
-            only_stubs=False,
-            prefer_stubs=False,
-        ):
-            definitions.append(
-                RawJediDefinition(
-                    module_path=_optional_path(getattr(item, "module_path", None)),
-                    name=_optional_text(getattr(item, "name", None), 256),
-                    full_name=_optional_text(getattr(item, "full_name", None), 1_024),
-                    kind=_optional_text(getattr(item, "type", None), 128),
-                    line=_optional_non_negative_int(getattr(item, "line", None), minimum=1),
-                    column=_optional_non_negative_int(getattr(item, "column", None), minimum=0),
+            project = self._projects.get(project_key)
+            if project is None:
+                project = project_type(
+                    path=project_key[0],
+                    environment_path=project_key[1],
+                    load_unsafe_extensions=False,
+                    added_sys_path=list(project_key[2]),
+                    smart_sys_path=False,
                 )
-            )
-        return tuple(definitions)
+                self._projects[project_key] = project
+            script = script_type(code=code, path=str(path), project=project)
+            definitions: list[RawJediDefinition] = []
+            for item in script.goto(
+                line=line,
+                column=column,
+                follow_imports=True,
+                follow_builtin_imports=False,
+                only_stubs=False,
+                prefer_stubs=False,
+            ):
+                definitions.append(
+                    RawJediDefinition(
+                        module_path=_optional_path(getattr(item, "module_path", None)),
+                        name=_optional_text(getattr(item, "name", None), 256),
+                        full_name=_optional_text(getattr(item, "full_name", None), 1_024),
+                        kind=_optional_text(getattr(item, "type", None), 128),
+                        line=_optional_non_negative_int(getattr(item, "line", None), minimum=1),
+                        column=_optional_non_negative_int(
+                            getattr(item, "column", None), minimum=0
+                        ),
+                    )
+                )
+            return tuple(definitions)
 
 
 def source_revision(

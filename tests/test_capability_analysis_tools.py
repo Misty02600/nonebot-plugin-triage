@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from dataclasses import replace
 from pathlib import Path
+from threading import Event, Timer
 from typing import Any, cast
 
 import pytest
@@ -33,6 +35,7 @@ from nbtriage.readonly_tools import (
 from nonebot_plugin_triage.capability_analysis_tools import (
     CapabilityTeachingToolProvider,
     _EvidenceCapture,
+    _navigation_toolset,
     _NavigationRegistry,
     _with_target_plugin_alias,
 )
@@ -717,3 +720,64 @@ def test_teaching_tools_offer_version_bound_framework_rag_and_capture_evidence(
     assert provider.evidence_is_current(_request(revision), manifest) is True
     pack["revision"] = "archive-v2"
     assert provider.evidence_is_current(_request(revision), manifest) is False
+
+
+def test_navigation_tool_timeout_does_not_wait_for_blocked_sync_navigation() -> None:
+    started = Event()
+    release = Event()
+
+    class BlockingNavigation:
+        def open_definition(self, _navigation_ref: str) -> dict[str, object]:
+            started.set()
+            release.wait(timeout=1)
+            return {"resolved": True}
+
+    calls = 0
+
+    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "python_open_definition",
+                        {"navigation_ref": "nav:blocked"},
+                        "call-definition",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("done")], finish_reason="stop")
+
+    agent = Agent(
+        FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
+        toolsets=cast(
+            Any,
+            [
+                _navigation_toolset(
+                    cast(_NavigationRegistry, BlockingNavigation()),
+                    initial_navigation=(),
+                    timeout_seconds=0.03,
+                )
+            ],
+        ),
+    )
+    timer = Timer(0.3, release.set)
+    timer.start()
+
+    async def run_agent() -> tuple[str, float]:
+        started_at = time.monotonic()
+        result = await agent.run("Open the definition.")
+        elapsed = time.monotonic() - started_at
+        release.set()
+        return result.output, elapsed
+
+    try:
+        output, elapsed = asyncio.run(run_agent())
+    finally:
+        release.set()
+        timer.cancel()
+
+    assert output == "done"
+    assert started.is_set()
+    assert elapsed < 0.2

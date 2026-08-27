@@ -59,6 +59,7 @@ _DYNAMIC_EVIDENCE_SOURCE_KIND = "approved_file_excerpt"
 _MAX_NAVIGATION_TARGETS_PER_EVIDENCE = 24
 _MAX_INITIAL_NAVIGATION_TARGETS = 64
 _MAX_OPEN_DEFINITION_LINES = 120
+_NAVIGATION_TOOL_TIMEOUT_SECONDS = 15.0
 _NAVIGABLE_PYTHON_SOURCE_KINDS = frozenset(
     {
         _DYNAMIC_EVIDENCE_SOURCE_KIND,
@@ -821,8 +822,9 @@ def _navigation_toolset(
     *,
     initial_navigation: tuple[dict[str, object], ...],
     selective_family: bool = False,
+    timeout_seconds: float = _NAVIGATION_TOOL_TIMEOUT_SECONDS,
 ) -> AbstractToolset[Any]:
-    def open_definition(navigation_ref: str) -> dict[str, object]:
+    async def open_definition(navigation_ref: str) -> dict[str, object]:
         """打开 Evidence 标注的 Python 定义并返回可引用源码；例如 Evidence 给出
         `nav:abc` 时调用 `python_open_definition(navigation_ref="nav:abc")`，不要把依赖
         包名交给 `file_info`。
@@ -830,7 +832,7 @@ def _navigation_toolset(
         Args:
             navigation_ref: Evidence 提供的位置句柄。
         """
-        return navigation.open_definition(navigation_ref)
+        return await asyncio.to_thread(navigation.open_definition, navigation_ref)
 
     sidecar = (
         "当前初始 Evidence 可直接导航的位置如下："
@@ -846,6 +848,7 @@ def _navigation_toolset(
     )
     toolset = FunctionToolset(
         tools=[open_definition],
+        timeout=timeout_seconds,
         instructions=(
             "python_open_definition 是当前 Evidence 中已标注 Python 位置的定义导航入口；"
             "文件 search_files 只在单个根内做文本搜索，不能替代跨依赖的符号导航。"
