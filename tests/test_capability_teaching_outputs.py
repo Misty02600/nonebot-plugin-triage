@@ -157,6 +157,16 @@ def test_generation_validation_supports_long_child_paths(tmp_path: Path) -> None
     short.rename(staging)
 
     outputs._validate_staged_generation(staging, manifest)
+    assert outputs._read_generation_documents(
+        staging / "help-display",
+        [help_name],
+        ".yml",
+    ) == {help_name: "help"}
+    assert outputs._read_generation_documents(
+        staging / "answer-knowledge",
+        [answer_name],
+        ".md",
+    ) == {answer_name: "answer"}
 
 
 def test_empty_output_keeps_previous_generation_pointer(tmp_path: Path) -> None:

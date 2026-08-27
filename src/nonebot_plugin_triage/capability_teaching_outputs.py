@@ -274,7 +274,7 @@ class CapabilityTeachingOutputWriter:
             return None
         root = self._resolved_root() / _OBJECTS_DIRECTORY_NAME / generation
         try:
-            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            manifest = json.loads(_read_utf8_text(root / "manifest.json"))
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise CapabilityTeachingOutputError(
                 "current teaching generation is unavailable"
@@ -325,7 +325,7 @@ class CapabilityTeachingOutputWriter:
     def current_generation(self) -> str | None:
         try:
             payload = json.loads(
-                (self._resolved_root() / _CURRENT_POINTER_NAME).read_text(encoding="utf-8")
+                _read_utf8_text(self._resolved_root() / _CURRENT_POINTER_NAME)
             )
         except (OSError, UnicodeError, json.JSONDecodeError):
             return None
@@ -556,7 +556,7 @@ def _safe_module_filename(module_name: str) -> str | None:
 def _validate_staged_generation(staging: Path, manifest: dict[str, object]) -> None:
     manifest_path = staging / "manifest.json"
     try:
-        parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+        parsed = json.loads(_read_utf8_text(manifest_path))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise CapabilityTeachingOutputError("teaching manifest validation failed") from error
     if parsed != manifest:
@@ -596,12 +596,24 @@ def _read_generation_documents(
         ):
             raise CapabilityTeachingOutputError("current teaching manifest is invalid")
         try:
-            documents[name] = (directory / name).read_text(encoding="utf-8")
+            documents[name] = _read_utf8_text(directory / name)
         except (OSError, UnicodeError) as error:
             raise CapabilityTeachingOutputError(
                 "current teaching generation is unavailable"
             ) from error
     return documents
+
+
+def _read_utf8_text(path: Path) -> str:
+    raw_path = os.path.abspath(path)
+    if os.name == "nt" and not raw_path.startswith("\\\\?\\"):
+        raw_path = (
+            f"\\\\?\\UNC\\{raw_path[2:]}"
+            if raw_path.startswith("\\\\")
+            else f"\\\\?\\{raw_path}"
+        )
+    with open(raw_path, encoding="utf-8") as stream:
+        return stream.read()
 
 
 def _write_text(path: Path, document: str) -> None:
