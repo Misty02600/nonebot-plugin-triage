@@ -134,36 +134,29 @@ def test_existing_generation_is_revalidated_before_pointer_switch(tmp_path: Path
     assert not pointer_path.exists()
 
 
-def test_transient_post_publish_validation_failure_is_retried(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_generation_validation_supports_long_child_paths(tmp_path: Path) -> None:
     from nonebot_plugin_triage import capability_teaching_outputs as outputs
 
-    root = tmp_path / "capability-teaching"
-    original = outputs._validate_staged_generation
-    destination_attempts = 0
+    target_length = 220
+    padding = target_length - len(str(tmp_path)) - 1
+    if padding < 1:
+        pytest.skip("pytest temporary path is already too long for this fixture")
+    short = tmp_path / "short"
+    help_name = "nonebot_plugin_course_schedule.yml"
+    answer_name = "nonebot_plugin_course_schedule.md"
+    manifest = {
+        "help_files": [help_name],
+        "answer_files": [answer_name],
+    }
+    (short / "help-display").mkdir(parents=True)
+    (short / "answer-knowledge").mkdir()
+    (short / "help-display" / help_name).write_text("help", encoding="utf-8")
+    (short / "answer-knowledge" / answer_name).write_text("answer", encoding="utf-8")
+    (short / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    staging = tmp_path / ("x" * padding)
+    short.rename(staging)
 
-    def fail_first_destination_validation(
-        staging: Path,
-        manifest: dict[str, object],
-    ) -> None:
-        nonlocal destination_attempts
-        if staging.name == manifest["generation"]:
-            destination_attempts += 1
-            if destination_attempts == 1:
-                raise CapabilityTeachingOutputError("teaching generation validation failed")
-        original(staging, manifest)
-
-    monkeypatch.setattr(outputs, "_validate_staged_generation", fail_first_destination_validation)
-
-    paths = CapabilityTeachingOutputWriter(root).refresh(
-        CapabilitySnapshot.create((_record(),)),
-        lambda _capability_id: _annotation("说明。"),
-    )
-
-    assert len(paths) == 2
-    assert destination_attempts == 2
+    outputs._validate_staged_generation(staging, manifest)
 
 
 def test_empty_output_keeps_previous_generation_pointer(tmp_path: Path) -> None:

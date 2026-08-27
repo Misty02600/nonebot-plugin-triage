@@ -9,7 +9,6 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from time import sleep
 from typing import cast
 
 import yaml
@@ -207,7 +206,7 @@ class CapabilityTeachingOutputWriter:
                 _validate_staged_generation(staging, manifest)
                 with suppress(FileExistsError):
                     os.replace(staging, destination)
-        _validate_published_generation(destination, manifest)
+        _validate_staged_generation(destination, manifest)
         pointer = json.dumps(
             {"schema_version": 1, "generation": generation},
             sort_keys=True,
@@ -466,19 +465,12 @@ def _validate_staged_generation(staging: Path, manifest: dict[str, object]) -> N
         expected = manifest[field_name]
         if not isinstance(expected, list) or any(not isinstance(item, str) for item in expected):
             raise CapabilityTeachingOutputError("teaching manifest validation failed")
-        actual = sorted(
-            path.name for path in (staging / directory_name).iterdir() if path.is_file()
-        )
+        with os.scandir(staging / directory_name) as entries:
+            actual = sorted(
+                entry.name for entry in entries if entry.is_file(follow_symlinks=False)
+            )
         if actual != expected:
             raise CapabilityTeachingOutputError("teaching generation validation failed")
-
-
-def _validate_published_generation(staging: Path, manifest: dict[str, object]) -> None:
-    try:
-        _validate_staged_generation(staging, manifest)
-    except CapabilityTeachingOutputError:
-        sleep(0.05)
-        _validate_staged_generation(staging, manifest)
 
 
 def _write_documents(directory: Path, documents: dict[str, str]) -> None:
