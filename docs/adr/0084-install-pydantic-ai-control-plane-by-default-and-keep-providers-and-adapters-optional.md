@@ -47,13 +47,13 @@ Toolset、Harness 与 usage 类型。此前这些公共运行时依赖只随 `op
 
 ## 替代关系
 
-- 部分替代 [ADR-0047](0047-reuse-pydantic-ai-provider-extras.md)：继续复用上游 Provider extras，但
+- 部分替代 [ADR-0047](history/0047-reuse-pydantic-ai-provider-extras.md)：继续复用上游 Provider extras，但
   Pydantic AI 公共层不再只通过 Provider extra 安装。
 - 部分替代 [ADR-0059](0059-share-read-only-evidence-access-across-agent-flows.md)：Harness 与 Jedi 从模型
   extra 移入基础依赖；其只读工具、安全边界和共享职责不变。
-- [ADR-0085](0085-remove-serena-bug-source-backend.md) 进一步删除 Serena MCP extra 与 Bug-only 后端；
+- [ADR-0085](history/0085-remove-serena-bug-source-backend.md) 进一步删除 Serena MCP extra 与 Bug-only 后端；
 - 延续 [ADR-0063](0063-keep-plugin-startup-independent-from-model-enhancements.md) 的启动降级合同。
-- 不改变 [ADR-0004](0004-onebot-v11-first-and-keyed-message-reference-index.md) 的 OneBot 首个 dogfood
+- 不改变 [ADR-0004](history/0004-onebot-v11-first-and-keyed-message-reference-index.md) 的 OneBot 首个 dogfood
   地位；只明确它不是所有部署的安装前提。
 
 ## 落实与确认

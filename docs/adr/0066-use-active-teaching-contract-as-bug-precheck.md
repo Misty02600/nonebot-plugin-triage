@@ -124,15 +124,15 @@ subject 或具体观察时，也不应先开放聊天、运行、日志、源码
 
 ## 与既有决定的关系
 
-- 部分替代 [ADR-0061](0061-read-latest-bounded-conversation-window-for-bug-assessment.md) 第 11 项及“没有公开
+- 部分替代 [ADR-0061](history/0061-read-latest-bounded-conversation-window-for-bug-assessment.md) 第 11 项及“没有公开
   文档时把教学注释当预期合同”的未采用结论：未服务的生成注释仍不是合同，但实际服务的公开结构化字段
   现在是第一层合同；
-- 部分替代 [ADR-0064](0064-refine-bug-conversation-evidence-and-verdict-contract.md) 第 13 项：人工确认不再是
+- 部分替代 [ADR-0064](history/0064-refine-bug-conversation-evidence-and-verdict-contract.md) 第 13 项：人工确认不再是
   教学合同成立的唯一方式；
 - 补充 [ADR-0032](0032-separate-capability-audience-analysis-and-platform-status.md)、
-  [ADR-0034](0034-distinguish-matchers-from-user-observable-capabilities.md) 的 ServingView 与用户可观察能力门禁；
+  [ADR-0034](history/0034-distinguish-matchers-from-user-observable-capabilities.md) 的 ServingView 与用户可观察能力门禁；
 - 补充 [ADR-0058](0058-use-deterministic-evidence-and-bounded-navigation-for-teaching-annotations.md) 与
-  [ADR-0062](0062-structure-capability-teaching-usages-requirements-and-interactions.md) 的注释生成、结构和服务责任；
+  [ADR-0062](history/0062-structure-capability-teaching-usages-requirements-and-interactions.md) 的注释生成、结构和服务责任；
 - 保留 [ADR-0060](0060-use-scope-thread-and-post-route-conversation-context.md) 的一次补充与 Reply 路由后上下文
   边界；不增加新的 Thread 轮次。
 

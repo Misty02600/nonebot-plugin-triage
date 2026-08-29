@@ -2,7 +2,7 @@
 
 - 状态：已采纳
 - 决策日期：2026-08-16
-- 替代范围：替代 [ADR-0081](0081-close-unknown-teaching-gates-and-freeze-parser-owned-usages.md)
+- 替代范围：替代 [ADR-0081](history/0081-close-unknown-teaching-gates-and-freeze-parser-owned-usages.md)
   第 2 节中“宿主发现未知门禁后不调用模型并直接关闭”的实施边界；其 parser canonical usage 与有限枚举决定
   继续有效。
 
@@ -65,5 +65,5 @@ entry 的关联。它不根据函数名猜测 limiter，也不自行决定第三
 
 - [ADR-0058：用确定性证据与有界源码导航生成教学注释](0058-use-deterministic-evidence-and-bounded-navigation-for-teaching-annotations.md)
 - [ADR-0059：跨 Agent 流程共享只读证据访问](0059-share-read-only-evidence-access-across-agent-flows.md)
-- [ADR-0081：未知安全门禁关闭公开教学，并冻结 parser 拥有的用法](0081-close-unknown-teaching-gates-and-freeze-parser-owned-usages.md)
+- [ADR-0081：未知安全门禁关闭公开教学，并冻结 parser 拥有的用法](history/0081-close-unknown-teaching-gates-and-freeze-parser-owned-usages.md)
 - [PLAN-0017：收敛多条目教学注释的生成与评测合同](../plans/done/PLAN-0017-qualify-multi-entry-capability-teaching.md)

@@ -13,7 +13,7 @@
 > 六项常用便捷 Permission 确定性投影为角色 / 场景约束，避免每个插件重复导航依赖源码。真实 Provider
 > held-out 与重新资格尚未完成。
 >
-> 后续 [ADR-0062](0062-structure-capability-teaching-usages-requirements-and-interactions.md) 已细化教学
+> 后续 [ADR-0062](history/0062-structure-capability-teaching-usages-requirements-and-interactions.md) 已细化教学
 > 输出 schema、Uninfo 角色投影和可信限流来源；本 ADR 的 Evidence Pack 与有界导航编排保持不变。
 
 ## 当时遇到了什么
@@ -156,11 +156,11 @@ ADR 重新选择该合同。
 - 延续 [ADR-0032](0032-separate-capability-audience-analysis-and-platform-status.md) 与
   [ADR-0036](0036-keep-capability-shadow-deterministic-and-record-oriented.md) 的模型外 ServingView、受众与
   当前 runtime record 真值；
-- 消费 [ADR-0039](0039-use-griffe-for-installed-public-framework-source-evidence.md) 保留下来的版本、来源与
+- 消费 [ADR-0039](history/0039-use-griffe-for-installed-public-framework-source-evidence.md) 保留下来的版本、来源与
   revision 安全合同，并由 ADR-0057 / 0059 的 Jedi 工具读取定义；不把静态符号关系提升为运行因果；
-- 保持 [ADR-0055](0055-use-ast-grep-for-matcher-source-shape-extraction.md) 的窄 CST 形状职责；
-- [ADR-0056](0056-use-serena-for-optional-bug-source-navigation.md) 的 Bug-only Serena 配置已由
-  [ADR-0085](0085-remove-serena-bug-source-backend.md) 撤销；教学链继续只使用共享 Direct Jedi；
+- 保持 [ADR-0055](history/0055-use-ast-grep-for-matcher-source-shape-extraction.md) 的窄 CST 形状职责；
+- [ADR-0056](history/0056-use-serena-for-optional-bug-source-navigation.md) 的 Bug-only Serena 配置已由
+  [ADR-0085](history/0085-remove-serena-bug-source-backend.md) 撤销；教学链继续只使用共享 Direct Jedi；
 - [ADR-0057](0057-select-source-analysis-tools-by-evidence-stage.md) 已选择 Direct Jedi；
   [ADR-0059](0059-share-read-only-evidence-access-across-agent-flows.md) 已决定跨消费者共享的文件、路径和
   运行配置证据工具边界。

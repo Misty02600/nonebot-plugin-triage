@@ -231,12 +231,12 @@ Jedi 在所有指标上显著优于 Griffe。选择 Jedi 的原因更窄也更�
 
 ## 与既有决定的关系
 
-- [ADR-0039](0039-use-griffe-for-installed-public-framework-source-evidence.md)：部分替代其 Griffe 后端选择；
+- [ADR-0039](history/0039-use-griffe-for-installed-public-framework-source-evidence.md)：部分替代其 Griffe 后端选择；
   distribution inventory、版本/revision、批准路径和 Evidence 合同继续有效；
-- [ADR-0055](0055-use-ast-grep-for-matcher-source-shape-extraction.md)：继续有效；ast-grep 保持 Matcher 形状
+- [ADR-0055](history/0055-use-ast-grep-for-matcher-source-shape-extraction.md)：继续有效；ast-grep 保持 Matcher 形状
   提取职责，不承担通用符号导航；
-- [ADR-0056](0056-use-serena-for-optional-bug-source-navigation.md)：其既有 opt-in Bug 纵切已由
-  [ADR-0085](0085-remove-serena-bug-source-backend.md) 撤销；
+- [ADR-0056](history/0056-use-serena-for-optional-bug-source-navigation.md)：其既有 opt-in Bug 纵切已由
+  [ADR-0085](history/0085-remove-serena-bug-source-backend.md) 撤销；
 - [ADR-0050](0050-use-a-bounded-agent-for-user-bug-assessment.md) 与
   [ADR-0053](0053-allow-relevant-source-and-log-bodies-for-bug-assessment.md)：继续约束 Bug Agent 的工具预算、
   Evidence 门禁、源码投影与普通用户披露边界。

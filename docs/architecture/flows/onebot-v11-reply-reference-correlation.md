@@ -74,10 +74,10 @@ correlation 可以进入短期 Thread 上下文，路由后分别供 Guidance / 
 ## 相关决定
 
 - [ADR-0001：QQ 群显式报障与本机运行证据](../../adr/0001-qq-group-report-linked-runtime-evidence.md)
-- [ADR-0004：OneBot V11 与带密钥消息引用索引](../../adr/0004-onebot-v11-first-and-keyed-message-reference-index.md)
+- [ADR-0004：OneBot V11 与带密钥消息引用索引](../../adr/history/0004-onebot-v11-first-and-keyed-message-reference-index.md)
 - [ADR-0006：跨平台 Alconna 入口与引用 Provider](../../adr/0006-cross-platform-alconna-entry-and-reference-providers.md)
-- [ADR-0030：免命令精确回复续问（已替代）](../../adr/0030-continue-support-thread-by-exact-reply.md)
-- [ADR-0031：支持 Thread 续问仍要求显式 triage](../../adr/0031-require-triage-for-support-thread-continuation.md)
-- [ADR-0033：用一次性 Reply Claim 串行化支持 Thread 处理轮](../../adr/0033-serialize-support-thread-turns-with-single-use-reply-claims.md)
-- [ADR-0035：用经校验的 UniSeg Receipt 结算 Thread 出站引用](../../adr/0035-settle-support-thread-replies-from-uniseg-receipts.md)
+- [ADR-0030：免命令精确回复续问（已替代）](../../adr/history/0030-continue-support-thread-by-exact-reply.md)
+- [ADR-0031：支持 Thread 续问仍要求显式 triage](../../adr/history/0031-require-triage-for-support-thread-continuation.md)
+- [ADR-0033：用一次性 Reply Claim 串行化支持 Thread 处理轮](../../adr/history/0033-serialize-support-thread-turns-with-single-use-reply-claims.md)
+- [ADR-0035：用经校验的 UniSeg Receipt 结算 Thread 出站引用](../../adr/history/0035-settle-support-thread-replies-from-uniseg-receipts.md)
 - [ADR-0060：用作用域 Thread 承接一次补充并在路由后投影会话上下文](../../adr/0060-use-scope-thread-and-post-route-conversation-context.md)

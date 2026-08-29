@@ -11,7 +11,7 @@
 
 ## 背景
 
-[ADR-0054](0054-store-reviewed-bug-problems-in-localstore.md) 首先建立了人工审核 `bug / not_bug` 目录，
+[ADR-0054](history/0054-store-reviewed-bug-problems-in-localstore.md) 首先建立了人工审核 `bug / not_bug` 目录，
 并把首版限制为维护者单写、在线只读。后续代码又形成了尚未接到 Bug runtime 的
 `ConfirmedBugProblem` 原型：它只保存 Agent 已判定的 `bug` 和发生次数，但把 Agent verdict、人工复核和
 问题生命周期都压进了“confirmed”一个概念，也不能保存经过完整调查后仍为 `unknown` 的维护者待判案件。
@@ -90,7 +90,7 @@
 - [ADR-0078](0078-defer-persisting-unknown-bug-assessments.md) 暂缓本 ADR 的深度 `unknown` 持久化；合格
   Agent `bug` 的正式 verdict、人工事后监督和入口不足不落库继续有效；
 
-- 部分替代 [ADR-0054](0054-store-reviewed-bug-problems-in-localstore.md) 第 3、8 项：人工 reviewed catalog 继续
+- 部分替代 [ADR-0054](history/0054-store-reviewed-bug-problems-in-localstore.md) 第 3、8 项：人工 reviewed catalog 继续
   维持维护者单写和在线只读，但合格 Agent 的正式 Bug 与深度 unknown 可以写入独立的运行问题所有权域；
 - 保留 ADR-0054 的 LocalStore data 所有权、原子写入、完整性、revision、损坏失败语义，以及只有精确 verified
   catalog 可以短路的现行边界；短路规则是否扩大留待问题身份决定；

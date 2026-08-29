@@ -53,12 +53,12 @@ ADR-0027 已决定让模型根据公开事实组织语言，但当时明确没�
 
 ## 关系
 
-- 落实并细化 [ADR-0027](0027-constrain-guidance-with-facts-not-fixed-wording.md) 的模型自由措辞与事实边界；
+- 落实并细化 [ADR-0027](history/0027-constrain-guidance-with-facts-not-fixed-wording.md) 的模型自由措辞与事实边界；
 - 不改变 [ADR-0037](0037-make-semantic-assessment-the-default-triage-path.md) 的语义 assessment / router 职责；
 - 扩展 [ADR-0038](0038-limit-semantic-assessment-remote-data-projection.md) 之外的一项独立出站数据合同，不能把
   Answer Agent 的 public facts 反向加入 semantic assessment 请求；
 - 结构化输出继续遵循 [ADR-0042](0042-use-pydantic-ai-model-profile-for-structured-output.md) 和
-  [ADR-0044](0044-use-pydantic-ai-agent-output-type-for-support-semantics.md) 的框架原生抽象方向。
+  [ADR-0044](history/0044-use-pydantic-ai-agent-output-type-for-support-semantics.md) 的框架原生抽象方向。
 - [ADR-0060](0060-use-scope-thread-and-post-route-conversation-context.md) 部分替代第 3 项：Guidance 路由后可
   接收有界 Thread 与直接 Reply 上下文；模型外批准的 public 事实、零业务工具和安全输出边界不变。
 

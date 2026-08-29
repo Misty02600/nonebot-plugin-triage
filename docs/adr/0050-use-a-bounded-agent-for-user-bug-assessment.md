@@ -135,11 +135,11 @@ Bug 判定必须协调人工合同、当前实现与实际运行证据。
 
 ## 关系
 
-- 补充 [ADR-0040](0040-require-trusted-preflight-failure-before-incident.md)：Bug 判定发生在上报之前，不改变
+- 补充 [ADR-0040](history/0040-require-trusted-preflight-failure-before-incident.md)：Bug 判定发生在上报之前，不改变
   可信失败才可建 incident 的规则；
-- 复用 [ADR-0044](0044-use-pydantic-ai-agent-output-type-for-support-semantics.md) 的 Pydantic AI 原生结构化输出
+- 复用 [ADR-0044](history/0044-use-pydantic-ai-agent-output-type-for-support-semantics.md) 的 Pydantic AI 原生结构化输出
   方向，但本 Agent 可以使用受控只读业务工具；
-- 继续区分 [ADR-0046](0046-merge-internal-reasoning-into-behavior-exploration.md) 的 SUPERUSER 行为探索：普通
+- 继续区分 [ADR-0046](history/0046-merge-internal-reasoning-into-behavior-exploration.md) 的 SUPERUSER 行为探索：普通
   用户 Bug 判定只返回安全三值结论，不提供源码解释；
 - 不改变 [ADR-0025](0025-explain-plugin-behavior-from-deployment-evidence.md) 的内部证据披露与只读边界；
 - 后续 help-spec ADR-0049 可以定义人工帮助规格和确定性源码事实的所有权，本决定只消费其稳定接口，不预先
@@ -152,7 +152,7 @@ Bug 判定必须协调人工合同、当前实现与实际运行证据。
   [ADR-0053](0053-allow-relevant-source-and-log-bodies-for-bug-assessment.md) 部分替代：允许相关正文进入独立
   合格的 Bug task，同时保留秘密清理、范围 / 预算、reconciliation 和普通用户安全输出。
 - verified verdict repository 使用 LocalStore data 保存的单写者、在线只读 catalog，详见
-  [ADR-0054](0054-store-reviewed-bug-problems-in-localstore.md)。
+  [ADR-0054](history/0054-store-reviewed-bug-problems-in-localstore.md)。
 - [ADR-0060](0060-use-scope-thread-and-post-route-conversation-context.md) 部分替代第 3、7、12 项：允许直接
   Reply 与模型外锚定的聊天正文进入独立合格的 Bug task；历史短路、公开合同初检、总预算、确定性
   reconciliation、三值结论与零自动上报继续有效。

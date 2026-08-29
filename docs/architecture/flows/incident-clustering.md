@@ -1,9 +1,13 @@
 # 短期显式报障聚类
 
-## 当前流程
+## 兼容流程（当前入口不可达）
+
+当前 semantic v7 不再产生 incident action，正式 `triage` 路径不会调用这条兼容链。以下流程描述仍保留的
+`LiveIncidentBuffer`、聚类与查询服务；它们只有未来通过新决定重新接入显式 incident 授权入口后才会执行，
+不能据此声称当前用户报障会创建 incident。
 
 ```text
-已分流为 suspected_incident 且关联运行证据的 triage 求助
+旧 intake 已分流为 suspected_incident 且关联运行证据的 triage 求助
     │
     └─ RuntimeEvidenceBundle
          ├─ 没有 failed observation ──────────────→ LiveIncident，无 cluster
@@ -14,12 +18,12 @@
                              ├─ report_count
                              ├─ first_reported_at
                              └─ last_reported_at
-                                  └─ SUPERUSER 按 incident ID 查询白名单摘要
+                                  └─ 兼容查询服务按 incident ID 投影白名单摘要
 ```
 
-聚类发生在 `triage` 请求已经分流为疑似故障之后。能力说明、用法纠错和澄清不会创建 incident 或 cluster；
-运行 hook 产生 observation 时也不会自动创建 incident、调用模型或发送消息；
-同一个 cluster 中的每次报障仍有独立 incident ID，因此公开受理回执、限流和精确查询权限不变。
+在旧链路中，聚类发生在请求已经分流为疑似故障之后。能力说明、用法纠错、澄清和运行 hook 本身都不会
+创建 incident 或 cluster。当前正式用户入口改用 Bug assessment 与 ORM Problem 工作流，不消费这里的
+incident ID；下文的签名、TTL 和容量只描述仍保留的兼容领域服务。
 
 ## 签名边界
 

@@ -117,7 +117,7 @@ Sentry 的公开模型提供了适合本项目的参考形状：单次 Event 是
   原先允许继续使用文件型单写者的实施选项不再适用；
 - 补充 [ADR-0068](0068-treat-qualified-agent-bug-verdicts-as-operational-decisions.md) 的自动 Bug / 深度 unknown
   持久化语义；
-- 补充 [ADR-0054](0054-store-reviewed-bug-problems-in-localstore.md) 的 LocalStore data 所有权；其单写者文件限制和
+- 补充 [ADR-0054](history/0054-store-reviewed-bug-problems-in-localstore.md) 的 LocalStore data 所有权；其单写者文件限制和
   ORM 重评门槛已经由 ADR-0073 接续，损坏时不得错误短路的语义继续有效；
 - 采用 Sentry Event → Issue 的工程形状作为参考，不继承其服务、字段、云端存储或默认 grouping 算法；
 - [ADR-0071](0071-group-bug-problems-with-versioned-evidence-fingerprints.md) 进一步用版本化 Evidence 指纹定义

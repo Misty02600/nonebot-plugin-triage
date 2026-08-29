@@ -52,8 +52,8 @@ Agent 即使完成了同一套 Evidence reconciliation，未登记的模型也�
 
 ## 替代关系
 
-- 替代 [ADR-0011](0011-expose-disabled-qualified-model-configuration.md)、
-  [ADR-0041](0041-qualify-opencode-go-tool-output-for-support-semantics.md) 和
+- 替代 [ADR-0011](history/0011-expose-disabled-qualified-model-configuration.md)、
+  [ADR-0041](history/0041-qualify-opencode-go-tool-output-for-support-semantics.md) 和
   [ADR-0063](0063-keep-plugin-startup-independent-from-model-enhancements.md) 中“任务资格不匹配即不运行”的部分；
 - 替代 [ADR-0068](0068-treat-qualified-agent-bug-verdicts-as-operational-decisions.md) 中只有精确已资格模型才能形成
   正式本地 Bug Decision 的限制；Evidence reconciliation、追加式 Decision 与人工事后监督继续有效；

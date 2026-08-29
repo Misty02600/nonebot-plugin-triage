@@ -8,7 +8,7 @@
 
 ## 背景
 
-[ADR-0045](0045-use-one-triage-cooldown-and-localstore-capability-cache.md) 曾把 `triage`、`报错查询`、`报错反馈`
+[ADR-0045](history/0045-use-one-triage-cooldown-and-localstore-capability-cache.md) 曾把 `triage`、`报错查询`、`报错反馈`
 和 `报错统计` 固定为四个顶层命令。[ADR-0072](0072-use-opaque-problem-ids-and-minimal-maintainer-lifecycle.md)
 沿用了 `报错查询 <编号> ...` 示例。
 
@@ -76,17 +76,17 @@
 
 ## 与既有决定的关系
 
-- [ADR-0079](0079-list-pending-problems-with-triage-query.md) 补充无编号的
+- [ADR-0079](history/0079-list-pending-problems-with-triage-query.md) 补充无编号的
   `triage 报错查询`，用于列出全部待处理 Problem；
 
-- 部分替代 [ADR-0045](0045-use-one-triage-cooldown-and-localstore-capability-cache.md) 的固定顶层命令集合：
+- 部分替代 [ADR-0045](history/0045-use-one-triage-cooldown-and-localstore-capability-cache.md) 的固定顶层命令集合：
   `triage` 根和统一冷却继续有效，Problem 查询不再是独立顶层命令；
 - 部分替代 [ADR-0072](0072-use-opaque-problem-ids-and-minimal-maintainer-lifecycle.md) 的命令示例；维护动作和
   SUPERUSER 边界不变，调用形式统一增加 `triage` 根；
 - Problem Decision 的写入语义由
   [ADR-0074](0074-preserve-append-only-problem-decisions.md) 定义，事务由
   [ADR-0073](0073-use-nonebot-orm-for-authoritative-bug-workflow-state.md) 定义。
-- [ADR-0076](0076-remove-legacy-trial-feedback-and-stats-chat-commands.md) 已决定直接删除旧 trial feedback / stats
+- [ADR-0076](history/0076-remove-legacy-trial-feedback-and-stats-chat-commands.md) 已决定直接删除旧 trial feedback / stats
   聊天入口，不把它们迁入本命令树。
 
 ## 相关文档

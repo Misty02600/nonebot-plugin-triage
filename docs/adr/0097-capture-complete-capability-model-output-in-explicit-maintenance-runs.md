@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；thinking 捕获由 [ADR-0103](0103-enable-opencode-go-thinking-and-capture-maintenance-reasoning.md) 替代 | 2026-08-20 |
+| 已采纳；thinking 捕获由 [ADR-0103](history/0103-enable-opencode-go-thinking-and-capture-maintenance-reasoning.md) 替代 | 2026-08-20 |
 
 ## 背景
 

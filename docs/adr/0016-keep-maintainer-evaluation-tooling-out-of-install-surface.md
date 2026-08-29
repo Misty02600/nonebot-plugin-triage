@@ -111,4 +111,4 @@ wheel 不能证明发布面已经收紧。
 ## 相关文档
 
 - [架构概览](../architecture/overview.md)
-- [ADR-0017：通过 pytest 执行确定性评测回归](0017-run-deterministic-evaluations-through-pytest.md)
+- [ADR-0017：通过 pytest 执行确定性评测回归](history/0017-run-deterministic-evaluations-through-pytest.md)

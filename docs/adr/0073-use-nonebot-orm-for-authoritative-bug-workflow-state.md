@@ -8,8 +8,8 @@
 
 ## 背景
 
-[ADR-0023](0023-defer-orm-until-durable-business-state.md) 曾明确推迟 ORM，要求等到运行入口真正需要跨重启、
-跨 Worker、事务一致性或长期查询的权威业务状态时再重新评审。[ADR-0054](0054-store-reviewed-bug-problems-in-localstore.md)
+[ADR-0023](history/0023-defer-orm-until-durable-business-state.md) 曾明确推迟 ORM，要求等到运行入口真正需要跨重启、
+跨 Worker、事务一致性或长期查询的权威业务状态时再重新评审。[ADR-0054](history/0054-store-reviewed-bug-problems-in-localstore.md)
 因此先采用维护者单写、在线只读的 LocalStore JSON snapshot。
 
 现在边界已经改变：[ADR-0068](0068-treat-qualified-agent-bug-verdicts-as-operational-decisions.md) 允许合格 Agent
@@ -107,9 +107,9 @@ NoneBot 启停接线；这些正是 `nonebot-plugin-orm` 已经提供的能力�
 - 2026-08-16 已删除未接线的 `ConfirmedBugProblem`、`LocalConfirmedBugProblemRepository` 与
   `runtime-confirmed-bug-problems.json` 写入合同；线上仍在使用的只读 reviewed catalog 在 ORM 替换前保留；
 
-- 接续并部分替代 [ADR-0023](0023-defer-orm-until-durable-business-state.md)：该 ADR 设定的 ORM 触发条件已经满足；
+- 接续并部分替代 [ADR-0023](history/0023-defer-orm-until-durable-business-state.md)：该 ADR 设定的 ORM 触发条件已经满足；
   其余内存、JSONL、可重建 cache 分层仍有效；
-- 部分替代 [ADR-0054](0054-store-reviewed-bug-problems-in-localstore.md) 的 JSON snapshot 适配：data 所有权、精确
+- 部分替代 [ADR-0054](history/0054-store-reviewed-bug-problems-in-localstore.md) 的 JSON snapshot 适配：data 所有权、精确
   适用性和损坏时不得错误短路继续有效，权威读写改由 ORM；
 - 落实 [ADR-0068](0068-treat-qualified-agent-bug-verdicts-as-operational-decisions.md)、
   [ADR-0070](0070-separate-bug-reports-occurrences-and-problems.md)、
@@ -120,4 +120,4 @@ NoneBot 启停接线；这些正是 `nonebot-plugin-orm` 已经提供的能力�
 ## 相关文档
 
 - [NoneBot 数据库最佳实践](https://nonebot.dev/docs/best-practice/database/)
-- [ADR-0023：按状态语义分层存储，推迟业务 ORM](0023-defer-orm-until-durable-business-state.md)
+- [ADR-0023：按状态语义分层存储，推迟业务 ORM](history/0023-defer-orm-until-durable-business-state.md)

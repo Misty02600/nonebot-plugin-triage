@@ -56,7 +56,7 @@ backend 分支和 OpenCode Go 的 `OPENCODE_API_KEY` 回退。继续保留这些
 ## 替代关系
 
 - 替代 ADR-0091 中“旧 backend 作为迁移输入”和 OpenCode Go 密钥回退的决定；
-- 替代 [ADR-0011](0011-expose-disabled-qualified-model-configuration.md) 中旧 backend 字段与
+- 替代 [ADR-0011](history/0011-expose-disabled-qualified-model-configuration.md) 中旧 backend 字段与
   `NBTriageModelService` 的配置/运行时设计；
 - 替代 [ADR-0063](0063-keep-plugin-startup-independent-from-model-enhancements.md) 中依赖 backend 与
   `OPENCODE_API_KEY` 的部署示例，但保留“模型增强不得阻断插件启动”的边界；

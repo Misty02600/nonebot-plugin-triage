@@ -176,19 +176,19 @@ revision 的精确组合，匹配部署配置与密钥后才建立真实 Bug Age
 ## 相关决定
 
 - [ADR-0020：triage 自然语言入口与可选 Reply](../../adr/0020-use-triage-command-for-natural-language-support.md)
-- [ADR-0031：支持 Thread 续问仍要求显式 triage](../../adr/0031-require-triage-for-support-thread-continuation.md)（Thread 身份已由 ADR-0060 部分替代）
-- [ADR-0033：用一次性 Reply Claim 串行化支持 Thread](../../adr/0033-serialize-support-thread-turns-with-single-use-reply-claims.md)（Claim 键已由 ADR-0060 部分替代）
-- [ADR-0035：用 UniSeg Receipt 结算 Thread 出站引用](../../adr/0035-settle-support-thread-replies-from-uniseg-receipts.md)（Thread 结算已由 ADR-0060 部分替代）
+- [ADR-0031：支持 Thread 续问仍要求显式 triage](../../adr/history/0031-require-triage-for-support-thread-continuation.md)（Thread 身份已由 ADR-0060 部分替代）
+- [ADR-0033：用一次性 Reply Claim 串行化支持 Thread](../../adr/history/0033-serialize-support-thread-turns-with-single-use-reply-claims.md)（Claim 键已由 ADR-0060 部分替代）
+- [ADR-0035：用 UniSeg Receipt 结算 Thread 出站引用](../../adr/history/0035-settle-support-thread-replies-from-uniseg-receipts.md)（Thread 结算已由 ADR-0060 部分替代）
 - [ADR-0038：限定语义 assessment 的远端数据投影](../../adr/0038-limit-semantic-assessment-remote-data-projection.md)
 - [ADR-0048：用公开事实驱动受控 Answer Agent](../../adr/0048-use-public-facts-for-guidance-answer-agent.md)
 - [ADR-0050：用有界 Agent 判定普通用户报告的 Bug](../../adr/0050-use-a-bounded-agent-for-user-bug-assessment.md)
 - [ADR-0051：允许 Bug Agent 查询受控设计 RAG](../../adr/0051-let-the-bug-assessment-agent-query-design-rag.md)
 - [ADR-0052：把 Bug 定义到整个 Bot 软件责任链](../../adr/0052-define-bug-across-the-bot-software-responsibility-chain.md)
 - [ADR-0053：允许 Bug Agent 使用相关源码与日志正文](../../adr/0053-allow-relevant-source-and-log-bodies-for-bug-assessment.md)
-- [ADR-0054：使用 LocalStore 保存已审核 Bug 问题记录](../../adr/0054-store-reviewed-bug-problems-in-localstore.md)（已被 ORM 工作流替代）
+- [ADR-0054：使用 LocalStore 保存已审核 Bug 问题记录](../../adr/history/0054-store-reviewed-bug-problems-in-localstore.md)（已被 ORM 工作流替代）
 - [ADR-0060：用作用域 Thread 承接一次补充并在路由后投影会话上下文](../../adr/0060-use-scope-thread-and-post-route-conversation-context.md)
-- [ADR-0061：为 Bug 判断读取当前会话最新有界聊天窗口](../../adr/0061-read-latest-bounded-conversation-window-for-bug-assessment.md)
-- [ADR-0064：收窄 Bug 会话证据与结论合同](../../adr/0064-refine-bug-conversation-evidence-and-verdict-contract.md)
+- [ADR-0061：为 Bug 判断读取当前会话最新有界聊天窗口](../../adr/history/0061-read-latest-bounded-conversation-window-for-bug-assessment.md)
+- [ADR-0064：收窄 Bug 会话证据与结论合同](../../adr/history/0064-refine-bug-conversation-evidence-and-verdict-contract.md)
 - [ADR-0065：只为明确支持的平台提供 Bug 会话历史工具](../../adr/0065-only-expose-conversation-history-for-supported-platforms.md)
 - [ADR-0066：用当前公开教学合同前置筛查普通用户 Bug](../../adr/0066-use-active-teaching-contract-as-bug-precheck.md)
 - [ADR-0068：把合格 Agent Bug verdict 作为正式判断](../../adr/0068-treat-qualified-agent-bug-verdicts-as-operational-decisions.md)
@@ -198,7 +198,7 @@ revision 的精确组合，匹配部署配置与密钥后才建立真实 Bug Age
 - [ADR-0074：用追加式 Problem Decision 保留判断历史](../../adr/0074-preserve-append-only-problem-decisions.md)
 - [ADR-0075：把问题维护注册为 triage 子命令](../../adr/0075-register-problem-maintenance-under-triage-subcommand.md)
 - [ADR-0078：在可记录性合同确定前不持久化 unknown](../../adr/0078-defer-persisting-unknown-bug-assessments.md)
-- [ADR-0079：用无编号的 triage 报错查询列出待处理问题](../../adr/0079-list-pending-problems-with-triage-query.md)
+- [ADR-0079：用无编号的 triage 报错查询列出待处理问题](../../adr/history/0079-list-pending-problems-with-triage-query.md)
 - [ADR-0101：用 LangGraph Checkpoint 保存长期开发者行为讨论](../../adr/0101-use-langgraph-checkpoints-for-long-running-behavior-inquiries.md)
 - [Alconna 能力与解析回执](alconna-capability-and-parse-receipts.md)
 - [运行观察入口](runtime-observation-intake.md)

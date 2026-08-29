@@ -48,18 +48,18 @@ ADR-0021 已加入默认关闭的部署本地能力影子索引，自动收集�
 
 ## 替代关系
 
-- [ADR-0045](0045-use-one-triage-cooldown-and-localstore-capability-cache.md) 部分替代本 ADR 的动态命令、
+- [ADR-0045](history/0045-use-one-triage-cooldown-and-localstore-capability-cache.md) 部分替代本 ADR 的动态命令、
   Matcher 优先级、入口长度配置和第 7 条两级限流；命令与边界保留为固定产品合同，每轮只消费统一入口冷却。
-- “疑似故障”的可达条件已由 [ADR-0040](0040-require-trusted-preflight-failure-before-incident.md) 收紧：
+- “疑似故障”的可达条件已由 [ADR-0040](history/0040-require-trusted-preflight-failure-before-incident.md) 收紧：
   用户报告只形成未验证信号；没有模型外可信初检失败时不得建单。
-- [ADR-0031](0031-require-triage-for-support-thread-continuation.md) 恢复并细化本 ADR 的显式入口：Thread 续问
+- [ADR-0031](history/0031-require-triage-for-support-thread-continuation.md) 恢复并细化本 ADR 的显式入口：Thread 续问
   同样要求 `triage`，精确 Reply 只负责选择可续接 Thread；该决定替代 ADR-0030 的免命令例外；
 
 - 部分替代 [ADR-0003](0003-unified-capability-guidance-and-incident-intake.md) 的 `@Bot` / Reply 触发细节；
   统一入口、五类 disposition 与只有疑似故障进入技术责任层的决定继续有效；
 - 部分替代 [ADR-0006](0006-cross-platform-alconna-entry-and-reference-providers.md) 的精确 `报错`、必须
   `to_me()` 和不读取当前请求文字约束；跨平台外壳、Reply ID、引用 Provider 与隐私边界继续有效；
-- 部分替代 [ADR-0014](0014-use-observation-first-production-trials.md) 的精确 Reply 入口门槛；只有疑似故障
+- 部分替代 [ADR-0014](history/0014-use-observation-first-production-trials.md) 的精确 Reply 入口门槛；只有疑似故障
   进入 trial，普通能力问答不进入；
 - 落实 ADR-0003 的统一显式支持入口。
 

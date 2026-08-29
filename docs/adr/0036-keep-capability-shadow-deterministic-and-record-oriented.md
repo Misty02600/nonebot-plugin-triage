@@ -29,7 +29,7 @@
 
 ## 替代关系
 
-- 替代 [ADR-0034](0034-distinguish-matchers-from-user-observable-capabilities.md) 的 Matcher 角色归并实现；
+- 替代 [ADR-0034](history/0034-distinguish-matchers-from-user-observable-capabilities.md) 的 Matcher 角色归并实现；
 - 收窄 [ADR-0026](0026-filter-capability-knowledge-before-retrieval.md) 与
   [ADR-0032](0032-separate-capability-audience-analysis-and-platform-status.md) 的逐能力源码对齐要求；
 - 不改变上述 ADR 的受众隔离、平台隔离、分析问题和模型前过滤边界。

@@ -57,7 +57,7 @@
 
 ## 替代关系
 
-- 窄范围替代 [ADR-0018](0018-use-localstore-only-for-enabled-trial-audit-log.md) 第 8 条中“模型 trace 不写入
+- 窄范围替代 [ADR-0018](history/0018-use-localstore-only-for-enabled-trial-audit-log.md) 第 8 条中“模型 trace 不写入
   LocalStore”的决定；ADR-0018 对 trial 审计、原始运行状态和自动遥测的其他限制继续有效。
 
 ## 落实与验证

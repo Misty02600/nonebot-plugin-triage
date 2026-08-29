@@ -126,8 +126,8 @@ NoneBot Alconna 的公开 `Extension.parse_wrapper` 是后续接入候选，但�
 ## 相关决定与计划
 
 - [ADR-0003：统一能力导航与故障入口](../../adr/0003-unified-capability-guidance-and-incident-intake.md)
-- [ADR-0022：SUPERUSER 能力影子候选检索](../../adr/0022-limit-capability-shadow-guidance-to-superusers.md)
+- [ADR-0022：SUPERUSER 能力影子候选检索](../../adr/history/0022-limit-capability-shadow-guidance-to-superusers.md)
 - [ADR-0026：在检索与模型前隔离能力知识受众域](../../adr/0026-filter-capability-knowledge-before-retrieval.md)
-- [ADR-0027：用事实输出合同约束能力帮助](../../adr/0027-constrain-guidance-with-facts-not-fixed-wording.md)
+- [ADR-0027：用事实输出合同约束能力帮助](../../adr/history/0027-constrain-guidance-with-facts-not-fixed-wording.md)
 - [ADR-0032：分离能力受众、平台范围与分析问题](../../adr/0032-separate-capability-audience-analysis-and-platform-status.md)
 - [显式支持入口分流](support-intake-routing.md)

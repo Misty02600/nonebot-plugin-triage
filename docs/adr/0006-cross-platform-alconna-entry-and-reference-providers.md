@@ -62,5 +62,5 @@ ADR-0005 曾把首个用户入口冻结为 OneBot V11 `on_fullmatch`、`GroupMes
 - [Alconna Matcher](https://nonebot.dev/docs/best-practice/alconna/matcher)
 - [UniMessage 跨平台消息](https://nonebot.dev/docs/best-practice/alconna/uniseg/message)
 - [UniSeg 消息段](https://nonebot.dev/docs/best-practice/alconna/uniseg/segment)
-- [ADR-0004：OneBot V11 与带密钥引用索引](0004-onebot-v11-first-and-keyed-message-reference-index.md)
-- [ADR-0005：原 OneBot 群报障交互策略](0005-first-group-report-interaction-policy.md)
+- [ADR-0004：OneBot V11 与带密钥引用索引](history/0004-onebot-v11-first-and-keyed-message-reference-index.md)
+- [ADR-0005：原 OneBot 群报障交互策略](history/0005-first-group-report-interaction-policy.md)

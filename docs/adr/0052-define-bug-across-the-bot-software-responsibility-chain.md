@@ -65,8 +65,8 @@ fingerprint 和评测 Gold 失去稳定含义。
 ## 关系
 
 - 补充 [ADR-0050](0050-use-a-bounded-agent-for-user-bug-assessment.md) 未冻结的 Bug 责任范围；
-- 不改变 [ADR-0040](0040-require-trusted-preflight-failure-before-incident.md) 的 incident 副作用门；
-- 不把 [ADR-0046](0046-merge-internal-reasoning-into-behavior-exploration.md) 的 SUPERUSER 行为探索并入普通用户
+- 不改变 [ADR-0040](history/0040-require-trusted-preflight-failure-before-incident.md) 的 incident 副作用门；
+- 不把 [ADR-0046](history/0046-merge-internal-reasoning-into-behavior-exploration.md) 的 SUPERUSER 行为探索并入普通用户
   Bug 判定。
 
 ## 相关文档

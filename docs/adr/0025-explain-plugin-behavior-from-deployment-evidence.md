@@ -106,9 +106,9 @@
 - 补充 [ADR-0020](0020-use-triage-command-for-natural-language-support.md) 的自然语言支持范围，但不改变当前
   已实现的入口分流；
 - 补充 [ADR-0021](0021-use-deployment-local-capability-shadow-index.md) 和
-  [ADR-0022](0022-limit-capability-shadow-guidance-to-superusers.md)，不替代其采集、披露、鉴权、派生索引和
+  [ADR-0022](history/0022-limit-capability-shadow-guidance-to-superusers.md)，不替代其采集、披露、鉴权、派生索引和
   执行资格边界；
-- 延续 [ADR-0023](0023-defer-orm-until-durable-business-state.md) 的状态语义，不提前选择业务存储方案；
+- 延续 [ADR-0023](history/0023-defer-orm-until-durable-business-state.md) 的状态语义，不提前选择业务存储方案；
 - 回答投递场景由 [ADR-0028](0028-allow-private-triage-and-superuser-request-context-replies.md) 补充；
 - 第 7 条关于配置值进入模型的边界由
   [ADR-0029](0029-control-model-config-values-with-deployment-deny-list.md) 部分替代；索引、日志、运行数据和

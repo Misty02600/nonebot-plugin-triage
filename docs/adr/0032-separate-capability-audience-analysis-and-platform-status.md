@@ -112,4 +112,4 @@ Matcher。把这些情况都称为“待审核”既无法说明真实缺口，�
 - [部署本地能力影子索引](../architecture/flows/capability-shadow-index.md)
 - [可选帮助数据源与复用边界](../architecture/help-source-adapters.md)
 - [架构概览](../architecture/overview.md)
-- [ADR-0034：区分 Matcher 事实与用户可观察能力](0034-distinguish-matchers-from-user-observable-capabilities.md)
+- [ADR-0034：区分 Matcher 事实与用户可观察能力](history/0034-distinguish-matchers-from-user-observable-capabilities.md)

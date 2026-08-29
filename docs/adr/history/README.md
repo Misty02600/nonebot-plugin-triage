@@ -1,0 +1,78 @@
+# 历史架构决策
+
+这里保存不再作为当前一等架构入口、但仍有追溯价值的 ADR。移动只改变阅读层级，不改变原编号、
+正文或决策状态，也不表示这些记录没有价值。当前约束请从[当前 ADR 索引](../README.md)和
+[架构入口](../../architecture/README.md)开始阅读。
+
+归档类型的含义：
+
+- `已替代`：标题所表达的主决定已经被后续决定接管。
+- `未采纳`：当时明确拒绝的候选方向。
+- `评测记录`：单次资格、试验或评测执行选择。
+- `实现记录`：低于 ADR 门槛的可逆接线、参数、算法或兼容修复。
+- `支持性理由`：理由仍值得追溯，但当前约束已经由更上层 ADR、architecture、代码或测试承接。
+
+| ADR | 原状态 | 归档类型 | 决策家族 | 当前入口 | 进入历史区的判断 |
+|---|---|---|---|---|---|
+| [ADR-0004](0004-onebot-v11-first-and-keyed-message-reference-index.md) | 部分被替代 | 支持性理由 | 跨平台传输与消息引用 | [跨平台支持入口](../../architecture/flows/cross-platform-report-intake.md) | OneBot-first 是首轮切片历史；通用入站边界已由 ADR-0006 接管，HMAC 引用索引的当前事实由 flow、代码和测试承接。 |
+| [ADR-0005](0005-first-group-report-interaction-policy.md) | 已被替代 | 已替代 | 支持入口交互 | [跨平台支持入口](../../architecture/flows/cross-platform-report-intake.md) | OneBot 专属的精确“报错”+ Reply + to_me 入口已被 ADR-0006、0020 和 0060 的跨平台显式入口与 scope Thread 替代。 |
+| [ADR-0009](0009-use-async-model-boundary.md) | 已采纳 | 实现记录 | 模型适配与结构化输出 | [模型 Provider 支持](../../architecture/model-provider-support.md) | 异步核心与同步 CLI 边缘桥接可直接从当前协议、调用链和 architecture 读取，不再作为独立架构问题。 |
+| [ADR-0011](0011-expose-disabled-qualified-model-configuration.md) | 模型配置与旧 service 由 ADR-0092 替代；产品启用开关、评测许可和部署地址分别由 ADR-0037、ADR-0086、ADR-0090 接续 | 已替代 | 模型配置与运行资格 | [模型 Provider 支持](../../architecture/model-provider-support.md) | 旧 enable/backend/service 和运行白名单已由 ADR-0037、0086、0090、0091、0092 改写，当前配置明确拒绝旧字段。 |
+| [ADR-0013](0013-use-mandatory-output-tool-for-opencode-go-b1.md) | 未采纳 | 未采纳 | Provider 与任务资格 | 仅保留历史 | 这是未采纳的单次 OpenCode Go B1 输出契约提案，保留用于解释为何没有把一次探测升级为产品网关。 |
+| [ADR-0014](0014-use-observation-first-production-trials.md) | 部分被替代 | 评测记录 | 生产 trial 与评测闭环 | [观察型生产 trial](../../architecture/flows/observation-first-trials.md) | Observation-first trial 已不是当前 semantic/Bug 主路径，其设计理由继续作为生产试验历史。 |
+| [ADR-0017](0017-run-deterministic-evaluations-through-pytest.md) | 已采纳 | 评测记录 | 评测与运行工件治理 | [架构概览](../../architecture/overview.md) | 通过 pytest 执行确定性评测而不增加专用 CI job，是低成本可调整的评测执行方式。 |
+| [ADR-0018](0018-use-localstore-only-for-enabled-trial-audit-log.md) | 已采纳 | 实现记录 | 状态所有权与 trial 审计 | [观察型生产 trial](../../architecture/flows/observation-first-trials.md) | Trial JSONL 与其余内存状态的分层已由 runtime、flow 和测试承接，且 trial 已非当前主路径。 |
+| [ADR-0022](0022-limit-capability-shadow-guidance-to-superusers.md) | 聊天 guidance fallback 由 ADR-0046 部分替代 | 已替代 | 能力影子与维护者访问 | [支持入口分流](../../architecture/flows/support-intake-routing.md) | 聊天 guidance fallback 已由 behavior exploration 分类后鉴权替代；仅余维护者 CLI 访问事实。 |
+| [ADR-0023](0023-defer-orm-until-durable-business-state.md) | 部分被 ADR-0073 接续；其他状态分层仍有效 | 已替代 | 状态所有权与持久化 | [ADR-0073：Bug 权威存储](../0073-use-nonebot-orm-for-authoritative-bug-workflow-state.md) | “推迟 ORM”的主决定已被 ADR-0073 的 Bug ORM 工作流取代，其余状态分层由 overview 和当前实现承担。 |
+| [ADR-0027](0027-constrain-guidance-with-facts-not-fixed-wording.md) | 已采纳 | 支持性理由 | 能力披露与公开服务 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | “用事实约束而非固定话术”仍是有效理由，但当前合同已由 ADR-0048、0094、architecture 和测试表达。 |
+| [ADR-0030](0030-continue-support-thread-by-exact-reply.md) | 已替代 | 已替代 | 支持 Thread | [支持入口分流](../../architecture/flows/support-intake-routing.md) | 免命令 exact-Reply 续问先被 ADR-0031 撤回，Reply Thread 身份随后又被 ADR-0060 的 scope Thread 替代。 |
+| [ADR-0031](0031-require-triage-for-support-thread-continuation.md) | 部分被替代 | 已替代 | 支持 Thread | [支持入口分流](../../architecture/flows/support-intake-routing.md) | 显式 triage 要求由 ADR-0020/0060 保留，但本记录的 Reply 选 Thread 与出站 Provider 条件已经失效。 |
+| [ADR-0033](0033-serialize-support-thread-turns-with-single-use-reply-claims.md) | 部分被替代 | 已替代 | 支持 Thread 并发 | [支持入口分流](../../architecture/flows/support-intake-routing.md) | 一次性 Reply Claim 与 Reply 绑定提交已由 ADR-0060 的 scope Claim 取代；lease、BUSY 与 TTL 由当前 flow 承接。 |
+| [ADR-0034](0034-distinguish-matchers-from-user-observable-capabilities.md) | 已替代 | 已替代 | 能力影子记录粒度 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | Matcher 到用户能力的多对多推断层已被 ADR-0036 删除，后续 teaching family 使用新的确定性边界。 |
+| [ADR-0035](0035-settle-support-thread-replies-from-uniseg-receipts.md) | 部分被替代 | 已替代 | 支持 Thread 投递 | [支持入口分流](../../architecture/flows/support-intake-routing.md) | ADR-0060 已取消用 UniSeg Receipt message ID 建立续接点；发送事务与失败关闭只作为当前实现事实保留。 |
+| [ADR-0039](0039-use-griffe-for-installed-public-framework-source-evidence.md) | Griffe 后端已由 ADR-0057 替代并移除 | 已替代 | 源码 Evidence 与只读导航 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | Griffe 后端已删除，并由 ADR-0057 的阶段化工具选择和 Direct Jedi 接管。 |
+| [ADR-0040](0040-require-trusted-preflight-failure-before-incident.md) | 已采纳；由 ADR-0043 进一步收紧，专用限流由 ADR-0045 部分替代 | 已替代 | Incident 与 Bug 初检 | [支持入口分流](../../architecture/flows/support-intake-routing.md) | 当前 semantic 路径已删除 incident 目标，在线流程改为 Bug assessment 与 active teaching precheck。 |
+| [ADR-0041](0041-qualify-opencode-go-tool-output-for-support-semantics.md) | schema / Prompt revision 由 ADR-0043 替代；手写 output tool 由 ADR-0044、独立 extra 由 ADR-0047、运行白名单由 ADR-0086 替代 | 评测记录 | Provider 与任务资格 | [模型 Provider 支持](../../architecture/model-provider-support.md) | 旧 Prompt、手写 output tool、extra 和运行白名单均已换代，现存价值是当时的 held-out 资格证据。 |
+| [ADR-0043](0043-separate-support-goals-observations-and-maintenance-depth.md) | 已替代 | 已替代 | 语义 taxonomy | [支持入口分流](../../architecture/flows/support-intake-routing.md) | 旧 goals/observation/maintenance-depth 三轴已由 ADR-0046 及后续 taxonomy 替代。 |
+| [ADR-0044](0044-use-pydantic-ai-agent-output-type-for-support-semantics.md) | 已采纳 | 实现记录 | 模型适配与结构化输出 | [模型 Provider 支持](../../architecture/model-provider-support.md) | 直接使用 Agent(output_type=...) 是 ADR-0042 原生能力所有权原则的具体接线，由代码和合约测试表达。 |
+| [ADR-0045](0045-use-one-triage-cooldown-and-localstore-capability-cache.md) | 已采纳 | 实现记录 | 入口配置与能力 cache | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 冷却默认值、删除配置键和 LocalStore cache 路径是可逆实现细节，当前配置、runtime、architecture 与测试已承接。 |
+| [ADR-0046](0046-merge-internal-reasoning-into-behavior-exploration.md) | 已采纳 | 支持性理由 | 语义 taxonomy 与行为探索 | [支持入口分流](../../architecture/flows/support-intake-routing.md) | 内部原因归入 behavior exploration、身份在模型外鉴权仍有效；旧 schema/Prompt 已过时，理由由当前 architecture 承接。 |
+| [ADR-0047](0047-reuse-pydantic-ai-provider-extras.md) | 部分被 ADR-0084 替代 | 已替代 | 发行与 Provider 依赖 | [模型 Provider 支持](../../architecture/model-provider-support.md) | Provider extras 仍被复用，但控制层与 optional Provider 的依赖所有权已由 ADR-0084 重划。 |
+| [ADR-0054](0054-store-reviewed-bug-problems-in-localstore.md) | 已被 ADR-0068、ADR-0073 替代；旧 JSON catalog 已删除 | 已替代 | Bug 工作流持久化 | [ADR-0073：Bug 权威存储](../0073-use-nonebot-orm-for-authoritative-bug-workflow-state.md) | 旧 JSON catalog 与文件 Repository 已被 ADR-0068、0073、0074 的 ORM 事务和 Decision 模型完整取代。 |
+| [ADR-0055](0055-use-ast-grep-for-matcher-source-shape-extraction.md) | 已采纳；直接替换已实现 | 实现记录 | 源码证据与只读导航 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | ast-grep 只是 Matcher CST 形状提取后端，当前职责由 capability flow、实现和回归测试表达。 |
+| [ADR-0056](0056-use-serena-for-optional-bug-source-navigation.md) | 已被 ADR-0085 替代 | 已替代 | 源码证据与只读导航 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | Serena extra、配置、进程和实现已由 ADR-0085 撤销。 |
+| [ADR-0061](0061-read-latest-bounded-conversation-window-for-bug-assessment.md) | 部分被 ADR-0064、ADR-0065、ADR-0066 替代 | 已替代 | Bug 会话证据 | [支持入口分流](../../architecture/flows/support-intake-routing.md) | 最新窗口、平台能力与 teaching precheck 已分别由 ADR-0064、0065、0066 接续。 |
+| [ADR-0062](0062-structure-capability-teaching-usages-requirements-and-interactions.md) | 公开字段与 requirement kind 已被 ADR-0094 替代 | 已替代 | 能力教学公开合同 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 公开字段与 requirement kind 已由 ADR-0094 替代，残留字段所有权进入当前 capability flow。 |
+| [ADR-0064](0064-refine-bug-conversation-evidence-and-verdict-contract.md) | 部分被 ADR-0065、ADR-0066 替代；Prompt v8 精确资格已通过 | 支持性理由 | Bug 会话与证据闭合 | [支持入口分流](../../architecture/flows/support-intake-routing.md) | 仍有效的窗口、精确 Reply 和预期/实际闭合已由 ADR-0060、0065、0066、当前 flow 与测试接管。 |
+| [ADR-0069](0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md) | Answer Markdown 决定已被 ADR-0094 替代 | 支持性理由 | 教学投影与静态分析 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | Answer Markdown 所有权已由 ADR-0094 更新；静态层定范围、模型理解语义由 ADR-0058 和 current architecture 表达。 |
+| [ADR-0076](0076-remove-legacy-trial-feedback-and-stats-chat-commands.md) | 已采纳；聊天入口、元数据与当前文档已删除 | 支持性理由 | 历史 trial 兼容清理 | [支持入口分流](../../architecture/flows/support-intake-routing.md) | 旧反馈与统计聊天入口已完成删除，本记录主要解释为何底层 trial 工件仍保留。 |
+| [ADR-0077](0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md) | 已采纳；已实现，待真实 Provider held-out | 实现记录 | 教学重生成与缓存 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 上一版注释作为非证据编辑基线是内部生成策略，当前行为由 capability flow、代码和测试承担。 |
+| [ADR-0079](0079-list-pending-problems-with-triage-query.md) | 已采纳；待处理列表与命令树已实现 | 支持性理由 | Bug 维护命令与授权 | [支持入口分流](../../architecture/flows/support-intake-routing.md) | 无编号待处理列表是 ADR-0075 命令树和 ADR-0072/0073 状态模型上的查询扩展。 |
+| [ADR-0081](0081-close-unknown-teaching-gates-and-freeze-parser-owned-usages.md) | 部分被 ADR-0082、ADR-0083、ADR-0095、ADR-0099 替代 | 已替代 | 能力教学 Parser 与门禁 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | Parser 槽位、family 成员和未知门禁分别由 ADR-0082、0083、0095、0099 接续。 |
+| [ADR-0082](0082-group-parameterized-matchers-only-by-runtime-handler-code-identity.md) | 已采纳；成员输入边界由 ADR-0095 细化 | 实现记录 | 参数化 Matcher 教学 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 按 Runtime Handler 代码身份分组是内部分析单元构造算法，由 capability flow 和定向测试表达。 |
+| [ADR-0085](0085-remove-serena-bug-source-backend.md) | 已采纳；已实现 | 支持性理由 | 源码证据与安装清理 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | Serena 移除已经完成，当前架构由 ADR-0057、0059、0084 和包元数据直接表达。 |
+| [ADR-0087](0087-validate-and-factor-runtime-command-aliases-for-teaching-usages.md) | 已采纳；已实现，待新模型评测 | 实现记录 | 教学 usage 展示 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | Alias 因式分解、display_trigger 校验与回退属于内部展示算法。 |
+| [ADR-0088](0088-bound-capability-annotation-concurrency-by-plugin.md) | 插件级调度被 ADR-0096 替代；第 4 项部分被 ADR-0093 替代 | 已替代 | 教学并发与发布 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 插件级调度粒度已由 ADR-0096 更新，缓存和部分发布又由 ADR-0093 接续。 |
+| [ADR-0095](0095-preserve-family-member-invocations-and-compress-only-display.md) | 已采纳；请求表示由 ADR-0098、聚合参数展示由 ADR-0102 细化 | 支持性理由 | Family 聚合与精确成员调用 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | Family 完整成员、共同注释、精确 usage 与展示压缩已由 capability flow 承接。 |
+| [ADR-0096](0096-bound-capability-annotation-concurrency-by-unit.md) | 固定 `1..32` 配置范围被 ADR-0120、仅分析阶段并发被 ADR-0122 替代 | 已替代 | 教学并发调度 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 固定并发上限被 ADR-0120 替代，分析阶段边界又被 ADR-0122 更新。 |
+| [ADR-0098](0098-deduplicate-complete-family-member-manifests.md) | 已采纳 | 实现记录 | Family 请求表示 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 完整成员清单与 Parser shape 去重是 Provider payload 的内部归一化和性能实现。 |
+| [ADR-0099](0099-separate-parser-structure-from-public-slot-names.md) | 已采纳；family 聚合槽位由 ADR-0102、联合输入传递由 ADR-0111 细化 | 支持性理由 | Parser 结构与公开命名 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | Parser 锁定结构、模型只命名槽位的理由仍有用，当前事实已进入 capability flow。 |
+| [ADR-0100](0100-keep-migut-help-descriptions-minimal.md) | 已采纳 | 支持性理由 | Migut Help 展示适配 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | Description 只显示 summary、其余事实留给 Answer 的有损展示策略已由 architecture 承接。 |
+| [ADR-0102](0102-keep-family-aggregate-parameters-actionable.md) | 已采纳 | 支持性理由 | Family 聚合展示 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 大聚合槽位的展示密度与校验阈值属于 ADR-0094/0095/0099 家族的展示细化。 |
+| [ADR-0103](0103-enable-opencode-go-thinking-and-capture-maintenance-reasoning.md) | 已采纳 | 评测记录 | 模型设置与维护诊断 | [模型 Provider 支持](../../architecture/model-provider-support.md) | Thinking level 的选择来自 Provider smoke 和真实插件诊断，当前 settings revision 已继续演进。 |
+| [ADR-0104](0104-preload-one-hop-python-dependency-source-for-teaching.md) | 已采纳；family 零工具边界由 ADR-0118 替代 | 支持性理由 | 教学 Evidence 与源码导航 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 一层依赖预载和依赖根访问是 ADR-0059 的教学链路细化，当前安全边界已在 capability flow 描述。 |
+| [ADR-0106](0106-follow-static-parameter-dependencies-for-teaching-evidence.md) | 已采纳；参数默认值形式由 ADR-0117 补充，普通调用深度由 ADR-0118 收敛 | 实现记录 | 教学 Evidence 提取 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 识别 Annotated[..., Depends(provider)] 是框架语法覆盖，随后又由 ADR-0117 补全默认值形式。 |
+| [ADR-0107](0107-capture-provider-http-errors-in-explicit-maintenance-diagnostics.md) | 已采纳 | 实现记录 | 维护诊断 | [模型 Provider 支持](../../architecture/model-provider-support.md) | HTTP 状态、响应头、正文截断和诊断 schema 是 ADR-0097 下的诊断字段设计。 |
+| [ADR-0108](0108-preserve-permission-disjunctions-in-teaching-requirements.md) | 已采纳 | 支持性理由 | 公开教学权限语义 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | Permission OR 容器是重要正确性依据，当前语义已由 ADR-0094、0113、0119 和 capability flow 承接。 |
+| [ADR-0109](0109-delegate-transient-http-retries-to-provider-sdks.md) | 已采纳 | 实现记录 | Provider 请求执行 | [模型 Provider 支持](../../architecture/model-provider-support.md) | max_retries 与把瞬时重试交给 SDK 属于原生 API 接线和参数选择。 |
+| [ADR-0110](0110-preload-static-family-member-callables.md) | 已采纳 | 实现记录 | Family Evidence 准备 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 静态工厂 Callable 的识别、去重和预算是 Evidence 首包构建算法。 |
+| [ADR-0111](0111-preserve-alconna-union-input-types-in-family-shapes.md) | 已采纳 | 实现记录 | Parser shape 完整性 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 保留 Alconna Union 成员是适配层结构丢失的普通正确性修复。 |
+| [ADR-0112](0112-do-not-blacklist-dynamic-source-symbols-in-public-teaching-text.md) | 已采纳 | 支持性理由 | 公开文本与保密边界 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 敏感值应在输入准入排除而非对子串设动态符号黑名单，是由 ADR-0058/0059、0094 和 flow 承接的负面设计理由。 |
+| [ADR-0114](0114-follow-static-gate-bindings-and-bind-jedi-to-request-evidence.md) | 已采纳；模型坐标接口被 ADR-0115、普通调用深度被 ADR-0118 局部替代 | 支持性理由 | 教学 Evidence 与源码导航 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 静态 gate 绑定链仍有价值，但坐标式接口已被 ADR-0115 替代，普通调用深度又被 ADR-0118 更新。 |
+| [ADR-0115](0115-open-python-definitions-through-request-bound-navigation-handles.md) | 已采纳 | 支持性理由 | 教学 Evidence 与源码导航 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 请求内 navigation_ref 是共享只读 Evidence 门禁下的工具协议优化，当前安全事实已进入 capability flow。 |
+| [ADR-0116](0116-classify-role-and-access-by-the-executed-gate.md) | 已采纳 | 支持性理由 | 公开教学权限语义 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 按入口实际执行的 gate 区分 role/access 是 ADR-0113/0108 的语义收紧。 |
+| [ADR-0117](0117-follow-default-depends-parameter-providers.md) | 已采纳 | 实现记录 | 教学 Evidence 提取 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 支持默认值形式 Depends(provider) 是 ADR-0106 遗漏的一种框架语法覆盖。 |
+| [ADR-0118](0118-limit-eager-source-depth-and-let-families-navigate-selectively.md) | 已采纳 | 支持性理由 | 教学 Evidence 与源码导航 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | Eager 展开深度、family 窄工具面和请求预算是 ADR-0104/0115 下的成本与工具面细化。 |
+| [ADR-0119](0119-store-direct-scene-requirements-as-atomic-sets.md) | 已采纳 | 支持性理由 | 公开教学权限语义 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 原子 allowed_scenes 集合是 ADR-0108/0113 下的 schema 表示修正，当前语义已进入 capability flow。 |
+| [ADR-0120](0120-remove-the-fixed-capability-annotation-concurrency-ceiling.md) | 已采纳 | 实现记录 | 教学并发调度 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | 是否保留固定数值上限属于部署调参与性能策略，当前配置事实已由 flow、代码和测试承担。 |
+| [ADR-0122](0122-pipeline-capability-evidence-preparation-and-analysis.md) | 已采纳 | 实现记录 | 教学并发调度 | [能力影子索引](../../architecture/flows/capability-shadow-index.md) | Evidence 准备池、同插件准备串行与逐单元流水衔接是内部调度实现。 |

@@ -77,7 +77,8 @@ LOCALSTORE_PLUGIN_DATA_DIR={"nonebot_plugin_triage":"/var/lib/nonebot/triage-wor
 ```
 
 - 普通用户当前不能通过 `triage` 创建 trial；未来若重新接入，仍必须使用显式授权入口；
-- 兼容维护者查询：`@Bot 报错查询 <incident_id>`；
+- 当前没有 incident / trial 聊天查询入口；正式 `triage 报错查询 [P-...]` 查询的是 ORM Problem 工作流，
+  不是这里的兼容 incident / trial 状态；
 - 旧 `报错反馈` 与 `报错统计` 聊天入口已删除；离线窗口统计继续使用 `summarize-trials`。
 
 兼容查询入口在读取 trial 状态前要求 `SUPERUSER`。`trial_mode=off` 是默认值，不创建日志文件；启用
@@ -118,8 +119,8 @@ just maintainer summarize-trials `
 迁移前产生的 `logs/nbtriage-trials.jsonl` 不会自动搬运、合并或纳入新文件；如需分析，维护者必须显式把
 旧文件作为独立输入，并自行完成隐私与来源复核。
 
-把 `NBTRIAGE_TRIAL_MODE` 改回 `off` 并按宿主流程重启，即停止兼容 trial 和日志写入；维护者对既有 incident
-的查询、入口限流与运行引用关联仍可独立工作，但当前 `triage` 本来就不会新增 incident。日志写入失败时兼容
+把 `NBTRIAGE_TRIAL_MODE` 改回 `off` 并按宿主流程重启，即停止兼容 trial 和日志写入；运行引用关联仍可
+独立工作，但当前 `triage` 不会新增 incident，也没有聊天入口查询既有 incident / trial。日志写入失败时兼容
 服务保持原回执并增加 drop；corrupt 增长时检查多进程共用路径、外部截断和版本不一致；发生隐私或权限事故
 时立即切回 `off`、隔离日志并停止共享。不要直接编辑现有 JSONL，调查应在副本上进行。
 
@@ -145,12 +146,12 @@ observe，不用模型填补证据缺口。
 | 脱敏轮转窗口汇总维护命令 | `src/nbtriage/live_trials.py`、`tools/nbtriage_maintainer/cli.py` |
 | trial 配置、sink 装配与白名单格式化 | `src/nonebot_plugin_triage/config.py`、`src/nonebot_plugin_triage/trials.py` |
 | incident 建立后的 fail-open trial 观察 | `src/nonebot_plugin_triage/live_reports.py` |
-| SUPERUSER 查询、反馈与统计 Matcher | `src/nonebot_plugin_triage/handlers.py` |
+| 未接入 Matcher 的兼容 incident 查询与 trial 格式化服务 | `src/nonebot_plugin_triage/incident_queries.py`、`src/nonebot_plugin_triage/trials.py` |
 | 隐私、轮转、TTL、容量与入口集成测试 | `tests/test_live_trials.py`、`tests/test_trial_runtime.py`、`tests/test_live_reports.py` |
 
 ## 相关决定
 
-- [ADR-0014：先用观察型生产 trial 建立可评测闭环](../../adr/0014-use-observation-first-production-trials.md)
+- [ADR-0014：先用观察型生产 trial 建立可评测闭环](../../adr/history/0014-use-observation-first-production-trials.md)
 - [ADR-0006：跨平台 Alconna 入口与引用 Provider](../../adr/0006-cross-platform-alconna-entry-and-reference-providers.md)
 - [ADR-0020：triage 自然语言入口与可选 Reply](../../adr/0020-use-triage-command-for-natural-language-support.md)
 - [ADR-0010：用有界证据获取循环验证 Agent 能力](../../adr/0010-use-bounded-evidence-seeking-agent-loop.md)

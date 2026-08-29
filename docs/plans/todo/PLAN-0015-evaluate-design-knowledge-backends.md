@@ -129,7 +129,7 @@ Context7 强调维护便利和覆盖更新，但增加网络、隐私、版本�
 | 出站最小化 | 用户原文、日志、源码、配置、身份、关联 ID | Context7 请求只含公共检索 query、可信 library ID 和认证元数据 | 网络前 spy/MockTransport 断言 |
 | 后端选择 | 四种候选模式、缺凭据、超时、429、5xx、零命中 | 严格按配置调用；未授权回退不发生；失败不触发其他副作用 | router/adapter 单测与 Agent fake integration |
 | 证据映射 | 本地与 Context7 返回同主题内容 | provider、component、version、locator、revision/freshness 分离，分数不混排 | `BugEvidence` 合同测试 |
-| 对比评测 | 全新 held-out 覆盖框架 API、Rule/Permission、配置、版本拒绝和无答案 | 分后端报告质量、延迟、费用与失败率，足以支持 D-001/D-002 | maintainer eval runner；报告保存在本地 `reports/` |
+| 对比评测 | 全新 held-out 覆盖框架 API、Rule/Permission、配置、版本拒绝和无答案 | 分后端报告质量、延迟、费用与失败率，足以支持 D-001 | maintainer eval runner；报告保存在本地 `reports/` |
 | 文档收敛 | 用户确认最终后端与顺序 | ADR、配置说明、overview 和 support/Bug flow 与实现一致 | 链接、术语与配置字段检查 |
 
 ## 相关文档

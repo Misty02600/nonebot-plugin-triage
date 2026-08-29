@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；family 边界被 [ADR-0095](0095-preserve-family-member-invocations-and-compress-only-display.md) 替代；真实插件诊断范围被 [ADR-0097](0097-capture-complete-capability-model-output-in-explicit-maintenance-runs.md) 部分替代；Migut Help description 边界被 [ADR-0100](0100-keep-migut-help-descriptions-minimal.md) 替代；路由、授权与业务准备状态的字段所有权被 [ADR-0113](0113-separate-routing-authorization-and-business-readiness-in-teaching.md) 部分替代 | 2026-08-19 |
+| 已采纳；family 边界被 [ADR-0095](history/0095-preserve-family-member-invocations-and-compress-only-display.md) 替代；真实插件诊断范围被 [ADR-0097](0097-capture-complete-capability-model-output-in-explicit-maintenance-runs.md) 部分替代；Migut Help description 边界被 [ADR-0100](history/0100-keep-migut-help-descriptions-minimal.md) 替代；路由、授权与业务准备状态的字段所有权被 [ADR-0113](0113-separate-routing-authorization-and-business-readiness-in-teaching.md) 部分替代 | 2026-08-19 |
 
 ## 当时遇到了什么
 
@@ -159,15 +159,15 @@ entry 提供。
 
 ## 替代关系
 
-- 替代 [ADR-0062](0062-structure-capability-teaching-usages-requirements-and-interactions.md) 的公开字段和
+- 替代 [ADR-0062](history/0062-structure-capability-teaching-usages-requirements-and-interactions.md) 的公开字段和
   requirement kind；其 Runtime/模型事实所有权、结构化限流和不按符号名猜门禁的原则继续有效。
-- 替代 [ADR-0069](0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md) 中模型生成
+- 替代 [ADR-0069](history/0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md) 中模型生成
   Answer Markdown 的决定；Help 与 Answer 仍是两个展示适配器，并由同一 generation 原子切换。
 - 接续 [ADR-0080](0080-model-capability-teaching-as-multiple-public-entries.md) 的多 entry 身份，不改变
   Alconna 叶子与普通 teaching entry 的边界。
-- 细化 [ADR-0081](0081-close-unknown-teaching-gates-and-freeze-parser-owned-usages.md) 的四项有限枚举：阈值
+- 细化 [ADR-0081](history/0081-close-unknown-teaching-gates-and-freeze-parser-owned-usages.md) 的四项有限枚举：阈值
   适用于所有固定备选，不只参数化 family。
-- 延续 [ADR-0082](0082-group-parameterized-matchers-only-by-runtime-handler-code-identity.md) 的 family 身份，
+- 延续 [ADR-0082](history/0082-group-parameterized-matchers-only-by-runtime-handler-code-identity.md) 的 family 身份，
   只改变查询时如何组合当前 Runtime 成员与共同注释。
 - 对 [ADR-0089](0089-persist-redacted-pydantic-ai-agent-traces.md) 增加仅限官方合成评测 opt-in 的诊断例外；
   生产默认遥测仍不保存正文。

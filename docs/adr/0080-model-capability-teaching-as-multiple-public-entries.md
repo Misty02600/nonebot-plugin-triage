@@ -104,6 +104,6 @@ output token、6,398 microUSD。1 条逐字基线案例与 2 条成员保留案�
 ## 相关决定
 
 - [ADR-0058：用确定性证据与有界源码导航生成教学注释](0058-use-deterministic-evidence-and-bounded-navigation-for-teaching-annotations.md)
-- [ADR-0062：结构化能力教学的用法、约束与交互](0062-structure-capability-teaching-usages-requirements-and-interactions.md)
-- [ADR-0069：分离帮助展示与 Answer 知识，并收窄静态分析职责](0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md)
-- [ADR-0077：把上一版机器生成教学内容作为非证据基线](0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md)
+- [ADR-0062：结构化能力教学的用法、约束与交互](history/0062-structure-capability-teaching-usages-requirements-and-interactions.md)
+- [ADR-0069：分离帮助展示与 Answer 知识，并收窄静态分析职责](history/0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md)
+- [ADR-0077：把上一版机器生成教学内容作为非证据基线](history/0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md)

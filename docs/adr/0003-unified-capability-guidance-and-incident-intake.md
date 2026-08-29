@@ -134,7 +134,7 @@ README 可能过期、缺少当前启用状态与权限信息，也难以可靠�
 
 ## 相关文档
 
-- [ADR-0040：只有可信初检仍失败才进入 incident](0040-require-trusted-preflight-failure-before-incident.md)
+- [ADR-0040：只有可信初检仍失败才进入 incident](history/0040-require-trusted-preflight-failure-before-incident.md)
 - [ADR-0001：QQ 群显式报障与本机运行证据](0001-qq-group-report-linked-runtime-evidence.md)
 - [ADR-0002：分级自治与所有权感知修复](0002-tiered-autonomy-and-ownership-aware-remediation.md)
 - [产品定位与同类能力](../architecture/product-positioning.md)

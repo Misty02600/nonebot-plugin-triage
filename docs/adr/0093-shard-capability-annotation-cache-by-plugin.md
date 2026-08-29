@@ -1,6 +1,6 @@
 # ADR-0093：按插件分片教学注释缓存并按单元部分发布
 
-> 后续关系：[ADR-0096](0096-bound-capability-annotation-concurrency-by-unit.md) 替代本 ADR 沿用的“不同插件并发、
+> 后续关系：[ADR-0096](history/0096-bound-capability-annotation-concurrency-by-unit.md) 替代本 ADR 沿用的“不同插件并发、
 > 同一插件内顺序分析”调度边界；本 ADR 的插件 cache shard、单元状态、staging 与全局原子 pointer 继续有效。
 > [ADR-0121](0121-checkpoint-completed-teaching-units-before-atomic-publication.md) 进一步允许把已完成但未发布的
 > 单元候选作为 cache checkpoint 持久化；本 ADR 的活动指针与原子发布边界不变。
@@ -39,7 +39,7 @@
 3. 失败的 `last_attempt` 不覆盖 `last_good`。只有分片的 `published_generation` 与当前 `current.json` 精确
    一致，且 `last_good` 的请求 fingerprint、插件源码 revision 与动态 Evidence manifest 都仍匹配本轮输入时，
    才可以作为缓存结果继续进入候选；不匹配的旧结果最多按
-   [ADR-0077](0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md) 作为
+   [ADR-0077](history/0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md) 作为
    `previous_annotation` 编辑基线，不能继续服务或充当 Evidence。
 4. 单个插件 JSON 通过临时文件、同步落盘和 `os.replace` 原子替换。各插件缓存是可删除重建的派生状态，
    不与其他插件缓存或活动 generation 组成跨文件事务；缓存缺失或落后只会导致后续重算，不能改变已经由
@@ -140,16 +140,16 @@ WAL / journal 或 SQLite 事务会制造第二套恢复协议，却不能替代�
 
 ## 替代关系
 
-- 部分替代 [ADR-0088](0088-bound-capability-annotation-concurrency-by-plugin.md) 决策第 4 项中“任一单元失败
+- 部分替代 [ADR-0088](history/0088-bound-capability-annotation-concurrency-by-plugin.md) 决策第 4 项中“任一单元失败
   都不激活半套 Answer 视图”的整轮失败边界，并具体规定成功缓存的按插件 JSON 形态；ADR-0088 的插件间
   有限并发、插件内顺序、全局 refresh lock、缓存写入锁、Runtime 准入和全局输出 pointer 继续有效。
 - 延续 [ADR-0058](0058-use-deterministic-evidence-and-bounded-navigation-for-teaching-annotations.md) 的
   Evidence、导航、插件级源码 revision 与首版全量重生成边界。
 - 不改变 [ADR-0066](0066-use-active-teaching-contract-as-bug-precheck.md) 的 active teaching contract；只有
   `current.json` 实际激活且仍通过当前 ServingView 的教学单元获得合同地位。
-- 不改变 [ADR-0069](0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md) 的
+- 不改变 [ADR-0069](history/0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md) 的
   help-display / answer-knowledge 双投影与单一 generation，也不改变
-  [ADR-0077](0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md) 的非证据基线边界。
+  [ADR-0077](history/0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md) 的非证据基线边界。
 
 ## 相关文档
 

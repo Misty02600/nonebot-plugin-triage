@@ -84,13 +84,13 @@
 
 ## 替代关系
 
-- [ADR-0045](0045-use-one-triage-cooldown-and-localstore-capability-cache.md) 部分替代第 1 条和“启用者提供
+- [ADR-0045](history/0045-use-one-triage-cooldown-and-localstore-capability-cache.md) 部分替代第 1 条和“启用者提供
   路径”的影响：能力影子改为默认启用，路径由 LocalStore 插件 cache 管理；导入期不解析路径，失败降级。
 - 第 2、4 条中“自动发现普通命令默认 review、普通 public 主要依赖显式批准”的边界，已被
   [ADR-0024](0024-auto-publish-deterministic-capability-fields.md) 部分替代；确定入口和平台范围可判定时
   自动 public，动态、冲突、敏感和证据不足项继续 review。
 - 第 6 条的“第一阶段不接入回复”和群聊 SUPERUSER 尚未接入边界，已被
-  [ADR-0022](0022-limit-capability-shadow-guidance-to-superusers.md) 部分替代；普通用户仍只读取已批准
+  [ADR-0022](history/0022-limit-capability-shadow-guidance-to-superusers.md) 部分替代；普通用户仍只读取已批准
   public，review / restricted 的证据与执行资格边界不变。
 - 部分替代 [ADR-0003](0003-unified-capability-guidance-and-incident-intake.md) 的 D-003：显式 Provider 不再是
   普通 Matcher 的唯一接入方式，但其安全披露职责保留。

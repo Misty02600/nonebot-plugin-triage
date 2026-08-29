@@ -5,10 +5,10 @@
 | 已采纳 | 2026-08-13 |
 
 > OpenCode Go 的 `support-semantic-v2` 传输形式已由
-> [ADR-0041](0041-qualify-opencode-go-tool-output-for-support-semantics.md) 部分替代为唯一、不可执行的
+> [ADR-0041](history/0041-qualify-opencode-go-tool-output-for-support-semantics.md) 部分替代为唯一、不可执行的
 > output tool；本 ADR 的默认 assessment、零可执行工具、零重试与失败关闭继续有效。
 > 当前目标 / 现象 / 维护深度 schema 与资格 revision 已由
-> [ADR-0043](0043-separate-support-goals-observations-and-maintenance-depth.md) 替代。
+> [ADR-0043](history/0043-separate-support-goals-observations-and-maintenance-depth.md) 替代。
 > [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) 已窄范围替代本 ADR 保留的
 > custom Base URL 禁令；默认 assessment、零可执行工具、零重试与失败关闭继续有效。
 
@@ -64,14 +64,14 @@ ADR-0011 又把模型装配表达成产品级 `enabled` 开关，并规定 Match
 ## 替代关系
 
 - OpenCode Go 的 `support-semantic-v2` 精确组合由
-  [ADR-0041](0041-qualify-opencode-go-tool-output-for-support-semantics.md) 部分替代第 6 条的 native-schema-only
+  [ADR-0041](history/0041-qualify-opencode-go-tool-output-for-support-semantics.md) 部分替代第 6 条的 native-schema-only
   传输限制；不改变 B1 或 B4 的资格。
 
-- incident 可达条件先由 [ADR-0040](0040-require-trusted-preflight-failure-before-incident.md) 收紧，随后由
-  [ADR-0043](0043-separate-support-goals-observations-and-maintenance-depth.md) 最终固定为
+- incident 可达条件先由 [ADR-0040](history/0040-require-trusted-preflight-failure-before-incident.md) 收紧，随后由
+  [ADR-0043](history/0043-separate-support-goals-observations-and-maintenance-depth.md) 最终固定为
   `incident_intake + reported_observation + 模型外可信初检失败`；本 ADR 的默认路径与零工具边界继续有效。
 
-- 部分替代 [ADR-0011](0011-expose-disabled-qualified-model-configuration.md) 的产品级 `enabled` 开关、
+- 部分替代 [ADR-0011](history/0011-expose-disabled-qualified-model-configuration.md) 的产品级 `enabled` 开关、
   禁用时的工厂分支，以及“Matcher 不消费模型服务”约束。ADR-0011 的密钥仅从环境读取、
   无 custom base URL、精确组合资格门、惰性 client factory 和每步一次请求继续有效。
 - 落实 [ADR-0020](0020-use-triage-command-for-natural-language-support.md) 中“指令只负责选中插件，后续文字由受控

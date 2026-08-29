@@ -66,9 +66,9 @@ ADR-0064 曾决定用 Bot 进程内的最近消息窗口，为没有原生历史
 
 ## 替代关系
 
-- 部分替代 [ADR-0064](0064-refine-bug-conversation-evidence-and-verdict-contract.md) 第 4、5 项以及对应的
+- 部分替代 [ADR-0064](history/0064-refine-bug-conversation-evidence-and-verdict-contract.md) 第 4、5 项以及对应的
   本地缓冲实现状态；保留 30 条上限、精确 Reply、Uninfo 可选身份补充、独立聊天额度和三值收敛；
-- 进一步收窄 [ADR-0061](0061-read-latest-bounded-conversation-window-for-bug-assessment.md) 第 4、6 项：
+- 进一步收窄 [ADR-0061](history/0061-read-latest-bounded-conversation-window-for-bug-assessment.md) 第 4、6 项：
   不支持历史的平台不再返回 conversation capability state，而是根本不暴露工具；
 - 不改变 [ADR-0060](0060-use-scope-thread-and-post-route-conversation-context.md) 的 scope Thread 与路由后
   Reply 投影；

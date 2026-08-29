@@ -4,11 +4,11 @@
 |---|---|---|
 | 已采纳；语义 assessment 实现由 ADR-0044、Provider extra 所有权由 ADR-0047 部分替代 | 2026-08-09 | 2026-08-09 |
 
-> [ADR-0044](0044-use-pydantic-ai-agent-output-type-for-support-semantics.md) 只对支持入口语义 assessment
+> [ADR-0044](history/0044-use-pydantic-ai-agent-output-type-for-support-semantics.md) 只对支持入口语义 assessment
 > 改用 Pydantic AI `Agent(output_type=SupportSemanticAssessment)`；本 ADR 的 B1 Direct Request、
 > Provider / Model / Profile 分层和零业务工具边界继续有效。
 
-> [ADR-0047](0047-reuse-pydantic-ai-provider-extras.md) 已替代项目自造 `model-` extra 名称与重复固定底层
+> [ADR-0047](history/0047-reuse-pydantic-ai-provider-extras.md) 已替代项目自造 `model-` extra 名称与重复固定底层
 > SDK 的安装决定；这里保留的旧名称和版本是当时的实施历史，不再是当前公开安装接口。
 
 > [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) 已窄范围替代固定 endpoint 边界：

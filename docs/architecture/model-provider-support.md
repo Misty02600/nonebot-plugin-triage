@@ -39,7 +39,7 @@ capability annotation 的评测结果推导 semantic 质量。
 [ADR-0053](../adr/0053-allow-relevant-source-and-log-bodies-for-bug-assessment.md) 允许独立合格的 Bug Agent
 接收与本案相关的源码、关联日志、完整 traceback 和获准设计摘录，并要求这些部署证据在出站前清理秘密。
 [ADR-0060](../adr/0060-use-scope-thread-and-post-route-conversation-context.md) 另允许直接 Reply 进入路由后任务；
-[ADR-0061](../adr/0061-read-latest-bounded-conversation-window-for-bug-assessment.md) 把 Bug 聊天读取收窄为当前会话
+[ADR-0061](../adr/history/0061-read-latest-bounded-conversation-window-for-bug-assessment.md) 把 Bug 聊天读取收窄为当前会话
 最新有界窗口，并允许投影会话关系所需的消息 / 用户 ID、角色和段元数据。聊天正文不做凭据或个人信息遮蔽；
 平台 transport envelope 不进入。[ADR-0065](../adr/0065-only-expose-conversation-history-for-supported-platforms.md)
 进一步规定：只有已绑定真实历史 Provider 时才暴露聊天工具，其他平台不使用本地滚动窗口模拟能力。
@@ -213,21 +213,21 @@ DeepSeek 的 `deepseek-v4-flash` 不是固定 snapshot。后续每份真实报�
 ## 相关决定与证据
 
 - [ADR-0008：采用 Pydantic AI 的受控模型适配层](../adr/0008-pydantic-ai-controlled-model-adaptation.md)
-- [ADR-0009：模型调用核心采用异步协议](../adr/0009-use-async-model-boundary.md)
-- [ADR-0011：公开默认关闭且按资格门装配的模型配置](../adr/0011-expose-disabled-qualified-model-configuration.md)
+- [ADR-0009：模型调用核心采用异步协议](../adr/history/0009-use-async-model-boundary.md)
+- [ADR-0011：公开默认关闭且按资格门装配的模型配置](../adr/history/0011-expose-disabled-qualified-model-configuration.md)
 - [ADR-0090：在部署端配置 Pydantic AI Provider 地址](../adr/0090-configure-pydantic-ai-provider-base-urls-at-deployment.md)
 - [ADR-0091：用 Pydantic AI 模型 ID 作为公开传输选择器](../adr/0091-use-pydantic-ai-model-ids-as-the-public-transport-selector.md)
 - [ADR-0092：删除旧模型 backend 配置兼容](../adr/0092-remove-legacy-model-backend-configuration.md)
 - [ADR-0037：把语义 assessment 作为 triage 的正式默认路径](../adr/0037-make-semantic-assessment-the-default-triage-path.md)
 - [ADR-0038：限定语义 assessment 的远端数据投影](../adr/0038-limit-semantic-assessment-remote-data-projection.md)
-- [ADR-0041：准入 OpenCode Go 工具输出式语义 assessment](../adr/0041-qualify-opencode-go-tool-output-for-support-semantics.md)
+- [ADR-0041：准入 OpenCode Go 工具输出式语义 assessment](../adr/history/0041-qualify-opencode-go-tool-output-for-support-semantics.md)
 - [ADR-0042：由 Pydantic AI ModelProfile 决定结构化输出方式](../adr/0042-use-pydantic-ai-model-profile-for-structured-output.md)
-- [ADR-0043：分离支持目标、现象陈述与维护证据深度](../adr/0043-separate-support-goals-observations-and-maintenance-depth.md)
-- [ADR-0044：语义 assessment 直接使用 Pydantic AI Agent output_type](../adr/0044-use-pydantic-ai-agent-output-type-for-support-semantics.md)
+- [ADR-0043：分离支持目标、现象陈述与维护证据深度](../adr/history/0043-separate-support-goals-observations-and-maintenance-depth.md)
+- [ADR-0044：语义 assessment 直接使用 Pydantic AI Agent output_type](../adr/history/0044-use-pydantic-ai-agent-output-type-for-support-semantics.md)
 - [ADR-0052：把 Bug 定义到整个 Bot 软件责任链](../adr/0052-define-bug-across-the-bot-software-responsibility-chain.md)
 - [ADR-0053：允许 Bug Agent 使用相关源码与日志正文](../adr/0053-allow-relevant-source-and-log-bodies-for-bug-assessment.md)
 - [ADR-0060：用作用域 Thread 承接一次补充并在路由后投影会话上下文](../adr/0060-use-scope-thread-and-post-route-conversation-context.md)
-- [ADR-0061：为 Bug 判断读取当前会话最新有界聊天窗口](../adr/0061-read-latest-bounded-conversation-window-for-bug-assessment.md)
+- [ADR-0061：为 Bug 判断读取当前会话最新有界聊天窗口](../adr/history/0061-read-latest-bounded-conversation-window-for-bug-assessment.md)
 - [ADR-0065：只为明确支持的平台提供 Bug 会话历史工具](../adr/0065-only-expose-conversation-history-for-supported-platforms.md)
 - [ADR-0012：让 Pydantic AI Deferred Tools 位于领域 Agent runtime 之后](../adr/0012-use-pydantic-ai-deferred-tools-behind-domain-runtime.md)
 - [ADR-0101：用 LangGraph Checkpoint 承载长期 Behavior Inquiry](../adr/0101-use-langgraph-checkpoints-for-long-running-behavior-inquiries.md)

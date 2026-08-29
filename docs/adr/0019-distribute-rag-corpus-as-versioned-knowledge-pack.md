@@ -87,9 +87,8 @@
 - 部分被替代：[ADR-0067：启动后从 stable catalog 刷新知识包](0067-refresh-knowledge-pack-from-stable-catalog-at-startup.md)
 - 补充：[ADR-0015：分离版本化评测合同与本地运行数据](0015-separate-versioned-evals-from-local-runtime-data.md)
 - 补充：[ADR-0016：将维护者评测工具排除在插件安装面之外](0016-keep-maintainer-evaluation-tooling-out-of-install-surface.md)
-- 补充：[ADR-0018：只用 LocalStore 保存显式启用的 trial 审计日志](0018-use-localstore-only-for-enabled-trial-audit-log.md)
+- 补充：[ADR-0018：只用 LocalStore 保存显式启用的 trial 审计日志](history/0018-use-localstore-only-for-enabled-trial-audit-log.md)
 
 ## 相关文档
 
-- [架构概览](../architecture/overview.md)
-- [README：bot-docs 本地检索 PoC](../../README.md#bot-docs-本地检索-poc)
+- [架构概览：bot-docs 检索与知识包边界](../architecture/overview.md#核心能力与当前命令入口)

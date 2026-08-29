@@ -210,7 +210,7 @@
 ## 相关文档
 
 - [ADR-0080：把一次能力分析投影为多个公开教学条目](../../adr/0080-model-capability-teaching-as-multiple-public-entries.md)
-- [ADR-0082：参数化 Matcher 只按 Runtime Handler 代码身份聚合](../../adr/0082-group-parameterized-matchers-only-by-runtime-handler-code-identity.md)
+- [ADR-0082：参数化 Matcher 只按 Runtime Handler 代码身份聚合](../../adr/history/0082-group-parameterized-matchers-only-by-runtime-handler-code-identity.md)
 - [ADR-0083：先解释未知教学门禁，再决定是否关闭公开知识](../../adr/0083-resolve-unknown-teaching-gates-before-closing-public-knowledge.md)
-- [ADR-0077：把上一版机器生成教学内容作为非证据基线](../../adr/0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md)
+- [ADR-0077：把上一版机器生成教学内容作为非证据基线](../../adr/history/0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md)
 - [模型与 Provider 支持](../../architecture/model-provider-support.md)

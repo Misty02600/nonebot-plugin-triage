@@ -144,13 +144,13 @@ Bug 判定还可能需要 Reply 周围的操作顺序、Bot 当时给出的教�
 
 ## 替代关系
 
-- 部分替代 [ADR-0030](0030-continue-support-thread-by-exact-reply.md) 经 ADR-0031 保留的 exact-Reply、
+- 部分替代 [ADR-0030](history/0030-continue-support-thread-by-exact-reply.md) 经 ADR-0031 保留的 exact-Reply、
   latest-only 与可持续 Guidance Thread 生命周期；保留显式入口、不使用 Waiter、短期内存与每轮限流思想；
-- 部分替代 [ADR-0031](0031-require-triage-for-support-thread-continuation.md) 的“Reply 选择 Thread”和默认只读
+- 部分替代 [ADR-0031](history/0031-require-triage-for-support-thread-continuation.md) 的“Reply 选择 Thread”和默认只读
   Reply ID 边界；保留每轮显式 `triage`、Alconna / UniSeg 入口、每轮鉴权与不使用 Waiter；
-- 部分替代 [ADR-0033](0033-serialize-support-thread-turns-with-single-use-reply-claims.md) 的 Reply Claim 与
+- 部分替代 [ADR-0033](history/0033-serialize-support-thread-turns-with-single-use-reply-claims.md) 的 Reply Claim 与
   Reply 绑定提交；保留单活动 lease、`BUSY`、TTL、失败关闭和单进程内存边界；
-- 部分替代 [ADR-0035](0035-settle-support-thread-replies-from-uniseg-receipts.md) 用 Receipt message ID 建立
+- 部分替代 [ADR-0035](history/0035-settle-support-thread-replies-from-uniseg-receipts.md) 用 Receipt message ID 建立
   Thread 续接点的决定；保留当前 Matcher 拥有发送事务、发送失败关闭，以及运行证据引用与 Thread 状态
   相互独立的职责边界；
 - 部分替代 [ADR-0048](0048-use-public-facts-for-guidance-answer-agent.md) 第 3 项对 Reply / Thread context 的

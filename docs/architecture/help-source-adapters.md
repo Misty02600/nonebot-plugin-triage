@@ -112,10 +112,12 @@ Agent 无法形成可靠共同说明时输出 `knowledge_enabled=false`。公开
 alternatives 的单一 requirement。LocalStore cache 只保存公开
 文本、请求指纹，以及动态 `read_file` Evidence 的 ID、相对位置和 revision 清单；它不保存源码正文或配置
 值。缓存按插件写入 `capability-annotations/<module_name>.json`，同一文件内按 teaching unit 分别保留
-`last_good` 与 `last_attempt`：失败尝试不覆盖仍精确匹配当前 revision / fingerprint / Evidence 的最近完整
-结果，尝试状态也不会被误当成公开事实。分片的 `published_generation` 还必须与当前输出指针一致，否则只
-能作为编辑基线。缓存候选和活动视图之间的 staging 只存在于内存，缓存文件不承担
-发布指针职责。教学文件策略硬拒绝 `.env*`、凭据与数据库，并额外拒绝日志、Migut Help 人工 YAML、评测
+`last_good`、`pending` 与 `last_attempt`。`last_good` 只表示已由当前 generation 发布的完整结果；通过同一套
+公开投影校验但尚未发布的候选在单元完成后原子 checkpoint 为 `pending`，重启后也只有 revision、请求
+fingerprint 与动态 Evidence manifest 全部仍匹配时才能免调用复用。`last_attempt` 只记录最近真实尝试，失败
+不会抹掉仍匹配的 `last_good` 或更早的 `pending`。分片的 `published_generation` 还必须与当前输出指针一致，
+否则 `last_good` 只能作为编辑基线；cache shard 可以保存未发布候选，但不拥有发布指针，只有
+`current.json` 选中的 generation 才是活动教学合同。教学文件策略硬拒绝 `.env*`、凭据与数据库，并额外拒绝日志、Migut Help 人工 YAML、评测
 Gold 和本任务生成的 help-display，避免秘密外发与评价数据泄漏。
 
 一次能力分析可以包含多个由模型外固定 ID 的公开 entry：普通命令通常只有一项，确定性的 Alconna 叶子
@@ -139,8 +141,8 @@ manifest 只用于一次完整 family 语义判断，不是新的 serving catalo
 Migut Help 最小字段 YAML 与结构化渲染的 Answer Markdown 写入 LocalStore
 `capability-teaching/objects/<generation>/{help-display,answer-knowledge}/`，manifest 记录 teaching unit
 状态与每个插件的 `active / eligible` 覆盖量，并只用一个原子 `current.json` 切换两类输出和对应 Answer
-内存视图。指针切换前的候选不是 active teaching contract；`SOURCE_CHANGED` 会作废该插件整份内存 staging，
-但不会阻止其他插件发布。插件源码 revision 变化时首版仍全量重生成该插件，不尝试逐 unit hash 复用。
+内存视图。指针切换前的候选不是 active teaching contract；`SOURCE_CHANGED` 会回滚该插件本轮 checkpoint
+并作废整份内存 staging，但不会阻止其他插件发布。插件源码 revision 变化时首版仍全量重生成该插件，不尝试逐 unit hash 复用。
 Migut Help 的 description 只投影 summary，用于简短功能说明和必要的参数含义。只有整个 Permission 恰好是
 单一 `SUPERUSER`，或 `admin OR owner` 管理员组合时，才投影原生 `permission`；是否存在冷却继续投影
 `has_cd`。`channel_admin / MEMBER`、其他混合 OR、scene、access、behavior boundaries 和具体限流文字留给
@@ -186,15 +188,13 @@ SUPERUSER 身份自动进入 LLM。真正执行仍由原插件自己的 Matcher�
 - [ADR-0021：用部署本地影子索引整理 Bot 能力证据](../adr/0021-use-deployment-local-capability-shadow-index.md)
 - [ADR-0024：自动公开确定且低风险的能力字段](../adr/0024-auto-publish-deterministic-capability-fields.md)
 - [ADR-0026：在检索与模型前隔离能力知识受众域](../adr/0026-filter-capability-knowledge-before-retrieval.md)
-- [ADR-0027：用事实输出合同约束能力帮助](../adr/0027-constrain-guidance-with-facts-not-fixed-wording.md)
 - [ADR-0029：由部署者 deny-list 控制相关配置值进入模型](../adr/0029-control-model-config-values-with-deployment-deny-list.md)
 - [ADR-0032：分离能力受众、平台范围与分析问题](../adr/0032-separate-capability-audience-analysis-and-platform-status.md)
-- [ADR-0034：区分 Matcher 事实与用户可观察能力](../adr/0034-distinguish-matchers-from-user-observable-capabilities.md)
 - [ADR-0058：用确定性证据与有界源码导航生成教学注释](../adr/0058-use-deterministic-evidence-and-bounded-navigation-for-teaching-annotations.md)
 - [ADR-0059：跨 Agent 链路共享只读证据访问工具](../adr/0059-share-read-only-evidence-access-across-agent-flows.md)
 - [ADR-0066：用当前公开教学合同前置筛查普通用户 Bug](../adr/0066-use-active-teaching-contract-as-bug-precheck.md)
-- [ADR-0069：分离帮助展示与 Answer 知识，并让静态分析只界定证据范围](../adr/0069-separate-help-display-from-answer-knowledge-and-bound-static-analysis.md)
-- [ADR-0077：把上一版机器生成教学内容作为非证据的最小改写基线](../adr/0077-use-previous-generated-teaching-content-as-a-non-evidentiary-baseline.md)
 - [ADR-0080：把一次能力分析投影为多个公开教学条目](../adr/0080-model-capability-teaching-as-multiple-public-entries.md)
-- [ADR-0096：按教学单元限制教学注释并发](../adr/0096-bound-capability-annotation-concurrency-by-unit.md)
 - [ADR-0093：按插件分片教学注释缓存并按单元部分发布](../adr/0093-shard-capability-annotation-cache-by-plugin.md)
+- [ADR-0094：收敛公开能力教学合同](../adr/0094-simplify-the-public-capability-teaching-contract.md)
+- [ADR-0113：分离路由、授权与业务准备状态](../adr/0113-separate-routing-authorization-and-business-readiness-in-teaching.md)
+- [ADR-0121：在原子发布前 checkpoint 已完成教学单元](../adr/0121-checkpoint-completed-teaching-units-before-atomic-publication.md)

@@ -45,18 +45,20 @@ TTL 从进入缓冲的时间计算，避免未来时钟偏移让观察超过最�
 ## 失败语义与边界
 
 - schema 版本、字段集合、时区、标识符、kind / outcome 或主体组合不合法时拒绝整条观察；
-- 容量与 TTL 没有默认值，构造缓冲时必须显式给出；当前上限分别是 1,000,000 条和 7 天，但这不是推荐的
-  生产默认值；
+- 领域缓冲构造器要求显式给出容量与 TTL；NoneBot 部署层当前默认使用 10,000 条和 900 秒，并允许在
+  1,000,000 条和 7 天的安全上限内配置；
 - 已过 TTL 的输入不会重新进入缓冲，会增加丢弃计数并返回未接收；
 - 观察器的 hook 捕获采集异常并增加本地 `dropped_count`，不把异常抛回 NoneBot；buffer 拒绝、容量或 TTL
   淘汰另由 buffer 计数，诊断界面未来必须同时展示两类损失；
 - 注册必须显式调用；导入模块没有副作用，同一观察器重复注册会拒绝。NoneBot 没有对应的公共注销入口，
   当前也不支持热切换观察器；
 - 当前实现只面向单进程内存，不提供跨 Worker 关联、崩溃恢复、并发数据库写入或管理员导出；
-- `correlation_id` 是本地生成的有界不透明标识，不编码 QQ 用户、群或消息 ID；尚未实现 QQ 回复消息到
-  correlation ID 的绑定、报障 Matcher、权限与群内告知策略，也未选择生产容量 / TTL 默认值。
+- `correlation_id` 是本地生成的有界不透明标识，不编码 QQ 用户、群或消息 ID；OneBot V11 Provider 已能
+  把当前进程内的入站或出站消息引用绑定到 correlation ID。其他 Adapter 只有提供对应引用 Provider 才能
+  获得相同能力；跨 Worker 和重启前历史引用仍不支持。
 
 ## 相关决定
 
 - [ADR-0001：QQ 群显式报障与本机运行证据](../../adr/0001-qq-group-report-linked-runtime-evidence.md)
 - [ADR-0002：分级自治与所有权感知修复](../../adr/0002-tiered-autonomy-and-ownership-aware-remediation.md)
+- [跨平台支持入口与引用 Provider](cross-platform-report-intake.md)

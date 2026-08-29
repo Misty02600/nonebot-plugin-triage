@@ -135,7 +135,7 @@ failure signature、subject、adapter、源码 revision、教学合同 revision 
 
 - 补充 [ADR-0070](0070-separate-bug-reports-occurrences-and-problems.md) 的 Problem identity 与版本边界；
 - 补充 [ADR-0068](0068-treat-qualified-agent-bug-verdicts-as-operational-decisions.md) 的自动记录和用户回执；
-- 保留 [ADR-0054](0054-store-reviewed-bug-problems-in-localstore.md) 对 verified verdict 精确适用性的现行要求；
+- 保留 [ADR-0054](history/0054-store-reviewed-bug-problems-in-localstore.md) 对 verified verdict 精确适用性的现行要求；
   Problem 聚合相同不代表旧 verdict 可以跨 revision 无条件短路；
 - 采用 Sentry fingerprinting 与 SARIF versioned partial fingerprints 的工程形状，但 signature kind、Evidence
   门禁和失败语义由 Triage 自己拥有；

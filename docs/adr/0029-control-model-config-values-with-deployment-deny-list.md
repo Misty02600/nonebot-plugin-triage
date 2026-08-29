@@ -87,7 +87,7 @@ NoneBot 不提供通用的配置注释契约，嵌套 JSON、alias 和插件自�
   边界：由“原始配置值一律不进入模型、显式白名单派生状态”改为“部署者 deny-list + 能力相关性筛选后的
   值可瞬时进入模型”。ADR-0025 对索引、日志、运行数据和回答的其余保护继续有效；
 - 延续 [ADR-0026](0026-filter-capability-knowledge-before-retrieval.md) 与
-  [ADR-0027](0027-constrain-guidance-with-facts-not-fixed-wording.md) 的模型前受众隔离和事实输出合同。
+  [ADR-0027](history/0027-constrain-guidance-with-facts-not-fixed-wording.md) 的模型前受众隔离和事实输出合同。
 
 ## 相关文档
 

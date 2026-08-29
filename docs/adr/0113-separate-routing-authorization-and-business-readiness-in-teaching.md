@@ -75,13 +75,13 @@
 ## 替代关系
 
 - `role / access` 的分类条件已由
-  [ADR-0116](0116-classify-role-and-access-by-the-executed-gate.md) 收紧为“入口直接身份判断 / 可配置资格查询”；
+  [ADR-0116](history/0116-classify-role-and-access-by-the-executed-gate.md) 收紧为“入口直接身份判断 / 可配置资格查询”；
   本 ADR 的 platform routing 与业务准备状态边界继续有效。
 
 - 部分替代 [ADR-0094](0094-simplify-the-public-capability-teaching-contract.md) 第 3、6 项中对 `access` 与
   `behavior_boundary` 的所有权定义；公开字段集合、脱敏边界和 Help / Answer 分层继续有效。
 - 延续 [ADR-0032](0032-separate-capability-audience-analysis-and-platform-status.md) 对平台范围的确定性所有权。
-- 延续 [ADR-0112](0112-do-not-blacklist-dynamic-source-symbols-in-public-teaching-text.md)，不恢复动态关键词黑名单。
+- 延续 [ADR-0112](history/0112-do-not-blacklist-dynamic-source-symbols-in-public-teaching-text.md)，不恢复动态关键词黑名单。
 
 ## 相关文档
 

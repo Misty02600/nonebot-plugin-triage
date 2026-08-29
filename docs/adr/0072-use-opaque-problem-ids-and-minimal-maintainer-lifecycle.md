@@ -104,7 +104,7 @@ Problem 和自动聚合。普通用户与维护者仍需要一个稳定、简短
 
 - [ADR-0078](0078-defer-persisting-unknown-bug-assessments.md) 暂缓深度 `unknown` 的公开编号、固定“已记录”
   回执和人工裁决路径；确定 `bug` 的中性编号与事务回执继续有效；
-- [ADR-0079](0079-list-pending-problems-with-triage-query.md) 新增无编号的
+- [ADR-0079](history/0079-list-pending-problems-with-triage-query.md) 新增无编号的
   `triage 报错查询` 待处理列表；
 
 - [ADR-0074](0074-preserve-append-only-problem-decisions.md) 规定“确认Bug / 确认非Bug”追加 Decision 并保留
@@ -116,7 +116,7 @@ Problem 和自动聚合。普通用户与维护者仍需要一个稳定、简短
 - 补充 [ADR-0068](0068-treat-qualified-agent-bug-verdicts-as-operational-decisions.md) 的人工复核和生命周期；
 - 补充 [ADR-0070](0070-separate-bug-reports-occurrences-and-problems.md) 的 Problem / Report 公开引用；
 - 补充 [ADR-0071](0071-group-bug-problems-with-versioned-evidence-fingerprints.md) 的自动关联和固定回执；
-- 保留 [ADR-0045](0045-use-one-triage-cooldown-and-localstore-capability-cache.md) 的固定维护命令名与
+- 保留 [ADR-0045](history/0045-use-one-triage-cooldown-and-localstore-capability-cache.md) 的固定维护命令名与
   SUPERUSER 边界；本决定只扩展问题记录参数和动作。
 
 ## 相关文档

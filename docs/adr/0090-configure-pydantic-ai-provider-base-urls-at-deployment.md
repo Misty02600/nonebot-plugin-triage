@@ -60,7 +60,7 @@ Pydantic AI 使用 `provider:model` 识别 Provider 与模型，例如 `alibaba:
 
 - 窄范围替代 [ADR-0008](0008-pydantic-ai-controlled-model-adaptation.md) 中运行时只能使用固定 endpoint 的部分；
   Provider / Model / Profile 分层、参数门和失败关闭继续有效；
-- 窄范围替代 [ADR-0011](0011-expose-disabled-qualified-model-configuration.md) 与
+- 窄范围替代 [ADR-0011](history/0011-expose-disabled-qualified-model-configuration.md) 与
   [ADR-0037](0037-make-semantic-assessment-the-default-triage-path.md) 中禁止 custom Base URL 的部分；密钥、
   惰性客户端、默认 assessment、零自动重试与启动降级边界继续有效；
 - 补充 [ADR-0086](0086-treat-model-evaluation-as-a-quality-label.md)：自定义连接可运行但默认未验证；

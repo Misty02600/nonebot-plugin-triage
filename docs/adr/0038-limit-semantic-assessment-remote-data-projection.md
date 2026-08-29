@@ -5,7 +5,7 @@
 | 已采纳 | 2026-08-13 |
 
 > 本 ADR 只决定可出站的数据类别。OpenCode Go 的精确 Provider/model/profile、预算与 held-out 资格已由
-> [ADR-0041](0041-qualify-opencode-go-tool-output-for-support-semantics.md) 另行确认；其他组合仍不能继承。
+> [ADR-0041](history/0041-qualify-opencode-go-tool-output-for-support-semantics.md) 另行确认；其他组合仍不能继承。
 
 ## 当时遇到了什么
 
@@ -78,7 +78,7 @@
 ## 相关文档
 
 - [ADR-0037：把语义 assessment 作为 triage 的正式默认路径](0037-make-semantic-assessment-the-default-triage-path.md)
-- [ADR-0041：准入 OpenCode Go 工具输出式语义 assessment](0041-qualify-opencode-go-tool-output-for-support-semantics.md)
-- [ADR-0011：公开按资格门装配的模型配置](0011-expose-disabled-qualified-model-configuration.md)
+- [ADR-0041：准入 OpenCode Go 工具输出式语义 assessment](history/0041-qualify-opencode-go-tool-output-for-support-semantics.md)
+- [ADR-0011：公开按资格门装配的模型配置](history/0011-expose-disabled-qualified-model-configuration.md)
 - [支持入口分流](../architecture/flows/support-intake-routing.md)
 - [模型 Provider 支持矩阵](../architecture/model-provider-support.md)

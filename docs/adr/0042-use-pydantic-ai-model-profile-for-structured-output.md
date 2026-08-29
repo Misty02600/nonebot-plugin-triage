@@ -4,7 +4,7 @@
 |---|---|
 | 已采纳；手写 Direct Request 输出定义由 ADR-0044 部分替代 | 2026-08-13 |
 
-> [ADR-0044](0044-use-pydantic-ai-agent-output-type-for-support-semantics.md) 改用 Pydantic AI
+> [ADR-0044](history/0044-use-pydantic-ai-agent-output-type-for-support-semantics.md) 改用 Pydantic AI
 > `Agent(output_type=SupportSemanticAssessment)` 消费本 ADR 确认的 `ModelProfile`；传输能力所有权、
 > 请求前唯一选择、Prompted Output 未资格化和零动态 fallback 决定继续有效。
 
@@ -52,7 +52,7 @@ Pydantic AI 2.27.0 的 `ModelProfile` 已拥有 `supports_tools`、`supports_jso
 
 ## 替代关系
 
-- 细化 [ADR-0041](0041-qualify-opencode-go-tool-output-for-support-semantics.md) 的实现所有权：OpenCode Go 的
+- 细化 [ADR-0041](history/0041-qualify-opencode-go-tool-output-for-support-semantics.md) 的实现所有权：OpenCode Go 的
   Tool Output 结论不变，但由显式 Pydantic AI ModelProfile 表达；任务资格不再保存重复传输 profile。
 - 继续遵守 [ADR-0037](0037-make-semantic-assessment-the-default-triage-path.md) 的一次请求、零重试、失败关闭，
   以及 [ADR-0038](0038-limit-semantic-assessment-remote-data-projection.md) 的最小出站投影。
