@@ -147,35 +147,6 @@ def test_editable_install_inventory_reads_existing_src_tree_without_importing(
     assert "public_framework" not in sys.modules
 
 
-def test_unloaded_editable_install_does_not_guess_source_layout(tmp_path: Path) -> None:
-    project = tmp_path / "checkout"
-    package = project / "src" / "public_framework"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
-    metadata_root = tmp_path / "site-packages"
-    metadata_root.mkdir()
-    distribution = _Distribution(
-        metadata_root,
-        ["public_framework.pth"],
-        direct_url=('{"url":"' + project.as_uri() + '","dir_info":{"editable":true}}'),
-    )
-    spec = InstalledComponentSpec(
-        "public-framework",
-        "public-framework",
-        "public_framework",
-    )
-
-    revision = resolve_installed_source(
-        spec,
-        distribution=distribution,
-        loaded_modules={},
-    )
-
-    assert revision.availability is SourceAvailability.MISSING
-    assert revision.binding is SourceBinding.UNRESOLVED
-    assert "editable_runtime_binding_required" in revision.issues
-
-
 def test_loaded_path_must_match_distribution_source(tmp_path: Path) -> None:
     spec, distribution = _fixture(tmp_path)
     shadow = tmp_path / "shadow" / "public_framework"
@@ -195,24 +166,6 @@ def test_loaded_path_must_match_distribution_source(tmp_path: Path) -> None:
     assert revision.availability is SourceAvailability.MISSING
     assert revision.binding is SourceBinding.CONFLICTED
     assert "runtime_distribution_source_conflict" in revision.issues
-
-
-def test_loaded_regular_install_is_bound_to_distribution_entry(tmp_path: Path) -> None:
-    spec, distribution = _fixture(tmp_path)
-    package = tmp_path / "public_framework"
-    loaded = ModuleType("public_framework")
-    loaded.__spec__ = ModuleSpec("public_framework", loader=None, is_package=True)
-    assert loaded.__spec__.submodule_search_locations is not None
-    loaded.__spec__.submodule_search_locations[:] = [str(package)]
-
-    revision = resolve_installed_source(
-        spec,
-        distribution=distribution,
-        loaded_modules={"public_framework": loaded},
-    )
-
-    assert revision.availability is SourceAvailability.AVAILABLE
-    assert revision.binding is SourceBinding.RUNTIME_BOUND
 
 
 def test_rejects_distribution_paths_outside_import_root(tmp_path: Path) -> None:

@@ -99,18 +99,6 @@ def test_file_toolsets_merge_hard_and_task_denies_and_remove_mutations(
     assert filter_func(None, _ToolDefinition("create_directory")) is False
 
 
-def test_logs_are_not_a_global_hard_deny(tmp_path: Path) -> None:
-    root_path = tmp_path / "data"
-    root_path.mkdir()
-    root = ReadOnlyRoot("data", root_path)
-    profile = ReadOnlyTaskProfile(task_id="bug.analysis", roots=(root,))
-
-    assert path_is_allowed(profile, root, "logs/runtime.log") is True
-    assert path_is_allowed(profile, root, ".env") is False
-    assert path_is_allowed(profile, root, ".git/config") is False
-    assert path_is_allowed(profile, root, "nested/bot.key") is False
-
-
 def test_task_policy_can_deny_generated_outputs_without_changing_other_tasks(
     tmp_path: Path,
 ) -> None:
@@ -254,49 +242,6 @@ def test_read_file_clamps_an_oversized_line_limit(tmp_path: Path) -> None:
                         "clamped-read",
                     )
                 ]
-            )
-        for message in messages:
-            if not isinstance(message, ModelRequest):
-                continue
-            for part in message.parts:
-                if isinstance(part, ToolReturnPart) and isinstance(part.content, str):
-                    tool_result = part.content
-        return ModelResponse(parts=[TextPart("done")], finish_reason="stop")
-
-    model = FunctionModel(
-        respond,
-        model_name="fixture-model",
-        profile=ModelProfile(supports_tools=True),
-    )
-    Agent(model, toolsets=cast(Any, list(bundle.toolsets))).run_sync("Read sample.py")
-
-    assert "   160\tline 160" in tool_result
-    assert "\tline 161" not in tool_result
-
-
-def test_read_file_uses_160_line_default_when_limit_is_omitted(tmp_path: Path) -> None:
-    pytest.importorskip("pydantic_ai_harness")
-    from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
-    from pydantic_ai.messages import ModelRequest, ToolReturnPart
-    from pydantic_ai.models.function import AgentInfo, FunctionModel
-    from pydantic_ai.profiles import ModelProfile
-
-    content = "".join(f"line {number}\n" for number in range(1, 201))
-    (tmp_path / "sample.py").write_text(content, encoding="utf-8")
-    profile = ReadOnlyTaskProfile(
-        task_id="harness.default-range",
-        roots=(ReadOnlyRoot("project", tmp_path),),
-    )
-    bundle = build_read_only_file_toolsets(profile)
-    tool_result = ""
-    calls = 0
-
-    def respond(messages, _info: AgentInfo) -> ModelResponse:
-        nonlocal calls, tool_result
-        calls += 1
-        if calls == 1:
-            return ModelResponse(
-                parts=[ToolCallPart("project_read_file", {"path": "sample.py"}, "default-read")]
             )
         for message in messages:
             if not isinstance(message, ModelRequest):

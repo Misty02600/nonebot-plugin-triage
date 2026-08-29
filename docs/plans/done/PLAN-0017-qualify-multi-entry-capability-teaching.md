@@ -69,7 +69,7 @@
 
 | 顺序 | 改动 | 主要实现位置或符号 | 关键约束 | 预期结果 |
 |---:|---|---|---|---|
-| 1 | 固化失败分类与开发回归集 | `evals/datasets/fixtures/`、`tests/test_capability_teaching_evaluation.py` | 从 v3 失败提炼机制，不把回归集冒充新的 held-out | 可以重复验证已知问题，又不污染下一次正式资格数据 |
+| 1 | 固化失败分类与开发回归集 | `evals/datasets/fixtures/`、`tests/capability/test_capability_teaching_evaluation.py` | 从 v3 失败提炼机制，不把回归集冒充新的 held-out | 可以重复验证已知问题，又不污染下一次正式资格数据 |
 | 2 | 增加确定调用合同 | `CapabilityInvocationTarget`、NoneBot adapter | 为 anchored entry 区分 canonical body 与模型外确认的 accepted bodies；记录参数必选性、Option token 和 `to_me` mention policy | alias 不再靠子串误过；`@bot` 与可选参数不再由模型猜 |
 | 3 | 收紧公开输出校验 | `capability_annotations.py`、投影层 | 只解析本项目帮助记法的括号、参数、Option 和命令锚点；禁止 `OWNER`、`MEMBER`、`ADMIN`、`Permission` 等内部符号；不做自动文字修补 | 语法和公开边界错误在写 cache / YAML / Markdown 前失败关闭 |
 | 4 | 调整模型合同 | `capability_model_adapter.py` | 中文 Prompt 要求逐项解释 gate candidate；模型外校验 candidate / resolution / constraint / Evidence 闭合；旧稿仍被新 Evidence 支持时尽量原样保留 | 可解释的第三方门禁不再误关，真正未知仍安全关闭，并降低无意义文案漂移 |

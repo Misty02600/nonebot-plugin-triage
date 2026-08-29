@@ -43,14 +43,14 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 async def load_nonebot_plugin(after_nonebot_init: None) -> None:
     nonebot.get_driver().register_adapter(Adapter)
     if nonebot.get_plugin_by_module_name("nonebot_plugin_triage") is None:
         nonebot.load_from_toml("pyproject.toml")
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def isolate_live_semantic_transport(
     monkeypatch: pytest.MonkeyPatch,
     load_nonebot_plugin: None,

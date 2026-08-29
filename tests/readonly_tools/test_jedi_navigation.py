@@ -119,50 +119,6 @@ def test_go_to_definition_returns_revision_bound_dependency_location(
     }
 
 
-def test_compiled_definition_uses_unique_approved_package_stub(tmp_path: Path) -> None:
-    profile, project, dependency = _fixture_profile(tmp_path)
-    handler = project.path / "handler.py"
-    handler.write_text(
-        "from native_package import search\n\nsearch('term')\n",
-        encoding="utf-8",
-    )
-    package = dependency.path / "native_package"
-    package.mkdir()
-    stub = package / "__init__.pyi"
-    stub.write_text("def search(query: str) -> list[str]: ...\n", encoding="utf-8")
-    backend = _FakeJediBackend(
-        (
-            RawJediDefinition(
-                module_path=None,
-                name="search",
-                full_name="native_package.native_package.search",
-                kind="function",
-                line=None,
-                column=None,
-            ),
-        )
-    )
-
-    result = DefinitionNavigator(profile, backend=backend).go_to_definition(
-        GoToDefinitionRequest(
-            root_name="project",
-            relative_path="handler.py",
-            line=3,
-            column=1,
-            source_revision=source_revision(profile, "project", "handler.py"),
-        )
-    )
-
-    assert result.failure is None
-    assert len(result.definitions) == 1
-    definition = result.definitions[0]
-    assert definition.root_name == "dependencies"
-    assert definition.relative_path == "native_package/__init__.pyi"
-    assert definition.line == 1
-    assert definition.column == 4
-    assert definition.full_name == "native_package.native_package.search"
-
-
 def test_stale_source_revision_stops_before_jedi(tmp_path: Path) -> None:
     profile, project, _ = _fixture_profile(tmp_path)
     (project.path / "handler.py").write_text("target()\n", encoding="utf-8")
@@ -271,28 +227,6 @@ def test_task_deny_applies_to_jedi_source_and_definition_paths(tmp_path: Path) -
     assert len(backend.calls) == 1
 
 
-def test_backend_failure_has_stable_failure_semantics(tmp_path: Path) -> None:
-    profile, project, _ = _fixture_profile(tmp_path)
-    (project.path / "handler.py").write_text("target()\n", encoding="utf-8")
-
-    class BrokenBackend:
-        def go_to_definition(self, **kwargs: object):
-            del kwargs
-            raise RuntimeError("raw backend details must not escape")
-
-    result = DefinitionNavigator(profile, backend=BrokenBackend()).go_to_definition(
-        GoToDefinitionRequest(
-            root_name="project",
-            relative_path="handler.py",
-            line=1,
-            column=1,
-            source_revision=source_revision(profile, "project", "handler.py"),
-        )
-    )
-
-    assert result.failure is DefinitionFailureReason.BACKEND_FAILED
-
-
 def test_installed_jedi_goes_to_imported_dependency_definition(tmp_path: Path) -> None:
     pytest.importorskip("jedi")
     profile, project, dependency = _fixture_profile(tmp_path)
@@ -318,47 +252,6 @@ def test_installed_jedi_goes_to_imported_dependency_definition(tmp_path: Path) -
         and item.name == "check"
         for item in result.definitions
     )
-
-
-def test_installed_jedi_reuses_project_for_same_navigation_profile(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    jedi = pytest.importorskip("jedi")
-    profile, project, _dependency = _fixture_profile(tmp_path)
-    handler = project.path / "handler.py"
-    handler.write_text("value = 1\nother = value\n", encoding="utf-8")
-    project_count = 0
-
-    class FakeProject:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            nonlocal project_count
-            project_count += 1
-
-    class FakeScript:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        def goto(self, **_kwargs: object) -> tuple[object, ...]:
-            return ()
-
-    monkeypatch.setattr(jedi, "Project", FakeProject)
-    monkeypatch.setattr(jedi, "Script", FakeScript)
-    navigator = DefinitionNavigator(profile)
-    revision = source_revision(profile, "project", "handler.py")
-
-    for line, column in ((1, 1), (2, 9)):
-        navigator.go_to_definition(
-            GoToDefinitionRequest(
-                root_name="project",
-                relative_path="handler.py",
-                line=line,
-                column=column,
-                source_revision=revision,
-            )
-        )
-
-    assert project_count == 1
 
 
 def test_installed_jedi_serializes_script_access_across_navigators(

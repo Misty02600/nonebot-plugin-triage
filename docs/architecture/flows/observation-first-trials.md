@@ -147,7 +147,7 @@ observe，不用模型填补证据缺口。
 | trial 配置、sink 装配与白名单格式化 | `src/nonebot_plugin_triage/config.py`、`src/nonebot_plugin_triage/trials.py` |
 | incident 建立后的 fail-open trial 观察 | `src/nonebot_plugin_triage/live_reports.py` |
 | 未接入 Matcher 的兼容 incident 查询与 trial 格式化服务 | `src/nonebot_plugin_triage/incident_queries.py`、`src/nonebot_plugin_triage/trials.py` |
-| 隐私、轮转、TTL、容量与入口集成测试 | `tests/test_live_trials.py`、`tests/test_trial_runtime.py`、`tests/test_live_reports.py` |
+| 隐私、轮转、TTL、容量与入口集成测试 | `tests/runtime/test_live_trials.py`、`tests/runtime/test_trial_runtime.py`、`tests/runtime/test_live_reports.py` |
 
 ## 相关决定
 

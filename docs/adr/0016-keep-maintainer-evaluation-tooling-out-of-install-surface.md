@@ -99,7 +99,7 @@ wheel 不能证明发布面已经收紧。
   wheel 与 sdist，防止只清理 wheel。
 - 历史 `evals/snapshots/` 已迁入被忽略的本地报告目录，依赖历史报告的回归从版本化 Fixture、split、rubric、
   策展标注和 Oracle 确定性重算。
-- 验证入口：`tests/test_package_metadata.py`、`scripts/verify_base_wheel.py`、
+- 验证入口：`tests/maintainer/test_package_metadata.py`、`scripts/verify_base_wheel.py`、
   `scripts/verify_distribution_contents.py`、`.github/workflows/ci.yml` 和 `.github/workflows/release.yml`。
 
 ## 替代关系

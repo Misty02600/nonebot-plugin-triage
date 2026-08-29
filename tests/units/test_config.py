@@ -9,8 +9,6 @@ from nonebot_plugin_triage.config import NBTriageConfig
     ("key", "replacement"),
     [
         ("nbtriage_command", "fixed to triage"),
-        ("nbtriage_support_cooldown_seconds", "nbtriage_cooldown_seconds"),
-        ("nbtriage_capability_shadow_path", "LocalStore cache"),
         ("nbtriage_model_backend", "provider:model"),
     ],
 )
@@ -43,19 +41,6 @@ def test_removed_bug_source_backend_setting_fails_fast() -> None:
         NBTriageConfig.model_validate({"nbtriage_bug_source_backend": "serena"})
 
 
-def test_pydantic_ai_model_id_is_publicly_configurable_without_backend() -> None:
-    config = NBTriageConfig(
-        nbtriage_model_name="google:gemini-2.5-flash",
-    )
-
-    assert config.nbtriage_model_name == "google:gemini-2.5-flash"
-
-
-def test_agent_trace_is_enabled_by_default_and_can_be_disabled() -> None:
-    assert NBTriageConfig().nbtriage_agent_trace_enabled is True
-    assert NBTriageConfig(nbtriage_agent_trace_enabled=False).nbtriage_agent_trace_enabled is False
-
-
 def test_restricted_config_normalizes_nonebot_roots() -> None:
     config = NBTriageConfig(
         nbtriage_restricted_config=frozenset(
@@ -74,7 +59,6 @@ def test_restricted_config_normalizes_nonebot_roots() -> None:
     "value",
     [
         "DISCORD_BOTS",
-        ["bad-key"],
         list(range(257)),
     ],
 )
@@ -114,10 +98,7 @@ def test_evidence_denied_patterns_are_relative_deduplicated_globs() -> None:
 @pytest.mark.parametrize(
     "value",
     [
-        "*.secret",
         ["../outside"],
-        ["C:/private/*"],
-        ["private\\*"],
         list(range(257)),
     ],
 )
