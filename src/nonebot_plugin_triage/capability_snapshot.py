@@ -459,8 +459,9 @@ def _candidate_from_matcher(
 ) -> CapabilityCandidate:
     source = _matcher_source_evidence(matcher, plugin, state)
     constraints, superuser_only = _matcher_constraints(matcher)
-    handler_references = _matcher_handler_references(matcher, plugin, state)
-    config_references = _matcher_config_references(matcher, plugin, state)
+    handler_chains = _matcher_handler_chains(matcher)
+    handler_references = _matcher_handler_references(handler_chains, plugin, state)
+    config_references = _matcher_config_references(handler_chains, plugin, state)
     matcher_type = _safe_text(getattr(matcher, "type", None)) or ""
     command = _alconna_command(matcher)
     if command is not None:
@@ -1005,18 +1006,15 @@ def _platform_scope(plugin: PluginIdentity) -> PlatformScope:
 
 
 def _matcher_config_references(
-    matcher: object,
+    handler_chains: tuple[tuple[int, tuple[FunctionType, ...]], ...],
     plugin: PluginIdentity,
     state: _CollectorState,
 ) -> tuple[_ResolvedConfigReference, ...]:
     """从已加载 handler 的同文件源码中提取标准 Pydantic 配置属性读取。"""
     result: list[_ResolvedConfigReference] = []
     seen: set[tuple[str, str, str, str, int, int, int]] = set()
-    for dependent in _safe_collection(getattr(matcher, "handlers", ())):
-        call = _python_handler_function(getattr(dependent, "call", None))
-        if call is None:
-            continue
-        for function in _handler_function_chain(call):
+    for _binding_index, chain in handler_chains:
+        for function in chain:
             location = _physical_function_location(function, plugin)
             if location is None:
                 continue
@@ -1080,16 +1078,13 @@ def _matcher_config_references(
 
 
 def _matcher_handler_references(
-    matcher: object,
+    handler_chains: tuple[tuple[int, tuple[FunctionType, ...]], ...],
     plugin: PluginIdentity,
     state: _CollectorState,
 ) -> tuple[dict[str, object], ...]:
     result: list[dict[str, object]] = []
-    for binding_index, dependent in enumerate(_safe_collection(getattr(matcher, "handlers", ()))):
-        call = _python_handler_function(getattr(dependent, "call", None))
-        if call is None:
-            continue
-        chain = _handler_function_chain(call)
+    for binding_index, chain in handler_chains:
+        call = chain[0]
         logical_reference = _handler_function_reference(
             chain[-1],
             plugin,
@@ -1120,6 +1115,17 @@ def _matcher_handler_references(
                 continue
             wrapper_reference["role"] = "wrapper"
             result.append(wrapper_reference)
+    return tuple(result)
+
+
+def _matcher_handler_chains(
+    matcher: object,
+) -> tuple[tuple[int, tuple[FunctionType, ...]], ...]:
+    result: list[tuple[int, tuple[FunctionType, ...]]] = []
+    for binding_index, dependent in enumerate(_safe_collection(getattr(matcher, "handlers", ()))):
+        call = _python_handler_function(getattr(dependent, "call", None))
+        if call is not None:
+            result.append((binding_index, _handler_function_chain(call)))
     return tuple(result)
 
 

@@ -123,7 +123,7 @@ class _EvidenceCapture:
         arguments: dict[str, Any],
         content: str,
     ) -> CapabilityEvidenceUnit:
-        bounded, truncated = _bounded_excerpt(content)
+        bounded = _bounded_excerpt(content)
         canonical_arguments = json.dumps(
             arguments,
             ensure_ascii=True,
@@ -150,15 +150,10 @@ class _EvidenceCapture:
             locator=f"{root.name}/{state.locator}",
         )
         self._units[evidence_id] = unit
-        if truncated:
-            return unit
         return unit
 
     def units(self) -> tuple[CapabilityEvidenceUnit, ...]:
         return tuple(self._units[key] for key in sorted(self._units))
-
-    def get(self, evidence_id: str) -> CapabilityEvidenceUnit | None:
-        return self._units.get(evidence_id)
 
     def record_knowledge(
         self,
@@ -740,23 +735,20 @@ class CapabilityTeachingToolProvider:
                     return False
                 continue
             if reference.source_kind == "python_dependency_function":
-                root_name, separator, locator = reference.locator.partition("/")
-                root = profiles.navigation_profile.root(root_name)
-                relative_path = locator.partition(":")[0]
-                if not separator or root is None or not relative_path:
-                    return False
-                state = _file_state(profiles.navigation_profile, root, relative_path)
-                if state is None or f"sha256:{state.revision}" != reference.revision:
+                if not _file_evidence_is_current(
+                    profiles.navigation_profile,
+                    reference,
+                    strip_symbol_suffix=True,
+                ):
                     return False
                 continue
             if reference.source_kind != _DYNAMIC_EVIDENCE_SOURCE_KIND:
                 return False
-            root_name, separator, locator = reference.locator.partition("/")
-            root = profiles.navigation_profile.root(root_name)
-            if not separator or root is None:
-                return False
-            state = _file_state(profiles.navigation_profile, root, locator)
-            if state is None or f"sha256:{state.revision}" != reference.revision:
+            if not _file_evidence_is_current(
+                profiles.navigation_profile,
+                reference,
+                strip_symbol_suffix=False,
+            ):
                 return False
         return True
 
@@ -1217,6 +1209,22 @@ def _file_state(
     return _FileState(locator=locator, revision=hashlib.sha256(raw).hexdigest())
 
 
+def _file_evidence_is_current(
+    access: ReadOnlyTaskProfile,
+    reference: CapabilityAnnotationEvidenceRef,
+    *,
+    strip_symbol_suffix: bool,
+) -> bool:
+    root_name, separator, locator = reference.locator.partition("/")
+    if strip_symbol_suffix:
+        locator = locator.partition(":")[0]
+    root = access.root(root_name)
+    if not separator or root is None or not locator:
+        return False
+    state = _file_state(access, root, locator)
+    return state is not None and f"sha256:{state.revision}" == reference.revision
+
+
 def _known_file_failure(
     access: ReadOnlyTaskProfile,
     root: ReadOnlyRoot,
@@ -1247,11 +1255,11 @@ def _known_file_failure(
     return None
 
 
-def _bounded_excerpt(value: str) -> tuple[str, bool]:
+def _bounded_excerpt(value: str) -> str:
     if len(value) <= _MAX_CITABLE_FILE_EXCERPT_CHARS:
-        return value, False
+        return value
     marker = "\n[... Triage truncated this citable excerpt ...]"
-    return value[: _MAX_CITABLE_FILE_EXCERPT_CHARS - len(marker)] + marker, True
+    return value[: _MAX_CITABLE_FILE_EXCERPT_CHARS - len(marker)] + marker
 
 
 def _source_inventory_complete(errors: tuple[str, ...]) -> bool:

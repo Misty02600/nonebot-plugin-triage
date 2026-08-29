@@ -317,6 +317,31 @@ def plugin_source_revision_matches(
     return source_pack.source_revision == expected_plugin_source_revision
 
 
+def _load_validated_source_evidence_pack(
+    module_root: str,
+    source_root: tuple[Path, bool],
+    *,
+    source_pack_cache: dict[str, CapabilitySourceEvidencePack] | None,
+    permission_semantic_profiles: tuple[PermissionSemanticProfile, ...] | None,
+    preparation_timings: dict[str, int] | None,
+) -> CapabilitySourceEvidencePack:
+    started_ns = monotonic_ns()
+    source_pack = _source_evidence_pack(
+        module_root,
+        source_root,
+        cache=source_pack_cache,
+        permission_semantic_profiles=(
+            _permission_semantic_profiles()
+            if permission_semantic_profiles is None
+            else permission_semantic_profiles
+        ),
+    )
+    _record_preparation_timing(preparation_timings, "source_pack", started_ns)
+    if not _source_inventory_complete(source_pack.partial_errors):
+        raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
+    return source_pack
+
+
 def build_capability_analysis_request(
     record: CapabilityRecord,
     policy: ConfigValuePolicy,
@@ -363,20 +388,13 @@ def build_capability_analysis_request(
     config_references = _config_references(record)
     module_root = _plugin_module_root(record)
     source_root = _plugin_source_root(module_root)
-    stage_started_ns = monotonic_ns()
-    source_pack = _source_evidence_pack(
+    source_pack = _load_validated_source_evidence_pack(
         module_root,
         source_root,
-        cache=source_pack_cache,
-        permission_semantic_profiles=(
-            _permission_semantic_profiles()
-            if permission_semantic_profiles is None
-            else permission_semantic_profiles
-        ),
+        source_pack_cache=source_pack_cache,
+        permission_semantic_profiles=permission_semantic_profiles,
+        preparation_timings=preparation_timings,
     )
-    _record_preparation_timing(preparation_timings, "source_pack", stage_started_ns)
-    if not _source_inventory_complete(source_pack.partial_errors):
-        raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
     stage_started_ns = monotonic_ns()
     handler_identities = _handler_code_identities(module_root, handler_references)
     targets = _analysis_targets(
@@ -583,20 +601,13 @@ def build_parameterized_family_analysis_request(
         raise CapabilityAnalysisAdapterError("family records have different owners")
 
     source_root = _plugin_source_root(identity.module_root)
-    stage_started_ns = monotonic_ns()
-    source_pack = _source_evidence_pack(
+    source_pack = _load_validated_source_evidence_pack(
         identity.module_root,
         source_root,
-        cache=source_pack_cache,
-        permission_semantic_profiles=(
-            _permission_semantic_profiles()
-            if permission_semantic_profiles is None
-            else permission_semantic_profiles
-        ),
+        source_pack_cache=source_pack_cache,
+        permission_semantic_profiles=permission_semantic_profiles,
+        preparation_timings=preparation_timings,
     )
-    _record_preparation_timing(preparation_timings, "source_pack", stage_started_ns)
-    if not _source_inventory_complete(source_pack.partial_errors):
-        raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
     stage_started_ns = monotonic_ns()
     parsed = _load_parsed_module(identity.module, identity.module_root, source_root)
     if parsed is None or parsed.revision != identity.source_revision:
@@ -651,11 +662,7 @@ def build_parameterized_family_analysis_request(
         }.values()
     )
     wrapper_references = tuple(
-        {
-            item: item
-            for record in records
-            for item in _handler_wrapper_references(record)
-        }.values()
+        {item: item for record in records for item in _handler_wrapper_references(record)}.values()
     )
     parsed_modules: dict[str, _ParsedModule] = {identity.module: parsed}
     handler_reference = next(
@@ -3367,37 +3374,12 @@ def _cached_call_definition(
     navigation: _SourceSliceNavigation,
     call: _CallSite,
 ) -> DefinitionLocation | None:
-    key = _DefinitionCacheKey(
-        navigation.root.path,
-        tuple((root.name, root.path) for root in navigation.roots),
+    return _cached_unique_definition(
+        cache._definitions,
+        navigation,
         call,
+        accepted_kinds=frozenset({"function"}),
     )
-    if key in cache._definitions:
-        cached = cache._definitions[key]
-        if cached is None or _definition_is_current(navigation, cached):
-            return cached
-        cache._definitions.pop(key, None)
-    try:
-        result = navigation.navigator.go_to_definition(
-            GoToDefinitionRequest(
-                root_name=navigation.root.name,
-                relative_path=call.relative_path,
-                line=call.line,
-                column=call.column,
-                source_revision=call.source_revision,
-            )
-        )
-    except PythonNavigationError:
-        cache._definitions[key] = None
-        return None
-    unique_definitions = {
-        (item.root_name, item.relative_path, item.line, item.column): item
-        for item in result.definitions
-        if item.kind == "function"
-    }
-    definition = next(iter(unique_definitions.values())) if len(unique_definitions) == 1 else None
-    cache._definitions[key] = definition
-    return definition
 
 
 def _cached_gate_definition(
@@ -3405,16 +3387,31 @@ def _cached_gate_definition(
     navigation: _SourceSliceNavigation,
     call: _CallSite,
 ) -> DefinitionLocation | None:
+    return _cached_unique_definition(
+        cache._gate_definitions,
+        navigation,
+        call,
+        accepted_kinds=frozenset({"function", "statement"}),
+    )
+
+
+def _cached_unique_definition(
+    store: dict[_DefinitionCacheKey, DefinitionLocation | None],
+    navigation: _SourceSliceNavigation,
+    call: _CallSite,
+    *,
+    accepted_kinds: frozenset[str],
+) -> DefinitionLocation | None:
     key = _DefinitionCacheKey(
         navigation.root.path,
         tuple((root.name, root.path) for root in navigation.roots),
         call,
     )
-    if key in cache._gate_definitions:
-        cached = cache._gate_definitions[key]
+    if key in store:
+        cached = store[key]
         if cached is None or _definition_is_current(navigation, cached):
             return cached
-        cache._gate_definitions.pop(key, None)
+        store.pop(key, None)
     try:
         result = navigation.navigator.go_to_definition(
             GoToDefinitionRequest(
@@ -3426,15 +3423,15 @@ def _cached_gate_definition(
             )
         )
     except PythonNavigationError:
-        cache._gate_definitions[key] = None
+        store[key] = None
         return None
     unique_definitions = {
         (item.root_name, item.relative_path, item.line, item.column): item
         for item in result.definitions
-        if item.kind in {"function", "statement"}
+        if item.kind in accepted_kinds
     }
     definition = next(iter(unique_definitions.values())) if len(unique_definitions) == 1 else None
-    cache._gate_definitions[key] = definition
+    store[key] = definition
     return definition
 
 
@@ -3936,6 +3933,16 @@ def _function_parameter_dependencies(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[_ParameterDependency, ...]:
     dependencies: dict[tuple[int, int], _ParameterDependency] = {}
+
+    def add_provider(provider: ast.Name | ast.Attribute, *, is_alias: bool) -> None:
+        call = _navigation_call_site(relative_path, source, source_revision, provider)
+        if call is None:
+            return
+        dependencies.setdefault(
+            (call.line, call.column),
+            _ParameterDependency(call=call, is_alias=is_alias),
+        )
+
     positional_arguments = (
         *function.args.posonlyargs,
         *function.args.args,
@@ -3966,21 +3973,11 @@ def _function_parameter_dependencies(
             provider = _annotated_dependency_provider(annotation)
             target = provider or annotation
             if isinstance(target, ast.Name | ast.Attribute):
-                call = _navigation_call_site(relative_path, source, source_revision, target)
-                if call is not None:
-                    dependencies.setdefault(
-                        (call.line, call.column),
-                        _ParameterDependency(call=call, is_alias=provider is None),
-                    )
+                add_provider(target, is_alias=provider is None)
         provider = _depends_provider(defaults.get(argument.arg))
         if provider is None:
             continue
-        call = _navigation_call_site(relative_path, source, source_revision, provider)
-        if call is not None:
-            dependencies.setdefault(
-                (call.line, call.column),
-                _ParameterDependency(call=call, is_alias=False),
-            )
+        add_provider(provider, is_alias=False)
     for decorator in function.decorator_list:
         if not isinstance(decorator, ast.Call):
             continue
@@ -3991,17 +3988,7 @@ def _function_parameter_dependencies(
                 provider = _depends_provider(node if isinstance(node, ast.expr) else None)
                 if provider is None:
                     continue
-                call = _navigation_call_site(
-                    relative_path,
-                    source,
-                    source_revision,
-                    provider,
-                )
-                if call is not None:
-                    dependencies.setdefault(
-                        (call.line, call.column),
-                        _ParameterDependency(call=call, is_alias=False),
-                    )
+                add_provider(provider, is_alias=False)
     return tuple(dependencies[key] for key in sorted(dependencies))
 
 
