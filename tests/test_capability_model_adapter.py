@@ -8,12 +8,13 @@ from typing import Any, cast
 import pytest
 from pydantic_ai import ModelResponse, TextPart, ThinkingPart, ToolCallPart, models
 from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.messages import ModelRequest, RetryPromptPart, UserPromptPart
+from pydantic_ai.messages import ModelRequest, RetryPromptPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.usage import RequestUsage
 
+import nbtriage.capability_model_adapter as capability_model_adapter
 from nbtriage.capability_analysis import (
     BaselineChangeOperation,
     BaselineMemberField,
@@ -47,7 +48,9 @@ from nbtriage.capability_model_adapter import (
     CapabilityModelAdapterError,
     CapabilityModelAdapterReason,
     PydanticAICapabilityAnalysisClient,
+    _completed_analysis_output_candidate,
     _instructions_for_request,
+    _validate_analysis_output_contract,
 )
 
 models.ALLOW_MODEL_REQUESTS = False
@@ -699,6 +702,97 @@ def test_navigation_budget_reserves_a_final_submission_before_the_hard_limit() -
     assert "只读补证阶段已经结束" in observed_instructions[2]
     assert client.last_usage is not None
     assert client.last_usage.total_tokens == 100
+
+
+def test_parallel_navigation_batch_respects_budget_then_finalizes() -> None:
+    provider_calls = 0
+    executed: list[str] = []
+    observed_tools: list[tuple[str, ...]] = []
+    successful_results: list[ToolReturnPart] = []
+    failed_results: list[ToolReturnPart] = []
+
+    async def read_primary() -> str:
+        await asyncio.sleep(0.01)
+        executed.append("primary")
+        return "primary evidence"
+
+    async def read_secondary() -> str:
+        executed.append("secondary")
+        return "secondary evidence"
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        nonlocal provider_calls
+        provider_calls += 1
+        observed_tools.append(tuple(tool.name for tool in info.function_tools))
+        if provider_calls == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart("read_primary", {}, "call-primary"),
+                    ToolCallPart("read_secondary", {}, "call-secondary"),
+                    ToolCallPart("read_primary", {}, "call-over-budget"),
+                ],
+                usage=RequestUsage(input_tokens=40, output_tokens=5),
+                finish_reason="tool_call",
+            )
+        failed_results.extend(
+            part
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, ToolReturnPart) and part.outcome == "failed"
+        )
+        successful_results.extend(
+            part
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, ToolReturnPart) and part.outcome == "success"
+        )
+        return ModelResponse(
+            parts=[ToolCallPart(info.output_tools[0].name, _output(), "call-output")],
+            usage=RequestUsage(input_tokens=30, output_tokens=5),
+            finish_reason="tool_call",
+        )
+
+    runtime = CapabilityAnalysisToolRuntime(
+        toolsets=(
+            FunctionToolset(tools=[read_primary]),
+            FunctionToolset(tools=[read_secondary]),
+        ),
+        evidence_units=tuple,
+        validate_source_context=lambda: True,
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
+        max_output_tokens=240,
+        max_requests=5,
+        max_tool_calls=2,
+        total_tokens_limit=1_000,
+        tool_runtime_factory=lambda _request: runtime,
+    )
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert result.entries[0].entry_id == "root"
+    assert provider_calls == 2
+    assert executed == ["primary", "secondary"]
+    assert observed_tools == [
+        ("read_primary", "read_secondary"),
+        (),
+    ]
+    assert len(failed_results) == 1
+    assert failed_results[0].tool_call_id == "call-over-budget"
+    assert "tool_budget_exhausted" in str(failed_results[0].content)
+    successful_contents = [
+        cast(dict[str, object], part.content) for part in successful_results
+    ]
+    assert [content["remaining_navigation_calls"] for content in successful_contents] == [
+        1,
+        0,
+    ]
+    assert successful_contents[-1]["navigation_phase"] == "finalize"
+    assert client.last_usage is not None
+    assert client.last_usage.tool_calls == 2
 
 
 def test_prompt_requires_complete_usage_literal_affix_self_check() -> None:
@@ -2031,6 +2125,95 @@ def test_request_timeout_is_classified_separately_from_transport_failure() -> No
         "provider_request_started",
         "provider_request_cancelled",
     ]
+
+
+def test_unit_timeout_caps_each_model_request_at_150_seconds() -> None:
+    observed_settings: list[dict[str, object]] = []
+
+    def respond(_messages: object, info: AgentInfo) -> ModelResponse:
+        observed_settings.append(dict(info.model_settings or {}))
+        return _native_response()
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+        timeout_seconds=300,
+    )
+
+    asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert observed_settings[0]["timeout"] == 150
+    assert client.diagnostic_timeout_seconds == 300
+    assert client.diagnostic_request_timeout_seconds == 150
+
+
+def test_elapsed_time_enters_reserve_then_finalize_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now_ns = [0]
+    monkeypatch.setattr(
+        capability_model_adapter,
+        "monotonic_ns",
+        lambda: now_ns[0],
+    )
+    deadline = capability_model_adapter._CapabilityRunDeadline(300)
+
+    assert deadline.phase() == "normal"
+    now_ns[0] = 121_000_000_000
+    assert deadline.phase() == "reserve"
+    now_ns[0] = 151_000_000_000
+    assert deadline.phase() == "finalize"
+
+
+def test_timeout_preserves_completed_request_usage_and_history() -> None:
+    provider_calls = 0
+
+    async def respond(_messages: object, _info: AgentInfo) -> ModelResponse:
+        nonlocal provider_calls
+        provider_calls += 1
+        if provider_calls == 1:
+            response = _native_response(summary="根据图片\u200b查找相似内容。")
+            response.usage = RequestUsage(input_tokens=100, output_tokens=10)
+            return response
+        await asyncio.sleep(0.5)
+        return _native_response()
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+        timeout_seconds=0.1,
+        capture_diagnostics=True,
+    )
+
+    with pytest.raises(CapabilityModelAdapterError) as error_info:
+        asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+
+    assert error_info.value.reason_code is CapabilityModelAdapterReason.TIMEOUT
+    assert provider_calls == 2
+    assert client.last_usage is not None
+    assert client.last_usage.requests == 1
+    assert client.last_usage.input_tokens == 100
+    assert any(
+        event.get("message") == "response"
+        for event in client.diagnostic_trace
+    )
+
+
+def test_completed_final_result_can_be_revalidated_after_cancellation() -> None:
+    response = ModelResponse(
+        parts=[ToolCallPart("final_result", _output(), "call-output")],
+        finish_reason="tool_call",
+    )
+
+    candidate = _completed_analysis_output_candidate([response])
+
+    assert candidate is not None
+    _validate_analysis_output_contract(
+        candidate,
+        _request(),
+        (),
+        allow_alias_fallback=False,
+    )
 
 
 def test_disabled_output_contains_no_entries() -> None:
