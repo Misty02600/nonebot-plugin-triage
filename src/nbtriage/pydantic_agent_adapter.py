@@ -21,7 +21,7 @@ from pydantic_ai.exceptions import (
     UsageLimitExceeded,
     UserError,
 )
-from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings, merge_model_settings
 from pydantic_ai.usage import RequestUsage, RunUsage
@@ -40,6 +40,7 @@ from nbtriage.bounded_agent import (
     agent_action_envelope_json_schema,
     parse_agent_action,
 )
+from nbtriage.model_run_diagnostics import last_model_response as _last_model_response
 from nbtriage.model_usage import (
     ProviderResponseIdentity,
     normalized_usage_cost_microusd,
@@ -339,13 +340,6 @@ class PydanticAIAgentStepClient:
             raise AgentStepError("Agent step must expose at least one allowed action")
         if len(set(request.allowed_actions)) != len(request.allowed_actions):
             raise AgentStepError("Agent step allowed actions must be unique")
-
-
-def _last_model_response(messages: list[ModelMessage]) -> ModelResponse | None:
-    return next(
-        (message for message in reversed(messages) if isinstance(message, ModelResponse)),
-        None,
-    )
 
 
 def _step_response_metadata(

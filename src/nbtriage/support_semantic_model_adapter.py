@@ -3,17 +3,13 @@ from __future__ import annotations
 import json
 
 from pydantic_ai import Agent, UsageLimits, capture_run_messages
-from pydantic_ai.exceptions import (
-    AgentRunError,
-    ModelAPIError,
-    ModelHTTPError,
-    UserError,
-)
-from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings, merge_model_settings
 
 from nbtriage.agent_telemetry import current_agent_instrumentation
+from nbtriage.model_run_diagnostics import last_model_response
 from nbtriage.support_semantics import (
     SupportAssessmentRequest,
     SupportSemanticAssessment,
@@ -179,20 +175,12 @@ class PydanticAISupportSemanticClient:
                 raise SupportSemanticModelAdapterError(
                     "support semantic model request failed during transport"
                 ) from error
-            except (
-                AgentRunError,
-                UserError,
-                ValueError,
-            ) as error:
-                raise SupportSemanticModelAdapterError(
-                    "support semantic model request failed"
-                ) from error
             except Exception as error:
                 raise SupportSemanticModelAdapterError(
                     "support semantic model request failed"
                 ) from error
             finally:
-                self._last_response = _last_model_response(captured_messages)
+                self._last_response = last_model_response(captured_messages)
 
         response = self._last_response
         if response is None:
@@ -234,13 +222,6 @@ def _build_payload(request: SupportAssessmentRequest) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
         allow_nan=False,
-    )
-
-
-def _last_model_response(messages: list[ModelMessage]) -> ModelResponse | None:
-    return next(
-        (message for message in reversed(messages) if isinstance(message, ModelResponse)),
-        None,
     )
 
 

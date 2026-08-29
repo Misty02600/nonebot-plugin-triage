@@ -32,6 +32,7 @@ from nbtriage.bug_assessment import (
     BugAssessmentToolbox,
     parse_bug_assessment_case,
 )
+from nbtriage.model_run_diagnostics import last_model_response
 
 BUG_AGENT_PROMPT_ID = "bug-assessment-agent-v1-prompt-v8-zh"
 _ALLOWED_OUTPUT_MODES = frozenset({"native", "tool"})
@@ -322,7 +323,7 @@ class PydanticAIBugAssessmentAgent:
                 ) from error
             finally:
                 self._last_messages = tuple(captured_messages)
-                self._last_response = _last_model_response(captured_messages)
+                self._last_response = last_model_response(captured_messages)
                 self._last_usage = _captured_run_usage(
                     captured_messages,
                     tool_calls=toolbox.tool_calls,
@@ -410,13 +411,6 @@ def _build_payload(case: BugAssessmentCase, toolbox: BugAssessmentToolbox) -> st
         ensure_ascii=False,
         separators=(",", ":"),
         allow_nan=False,
-    )
-
-
-def _last_model_response(messages: list[ModelMessage]) -> ModelResponse | None:
-    return next(
-        (message for message in reversed(messages) if isinstance(message, ModelResponse)),
-        None,
     )
 
 

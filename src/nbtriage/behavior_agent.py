@@ -9,8 +9,8 @@ from typing import Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import Agent, RunContext, Tool, UsageLimits, capture_run_messages
-from pydantic_ai.exceptions import AgentRunError, ModelAPIError, ModelHTTPError, UserError
-from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings, merge_model_settings
 
@@ -23,6 +23,7 @@ from nbtriage.behavior_exploration import (
     BehaviorEvidenceSnapshot,
     BehaviorSafeTurn,
 )
+from nbtriage.model_run_diagnostics import last_model_response
 
 BEHAVIOR_AGENT_MAX_REQUESTS = 5
 BEHAVIOR_AGENT_MAX_TOOL_CALLS = 3
@@ -283,11 +284,9 @@ class PydanticAIBehaviorAgentClient:
                     ) from error
                 if isinstance(error, (ModelAPIError, TimeoutError)):
                     raise BehaviorAgentError("behavior model transport failed") from error
-                if isinstance(error, (AgentRunError, UserError, ValueError)):
-                    raise BehaviorAgentError("behavior Agent run failed") from error
                 raise BehaviorAgentError("behavior Agent run failed") from error
             finally:
-                self._last_response = _last_model_response(captured_messages)
+                self._last_response = last_model_response(captured_messages)
 
         response = self._last_response
         if response is None:
@@ -318,13 +317,6 @@ def _build_payload(request: BehaviorAgentRequest) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
         allow_nan=False,
-    )
-
-
-def _last_model_response(messages: list[ModelMessage]) -> ModelResponse | None:
-    return next(
-        (message for message in reversed(messages) if isinstance(message, ModelResponse)),
-        None,
     )
 
 
