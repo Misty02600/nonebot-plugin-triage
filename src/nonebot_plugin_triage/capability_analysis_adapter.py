@@ -357,6 +357,7 @@ def build_capability_analysis_request(
     _enforce_source_policy(record, source_policy)
 
     handler_references = _handler_references(record)
+    wrapper_references = _handler_wrapper_references(record)
     if any(item.closure_freevars for item in handler_references):
         raise CapabilityAnalysisAdapterError("parameterized handler requires family-level analysis")
     config_references = _config_references(record)
@@ -378,7 +379,12 @@ def build_capability_analysis_request(
         raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
     stage_started_ns = monotonic_ns()
     handler_identities = _handler_code_identities(module_root, handler_references)
-    targets = _analysis_targets(module_root, handler_references, config_references)
+    targets = _analysis_targets(
+        module_root,
+        handler_references,
+        config_references,
+        wrapper_references=wrapper_references,
+    )
     parsed_modules: dict[str, _ParsedModule] = {}
     resolved_targets = _resolve_analysis_targets(
         targets,
@@ -644,6 +650,13 @@ def build_parameterized_family_analysis_request(
             for item in _config_references(record)
         }.values()
     )
+    wrapper_references = tuple(
+        {
+            item: item
+            for record in records
+            for item in _handler_wrapper_references(record)
+        }.values()
+    )
     parsed_modules: dict[str, _ParsedModule] = {identity.module: parsed}
     handler_reference = next(
         (
@@ -663,7 +676,12 @@ def build_parameterized_family_analysis_request(
         source=handler_source,
         handler_identity=identity,
     )
-    config_targets = _analysis_targets(identity.module_root, (), config_references)
+    config_targets = _analysis_targets(
+        identity.module_root,
+        (),
+        config_references,
+        wrapper_references=wrapper_references,
+    )
     resolved_config_targets = _resolve_analysis_targets(
         config_targets,
         module_root=identity.module_root,
@@ -2492,6 +2510,18 @@ def _valid_qualname(value: object) -> bool:
 
 
 def _handler_references(record: CapabilityRecord) -> tuple[_FunctionReference, ...]:
+    return _runtime_handler_references(record, role=None)
+
+
+def _handler_wrapper_references(record: CapabilityRecord) -> tuple[_FunctionReference, ...]:
+    return _runtime_handler_references(record, role="wrapper")
+
+
+def _runtime_handler_references(
+    record: CapabilityRecord,
+    *,
+    role: str | None,
+) -> tuple[_FunctionReference, ...]:
     references: set[_FunctionReference] = set()
     fallback_binding_index = 0
     for value in _claim_values(record, "handler.references", evidence_kind="matcher_source"):
@@ -2499,6 +2529,9 @@ def _handler_references(record: CapabilityRecord) -> tuple[_FunctionReference, .
             continue
         for item in value:
             if not isinstance(item, Mapping):
+                continue
+            item_role = item.get("role")
+            if item_role not in (None, "wrapper") or item_role != role:
                 continue
             module = item.get("module")
             function = item.get("function")
@@ -2537,15 +2570,20 @@ def _handler_references(record: CapabilityRecord) -> tuple[_FunctionReference, .
                     source_revision=source_revision,
                     closure_freevars=tuple(sorted(set(closure_freevars))),
                     binding_index=(
-                        binding_index
-                        if isinstance(binding_index, int)
-                        and not isinstance(binding_index, bool)
-                        and binding_index >= 0
-                        else fallback_binding_index
+                        None
+                        if role == "wrapper"
+                        else (
+                            binding_index
+                            if isinstance(binding_index, int)
+                            and not isinstance(binding_index, bool)
+                            and binding_index >= 0
+                            else fallback_binding_index
+                        )
                     ),
                 )
             )
-            fallback_binding_index += 1
+            if role is None:
+                fallback_binding_index += 1
     return tuple(
         sorted(
             references,
@@ -2667,6 +2705,8 @@ def _analysis_targets(
     module_root: str,
     handlers: tuple[_FunctionReference, ...],
     config_references: tuple[_ConfigReference, ...],
+    *,
+    wrapper_references: tuple[_FunctionReference, ...] = (),
 ) -> tuple[_FunctionReference, ...]:
     handler_targets: dict[HandlerCodeIdentity, _FunctionReference] = {}
     for reference in handlers:
@@ -2678,11 +2718,33 @@ def _analysis_targets(
         raise CapabilityAnalysisAdapterError("capability handler count exceeds budget")
 
     handler_symbols = {
-        (item.module, item.function, item.source_revision) for item in handler_targets.values()
+        (
+            item.module,
+            item.qualname or item.function,
+            item.code_firstlineno or item.line or 0,
+            item.source_revision,
+        )
+        for item in handler_targets.values()
+    }
+    wrapper_targets: dict[tuple[str, str, int, str], _FunctionReference] = {}
+    for item in wrapper_references:
+        identity = (
+            item.module,
+            item.qualname or item.function,
+            item.code_firstlineno or item.line or 0,
+            item.source_revision,
+        )
+        if identity in handler_symbols:
+            continue
+        wrapper_targets.setdefault(identity, item)
+
+    occupied_symbols = {
+        (item.module, item.function, item.source_revision)
+        for item in (*handler_targets.values(), *wrapper_targets.values())
     }
     config_targets: dict[tuple[str, str, int, str], _FunctionReference] = {}
     for item in config_references:
-        if (item.module, item.function, item.source_revision) in handler_symbols:
+        if (item.module, item.function, item.source_revision) in occupied_symbols:
             continue
         config_targets.setdefault(
             (item.module, item.function, item.line or 0, item.source_revision),
@@ -2708,13 +2770,24 @@ def _analysis_targets(
         )
     )
     remaining = _MAX_FUNCTIONS - len(ordered_handlers)
+    ordered_wrappers = tuple(
+        sorted(
+            wrapper_targets.values(),
+            key=lambda item: (
+                item.module,
+                item.qualname or item.function,
+                item.code_firstlineno or item.line or 0,
+            ),
+        )
+    )[:remaining]
+    remaining -= len(ordered_wrappers)
     ordered_config = tuple(
         sorted(
             config_targets.values(),
             key=lambda item: (item.module, item.function, item.line or 0),
         )
     )[:remaining]
-    return (*ordered_handlers, *ordered_config)
+    return (*ordered_handlers, *ordered_wrappers, *ordered_config)
 
 
 def _resolve_analysis_targets(

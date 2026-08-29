@@ -1016,53 +1016,53 @@ def _matcher_config_references(
         call = _python_handler_function(getattr(dependent, "call", None))
         if call is None:
             continue
-        module_name = _safe_text(getattr(call, "__module__", None))
-        if module_name is None or not _module_belongs_to_plugin(module_name, plugin.module_name):
-            continue
-        module = sys.modules.get(module_name)
-        if module is None:
-            continue
-        source_path = _module_file(module)
-        if source_path is None:
-            continue
-        source_text, source_revision = _module_source_text(source_path, state)
-        if source_text is None or source_revision is None:
-            continue
-        bindings, config_types = _module_config_bindings(
-            module,
-            plugin.module_name,
-            plugin.config_type,
-        )
-        if not bindings:
-            continue
-        try:
-            references = extract_config_references(source_text, call.__qualname__, bindings)
-        except ConfigReferenceError:
-            continue
-        for reference in references:
-            identity = (
-                module_name,
-                reference.binding_name,
-                reference.field_name,
-                reference.config_key,
-                reference.line,
-                reference.column,
-                reference.helper_depth,
+        for function in _handler_function_chain(call):
+            location = _physical_function_location(function, plugin)
+            if location is None:
+                continue
+            module_name, module, source_path = location
+            source_text, source_revision = _module_source_text(source_path, state)
+            if source_text is None or source_revision is None:
+                continue
+            bindings, config_types = _module_config_bindings(
+                module,
+                plugin.module_name,
+                plugin.config_type,
             )
-            if identity in seen:
+            if not bindings:
                 continue
-            seen.add(identity)
-            config_type = config_types.get(reference.binding_name)
-            if config_type is None:
-                continue
-            result.append(
-                _ResolvedConfigReference(
-                    module_name,
-                    source_revision,
-                    config_type,
-                    reference,
+            try:
+                references = extract_config_references(
+                    source_text,
+                    function.__code__.co_qualname,
+                    bindings,
                 )
-            )
+            except ConfigReferenceError:
+                continue
+            for reference in references:
+                identity = (
+                    module_name,
+                    reference.binding_name,
+                    reference.field_name,
+                    reference.config_key,
+                    reference.line,
+                    reference.column,
+                    reference.helper_depth,
+                )
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                config_type = config_types.get(reference.binding_name)
+                if config_type is None:
+                    continue
+                result.append(
+                    _ResolvedConfigReference(
+                        module_name,
+                        source_revision,
+                        config_type,
+                        reference,
+                    )
+                )
     return tuple(
         sorted(
             result,
@@ -1089,39 +1089,37 @@ def _matcher_handler_references(
         call = _python_handler_function(getattr(dependent, "call", None))
         if call is None:
             continue
-        module_name = _safe_text(getattr(call, "__module__", None))
-        function_name = _safe_text(getattr(call, "__name__", None))
-        if (
-            module_name is None
-            or function_name is None
-            or not _module_belongs_to_plugin(module_name, plugin.module_name)
-        ):
-            continue
-        module = sys.modules.get(module_name)
-        if not isinstance(module, ModuleType):
-            continue
-        source_path = _module_file(module)
-        if source_path is None:
-            continue
-        _, source_revision = _module_source_text(source_path, state)
-        if source_revision is None:
-            continue
-        try:
-            line = inspect.getsourcelines(call)[1]
-        except (OSError, TypeError):
-            line = None
-        result.append(
-            {
-                "module": module_name,
-                "function": function_name,
-                "qualname": call.__qualname__,
-                "line": line,
-                "code_firstlineno": call.__code__.co_firstlineno,
-                "source_revision": source_revision,
-                "closure_freevars": sorted(call.__code__.co_freevars),
-                "binding_index": binding_index,
-            }
+        chain = _handler_function_chain(call)
+        logical_reference = _handler_function_reference(
+            chain[-1],
+            plugin,
+            state,
+            binding_index=binding_index,
         )
+        if logical_reference is None:
+            logical_reference = _handler_function_reference(
+                call,
+                plugin,
+                state,
+                binding_index=binding_index,
+            )
+            if logical_reference is None:
+                continue
+            result.append(logical_reference)
+            continue
+
+        result.append(logical_reference)
+        for wrapper in chain[:-1]:
+            wrapper_reference = _handler_function_reference(
+                wrapper,
+                plugin,
+                state,
+                binding_index=binding_index,
+            )
+            if wrapper_reference is None or wrapper_reference == logical_reference:
+                continue
+            wrapper_reference["role"] = "wrapper"
+            result.append(wrapper_reference)
     return tuple(result)
 
 
@@ -1131,6 +1129,88 @@ def _python_handler_function(call: object) -> FunctionType | None:
     if inspect.ismethod(call) and inspect.isfunction(call.__func__):
         return cast(FunctionType, call.__func__)
     return None
+
+
+def _handler_function_chain(call: FunctionType) -> tuple[FunctionType, ...]:
+    """返回已注册 wrapper 到原业务 Handler 的标准 ``__wrapped__`` 链。"""
+    try:
+        unwrapped = _python_handler_function(inspect.unwrap(call))
+    except ValueError:
+        return (call,)
+    if unwrapped is None or unwrapped is call:
+        return (call,)
+
+    chain = [call]
+    current = call
+    while current is not unwrapped:
+        current = _python_handler_function(getattr(current, "__wrapped__", None))
+        if current is None:
+            return (call,)
+        chain.append(current)
+    return tuple(chain)
+
+
+def _physical_function_location(
+    function: FunctionType,
+    plugin: PluginIdentity,
+) -> tuple[str, ModuleType, Path] | None:
+    """按 code object 定位函数物理源码，避免 ``functools.wraps`` 的复制属性误导。"""
+    try:
+        source_path = Path(function.__code__.co_filename).resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+
+    module = inspect.getmodule(function.__code__)
+    if isinstance(module, ModuleType):
+        module_name = _safe_text(getattr(module, "__name__", None))
+        if (
+            module_name is not None
+            and _module_belongs_to_plugin(module_name, plugin.module_name)
+            and _module_file(module) == source_path
+        ):
+            return module_name, module, source_path
+
+    candidates = sorted(
+        (
+            (module_name, candidate)
+            for module_name, candidate in sys.modules.items()
+            if isinstance(candidate, ModuleType)
+            and _module_belongs_to_plugin(module_name, plugin.module_name)
+            and _module_file(candidate) == source_path
+        ),
+        key=lambda item: item[0],
+    )
+    if not candidates:
+        return None
+    module_name, module = candidates[0]
+    return module_name, module, source_path
+
+
+def _handler_function_reference(
+    function: FunctionType,
+    plugin: PluginIdentity,
+    state: _CollectorState,
+    *,
+    binding_index: int,
+) -> dict[str, object] | None:
+    location = _physical_function_location(function, plugin)
+    if location is None:
+        return None
+    module_name, _, source_path = location
+    _, source_revision = _module_source_text(source_path, state)
+    if source_revision is None:
+        return None
+    code = function.__code__
+    return {
+        "module": module_name,
+        "function": code.co_name,
+        "qualname": code.co_qualname,
+        "line": code.co_firstlineno,
+        "code_firstlineno": code.co_firstlineno,
+        "source_revision": source_revision,
+        "closure_freevars": sorted(code.co_freevars),
+        "binding_index": binding_index,
+    }
 
 
 def _module_config_bindings(

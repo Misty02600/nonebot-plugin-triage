@@ -1831,6 +1831,48 @@ second = create_handler("亲亲")
     } == {"anchor_only"}
 
 
+def test_wrapped_handler_is_not_misclassified_as_parameterized_family(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+async def handler():
+    return "done"
+
+async def wrapper(*args, **kwargs):
+    return await handler(*args, **kwargs)
+""",
+    )
+    logical_reference = _handler_reference(module, "handler", 1)
+    wrapper_reference = _handler_reference(module, "wrapper", 4)
+    wrapper_reference.update(
+        {
+            "closure_freevars": ["func"],
+            "role": "wrapper",
+        }
+    )
+    record = _record(
+        module.__name__,
+        handlers=[logical_reference, wrapper_reference],
+        config_references=[],
+    )
+
+    request = build_capability_analysis_request(record, ConfigValuePolicy())
+
+    assert parameterized_handler_code_identity(record) is None
+    assert {
+        item.content.splitlines()[0]
+        for item in request.evidence_units
+        if item.source_kind == "python_function"
+    } == {
+        "async def handler():",
+        "async def wrapper(*args, **kwargs):",
+    }
+
+
 def test_parameterized_family_keeps_different_member_argument_shapes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

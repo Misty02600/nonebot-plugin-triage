@@ -938,6 +938,96 @@ second = create_matcher("二")
     }
 
 
+def test_handler_reference_separates_wrapped_handler_from_wrapper_code(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    module_name = f"snapshot_plugin_{uuid4().hex}"
+    package = tmp_path / module_name
+    package.mkdir()
+    helper_path = package / "helper.py"
+    helper_source = """\
+from functools import wraps
+
+def with_reaction(func):
+    reaction = "working"
+
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        _ = reaction
+        return await func(*args, **kwargs)
+
+    return wrapper
+"""
+    helper_path.write_text(helper_source, encoding="utf-8")
+    helper_name = f"{module_name}.helper"
+    helper = ModuleType(helper_name)
+    helper.__file__ = str(helper_path)
+    helper.__package__ = module_name
+    monkeypatch.setitem(sys.modules, helper_name, helper)
+    exec(compile(helper_source, str(helper_path), "exec"), helper.__dict__)
+
+    module_path = package / "__init__.py"
+    source = f"""\
+from nonebot import on_command
+from {helper_name} import with_reaction
+
+matcher = on_command("wrapped")
+
+@matcher.handle()
+@with_reaction
+async def handler():
+    return "done"
+"""
+    module_path.write_text(source, encoding="utf-8")
+    module = ModuleType(module_name)
+    module.__file__ = str(module_path)
+    module.__package__ = module_name
+    module.__path__ = [str(package)]  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, module_name, module)
+    exec(compile(source, str(module_path), "exec"), module.__dict__)
+    matcher = module.__dict__["matcher"]
+    assert isinstance(matcher, type)
+    matcher_cleanup.append(matcher)
+    plugin = SimpleNamespace(
+        id_=module_name,
+        name=module_name,
+        module_name=module_name,
+        module=module,
+        matcher={matcher},
+        metadata=PluginMetadata(
+            name="测试插件",
+            description="插件声明说明",
+            usage="测试用法",
+            supported_adapters={"~onebot.v11"},
+        ),
+    )
+
+    snapshot = build_capability_snapshot(plugins=[plugin])
+
+    references = _record_values(snapshot.records[0], "handler.references")[0]
+    logical = next(item for item in references if "role" not in item)
+    wrapper = next(item for item in references if item.get("role") == "wrapper")
+    assert (
+        logical["module"],
+        logical["function"],
+        logical["qualname"],
+        logical["closure_freevars"],
+    ) == (module_name, "handler", "handler", [])
+    assert (
+        wrapper["module"],
+        wrapper["function"],
+        wrapper["qualname"],
+        wrapper["closure_freevars"],
+    ) == (
+        helper_name,
+        "wrapper",
+        "with_reaction.<locals>.wrapper",
+        ["func", "reaction"],
+    )
+
+
 def test_handler_reference_unwraps_bound_instance_method(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
