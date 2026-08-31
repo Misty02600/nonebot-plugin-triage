@@ -2071,6 +2071,7 @@ def _eligible_record(record: CapabilityRecord) -> bool:
         and not record.analysis_issues
         and record.state in {RecordState.VERIFIED, RecordState.CANDIDATE}
         and _has_observed_teaching_invocation(record)
+        and _has_observed_handler_reference(record)
         and not any(issue is AnalysisIssue.SENSITIVE_AMBIGUITY for issue in record.analysis_issues)
     )
 
@@ -2101,6 +2102,19 @@ def _has_observed_teaching_invocation(record: CapabilityRecord) -> bool:
         if isinstance(value, str) and value
     )
     return factories == {"on_regex"} and len(patterns) == 1
+
+
+def _has_observed_handler_reference(record: CapabilityRecord) -> bool:
+    return any(
+        claim.field == "handler.references"
+        and claim.basis is ClaimBasis.OBSERVED
+        and isinstance(claim.value, list)
+        and any(
+            isinstance(reference, dict) and reference.get("role") != "wrapper"
+            for reference in claim.value
+        )
+        for claim in record.claims
+    )
 
 
 def _has_declared_teaching(record: CapabilityRecord) -> bool:

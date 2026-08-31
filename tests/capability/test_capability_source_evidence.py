@@ -88,6 +88,46 @@ async def handle_search():
     }
 
 
+def test_extracts_direct_registration_handler_decorator(tmp_path: Path) -> None:
+    source = _write(
+        tmp_path / "plugin.py",
+        """\
+from nonebot import on_command
+from nonebot.permission import SUPERUSER
+from nonebot.rule import to_me
+from nonebot_plugin_uninfo import ADMIN
+
+@on_command("开启解析", rule=to_me(), permission=SUPERUSER | ADMIN()).handle()
+async def handle_enable():
+    return True
+""",
+    )
+
+    pack = build_capability_source_evidence(
+        "example_plugin",
+        source,
+        permission_semantic_profiles=(
+            nonebot_permission_profile(),
+            uninfo_permission_profile(),
+        ),
+    )
+
+    assert len(pack.registrations) == 1
+    registration = pack.registrations[0]
+    assert (
+        registration.matcher_name,
+        registration.factory,
+        registration.entries,
+        registration.handlers,
+    ) == (None, "on_command", ("开启解析",), ("handle_enable",))
+    assert [item.name for item in pack.handlers] == ["handle_enable"]
+    assert {(item.kind, item.symbol.rpartition(".")[2]) for item in pack.symbols} == {
+        (StructuralSymbolKind.PERMISSION, "ADMIN"),
+        (StructuralSymbolKind.PERMISSION, "SUPERUSER"),
+        (StructuralSymbolKind.RULE, "to_me"),
+    }
+
+
 def test_extracts_official_literal_and_event_registration_forms(tmp_path: Path) -> None:
     source = _write(
         tmp_path / "plugin.py",
@@ -136,6 +176,55 @@ not_a_matcher = service.on_command("private")
     assert [(item.matcher_name, item.factory, item.entries) for item in pack.registrations] == [
         ("group_command", "on_command", ("root child",)),
         ("literal", "on_fullmatch", ("hello",)),
+    ]
+
+
+def test_extracts_proven_alconna_dispatch_registrations_and_gates(tmp_path: Path) -> None:
+    source = _write(
+        tmp_path / "plugin.py",
+        """\
+from nonebot_plugin_alconna import on_alconna as create_matcher
+
+root = create_matcher(Alconna("bili"))
+main = root.dispatch("$main", handlers=[handle_main])
+subscribe = root.dispatch(
+    path="admin.subscribe",
+    permission=GROUP_ADMIN_OR_SUPERUSER,
+    handlers=[handle_subscribe],
+)
+
+class BusinessService:
+    def dispatch(self, path):
+        return path
+
+service = BusinessService()
+not_a_matcher = service.dispatch("private")
+""",
+    )
+
+    pack = build_capability_source_evidence("example_plugin", source)
+
+    assert [
+        (item.matcher_name, item.factory, item.entries, item.handlers)
+        for item in pack.registrations
+    ] == [
+        ("root", "on_alconna", ("bili",), ()),
+        ("main", "dispatch", ("bili",), ("handle_main",)),
+        (
+            "subscribe",
+            "dispatch",
+            ("bili admin subscribe",),
+            ("handle_subscribe",),
+        ),
+    ]
+    assert [
+        (item.kind, item.symbol, item.owner) for item in pack.symbols if item.owner == "subscribe"
+    ] == [
+        (
+            StructuralSymbolKind.PERMISSION,
+            "GROUP_ADMIN_OR_SUPERUSER",
+            "subscribe",
+        )
     ]
 
 

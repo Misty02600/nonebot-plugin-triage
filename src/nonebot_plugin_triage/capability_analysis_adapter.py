@@ -438,6 +438,11 @@ def build_capability_analysis_request(
         selected_registrations,
         invocations,
     )
+    fixed_permission_facts = _fixed_permission_facts(
+        source_pack,
+        selected_registrations,
+        gate_symbols,
+    )
     _record_preparation_timing(preparation_timings, "runtime_projection", stage_started_ns)
     stage_started_ns = monotonic_ns()
     gate_names = frozenset(item.symbol.rpartition(".")[2] for item in gate_symbols)
@@ -529,11 +534,7 @@ def build_capability_analysis_request(
         config_projections=projections,
         unknown_config=unknown,
         fixed_constraints=fixed_permission_constraints(
-            _fixed_permission_facts(
-                source_pack,
-                selected_registrations,
-                gate_symbols,
-            ),
+            fixed_permission_facts,
             evidence_id=structure_evidence.evidence_id,
         ),
         invocations=invocations,
@@ -542,6 +543,9 @@ def build_capability_analysis_request(
             gate_symbols,
             invocations,
             structure_evidence,
+            record=record,
+            runtime_evidence=runtime_evidence,
+            fixed_permission_facts=fixed_permission_facts,
         ),
     )
 
@@ -1909,6 +1913,10 @@ def _gate_candidates(
     gate_symbols: tuple[StructuralSymbolFact, ...],
     invocations: tuple[CapabilityInvocationTarget, ...],
     structure_evidence: CapabilityEvidenceUnit,
+    *,
+    record: CapabilityRecord,
+    runtime_evidence: CapabilityEvidenceUnit,
+    fixed_permission_facts: tuple[PermissionConstraintFact, ...],
 ) -> tuple[CapabilityGateCandidate, ...]:
     entry_ids = tuple(item.entry_id for item in invocations)
     candidates: list[CapabilityGateCandidate] = []
@@ -1961,6 +1969,48 @@ def _gate_candidates(
                     structure_evidence.evidence_id,
                 )
             )
+
+    covered_kinds = {
+        (
+            CapabilityGateKind.PERMISSION
+            if item.kind is StructuralSymbolKind.PERMISSION
+            else CapabilityGateKind.RULE
+        )
+        for item in gate_symbols
+    }
+    if fixed_permission_facts:
+        covered_kinds.add(CapabilityGateKind.PERMISSION)
+    covered_kinds.update(
+        gate_kind
+        for registration in registrations
+        for field_name, gate_kind in (
+            ("permission", CapabilityGateKind.PERMISSION),
+            ("rule", CapabilityGateKind.RULE),
+        )
+        if field_name in registration.opaque_fields
+    )
+    if invocations and all(item.requires_mention for item in invocations):
+        covered_kinds.add(CapabilityGateKind.RULE)
+
+    runtime_gates: dict[CapabilityGateKind, list[str]] = {}
+    for constraint in record.constraints:
+        kind = "permission" if constraint.kind == "permission_updater" else constraint.kind
+        if kind not in {"permission", "rule"}:
+            continue
+        gate_kind = CapabilityGateKind(kind)
+        runtime_gates.setdefault(gate_kind, []).append(constraint.constraint_id)
+    for gate_kind, constraint_ids in runtime_gates.items():
+        if gate_kind in covered_kinds:
+            continue
+        candidates.append(
+            _gate_candidate(
+                gate_kind,
+                f"runtime:{record.capability_id}",
+                "|".join(sorted(constraint_ids)),
+                entry_ids,
+                runtime_evidence.evidence_id,
+            )
+        )
     unique = {item.candidate_id: item for item in candidates}
     return tuple(unique[key] for key in sorted(unique))
 

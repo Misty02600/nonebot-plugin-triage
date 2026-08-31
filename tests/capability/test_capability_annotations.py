@@ -206,7 +206,22 @@ def _record(capability_id: str, disclosure: Disclosure) -> CapabilityRecord:
         disclosure=disclosure,
         state=RecordState.VERIFIED,
         platform_scope=PlatformScope.all(),
-        claims=(Claim("invocation.header", "搜图", ClaimBasis.OBSERVED),),
+        claims=(
+            Claim("invocation.header", "搜图", ClaimBasis.OBSERVED),
+            Claim(
+                "handler.references",
+                [
+                    {
+                        "module": "plugin.image.handlers",
+                        "function": "handle_image",
+                        "qualname": "handle_image",
+                        "source_revision": f"sha256:{'0' * 64}",
+                        "closure_freevars": [],
+                    }
+                ],
+                ClaimBasis.OBSERVED,
+            ),
+        ),
     )
 
 
@@ -1058,6 +1073,47 @@ async def test_common_plugin_source_failure_closes_plugin_before_other_units(
     assert status.skipped_count == 2
     assert all(item.state is CapabilityTeachingUnitState.SKIPPED for item in status.units)
     assert all(item.reason is CapabilityTeachingUnitReason.SOURCE_ADAPTER for item in status.units)
+
+
+@pytest.mark.asyncio
+async def test_command_without_observed_handler_is_excluded_before_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared: list[str] = []
+
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        prepared.append(record.capability_id)
+        return _request(record.capability_id)
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        build_request,
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=lambda: FakeCapabilityAnalysisClient(_output()),
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    record = _record("command:container", Disclosure.PUBLIC)
+    record = replace(
+        record,
+        claims=tuple(
+            claim for claim in record.claims if claim.field != "handler.references"
+        ),
+    )
+
+    status = await service.refresh(CapabilitySnapshot.create((record,)))
+
+    assert prepared == []
+    assert status.eligible_count == 0
+    assert status.skipped_count == 0
+    assert status.units == ()
 
 
 @pytest.mark.asyncio

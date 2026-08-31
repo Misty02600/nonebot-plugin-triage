@@ -47,6 +47,7 @@ _REGISTRATION_FACTORIES = frozenset(
 )
 _FACTORIES_WITH_ENTRY = frozenset(
     {
+        "dispatch",
         "on_alconna",
         "on_command",
         "on_endswith",
@@ -62,6 +63,7 @@ _COMMAND_GROUP_METHODS = {
     "shell_command": "on_shell_command",
 }
 _NONEBOT_FACTORY_MODULES = frozenset({"nonebot", "nonebot.plugin", "nonebot.plugin.on"})
+_ALCONNA_FACTORY_MODULES = frozenset({"nonebot_plugin_alconna", "nonebot_plugin_alconna.matcher"})
 _NONEBOT_GROUP_TYPES = {
     "nonebot.CommandGroup": "command",
     "nonebot.MatcherGroup": "matcher",
@@ -78,7 +80,7 @@ _HANDLER_DECORATOR_PATTERNS = (
     "@$MATCHER.$DECORATOR",
     "@$MATCHER.$DECORATOR($$$ARGS)",
 )
-_EXTRACTOR_VERSION = "nbtriage-capability-source-evidence-v4-handler-owner"
+_EXTRACTOR_VERSION = "nbtriage-capability-source-evidence-v6-direct-registration-decorator"
 
 
 class CapabilitySourceEvidenceError(ValueError):
@@ -624,19 +626,22 @@ def _registration_anchors(
     symbols: list[StructuralSymbolFact] = []
     permission_constraints: list[PermissionConstraintFact] = []
     errors: list[str] = []
-    for statement in _top_level_nodes(tree):
-        call, matcher_name, binding_opaque = _registration_call(statement)
-        if call is None:
-            continue
+    for call, matcher_name, binding_opaque in (
+        candidate
+        for statement in _top_level_nodes(tree)
+        for candidate in _registration_candidates(statement)
+    ):
         resolved = _registration_factory(tree, call)
         if resolved is None:
             continue
         factory, group_binding = resolved
         entries, entry_opaque = _registration_entries(factory, call)
-        if group_binding is not None and group_binding.kind == "command":
+        if group_binding is not None and group_binding.kind in {"alconna", "command"}:
             if group_binding.command_prefix is None:
                 entries = ()
                 entry_opaque = True
+            elif group_binding.kind == "alconna" and entries == ("$main",):
+                entries = (group_binding.command_prefix,)
             elif entries:
                 entries = tuple(f"{group_binding.command_prefix} {entry}" for entry in entries)
         if factory in {"on_command", "on_shell_command"} and not entries and not entry_opaque:
@@ -701,6 +706,24 @@ def _registration_anchors(
     return anchors, symbols, permission_constraints, errors
 
 
+def _registration_candidates(
+    statement: SgNode,
+) -> tuple[tuple[SgNode, str | None, bool], ...]:
+    candidates: list[tuple[SgNode, str | None, bool]] = []
+    seen: set[tuple[int, int]] = set()
+    call, matcher_name, binding_opaque = _registration_call(statement)
+    if call is not None:
+        candidates.append((call, matcher_name, binding_opaque))
+        seen.add(_node_key(call))
+    for owner in _handler_decorator_owners(statement):
+        call = _unwrap_parenthesized(owner)
+        if call is None or call.kind() != "call" or _node_key(call) in seen:
+            continue
+        candidates.append((call, None, False))
+        seen.add(_node_key(call))
+    return tuple(candidates)
+
+
 def _registration_call(
     statement: SgNode,
 ) -> tuple[SgNode | None, str | None, bool]:
@@ -739,6 +762,8 @@ def _registration_factory(
         module_name, _, imported_terminal = imported.rpartition(".")
         if module_name in _NONEBOT_FACTORY_MODULES and imported_terminal in _REGISTRATION_FACTORIES:
             return imported_terminal, None
+        if module_name in _ALCONNA_FACTORY_MODULES and imported_terminal == "on_alconna":
+            return "on_alconna", None
     if function is not None and function.kind() == "identifier":
         return (terminal, None) if terminal in _REGISTRATION_FACTORIES else None
 
@@ -751,6 +776,8 @@ def _registration_factory(
     if group_binding.kind == "command":
         factory = _COMMAND_GROUP_METHODS.get(terminal)
         return (factory, group_binding) if factory is not None else None
+    if group_binding.kind == "alconna":
+        return ("dispatch", group_binding) if terminal == "dispatch" else None
     if group_binding.kind == "matcher" and terminal in _REGISTRATION_FACTORIES:
         return terminal, group_binding
     return None
@@ -792,13 +819,19 @@ def _group_binding_from_assignment(
     bindings = _import_bindings_before(tree, statement.range().start.index)
     resolved = _resolve_imported_name(qualified, bindings)
     group_kind = _NONEBOT_GROUP_TYPES.get(resolved or "")
-    if group_kind is None:
+    if group_kind is not None:
+        if group_kind == "matcher":
+            return _MatcherGroupBinding("matcher")
+        positional, keywords = _call_arguments(value)
+        command = positional[0] if positional else keywords.get("cmd")
+        return _MatcherGroupBinding("command", _literal_command(command))
+
+    registration = _registration_factory(tree, value)
+    if registration is None or registration != ("on_alconna", None):
         return None
-    if group_kind == "matcher":
-        return _MatcherGroupBinding("matcher")
-    positional, keywords = _call_arguments(value)
-    command = positional[0] if positional else keywords.get("cmd")
-    return _MatcherGroupBinding("command", _literal_command(command))
+    entries, opaque = _registration_entries("on_alconna", value)
+    command_prefix = entries[0] if not opaque and len(entries) == 1 else None
+    return _MatcherGroupBinding("alconna", command_prefix)
 
 
 def _literal_command(expression: SgNode | None) -> str | None:
@@ -815,14 +848,17 @@ def _literal_command(expression: SgNode | None) -> str | None:
 def _registration_entries(factory: str, call: SgNode) -> tuple[tuple[str, ...], bool]:
     if factory not in _FACTORIES_WITH_ENTRY:
         return (), False
-    positional, _ = _call_arguments(call)
-    expression = positional[0] if positional else _keyword_value(call, "cmd")
+    positional, keywords = _call_arguments(call)
+    keyword_name = "path" if factory == "dispatch" else "cmd"
+    expression = positional[0] if positional else keywords.get(keyword_name)
     if expression is None:
         return (), True
     if factory in {"on_endswith", "on_fullmatch", "on_keyword", "on_startswith"}:
         return _literal_strings(expression)
     value = _literal_value(expression)
     if isinstance(value, str):
+        if factory == "dispatch":
+            value = " ".join(part for part in value.split(".") if part)
         return ((value,), False) if value else ((), False)
     if isinstance(value, tuple):
         if not all(isinstance(item, str) for item in value):
@@ -900,29 +936,23 @@ def _associate_handlers(
     anchors: list[_AnchorBuilder], functions: tuple[_FunctionSource, ...]
 ) -> tuple[dict[tuple[int, int], set[str]], set[tuple[int, int]]]:
     by_matcher: dict[str, list[_AnchorBuilder]] = {}
+    by_source_index: dict[int, list[_AnchorBuilder]] = {}
     for anchor in anchors:
+        by_source_index.setdefault(anchor.source_index, []).append(anchor)
         if anchor.matcher_name is not None:
             by_matcher.setdefault(anchor.matcher_name, []).append(anchor)
     matcher_by_function: dict[tuple[int, int], set[str]] = {}
     known_functions: set[tuple[int, int]] = set()
     for function in functions:
-        decorators = (
-            decorator
-            for pattern in _HANDLER_DECORATOR_PATTERNS
-            for decorator in function.container.find_all(pattern=pattern)
-        )
-        for decorator in decorators:
-            parent = decorator.parent()
-            if parent is None or _node_key(parent) != _node_key(function.container):
-                continue
-            owner = decorator.get_match("MATCHER")
-            attribute = decorator.get_match("DECORATOR")
-            if owner is None or attribute is None or owner.kind() != "identifier":
-                continue
-            if attribute.text() not in _HANDLER_DECORATORS:
-                continue
+        for owner in _handler_decorator_owners(function.container):
             function_key = _node_key(function.definition)
-            for anchor in by_matcher.get(owner.text(), ()):
+            if owner.kind() == "identifier":
+                matching_anchors = by_matcher.get(owner.text(), ())
+            elif owner.kind() == "call":
+                matching_anchors = by_source_index.get(owner.range().start.index, ())
+            else:
+                matching_anchors = ()
+            for anchor in matching_anchors:
                 anchor.handlers.add(function.name)
                 known_functions.add(function_key)
                 if anchor.matcher_name is not None:
@@ -941,6 +971,26 @@ def _associate_handlers(
             if anchor.matcher_name is not None:
                 matcher_by_function.setdefault(function_key, set()).add(anchor.matcher_name)
     return matcher_by_function, known_functions
+
+
+def _handler_decorator_owners(container: SgNode) -> tuple[SgNode, ...]:
+    owners: list[SgNode] = []
+    seen: set[tuple[int, int]] = set()
+    for pattern in _HANDLER_DECORATOR_PATTERNS:
+        for decorator in container.find_all(pattern=pattern):
+            parent = decorator.parent()
+            if parent is None or _node_key(parent) != _node_key(container):
+                continue
+            owner = _unwrap_parenthesized(decorator.get_match("MATCHER"))
+            attribute = decorator.get_match("DECORATOR")
+            if owner is None or attribute is None or attribute.text() not in _HANDLER_DECORATORS:
+                continue
+            key = _node_key(owner)
+            if key in seen:
+                continue
+            owners.append(owner)
+            seen.add(key)
+    return tuple(owners)
 
 
 def _handler_facts(

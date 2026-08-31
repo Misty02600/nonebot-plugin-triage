@@ -1110,6 +1110,56 @@ status = on_command("状态", aliases={"运行状态"}, rule=to_me(), handlers=[
     )
 
 
+def test_invocation_target_detects_to_me_in_direct_registration_decorator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+class Matcher:
+    def handle(self):
+        return lambda function: function
+
+def on_command(*args, **kwargs):
+    return Matcher()
+
+def to_me():
+    return object()
+
+@on_command("开启解析", rule=to_me()).handle()
+async def handle_enable():
+    return True
+""",
+    )
+    handle_enable = module.__dict__["handle_enable"]
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[
+                _handler_reference(
+                    module,
+                    "handle_enable",
+                    handle_enable.__code__.co_firstlineno,
+                )
+            ],
+            config_references=[],
+            command_header="开启解析",
+        ),
+        ConfigValuePolicy(),
+    )
+
+    assert request.invocations == (
+        CapabilityInvocationTarget(
+            "root",
+            CapabilityInvocationMode.ANCHORED,
+            "开启解析",
+            requires_mention=True,
+        ),
+    )
+
+
 def test_regex_invocation_keeps_pattern_and_flags_without_inventing_command_body(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2129,6 +2179,104 @@ matcher = on_command(
         item.source_kind == "python_function" and item.content.startswith("def other_permission():")
         for item in request.evidence_units
     )
+
+
+def test_alconna_dispatch_permission_becomes_gate_with_predicate_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+class Matcher:
+    def dispatch(self, *args, **kwargs):
+        return self
+
+def on_alconna(*args, **kwargs):
+    return Matcher()
+
+def Alconna(*args, **kwargs):
+    return object()
+
+class Permission:
+    def __init__(self, checker):
+        self.checker = checker
+
+async def check_access():
+    return True
+
+ACCESS = Permission(check_access)
+
+async def handle_sub():
+    return True
+
+root = on_alconna(Alconna("bili"))
+sub = root.dispatch("sub", permission=ACCESS, handlers=[handle_sub])
+""",
+    )
+    handle_sub = module.__dict__["handle_sub"]
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle_sub", handle_sub.__code__.co_firstlineno)],
+            config_references=[],
+            command_header="bili sub",
+            opaque_gate_kinds=("permission",),
+        ),
+        ConfigValuePolicy(),
+    )
+
+    assert len(request.gate_candidates) == 1
+    candidate = request.gate_candidates[0]
+    structure = next(
+        item for item in request.evidence_units if item.source_kind == "matcher_source_structure"
+    )
+    assert candidate.kind.value == "permission"
+    assert candidate.evidence_ids == (structure.evidence_id,)
+    assert any(
+        item.source_kind == "python_gate_binding"
+        and item.content == "ACCESS = Permission(check_access)"
+        for item in request.evidence_units
+    )
+    assert any(
+        item.source_kind == "python_function"
+        and item.content.startswith("async def check_access():")
+        for item in request.evidence_units
+    )
+
+
+def test_runtime_gate_without_source_registration_still_becomes_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+async def handle():
+    return True
+""",
+    )
+    handle = module.__dict__["handle"]
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle", handle.__code__.co_firstlineno)],
+            config_references=[],
+            command_header="secure",
+            opaque_gate_kinds=("permission",),
+        ),
+        ConfigValuePolicy(),
+    )
+
+    assert len(request.gate_candidates) == 1
+    candidate = request.gate_candidates[0]
+    runtime = next(
+        item for item in request.evidence_units if item.source_kind == "runtime_capability_facts"
+    )
+    assert candidate.kind.value == "permission"
+    assert candidate.evidence_ids == (runtime.evidence_id,)
 
 
 def test_unknown_gate_definition_resolves_from_local_plugin_import(
