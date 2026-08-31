@@ -122,7 +122,7 @@ Direct Jedi，Bug 仍使用有界文本读取。
   `load_unsafe_extensions=False`；
 - 返回位置可能来自插件根、`site-packages`、typeshed 或 uv cache，必须重新经过批准组件、source revision
   和相对 locator 门禁；
-- 对 nonemigut 的 workspace 插件、Git/wheel 依赖、Misty Uninfo fork、Alconna 动态注册写法的真实准确率；
+- 对真实下游部署中的 workspace 插件、Git/wheel 依赖、Uninfo VCS fork、Alconna 动态注册写法的准确率；
 - project references 在真实插件规模下的耗时、内存、并发和中断语义；
 - 迁移实现仍须补齐现有 inventory / Evidence / revision 合同与回归覆盖。
 
@@ -196,9 +196,9 @@ Direct Jedi，Bug 仍使用有界文本读取。
 
 ## 评分对比摘要
 
-2026-08-14 的本地、零网络实验绑定同一 E 盘 `.venv` 中实际安装的 nonebot2 `2.5.0`、
+2026-08-14 的本地、零网络实验绑定同一隔离 `.venv` 中实际安装的 nonebot2 `2.5.0`、
 nonebot-adapter-onebot `2.4.6` 和 nonebot-plugin-alconna `0.62.1`。该环境没有锁定或安装
-nonebot-plugin-uninfo，因此三包结果不能冒充四包完整覆盖；Nonemigut 的另一个部署后来单独证明 Griffe
+nonebot-plugin-uninfo，因此三包结果不能冒充四包完整覆盖；另一个独立下游环境后来单独证明 Griffe
 能够读取其 VCS Uninfo `0.11.1`，但不改变原环境缺口。
 
 | 指标 | Griffe/AST（20 题） | inventory-bound 词法（同 20 题） | Jedi 0.20.0（10 道新题 smoke） |
@@ -215,9 +215,9 @@ Jedi 在所有指标上显著优于 Griffe。选择 Jedi 的原因更窄也更�
 定义”，Jedi 的 cursor-aware goto 与这个问题同构；它正确处理了 nested namespace、wildcard re-export、
 跨包继承、签名和 Griffe 当前误定位的 stub-only `.pyi`。三次独立运行的质量结果一致。
 
-真实 Nonemigut 抽样也支持这个边界：Direct Jedi 对四个命名跨文件问题都给出准确 definition；Griffe
-适合命名良好的 API 浏览，却会因 Python 最终绑定模型丢失 NoneBot 惯用的重复 `_` handler（`who-at-me`
-保留 1/4，`withdraw` 保留 10/33）。另一方面，Jedi 同样漏掉字符串配置键和 `setattr` 动态写入，所以最终
+真实下游插件抽样也支持这个边界：Direct Jedi 对命名跨文件问题给出准确 definition；Griffe
+适合命名良好的 API 浏览，却会因 Python 最终绑定模型只保留一部分 NoneBot 惯用的重复 `_` handler。
+另一方面，Jedi 同样漏掉字符串配置键和 `setattr` 动态写入，所以最终
 组合必须是 **Jedi-first for known use-site definition，glob/text fallback for discovery and dynamic text**，
 而不是 Jedi-only。
 
@@ -227,7 +227,7 @@ Jedi 在所有指标上显著优于 Griffe。选择 Jedi 的原因更窄也更�
 - 不构建完整 Python 调用图、控制流图或数据流图；
 - 不允许模型、部署者配置或被分析仓库提供 ast-grep 规则、Serena context 或源码 scope；
 - 不因为某个工具能读取源码，就自动允许把整个插件或依赖正文发送给远端模型；
-- 本 ADR 只记录选择，不在同一次文档变更中增删依赖或把实验后端启用到 nonemigut。
+- 本 ADR 只记录选择，不在同一次文档变更中增删依赖或把实验后端启用到下游部署。
 
 ## 与既有决定的关系
 
@@ -261,7 +261,7 @@ Jedi 在所有指标上显著优于 Griffe。选择 Jedi 的原因更窄也更�
 inventory、版本、revision、路径门禁与 Evidence，后端无权扩大范围。后续 ADR-0059 已移除项目自有
 Griffe reader 并实现共享只读 FileSystem / Jedi 领域边界；MultiLSPy 不采用；Serena 不进入该职责。
 
-本决定依据 20 题 Griffe/词法同题实验、10 道 Jedi 新题 smoke 和 Nonemigut 实际插件只读抽样。样本足以
+本决定依据 20 题 Griffe/词法同题实验、10 道 Jedi 新题 smoke 和真实下游插件只读抽样。样本足以
 做工程选型，不足以主张统计显著性，也没有消除动态 Python 的固有限制。实现完成的最低资格是：真实安装
 依赖 definition Gold 不退化、stub locator 正确、错误组件/版本为零、所有结果经过 RECORD/revision 门禁、
 目标包零 import、partial/opaque 可观察，以及 glob fallback 回归保持通过。

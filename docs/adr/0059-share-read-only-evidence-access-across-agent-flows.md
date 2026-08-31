@@ -51,7 +51,7 @@
      复核后的单插件源码根；
    - LocalStore 解析出的 config、data、cache 根；
    - 当前 Bot 解释器由 `sysconfig` 给出的 `purelib` / `platlib` 中的 `.py` / `.pyi` 依赖源码。
-6. `plugin_dirs` 是可复用的声明边界，但不是唯一来源。nonemigut 当前把本地插件作为 uv workspace 的 PEP
+6. `plugin_dirs` 是可复用的声明边界，但不是唯一来源。一个真实下游部署把本地插件作为 uv workspace 的 PEP
    660 editable distribution 安装且 `plugin_dirs=[]`，因此必须同时支持“已加载模块 + 当前环境 distribution /
    editable 根”的复核；workspace 中存在但本轮未加载的插件不能因此进入普通教学能力。
 7. `.venv` 不是交给模型自由遍历的单一文件根。“允许全部依赖代码”指当前解释器 `purelib` / `platlib`

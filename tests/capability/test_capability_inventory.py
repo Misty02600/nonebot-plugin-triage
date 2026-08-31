@@ -16,18 +16,17 @@ def _write_pyproject(tmp_path: Path, content: str) -> Path:
     return path
 
 
-def test_reads_nonemigut_standard_nonebot_inventory(tmp_path: Path) -> None:
-    (tmp_path / "Migut" / "plugins").mkdir(parents=True)
+def test_reads_standard_nonebot_inventory(tmp_path: Path) -> None:
+    (tmp_path / "extensions" / "plugins").mkdir(parents=True)
     (tmp_path / "plugins").mkdir()
     content = """
 [tool.nonebot]
-plugin_dirs = ["Migut/plugins", "plugins"]
+plugin_dirs = ["extensions/plugins", "plugins"]
 builtin_plugins = ["echo"]
 
 [tool.nonebot.plugins]
-event-react = ["event_react"]
-YetAnotherPicSearch = ["YetAnotherPicSearch"]
-nonebot-plugin-triage = ["nonebot_plugin_triage"]
+alpha-plugin = ["alpha_plugin"]
+beta-plugin = ["beta_plugin"]
 """.lstrip()
     path = _write_pyproject(tmp_path, content)
 
@@ -35,17 +34,16 @@ nonebot-plugin-triage = ["nonebot_plugin_triage"]
 
     assert inventory.content_sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
     assert inventory.source_location == str(path.resolve())
-    assert inventory.plugin_dirs == ("Migut/plugins", "plugins")
+    assert inventory.plugin_dirs == ("extensions/plugins", "plugins")
     assert not inventory.is_partial
     assert [
         (plugin.module_name, plugin.kind, plugin.distribution_name) for plugin in inventory.plugins
     ] == [
-        ("YetAnotherPicSearch", DeclaredPluginKind.ROOT, "YetAnotherPicSearch"),
-        ("event_react", DeclaredPluginKind.ROOT, "event-react"),
+        ("alpha_plugin", DeclaredPluginKind.ROOT, "alpha-plugin"),
+        ("beta_plugin", DeclaredPluginKind.ROOT, "beta-plugin"),
         ("nonebot.plugins.echo", DeclaredPluginKind.BUILTIN, None),
-        ("nonebot_plugin_triage", DeclaredPluginKind.ROOT, "nonebot-plugin-triage"),
     ]
-    assert inventory.plugins[1].source_location == "tool.nonebot.plugins.event-react[0]"
+    assert inventory.plugins[1].source_location == "tool.nonebot.plugins.beta-plugin[0]"
 
 
 def test_invalid_entries_are_partial_without_discarding_valid_plugins(tmp_path: Path) -> None:

@@ -87,7 +87,7 @@ Uninfo 0.11.1 的 `ADMIN()` 精确展开为 `admin OR owner`；`CHANNEL_ADMINIST
 同一表达式仍有未知自定义分支时，已知分支不会被单独发布成 fixed AND。
 最终索引不保存 import 来源；同名本地符号不会套用该语义。模型被要求直接使用这些稳定事实，不再为每个
 插件重复打开 Uninfo 源码；实际安装版本既不作为启用门，也不单独触发教学注释失效。高级动态 Permission
-继续保持 opaque，必要时才走 Jedi / 文件补读。当前映射已用 nonemigut 的 0.11.1 源码复核。
+继续保持 opaque，必要时才走 Jedi / 文件补读。当前映射已用 Uninfo 0.11.1 的已安装源码复核。
 
 源码切片中的 Handler 或 helper 实际使用 `Uninfo` / `QryItrface` 类型注解时，首包还会加入一份可引用的
 框架语义 Evidence。它覆盖 README 中与源码理解相关的 Session、User、Scene、Member、查询接口与内建

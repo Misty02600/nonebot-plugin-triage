@@ -57,9 +57,8 @@
 
 9. Triage 随发行包提供 `nonebot-plugin-orm` / Alembic 迁移。部署者安装或更新含 schema 变化的版本后执行
    `nb orm upgrade`，可再用 `nb orm check` 验证；不通过关闭启动检查或在业务请求中临时建表来隐藏迁移缺失。
-10. 当前 nonemigut 已锁定 `nonebot-plugin-orm==0.8.3`、SQLite extra 与 `aiosqlite`，但 Triage 仍需自己的直接
-    依赖声明。当前部署没有 `runtime-confirmed-bug-problems.json` 或 `reviewed-bug-problems.json` 实际数据，因此
-    首个实现不需要迁移线上记录。
+10. 下游宿主通过其他插件传递解析 `nonebot-plugin-orm`、SQLite extra 与 `aiosqlite`，不代表 Triage 可以省略
+    自己的直接依赖声明。首个实现不把 JSON repository 原型静默迁移为 ORM 线上记录。
 11. 两个 JSON repository 在 ORM 纵切接通前只视为未接线原型。若实施前发现真实 JSON 数据，必须提供显式、
     可重复且有冲突报告的一次性导入；不能在每次启动时静默合并，也不能让 JSON 与 ORM 同时成为权威写源。
 12. SQLite 是当前单机 Bot 的默认后端，不被描述成无限扩展的多机数据库。若未来多个主机共享写入或写并发超出
@@ -77,7 +76,7 @@
 
 ## 带来的影响
 
-- `pyproject.toml` 和 lock 将新增 Triage 对 `nonebot-plugin-orm[sqlite]` 的直接运行依赖；nonemigut 当前已解析同一
+- `pyproject.toml` 和 lock 将新增 Triage 对 `nonebot-plugin-orm[sqlite]` 的直接运行依赖；下游宿主已解析同一
   依赖，不代表其他部署可以省略；
 - 需要设计最小 ORM schema、唯一约束、迁移升降级和事务型 Repository，并用 SQLite 覆盖创建、关联、并发冲突、
   rollback、alias 与回归；
