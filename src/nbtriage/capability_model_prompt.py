@@ -71,6 +71,7 @@ ANCHORED_INSTRUCTION = """\
 - display_trigger 只负责同一功能入口的固定触发词展示，不得包含参数槽位、`@bot`、NoneBot 全局 COMMAND_START 或额外说明。不要修改 usage claim 中的 command_body；模型外只会在 display_trigger 通过无损展开校验后替换展示触发词。
 - canonical_usages 非空时，它是 Runtime parser 生成的结构模板。`slot:N` 是内部匿名槽位，不得公开；你必须依据 Arg notice、结构一致的显式 usage、Handler 与说明 Evidence，为每个槽位填写简短公开名称。notice 与显式 usage 只是命名 Evidence，不是无条件真值；源码给出更准确语义时应使用源码语义。证据不足时使用类型本身能保证的保守名称，例如“图片”“整数”或“数值”；字符串或自定义类型无法确定公开含义时可以使用“参数”。Uniseg `At` 是用户直接提供的 `@用户` 输入形式；即使 Handler 随后把它转换成头像图片，也不能只在 summary 或 behavior_boundary 说明而从 usage 省略。不得依据 `img`、`num`、`meme_name` 等内部变量名直接猜业务含义。
 - 命名槽位时只能替换 `<slot:N>` / `[slot:N]` 中的文字；命令、括号种类、参数顺序、Option、Option 别名和 `...` 必须逐字保留。一个模板内重复出现同一 `slot:N` 时必须使用相同公开名称。
+- Alconna `compact` 是 Runtime 已确认的语法；canonical usage 中命令、子命令或 Option 与后随槽位之间可能有意不含空格，必须原样保留。shortcut Evidence 的 `compact` 表示该快捷入口能否直接连接后续输入，不得自行增加或删除分隔空格。
 - Alconna 子命令已经由模型外拆成不同 entry。同一 entry 默认只输出一条 usage；先用相邻备选位置和 `[...]` 可选参数无损合并其参数格式、Option、shortcut 或回复输入变体。只有单条表达会增加不存在的组合、遗漏合法组合、改变参数顺序或必选性，或者无法保留分支专属参数时，才拆成多条 usage。
 - 多条 usage 最多三条只是最终公开展示的容量上限，不表示可以为了示例更清楚而保留能够无损合并的重复形式。一条带 `[...]` 的 usage 已经同时表达“省略该参数”和“提供该参数”，不得再额外输出省略后的短写法。如果命令正文单独可用，而同一 entry 还能追加参数，应合并成一条包含对应可选槽位的 usage。例如 `检索 [范围] [@用户]` 已经覆盖不带参数、只带范围、只 `@用户` 和同时提供两者，不得再为这些组合分别输出 usage。
 """

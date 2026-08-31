@@ -313,6 +313,44 @@ def test_agent_preserves_parser_usage_and_accepts_cited_shortcut_usage() -> None
     assert annotation.entries[0].usages == ("搜图 [图片]", "今日找图")
 
 
+def test_agent_preserves_compact_parser_separators_when_naming_slots() -> None:
+    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+        output = _output(usage="@bot 提醒[时间]")
+        entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
+        entry["display_trigger"] = "(提醒|叫我)"
+        return ModelResponse(
+            parts=[TextPart(json.dumps(output, ensure_ascii=False))],
+            finish_reason="stop",
+        )
+
+    request = replace(
+        _request(),
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "提醒",
+                canonical_usages=("@bot 提醒[slot:0]",),
+                aliases=("叫我",),
+                requires_mention=True,
+            ),
+        ),
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+    annotation = project_capability_annotation(
+        request,
+        result,
+        analysis_revision="compact-test",
+    )
+
+    assert annotation.entries[0].usages == ("@bot (提醒|叫我)[时间]",)
+
+
 def test_agent_accepts_typed_scene_and_evidenced_rate_limit_exemption() -> None:
     def respond(_messages, _info: AgentInfo) -> ModelResponse:
         output = _output()

@@ -256,14 +256,18 @@ def _command_usage(command: Alconna) -> str:
     declared = _optional_public_text(command.meta.usage, limit=200)
     if declared:
         return declared
-    parts = [_public_text(command.header_display, limit=64)]
+    header = _public_text(command.header_display, limit=64)
+    arguments: list[str] = []
     for argument in command.args.argument:
         if argument.hidden:
             continue
         name = _public_text(argument.name, limit=40)
         required = not argument.optional and argument.field.default is Empty
-        parts.append(f"<{name}>" if required else f"[{name}]")
-    return " ".join(parts)
+        arguments.append(f"<{name}>" if required else f"[{name}]")
+    if not arguments:
+        return header
+    first = f"{header}{arguments[0]}" if command.meta.compact else f"{header} {arguments[0]}"
+    return " ".join((first, *arguments[1:]))
 
 
 def _matching_capabilities(

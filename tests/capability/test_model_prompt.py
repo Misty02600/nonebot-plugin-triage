@@ -134,6 +134,7 @@ def test_prompt_preserves_unique_model_only_contracts() -> None:
                 "展开后必须恰好等于全部入口",
                 "shortcut usage 可以是完全不同的可调用文字，不要求包含 command_body",
                 "Uniseg `At` 是用户直接提供的 `@用户` 输入形式",
+                "Alconna `compact` 是 Runtime 已确认的语法",
                 "同一 entry 默认只输出一条 usage",
             ),
         ),

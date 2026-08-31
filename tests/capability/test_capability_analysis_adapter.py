@@ -87,6 +87,7 @@ def _record(
     superuser_only: bool = False,
     command_header: str | None = "test",
     command_aliases: list[str] | None = None,
+    command_compact: bool | None = None,
     command_arguments: list[dict[str, object]] | None = None,
     command_components: list[dict[str, object]] | None = None,
     command_shortcuts: list[dict[str, object]] | None = None,
@@ -134,6 +135,15 @@ def _record(
             Claim(
                 "command.aliases",
                 command_aliases,
+                ClaimBasis.OBSERVED,
+                (matcher_evidence_id,),
+            )
+        )
+    if command_compact is not None:
+        claims.append(
+            Claim(
+                "command.compact",
+                command_compact,
                 ClaimBasis.OBSERVED,
                 (matcher_evidence_id,),
             )
@@ -965,6 +975,99 @@ matcher = on_alconna("仓库", handlers=[handle])
     ]
 
 
+def test_alconna_compact_controls_command_and_option_separators(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def on_alconna(*args, **kwargs):
+    return object()
+
+async def handle():
+    return True
+
+matcher = on_alconna("词云", handlers=[handle])
+""",
+    )
+    handler = _handler_reference(module, "handle", 4)
+    compact_root = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[handler],
+            config_references=[],
+            command_header="提醒",
+            command_compact=True,
+            command_arguments=[
+                {
+                    "name": "时间",
+                    "required": False,
+                    "hidden": False,
+                    "variadic": False,
+                    "has_default": True,
+                }
+            ],
+        ),
+        ConfigValuePolicy(),
+    )
+    compact_subcommand = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[handler],
+            config_references=[],
+            command_header="词云",
+            command_aliases=["云"],
+            command_compact=True,
+            command_components=[
+                {
+                    "kind": "subcommand",
+                    "name": "帮助",
+                    "compact": None,
+                    "arguments": (
+                        {
+                            "name": "页码",
+                            "required": False,
+                            "hidden": False,
+                            "variadic": False,
+                            "has_default": True,
+                        },
+                    ),
+                    "components": (
+                        {
+                            "kind": "option",
+                            "name": "-n",
+                            "aliases": ("--num",),
+                            "compact": True,
+                            "arguments": (
+                                {
+                                    "name": "数量",
+                                    "required": True,
+                                    "hidden": False,
+                                    "variadic": False,
+                                    "has_default": False,
+                                },
+                            ),
+                            "components": (),
+                        },
+                    ),
+                }
+            ],
+        ),
+        ConfigValuePolicy(),
+    )
+
+    assert compact_root.invocations[0].canonical_usages == ("提醒[slot:0]",)
+    (subcommand_target,) = compact_subcommand.invocations
+    assert subcommand_target.mode is CapabilityInvocationMode.ANCHORED
+    assert subcommand_target.command_body == "词云帮助"
+    assert subcommand_target.aliases == ("云帮助",)
+    assert subcommand_target.canonical_usages == (
+        "词云帮助 [slot:0] [(-n|--num)<slot:1>]",
+    )
+
+
 def test_invocation_target_keeps_runtime_aliases_and_precise_to_me_rule(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1101,6 +1204,72 @@ matcher = on_alconna("词云", handlers=[handle_wordcloud])
     )
     assert '"command.shortcuts"' in shortcut_evidence.content
     assert r"(?P<type>今日|昨日)词云" in shortcut_evidence.content
+
+
+def test_alconna_alias_shortcuts_inherit_required_parser_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+def on_alconna(*args, **kwargs):
+    return object()
+
+async def handle_info():
+    return True
+
+matcher = on_alconna(
+    "表情详情",
+    aliases={"表情帮助", "表情示例"},
+    handlers=[handle_info],
+)
+""",
+    )
+    handle_info = module.__dict__["handle_info"]
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[
+                _handler_reference(module, "handle_info", handle_info.__code__.co_firstlineno)
+            ],
+            config_references=[],
+            command_header="表情详情",
+            command_arguments=[
+                {
+                    "name": "meme_name",
+                    "required": True,
+                    "hidden": False,
+                    "variadic": False,
+                    "has_default": False,
+                    "pattern_type": "builtins.str",
+                }
+            ],
+            command_shortcuts=[
+                {
+                    "pattern": f"{alias}$",
+                    "display": alias,
+                    "command": ["表情详情"],
+                    "arguments": [],
+                    "prefixes": [],
+                    "fuzzy": True,
+                    "prefix": True,
+                    "flags": 0,
+                    "wrapper": None,
+                    "opaque_values": False,
+                }
+                for alias in ("表情帮助", "表情示例")
+            ],
+        ),
+        ConfigValuePolicy(),
+    )
+
+    target = request.invocations[0]
+    assert target.aliases == ("表情帮助", "表情示例")
+    assert target.canonical_usages == ("表情详情 <slot:0>",)
+    assert target.shortcut_count == 0
+    assert target.shortcut_evidence_ids == ()
 
 
 def test_variadic_arguments_use_migut_multi_value_marker(

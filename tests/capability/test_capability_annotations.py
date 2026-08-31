@@ -446,6 +446,39 @@ def test_parser_owned_usage_allows_slot_naming_but_rejects_structure_changes() -
     assert alternative_annotation.entries[0].usages == ("随机表情 [图片|文字|@用户]...",)
 
 
+def test_parser_alias_cannot_use_unrelated_shortcut_evidence_to_drop_required_arguments() -> None:
+    request = replace(
+        _request(),
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "表情详情",
+                ("表情详情 <slot:0>",),
+                aliases=("表情帮助", "表情示例"),
+                shortcut_count=1,
+                shortcut_evidence_ids=("evidence-handler",),
+            ),
+        ),
+    )
+    output = CapabilityAnalysisOutput(
+        entries=(
+            replace(
+                _entry(),
+                claims=tuple(
+                    replace(claim, statement="表情帮助")
+                    if claim.kind is SemanticClaimKind.USAGE
+                    else claim
+                    for claim in _entry().claims
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(CapabilityAnnotationError, match="aliases inherit"):
+        project_capability_annotation(request, output, analysis_revision="analysis-v1")
+
+
 def test_complete_usage_requires_bounded_member_selector() -> None:
     request = CapabilityAnalysisRequest(
         capability=_request().capability,

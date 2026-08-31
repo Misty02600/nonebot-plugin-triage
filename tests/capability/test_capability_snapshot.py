@@ -218,12 +218,13 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     command = Alconna(
         "image",
         Args["query#关键词", str]["tags", MultiVar(str)],
-        Option("--limit", Args["count", int]),
+        Option("--limit", Args["count", int], compact=True),
         Subcommand("detail", Args["id", str]),
         meta=CommandMeta(
             description="搜索图片",
             usage="image <query> [--limit <count>]",
             example="image cat --limit 3",
+            compact=True,
         ),
         namespace=f"snapshot-{uuid4().hex}",
     )
@@ -241,6 +242,7 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
             "args": ["{scope}"],
             "humanized": "<时间范围>找图",
             "wrapper": shortcut_wrapper,
+            "compact": False,
         },
     )
     matcher_cleanup.append(matcher)
@@ -268,6 +270,7 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     assert disabled_record.disclosure is Disclosure.RESTRICTED
     assert _record_values(disabled_record, "command.enabled") == (False,)
     assert _record_values(public_record, "command.header") == ("image",)
+    assert _record_values(public_record, "command.compact") == (True,)
     assert _record_values(public_record, "usage") == ("image <query> [--limit <count>]",)
     assert _record_values(public_record, "command.arguments")[0][0]["name"] == "query"
     assert _record_values(public_record, "command.arguments")[0][0]["notice"] == "关键词"
@@ -277,17 +280,19 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     components = _record_values(public_record, "command.components")[0]
     assert {item["name"] for item in components} >= {"--limit", "detail"}
     assert {item["name"] for item in components}.isdisjoint({"--help", "--comp", "--shortcut"})
+    assert next(item for item in components if item["name"] == "--limit")["compact"] is True
     assert _record_values(public_record, "command.shortcut_count") == (1,)
     shortcuts = _record_values(public_record, "command.shortcuts")[0]
     assert shortcuts == [
         {
-            "pattern": r"(?P<scope>今日|昨日)找图",
+            "pattern": r"(?P<scope>今日|昨日)找图$",
             "display": "<时间范围>找图",
             "command": ["image"],
             "arguments": ["{scope}"],
             "prefixes": [],
             "fuzzy": True,
             "prefix": False,
+            "compact": False,
             "flags": 0,
             "wrapper": None,
             "opaque_values": False,

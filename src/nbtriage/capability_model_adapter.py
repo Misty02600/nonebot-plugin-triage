@@ -90,6 +90,7 @@ from nbtriage.capability_usage import (
     CapabilityUsageExpressionError,
     deterministic_usage_selector,
     group_literal_expression_for_usage,
+    usage_command_body_pattern,
     validate_usage_selector,
 )
 from nbtriage.model_run_diagnostics import (
@@ -774,7 +775,7 @@ def _display_trigger_usage_error(
     display_trigger: str,
 ) -> str | None:
     assert target.command_body is not None
-    pattern = rf"(?<!\S){re.escape(target.command_body)}(?!\S)"
+    pattern = usage_command_body_pattern(target.command_body)
     grouped_trigger = group_literal_expression_for_usage(display_trigger)
     for usage in (item.statement for item in entry.claims if item.kind == "usage"):
         rendered, substitutions = re.subn(
@@ -1438,7 +1439,7 @@ def _validate_analysis_output_contract(
                     for index, usage in enumerate(usages)
                     if len(
                         re.findall(
-                            rf"(?<!\S){re.escape(target.command_body)}(?!\S)",
+                            usage_command_body_pattern(target.command_body),
                             usage,
                         )
                     )
@@ -1483,7 +1484,7 @@ def _validate_analysis_output_contract(
                     and target.command_body is not None
                     and len(
                         re.findall(
-                            rf"(?<!\S){re.escape(target.command_body)}(?!\S)",
+                            usage_command_body_pattern(target.command_body),
                             usage,
                         )
                     )
@@ -1500,7 +1501,10 @@ def _validate_analysis_output_contract(
                         if is_shortcut
                         else len(
                             re.findall(
-                                rf"@bot {re.escape(target.command_body)}(?!\S)",
+                                usage_command_body_pattern(
+                                    target.command_body,
+                                    requires_mention=True,
+                                ),
                                 usage,
                             )
                         )

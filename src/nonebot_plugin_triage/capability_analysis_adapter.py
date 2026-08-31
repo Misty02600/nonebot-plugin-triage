@@ -1025,8 +1025,10 @@ def _family_parser_shape(
         return None
     arguments = _single_family_fact(record, "command.arguments", default=[])
     components = _single_family_fact(record, "command.components", default=[])
+    compact = _single_family_fact(record, "command.compact", default=False)
     return {
         "parser": "alconna",
+        "compact": compact,
         "arguments": arguments,
         "components": components,
         "usage_templates": [
@@ -1058,7 +1060,7 @@ def _family_usage_template(invocation: CapabilityInvocationTarget, usage: str) -
     prefix = f"@bot {command_body}" if invocation.requires_mention else command_body
     if usage == prefix:
         return "@bot {command}" if invocation.requires_mention else "{command}"
-    if usage.startswith(f"{prefix} "):
+    if usage.startswith(prefix):
         command = "@bot {command}" if invocation.requires_mention else "{command}"
         return f"{command}{usage[len(prefix) :]}"
     return usage
@@ -1088,6 +1090,7 @@ def _family_member_hints(record: CapabilityRecord) -> list[list[object]]:
         "command.prefixes",
         "command.separators",
         "command.force_whitespace",
+        "command.compact",
         "trigger.factory",
         "trigger.entries",
         "trigger.regex_flags",
@@ -1503,6 +1506,12 @@ def _invocation_targets(
             "capability has no unique deterministic public invocation"
         )
     header = headers[0]
+    declared_aliases = {
+        alias
+        for registration in selected_registrations
+        for alias in registration.aliases
+        if alias.strip() and alias != header
+    }
     aliases = tuple(
         sorted(
             {
@@ -1515,6 +1524,12 @@ def _invocation_targets(
                 for value in (raw if isinstance(raw, list) else ())
                 if isinstance(value, str) and value.strip() and value != header
             },
+            key=lambda item: (item.casefold(), item),
+        )
+    )
+    aliases = tuple(
+        sorted(
+            set(aliases).union(declared_aliases),
             key=lambda item: (item.casefold(), item),
         )
     )
@@ -1534,6 +1549,7 @@ def _invocation_targets(
         raise CapabilityAnalysisAdapterError("capability has conflicting command components")
     command_arguments = arguments[0] if arguments else []
     command_components = components[0] if components else []
+    command_compact = _command_compact(record)
     shortcut_counts = tuple(
         value
         for value in _claim_values(
@@ -1545,8 +1561,15 @@ def _invocation_targets(
     )
     if len(set(shortcut_counts)) > 1:
         raise CapabilityAnalysisAdapterError("capability has conflicting shortcut counts")
-    if shortcut_counts and runtime_evidence_id is not None:
-        shortcut_count = shortcut_counts[0]
+    shortcut_count = shortcut_counts[0] if shortcut_counts else 0
+    shortcut_count -= _argument_preserving_alias_shortcut_count(
+        record,
+        header=header,
+        aliases=frozenset(declared_aliases),
+    )
+    if shortcut_count < 0:
+        raise CapabilityAnalysisAdapterError("capability has conflicting alias shortcut facts")
+    if shortcut_count and runtime_evidence_id is not None:
         shortcut_evidence_ids = (runtime_evidence_id,)
     else:
         shortcut_count = 0
@@ -1557,6 +1580,7 @@ def _invocation_targets(
             header,
             command_arguments,
             _option_components(command_components),
+            compact=command_compact,
         )
         if canonical is not None and requires_mention:
             canonical = f"@bot {canonical}"
@@ -1576,11 +1600,13 @@ def _invocation_targets(
         CapabilityInvocationTarget(
             entry_id=f"subcommand:{hashlib.sha256(' '.join(path).encode('utf-8')).hexdigest()[:16]}",
             mode=CapabilityInvocationMode.ANCHORED,
-            command_body=" ".join((header, *path)),
+            command_body=_command_path_body(header, path, compact=command_compact),
             canonical_usages=((f"@bot {canonical}",) if requires_mention else (canonical,))
             if canonical is not None
             else (),
-            aliases=tuple(" ".join((alias, *path)) for alias in aliases),
+            aliases=tuple(
+                _command_path_body(alias, path, compact=command_compact) for alias in aliases
+            ),
             requires_mention=requires_mention,
             shortcut_count=shortcut_count,
             shortcut_evidence_ids=shortcut_evidence_ids,
@@ -1588,12 +1614,74 @@ def _invocation_targets(
         for path, component in subcommands
         for canonical in (
             _structured_usage(
-                " ".join((header, *path)),
+                _command_path_body(header, path, compact=command_compact),
                 component.get("arguments", []),
                 _option_components(component.get("components", [])),
+                compact=component.get("compact") is True,
             ),
         )
     )
+
+
+def _command_compact(record: CapabilityRecord) -> bool:
+    values = _claim_values(record, "command.compact", evidence_kind="matcher_source")
+    if any(not isinstance(value, bool) for value in values) or len(set(values)) > 1:
+        raise CapabilityAnalysisAdapterError("capability has conflicting command compact facts")
+    return values[0] if values else False
+
+
+def _command_path_body(
+    header: str,
+    path: tuple[str, ...],
+    *,
+    compact: bool,
+) -> str:
+    if not path:
+        return header
+    head = f"{header}{path[0]}" if compact else f"{header} {path[0]}"
+    return " ".join((head, *path[1:]))
+
+
+def _argument_preserving_alias_shortcut_count(
+    record: CapabilityRecord,
+    *,
+    header: str,
+    aliases: frozenset[str],
+) -> int:
+    """统计 Alconna 为命令别名生成、且继承原 Parser 参数的 shortcut。"""
+    if not aliases:
+        return 0
+    shortcut_groups = tuple(
+        value
+        for value in _claim_values(
+            record,
+            "command.shortcuts",
+            evidence_kind="matcher_source",
+        )
+        if isinstance(value, list)
+    )
+    if len(shortcut_groups) > 1:
+        raise CapabilityAnalysisAdapterError("capability has conflicting command shortcuts")
+    if not shortcut_groups:
+        return 0
+
+    matched: set[str] = set()
+    for item in shortcut_groups[0]:
+        if not isinstance(item, Mapping):
+            continue
+        display = item.get("display")
+        if not isinstance(display, str) or display not in aliases:
+            continue
+        if (
+            item.get("pattern") == f"{display}$"
+            and item.get("command") == [header]
+            and item.get("arguments") == []
+            and item.get("prefix") is True
+            and item.get("wrapper") is None
+            and item.get("opaque_values") is False
+        ):
+            matched.add(display)
+    return len(matched)
 
 
 def _family_static_callable_evidence(
@@ -1767,12 +1855,14 @@ def deterministic_record_usages(
         return ()
     command_arguments = arguments[0] if arguments else []
     command_components = components[0] if components else []
+    command_compact = _command_compact(record)
     leaves = _subcommand_leaves(command_components)
     if not leaves:
         usage = _structured_usage(
             header,
             command_arguments,
             _option_components(command_components),
+            compact=command_compact,
             generic_slot_names=True,
         )
         if usage is None:
@@ -1783,13 +1873,14 @@ def deterministic_record_usages(
 
     result: list[str] = []
     for path, component in leaves:
-        command_body = " ".join((header, *path))
+        command_body = _command_path_body(header, path, compact=command_compact)
         component_arguments = component.get("arguments", [])
         options = _option_components(component.get("components", []))
         usage = _structured_usage(
             command_body,
             component_arguments,
             options,
+            compact=component.get("compact") is True,
             generic_slot_names=True,
         )
         if usage is None:
@@ -1990,6 +2081,7 @@ def _structured_usage(
     arguments: object,
     options: list[object],
     *,
+    compact: bool = False,
     generic_slot_names: bool = False,
 ) -> str | None:
     """把 Runtime parser 结构渲染为匿名模板或保守的直接帮助用法。"""
@@ -2010,9 +2102,12 @@ def _structured_usage(
     )
     if rendered_options is None:
         return None
-    if not rendered_arguments and not rendered_options:
+    parts = (*rendered_arguments, *rendered_options)
+    if not parts:
         return None
-    return " ".join((command_body, *rendered_arguments, *rendered_options))
+    if compact:
+        return " ".join((f"{command_body}{parts[0]}", *parts[1:]))
+    return " ".join((command_body, *parts))
 
 
 def _render_arguments(
@@ -2072,6 +2167,9 @@ def _render_options(
         option_arguments = option.get("arguments", [])
         if not isinstance(option_arguments, (list, tuple)):
             return None
+        compact = option.get("compact")
+        if compact is not None and not isinstance(compact, bool):
+            return None
         rendered_arguments = _render_arguments(
             option_arguments,
             slot_indexes=slot_indexes,
@@ -2087,7 +2185,13 @@ def _render_options(
             option_head = f"({'|'.join(names)})"
         else:
             option_head = "|".join(names)
-        result.append(f"[{' '.join((option_head, *rendered_arguments))}]")
+        separator = "" if compact is True else " "
+        rendered = (
+            f"{option_head}{separator}{' '.join(rendered_arguments)}"
+            if rendered_arguments
+            else option_head
+        )
+        result.append(f"[{rendered}]")
     return tuple(result)
 
 
@@ -2280,6 +2384,7 @@ def _runtime_fact_claims(record: CapabilityRecord) -> list[dict[str, object]]:
         "command.prefixes",
         "command.separators",
         "command.force_whitespace",
+        "command.compact",
         "command.enabled",
         "command.arguments",
         "command.components",

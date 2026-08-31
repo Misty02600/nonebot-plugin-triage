@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import cast
 
-from arclet.alconna import Alconna, CommandMeta, command_manager
+from arclet.alconna import Alconna, Args, CommandMeta, command_manager
 from nonebot.adapters import Bot, Event
 
 from nonebot_plugin_triage.support_intake import (
@@ -17,7 +17,8 @@ async def test_capability_registry_is_explicit_and_never_executes_commands() -> 
     called = False
     public = Alconna(
         "公开测试",
-        meta=CommandMeta(description="公开说明"),
+        Args["内容?", str],
+        meta=CommandMeta(description="公开说明", compact=True),
         namespace="nbtriage-runtime-test",
     )
     unlisted = Alconna(
@@ -60,6 +61,7 @@ async def test_capability_registry_is_explicit_and_never_executes_commands() -> 
     assert "管理测试" not in headers
     assert "隐藏测试" not in headers
     assert "停用测试" not in headers
+    assert next(item for item in capabilities if item.header == "公开测试").usage == "公开测试[内容]"
     assert called is False
 
 

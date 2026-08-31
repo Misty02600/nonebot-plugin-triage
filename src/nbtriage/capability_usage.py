@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 MAX_EXPLICIT_USAGE_ALTERNATIVES = 4
@@ -9,6 +10,16 @@ MAX_PUBLIC_USAGES = 3
 
 class CapabilityUsageExpressionError(ValueError):
     pass
+
+
+def usage_command_body_pattern(
+    command_body: str,
+    *,
+    requires_mention: bool = False,
+) -> str:
+    """生成可同时识别空格分隔与 Parser 紧凑槽位的命令正文模式。"""
+    prefix = r"(?<!\S)@bot " if requires_mention else r"(?<!\S)"
+    return rf"{prefix}{re.escape(command_body)}(?=$|\s|[<\[])"
 
 
 class _LiteralExpressionParser:
@@ -196,6 +207,7 @@ __all__ = (
     "deterministic_usage_selector",
     "expand_literal_expression",
     "group_literal_expression_for_usage",
+    "usage_command_body_pattern",
     "validate_literal_expression",
     "validate_usage_selector",
 )

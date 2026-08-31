@@ -139,6 +139,7 @@ class AlconnaShortcut:
     prefixes: tuple[str, ...]
     fuzzy: bool
     prefix: bool
+    compact: bool
     flags: int
     wrapper: str | None
     opaque_values: bool
@@ -164,6 +165,7 @@ class CapabilityCandidate:
     usage: str | None
     example: str | None
     force_whitespace: str | bool | None
+    compact: bool | None
     enabled: bool | None
     arguments: tuple[AlconnaArgument, ...]
     components: tuple[AlconnaComponent, ...]
@@ -655,6 +657,7 @@ def _alconna_shortcuts(
             prefixes=prefixes,
             fuzzy=bool(getattr(value, "fuzzy", False)),
             prefix=bool(getattr(value, "prefix", False)),
+            compact=not pattern.endswith("$"),
             flags=flags,
             wrapper=wrapper_name,
             opaque_values=command_opaque or arguments_opaque or prefixes_opaque,
@@ -776,6 +779,8 @@ def _alconna_candidate(
     description = _safe_text(getattr(meta, "description", None))
     usage = _safe_text(getattr(meta, "usage", None))
     example = _safe_text(getattr(meta, "example", None))
+    compact_value = getattr(meta, "compact", None)
+    compact = compact_value if isinstance(compact_value, bool) else None
     shortcuts, shortcut_count = _alconna_shortcuts(command, plugin.module_name)
     candidate_id = _candidate_id(
         plugin.plugin_id,
@@ -802,6 +807,7 @@ def _alconna_candidate(
         usage=usage,
         example=example,
         force_whitespace=None,
+        compact=compact,
         enabled=enabled,
         arguments=arguments,
         components=components,
@@ -880,6 +886,7 @@ def _command_candidate(
         usage=None,
         example=None,
         force_whitespace=force_whitespace,
+        compact=None,
         enabled=None,
         arguments=(),
         components=(),
@@ -932,6 +939,7 @@ def _generic_candidate(
         usage=None,
         example=None,
         force_whitespace=None,
+        compact=None,
         enabled=None,
         arguments=(),
         components=(),
@@ -1717,6 +1725,7 @@ def _core_record(
         ("command.prefixes", list(candidate.prefixes)),
         ("command.separators", list(candidate.separators)),
         ("command.force_whitespace", candidate.force_whitespace),
+        ("command.compact", candidate.compact),
         ("command.enabled", candidate.enabled),
         ("command.arguments", [asdict(item) for item in candidate.arguments]),
         ("command.components", [asdict(item) for item in candidate.components]),

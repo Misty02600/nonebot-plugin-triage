@@ -31,12 +31,13 @@ from nbtriage.capability_usage import (
     MAX_PUBLIC_USAGES,
     CapabilityUsageExpressionError,
     group_literal_expression_for_usage,
+    usage_command_body_pattern,
     validate_usage_selector,
 )
 
 CAPABILITY_ANNOTATION_SCHEMA_VERSION = 11
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v90-zh"
-CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v50"
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v92-zh"
+CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v55"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
@@ -988,6 +989,7 @@ def _validated_usage(
                     "usage must match a parser-provided structural template or cite registered "
                     "shortcut Evidence"
                 )
+            _reject_alias_as_shortcut(normalized, target)
             if target.requires_mention and len(re.findall(r"(?<!\S)@bot(?=\s)", normalized)) != 1:
                 raise CapabilityAnnotationError(
                     "mention-required shortcut usage must contain one @bot placeholder"
@@ -996,7 +998,16 @@ def _validated_usage(
         if (
             target.requires_mention
             and target.command_body is not None
-            and len(re.findall(rf"@bot {re.escape(target.command_body)}(?!\S)", normalized)) != 1
+            and len(
+                re.findall(
+                    usage_command_body_pattern(
+                        target.command_body,
+                        requires_mention=True,
+                    ),
+                    normalized,
+                )
+            )
+            != 1
         ):
             raise CapabilityAnnotationError(
                 "usage for a mention-required invocation must place @bot before command_body"
@@ -1022,8 +1033,9 @@ def _validated_usage(
         )
     if target.mode is CapabilityInvocationMode.ANCHORED:
         assert target.command_body is not None
-        if len(re.findall(rf"(?<!\S){re.escape(target.command_body)}(?!\S)", normalized)) != 1:
+        if len(re.findall(usage_command_body_pattern(target.command_body), normalized)) != 1:
             if shortcut_allowed:
+                _reject_alias_as_shortcut(normalized, target)
                 if (
                     target.requires_mention
                     and len(re.findall(r"(?<!\S)@bot(?=\s)", normalized)) != 1
@@ -1037,7 +1049,16 @@ def _validated_usage(
             )
         if (
             target.requires_mention
-            and len(re.findall(rf"@bot {re.escape(target.command_body)}(?!\S)", normalized)) != 1
+            and len(
+                re.findall(
+                    usage_command_body_pattern(
+                        target.command_body,
+                        requires_mention=True,
+                    ),
+                    normalized,
+                )
+            )
+            != 1
         ):
             raise CapabilityAnnotationError(
                 "usage for a mention-required invocation must place @bot before command_body"
@@ -1047,6 +1068,18 @@ def _validated_usage(
         target=target,
         display_trigger=display_trigger,
     )
+
+
+def _reject_alias_as_shortcut(
+    usage: str,
+    target: CapabilityInvocationTarget,
+) -> None:
+    candidate = usage.removeprefix("@bot ")
+    if any(re.match(usage_command_body_pattern(alias), candidate) for alias in target.aliases):
+        raise CapabilityAnnotationError(
+            "Runtime aliases inherit the canonical parser structure and cannot be published "
+            "as standalone shortcut usages"
+        )
 
 
 def _render_display_trigger(
@@ -1072,7 +1105,7 @@ def _render_display_trigger(
         )
     except CapabilityUsageExpressionError as error:
         raise CapabilityAnnotationError(str(error)) from error
-    pattern = rf"(?<!\S){re.escape(target.command_body)}(?!\S)"
+    pattern = usage_command_body_pattern(target.command_body)
     grouped_trigger = group_literal_expression_for_usage(display_trigger)
     rendered, substitutions = re.subn(pattern, lambda _match: grouped_trigger, usage, count=1)
     if substitutions != 1:
