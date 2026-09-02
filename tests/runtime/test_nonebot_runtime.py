@@ -9,7 +9,7 @@ import pytest
 from nonebot.matcher import current_matcher
 
 import nonebot_plugin_triage.nonebot_runtime as nonebot_runtime
-from nbtriage.bug_logs import CorrelatedBugLogBuffer, bug_log_bundle_evidence
+from nbtriage.bug.logs import CorrelatedBugLogBuffer, bug_log_bundle_evidence
 from nbtriage.runtime_observations import RuntimeObservationBuffer
 from nonebot_plugin_triage.nonebot_runtime import (
     NBTRIAGE_CORRELATION_STATE_KEY,

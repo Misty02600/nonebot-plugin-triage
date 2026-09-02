@@ -6,7 +6,7 @@ from typing import Any
 
 from nonebot.adapters import Bot, Event
 
-from nbtriage.bug_conversation import (
+from nbtriage.bug.conversation import (
     BoundBugConversationReader,
     BugConversationMessage,
     BugConversationPage,

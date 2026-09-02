@@ -15,8 +15,8 @@ from typing import Protocol
 
 from nonebot import logger
 
-from nbtriage.bug_agent import BUG_AGENT_PROMPT_ID
-from nbtriage.bug_assessment import (
+from nbtriage.bug._agent import BUG_AGENT_PROMPT_ID
+from nbtriage.bug.assessment import (
     BUG_EVIDENCE_BODY_MAX_CHARS,
     BugAssessmentAgentClient,
     BugAssessmentCase,
@@ -33,20 +33,20 @@ from nbtriage.bug_assessment import (
     build_bug_case_fingerprint,
     unknown_bug_decision,
 )
-from nbtriage.bug_conversation import (
+from nbtriage.bug.conversation import (
     BoundBugConversationReader,
     BugConversationMessage,
     BugConversationPage,
 )
-from nbtriage.bug_design import BugDesignIndexReader
-from nbtriage.bug_intake import BugIntakeStatus, evaluate_bug_intake
-from nbtriage.bug_logs import (
+from nbtriage.bug.design import BugDesignIndexReader
+from nbtriage.bug.intake import BugIntakeStatus, evaluate_bug_intake
+from nbtriage.bug.logs import (
     CorrelatedBugLogBuffer,
     bug_log_bundle_evidence,
     redact_bug_evidence_text,
 )
-from nbtriage.bug_source import ApprovedSourceRoot, BoundedSourceReader
-from nbtriage.bug_workflow import (
+from nbtriage.bug.source import ApprovedSourceRoot, BoundedSourceReader
+from nbtriage.bug.workflow import (
     BugOccurrenceInput,
     BugReportInput,
     ProblemDecisionInput,
@@ -514,7 +514,7 @@ def _create_bug_agent_runtime_binding(
         )
 
     def create_client() -> BugAssessmentAgentClient:
-        from nbtriage.bug_agent import PydanticAIBugAssessmentAgent
+        from nbtriage.bug._agent import PydanticAIBugAssessmentAgent
 
         return PydanticAIBugAssessmentAgent(
             binding.model,

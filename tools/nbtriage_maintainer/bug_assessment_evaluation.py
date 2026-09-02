@@ -18,12 +18,12 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RunUsage
 
-from nbtriage.bug_agent import (
+from nbtriage.bug._agent import (
     BUG_AGENT_PROMPT_ID,
     SYSTEM_INSTRUCTION,
     BugAssessmentAgentError,
 )
-from nbtriage.bug_assessment import (
+from nbtriage.bug.assessment import (
     BUG_ASSESSMENT_MAX_TOOL_CALLS,
     BUG_ASSESSMENT_SCHEMA_VERSION,
     BUG_CONVERSATION_MAX_TOOL_CALLS,

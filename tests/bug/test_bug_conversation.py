@@ -1,4 +1,4 @@
-from nbtriage.bug_conversation import (
+from nbtriage.bug.conversation import (
     BugConversationMessage,
     BugConversationPage,
 )

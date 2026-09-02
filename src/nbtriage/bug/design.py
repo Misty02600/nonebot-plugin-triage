@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from nbtriage.bug_assessment import BugEvidence, BugEvidenceKind
+from nbtriage.bug.assessment import BugEvidence, BugEvidenceKind
 from nbtriage.knowledge_index import (
     KnowledgeEvidence,
     KnowledgeIndexReader,

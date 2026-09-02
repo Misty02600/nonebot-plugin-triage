@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from nbtriage.bug_assessment import BugEvidence, BugEvidenceKind
+from nbtriage.bug.assessment import BugEvidence, BugEvidenceKind
 
 _MAX_SOURCE_FILES = 256
 _MAX_SOURCE_FILE_BYTES = 256 * 1024

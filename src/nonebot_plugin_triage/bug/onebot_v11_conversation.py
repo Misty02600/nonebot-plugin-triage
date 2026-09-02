@@ -8,7 +8,7 @@ from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
 from nonebot.adapters.onebot.v11.event import Reply as OneBotV11Reply
 
-from nbtriage.bug_conversation import (
+from nbtriage.bug.conversation import (
     BoundBugConversationReader,
     BugConversationAvailability,
     BugConversationMessage,

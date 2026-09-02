@@ -7,7 +7,7 @@ import pytest
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageSegment
 from nonebot.adapters.onebot.v11.event import Reply, Sender
 
-from nonebot_plugin_triage.onebot_bug_conversation import (
+from nonebot_plugin_triage.bug.onebot_v11_conversation import (
     ONEBOT_HISTORY_MAX_MESSAGES,
     bind_onebot_v11_bug_conversation,
 )

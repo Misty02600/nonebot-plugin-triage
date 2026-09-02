@@ -5,8 +5,8 @@ from typing import cast
 
 import pytest
 
-from nbtriage.bug_agent import BUG_AGENT_PROMPT_ID
-from nbtriage.bug_assessment import (
+from nbtriage.bug._agent import BUG_AGENT_PROMPT_ID
+from nbtriage.bug.assessment import (
     BugAssessmentDecision,
     BugDecisionSource,
     BugEvidence,
@@ -16,9 +16,9 @@ from nbtriage.bug_assessment import (
     BugResponsibility,
     BugVerdict,
 )
-from nbtriage.bug_conversation import BugConversationMessage, BugConversationPage
-from nbtriage.bug_design import BugDesignIndexReader
-from nbtriage.bug_logs import CorrelatedBugLogBuffer
+from nbtriage.bug.conversation import BugConversationMessage, BugConversationPage
+from nbtriage.bug.design import BugDesignIndexReader
+from nbtriage.bug.logs import CorrelatedBugLogBuffer
 from nbtriage.capability.catalog.records import (
     CapabilityRecord,
     CapabilitySearchHit,
@@ -33,8 +33,8 @@ from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingEntry,
 )
 from nbtriage.runtime_observations import RuntimeObservationBuffer
-from nonebot_plugin_triage import bug_assessment_runtime
-from nonebot_plugin_triage.bug_assessment_runtime import (
+from nonebot_plugin_triage.bug import assessment as bug_assessment_runtime
+from nonebot_plugin_triage.bug.assessment import (
     OPENCODE_GO_BUG_TASK_QUALIFICATION,
     QUALIFIED_BUG_TASKS,
     BugAssessmentRuntimeRequest,

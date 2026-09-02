@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from nbtriage.bug_assessment import BugEvidence, BugEvidenceKind
+from nbtriage.bug.assessment import BugEvidence, BugEvidenceKind
 
 BUG_LOG_SCHEMA_VERSION = 1
 _MAX_TRACEBACK_CHARS = 64_000

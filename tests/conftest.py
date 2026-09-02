@@ -57,7 +57,7 @@ def isolate_live_semantic_transport(
 ) -> None:
     """普通 pytest 不得因维护者本机配置而调用真实语义 Provider。"""
     from nonebot_plugin_triage import handlers
-    from nonebot_plugin_triage.bug_assessment_runtime import (
+    from nonebot_plugin_triage.bug.assessment import (
         UnavailableBugAssessmentService,
     )
     from nonebot_plugin_triage.public_guidance import PublicGuidanceService

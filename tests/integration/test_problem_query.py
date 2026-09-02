@@ -51,8 +51,8 @@ async def test_query_subcommand_lists_pending_problems_without_semantic(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.bug_assessment import BugVerdict
-    from nbtriage.bug_workflow import (
+    from nbtriage.bug.assessment import BugVerdict
+    from nbtriage.bug.workflow import (
         ProblemDecisionSource,
         ProblemLifecycle,
         ProblemReviewStatus,

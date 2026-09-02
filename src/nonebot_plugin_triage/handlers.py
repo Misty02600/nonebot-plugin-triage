@@ -25,14 +25,14 @@ from nonebot_plugin_alconna import (
     on_alconna,
 )
 
-from nbtriage.bug_assessment import (
+from nbtriage.bug.assessment import (
     BugDecisionSource,
     BugReason,
     BugVerdict,
     format_bug_assessment_reply,
     format_bug_supplement_request,
 )
-from nbtriage.bug_workflow import (
+from nbtriage.bug.workflow import (
     BUG_PROBLEM_ID_PATTERN,
     ProblemMaintenanceAction,
     format_new_bug_receipt,
@@ -63,12 +63,13 @@ from nonebot_plugin_triage.behavior_exploration_runtime import (
     BehaviorExplorationRequest,
     BehaviorScope,
 )
-from nonebot_plugin_triage.bug_assessment_runtime import (
+from nonebot_plugin_triage.bug.assessment import (
     BugAssessmentRuntimeOutcome,
     BugAssessmentRuntimeRequest,
     BugAssessmentRuntimeService,
 )
-from nonebot_plugin_triage.bug_workflow_orm import (
+from nonebot_plugin_triage.bug.participants import enrich_conversation_with_uninfo
+from nonebot_plugin_triage.bug.repository import (
     BugWorkflowStoreError,
     ProblemActionError,
 )
@@ -105,7 +106,6 @@ from nonebot_plugin_triage.thread_references import (
     PendingContinuationBinding,
     PreparedScopeSupplementBinding,
 )
-from nonebot_plugin_triage.uninfo_participants import enrich_conversation_with_uninfo
 from nonebot_plugin_triage.universal_references import adapter_name, conversation_scope
 
 plugin_runtime = create_plugin_runtime(plugin_config)
@@ -466,7 +466,7 @@ async def _bug_assessment_decision(
         from nonebot.adapters.onebot.v11 import GroupMessageEvent
 
         if isinstance(bot, OneBotV11Bot) and isinstance(event, GroupMessageEvent):
-            from nonebot_plugin_triage.onebot_bug_conversation import (
+            from nonebot_plugin_triage.bug.onebot_v11_conversation import (
                 bind_onebot_v11_bug_conversation,
             )
 

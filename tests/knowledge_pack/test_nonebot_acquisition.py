@@ -11,7 +11,7 @@ from tools.nbtriage_maintainer.knowledge_pack.builder import build_knowledge_ind
 from tools.nbtriage_maintainer.knowledge_pack.models import KnowledgePackError
 from tools.nbtriage_maintainer.knowledge_pack.write_policy import write_snapshot_policy
 
-from nbtriage.bug_design import BugDesignIndexReader
+from nbtriage.bug.design import BugDesignIndexReader
 
 
 def _archive(*, non_api_count: int = 64, unsafe_path: str | None = None) -> bytes:

@@ -10,8 +10,8 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.usage import RequestUsage
 
-from nbtriage.bug_agent import PydanticAIBugAssessmentAgent
-from nbtriage.bug_assessment import (
+from nbtriage.bug._agent import PydanticAIBugAssessmentAgent
+from nbtriage.bug.assessment import (
     BugAssessmentCase,
     BugAssessmentToolbox,
     BugEvidence,

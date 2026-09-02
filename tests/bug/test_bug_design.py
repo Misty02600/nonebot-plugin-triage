@@ -4,8 +4,8 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
-from nbtriage.bug_assessment import BugEvidenceKind
-from nbtriage.bug_design import BugDesignIndexReader
+from nbtriage.bug.assessment import BugEvidenceKind
+from nbtriage.bug.design import BugDesignIndexReader
 from nbtriage.knowledge_index import (
     KNOWLEDGE_INDEX_SCHEMA_VERSION,
     KNOWLEDGE_RETRIEVER_ID,

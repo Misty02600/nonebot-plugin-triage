@@ -8,8 +8,8 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from nbtriage.bug_assessment import BugEvidenceKind, BugVerdict
-from nbtriage.bug_workflow import (
+from nbtriage.bug.assessment import BugEvidenceKind, BugVerdict
+from nbtriage.bug.workflow import (
     BugOccurrenceInput,
     BugReportInput,
     EvidenceReceipt,
@@ -26,7 +26,7 @@ from nbtriage.bug_workflow import (
 
 @pytest.fixture
 async def repository(tmp_path: Path) -> AsyncIterator[Any]:
-    from nonebot_plugin_triage.bug_workflow_orm import (
+    from nonebot_plugin_triage.bug.repository import (
         BugOccurrenceModel,
         BugProblemModel,
         BugReportModel,
@@ -151,7 +151,7 @@ async def test_repository_groups_stable_occurrences_and_keeps_report_idempotency
 async def test_repository_maintenance_updates_projection_and_preserves_decisions(
     repository: Any,
 ) -> None:
-    from nonebot_plugin_triage.bug_workflow_orm import ProblemDecisionModel
+    from nonebot_plugin_triage.bug.repository import ProblemDecisionModel
 
     receipt = await repository.record_bug(
         _command(report_key="1" * 64, occurrence_key="a" * 64, signature=_signature())

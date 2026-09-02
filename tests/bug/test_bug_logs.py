@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from nbtriage.bug_logs import (
+from nbtriage.bug.logs import (
     CorrelatedBugLogBuffer,
     bug_log_bundle_evidence,
     build_correlated_bug_log,

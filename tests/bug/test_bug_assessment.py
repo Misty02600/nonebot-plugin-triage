@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from nbtriage.bug_assessment import (
+from nbtriage.bug.assessment import (
     BugAssessmentCandidate,
     BugAssessmentCase,
     BugAssessmentCoordinator,

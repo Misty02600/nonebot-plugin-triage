@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from nbtriage.bug_source import ApprovedSourceRoot, BoundedSourceReader, BugSourceError
+from nbtriage.bug.source import ApprovedSourceRoot, BoundedSourceReader, BugSourceError
 
 
 def test_search_returns_real_source_span_with_relative_locator(tmp_path: Path) -> None:

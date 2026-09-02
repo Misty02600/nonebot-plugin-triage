@@ -17,7 +17,7 @@ from nonebot.message import run_postprocessor as register_run_postprocessor
 from nonebot.message import run_preprocessor as register_run_preprocessor
 from nonebot.typing import T_State
 
-from nbtriage.bug_logs import CorrelatedBugLogBuffer, build_correlated_bug_log
+from nbtriage.bug.logs import CorrelatedBugLogBuffer, build_correlated_bug_log
 from nbtriage.runtime_observations import (
     RUNTIME_OBSERVATION_SCHEMA_VERSION,
     ObservationKind,

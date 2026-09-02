@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from nbtriage.bug_conversation import BugConversationMessage
-from nbtriage.bug_intake import BugIntakeStatus, evaluate_bug_intake
+from nbtriage.bug.conversation import BugConversationMessage
+from nbtriage.bug.intake import BugIntakeStatus, evaluate_bug_intake
 from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,

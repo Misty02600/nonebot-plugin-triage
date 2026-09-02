@@ -22,14 +22,14 @@ Bug Agent 当前通过 `search_design_rag` 查询框架与项目设计证据，�
 
 ### 已有实现
 
-- `src/nbtriage/bug_agent.py::search_design_rag` 是 Agent 当前唯一的设计知识工具，底层来源没有暴露给模型。
-- `src/nonebot_plugin_triage/bug_assessment_runtime.py::BugAssessmentRuntimeService.assess` 内部的
+- `src/nbtriage/bug/_agent.py::search_design_rag` 是 Agent 当前唯一的设计知识工具，底层来源没有暴露给模型。
+- `src/nonebot_plugin_triage/bug/assessment.py::BugAssessmentRuntimeService.assess` 内部的
   `design_loader` 只读取本地 `KnowledgePackService`，再调用 `BugDesignIndexReader.search`。
 - `src/nonebot_plugin_triage/knowledge_pack_runtime.py::KnowledgePackService` 下载并校验配置的知识包，使用
   LocalStore cache 保存索引；安装或校验失败时退化为无知识模式。
 - `src/nonebot_plugin_triage/config.py::NBTriageConfig` 只暴露
   `NBTRIAGE_KNOWLEDGE_PACK_URL` 与 `NBTRIAGE_KNOWLEDGE_PACK_SHA256`，尚无 Context7 或后端选择配置。
-- `src/nbtriage/bug_design.py::BugDesignIndexReader.search` 已支持 `component`、`version` 与 `limit`，并区分
+- `src/nbtriage/bug/design.py::BugDesignIndexReader.search` 已支持 `component`、`version` 与 `limit`，并区分
   `snapshot_only`、`exact_version` 和 `declared_range`。
 
 ### 已确认缺口

@@ -24,7 +24,7 @@ from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RunUsage
 
 from nbtriage.agent_telemetry import current_agent_instrumentation
-from nbtriage.bug_assessment import (
+from nbtriage.bug.assessment import (
     BUG_ASSESSMENT_MAX_TOOL_CALLS,
     BUG_CONVERSATION_MAX_TOOL_CALLS,
     BugAssessmentCandidate,

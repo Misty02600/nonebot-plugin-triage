@@ -447,7 +447,7 @@ async def test_first_bug_unknown_waits_once_and_second_unknown_closes(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.bug_assessment import (
+    from nbtriage.bug.assessment import (
         BugAssessmentDecision,
         BugDecisionSource,
         BugEvidenceKind,
@@ -531,7 +531,7 @@ async def test_conclusive_bug_assessment_closes_scope(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.bug_assessment import (
+    from nbtriage.bug.assessment import (
         BugAssessmentDecision,
         BugDecisionSource,
         BugOccurrence,
@@ -539,10 +539,10 @@ async def test_conclusive_bug_assessment_closes_scope(
         BugResponsibility,
         BugVerdict,
     )
-    from nbtriage.bug_workflow import BugRecordReceipt, RecordBugCommand
+    from nbtriage.bug.workflow import BugRecordReceipt, RecordBugCommand
     from nbtriage.support_threads import ThreadStatus
     from nonebot_plugin_triage import handlers
-    from nonebot_plugin_triage.bug_assessment_runtime import BugAssessmentRuntimeOutcome
+    from nonebot_plugin_triage.bug.assessment import BugAssessmentRuntimeOutcome
 
     runtime = _install_isolated_support_threads(monkeypatch)
     _inject_semantic_assessment(
@@ -603,7 +603,7 @@ async def test_public_precheck_misuse_reuses_guidance_and_closes_scope(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.bug_assessment import (
+    from nbtriage.bug.assessment import (
         BugAssessmentDecision,
         BugDecisionSource,
         BugOccurrence,

@@ -10,8 +10,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from nbtriage.bug_assessment import BugVerdict
-from nbtriage.bug_workflow import (
+from nbtriage.bug.assessment import BugVerdict
+from nbtriage.bug.workflow import (
     BUG_PROBLEM_ID_PATTERN,
     BugRecordReceipt,
     EvidenceReceipt,

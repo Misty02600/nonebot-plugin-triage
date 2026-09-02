@@ -13,7 +13,7 @@ from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RequestUsage
 
-from nbtriage.bug_agent import PydanticAIBugAssessmentAgent
+from nbtriage.bug._agent import PydanticAIBugAssessmentAgent
 from nbtriage.capability.teaching.model_adapter import (
     CapabilityAnalysisToolRuntimeFactory,
     PydanticAICapabilityAnalysisClient,

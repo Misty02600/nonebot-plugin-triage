@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from nbtriage.bug_assessment import (
+from nbtriage.bug.assessment import (
     BugAssessmentDecision,
     BugDecisionSource,
     BugEvidence,

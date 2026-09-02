@@ -100,7 +100,7 @@ Checkpoint 工作区；Pydantic AI Agent 首切只读取 Capability Shadow 的�
 | 通用入站引用与 Target scope | `src/nonebot_plugin_triage/universal_references.py` |
 | OneBot V11 运行证据出站引用 Provider | `src/nonebot_plugin_triage/onebot_v11_references.py` |
 | scope Thread、一次补充与发送成功结算 | `src/nbtriage/support_threads.py`、`src/nonebot_plugin_triage/thread_references.py`、`src/nonebot_plugin_triage/support_responses.py` |
-| Bug Reply / OneBot 群历史上下文 | `src/nbtriage/bug_conversation.py`、`src/nonebot_plugin_triage/onebot_bug_conversation.py` |
+| Bug Reply / OneBot 群历史上下文 | `src/nbtriage/bug/conversation.py`、`src/nonebot_plugin_triage/bug/onebot_v11_conversation.py` |
 | HMAC 引用索引 | `src/nbtriage/message_references.py` |
 | 类型化授权校验、故障组合与窄回显 | `src/nonebot_plugin_triage/live_reports.py` |
 | incident、cluster 与 trial | `src/nbtriage/live_incidents.py`、`src/nbtriage/live_trials.py` |

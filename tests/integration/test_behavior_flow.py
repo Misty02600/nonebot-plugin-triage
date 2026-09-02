@@ -150,7 +150,7 @@ async def test_explicit_short_routes_are_not_hijacked_by_active_behavior_inquiry
         monkeypatch.setattr(handlers, "_capability_guidance_result", fixed_guidance)
         expected = "公开教学"
     else:
-        from nbtriage.bug_assessment import (
+        from nbtriage.bug.assessment import (
             BugAssessmentDecision,
             BugDecisionSource,
             BugOccurrence,
@@ -159,7 +159,7 @@ async def test_explicit_short_routes_are_not_hijacked_by_active_behavior_inquiry
             BugVerdict,
             format_bug_assessment_reply,
         )
-        from nonebot_plugin_triage.bug_assessment_runtime import (
+        from nonebot_plugin_triage.bug.assessment import (
             BugAssessmentRuntimeOutcome,
         )
 

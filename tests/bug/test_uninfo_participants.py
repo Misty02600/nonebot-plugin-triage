@@ -7,8 +7,8 @@ from typing import cast
 import pytest
 from nonebot.adapters import Bot, Event
 
-from nbtriage.bug_conversation import BugConversationMessage, BugConversationPage
-from nonebot_plugin_triage.uninfo_participants import (
+from nbtriage.bug.conversation import BugConversationMessage, BugConversationPage
+from nonebot_plugin_triage.bug.participants import (
     _UninfoConversationReader,
     enrich_conversation_with_uninfo,
 )
@@ -100,7 +100,7 @@ async def test_uninfo_resolution_is_deferred_until_conversation_is_read(
         return None
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.uninfo_participants.import_module",
+        "nonebot_plugin_triage.bug.participants.import_module",
         lambda _name: SimpleNamespace(
             get_session=get_session,
             get_interface=lambda _bot: None,

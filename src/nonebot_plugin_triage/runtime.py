@@ -10,7 +10,7 @@ from typing import Protocol
 from nonebot import get_driver, logger
 
 from nbtriage.agent_telemetry import AgentTelemetryRuntime
-from nbtriage.bug_logs import CorrelatedBugLogBuffer
+from nbtriage.bug.logs import CorrelatedBugLogBuffer
 from nbtriage.capability.teaching.analysis import CapabilityAnalysisClient
 from nbtriage.incident_queries import IncidentQueryService
 from nbtriage.live_incidents import LiveIncidentBuffer
@@ -28,12 +28,12 @@ from nonebot_plugin_triage.behavior_exploration_runtime import (
     BehaviorExplorationServiceLike,
     create_behavior_exploration_service,
 )
-from nonebot_plugin_triage.bug_assessment_runtime import (
+from nonebot_plugin_triage.bug.assessment import (
     BugAssessmentServiceLike,
     create_bug_assessment_runtime_service,
 )
+from nonebot_plugin_triage.bug.repository import NoneBotORMBugWorkflowRepository
 from nonebot_plugin_triage.bug_workflow_identity import BugWorkflowIdentity
-from nonebot_plugin_triage.bug_workflow_orm import NoneBotORMBugWorkflowRepository
 from nonebot_plugin_triage.capability.shadow import (
     CapabilityShadowService,
     register_capability_shadow,

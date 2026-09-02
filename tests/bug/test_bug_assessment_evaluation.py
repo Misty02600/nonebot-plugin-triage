@@ -15,7 +15,7 @@ from tools.nbtriage_maintainer.bug_assessment_evaluation import (
     evaluate_bug_assessment,
 )
 
-from nbtriage.bug_assessment import (
+from nbtriage.bug.assessment import (
     BugAssessmentCandidate,
     BugCandidateReason,
     BugEvidenceKind,
