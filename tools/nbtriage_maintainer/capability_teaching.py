@@ -12,12 +12,12 @@ from tempfile import TemporaryDirectory
 from time import monotonic_ns
 from typing import Any
 
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisClient,
     CapabilityAnalysisOutput,
     CapabilityAnalysisRequest,
 )
-from nbtriage.capability_model_adapter import (
+from nbtriage.capability.teaching.model_adapter import (
     CapabilityModelAdapterError,
     PydanticAICapabilityAnalysisClient,
 )

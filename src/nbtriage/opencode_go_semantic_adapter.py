@@ -14,7 +14,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RequestUsage
 
 from nbtriage.bug_agent import PydanticAIBugAssessmentAgent
-from nbtriage.capability_model_adapter import (
+from nbtriage.capability.teaching.model_adapter import (
     CapabilityAnalysisToolRuntimeFactory,
     PydanticAICapabilityAnalysisClient,
 )

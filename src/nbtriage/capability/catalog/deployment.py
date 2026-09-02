@@ -18,8 +18,8 @@ from nbtriage.artifact_revisions import (
     StdlibDistributionMetadataAdapter,
     build_artifact_revision,
 )
-from nbtriage.capability_inventory import DeclaredInventory, read_declared_inventory
-from nbtriage.capability_reconciliation import (
+from nbtriage.capability.catalog.inventory import DeclaredInventory, read_declared_inventory
+from nbtriage.capability.catalog.reconciliation import (
     CapabilityReconciliation,
     reconcile_plugin_runtime,
 )

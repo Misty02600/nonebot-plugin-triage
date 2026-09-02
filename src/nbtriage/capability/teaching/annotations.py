@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     BaselineChangeOperation,
     BaselineMemberField,
     CapabilityAnalysisEntryBaseline,
@@ -26,7 +26,7 @@ from nbtriage.capability_analysis import (
     TeachingRole,
     TeachingScene,
 )
-from nbtriage.capability_usage import (
+from nbtriage.capability.teaching.usage import (
     MAX_EXPLICIT_USAGE_ALTERNATIVES,
     MAX_PUBLIC_USAGES,
     CapabilityUsageExpressionError,

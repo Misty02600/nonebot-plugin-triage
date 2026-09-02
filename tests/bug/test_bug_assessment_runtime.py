@@ -19,7 +19,7 @@ from nbtriage.bug_assessment import (
 from nbtriage.bug_conversation import BugConversationMessage, BugConversationPage
 from nbtriage.bug_design import BugDesignIndexReader
 from nbtriage.bug_logs import CorrelatedBugLogBuffer
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.records import (
     CapabilityRecord,
     CapabilitySearchHit,
     Claim,
@@ -28,7 +28,7 @@ from nbtriage.capabilities import (
     PlatformScope,
     RecordState,
 )
-from nbtriage.capability_annotations import (
+from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
 )

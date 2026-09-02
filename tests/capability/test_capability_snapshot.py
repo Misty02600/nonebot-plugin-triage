@@ -29,7 +29,7 @@ from nonebot.rule import CommandRule, Rule
 from nonebot_plugin_alconna import At, Image, Text, on_alconna
 from pydantic import BaseModel
 
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.records import (
     AnalysisIssue,
     Disclosure,
     PlatformScopeKind,

@@ -14,8 +14,8 @@ from typing import cast
 import yaml
 from nonebot import require
 
-from nbtriage.capabilities import CapabilityRecord, CapabilitySnapshot, ClaimBasis
-from nbtriage.capability_annotations import CapabilityTeachingEntry
+from nbtriage.capability.catalog.records import CapabilityRecord, CapabilitySnapshot, ClaimBasis
+from nbtriage.capability.teaching.annotations import CapabilityTeachingEntry
 from nonebot_plugin_triage.capability.teaching.annotations import (
     CapabilityAnnotationRefreshStatus,
     CapabilityTeachingUnitState,

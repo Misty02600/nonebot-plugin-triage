@@ -23,7 +23,7 @@ from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 from pydantic_ai.usage import RunUsage
 from pydantic_core import to_jsonable_python
 
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.records import (
     CapabilityRecord,
     Claim,
     ClaimBasis,
@@ -33,7 +33,7 @@ from nbtriage.capabilities import (
     EvidenceRef,
     RecordState,
 )
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisBaseline,
     CapabilityAnalysisEntryBaseline,
     CapabilityAnalysisOutput,
@@ -58,7 +58,7 @@ from nbtriage.capability_analysis import (
     TeachingScene,
     UnknownConfigReference,
 )
-from nbtriage.capability_annotations import (
+from nbtriage.capability.teaching.annotations import (
     CAPABILITY_ANNOTATION_BUDGET_PROFILE,
     CAPABILITY_ANNOTATION_PRIVACY_POLICY,
     CAPABILITY_ANNOTATION_PROMPT_ID,
@@ -68,17 +68,17 @@ from nbtriage.capability_annotations import (
     CapabilityTeachingAnnotation,
     project_capability_annotation,
 )
-from nbtriage.capability_model_adapter import (
+from nbtriage.capability.teaching.framework_semantics import uninfo_permission_profile
+from nbtriage.capability.teaching.model_adapter import (
     SYSTEM_INSTRUCTION,
     CapabilityAnalysisToolRuntime,
     CapabilityAnalysisToolRuntimeFactory,
 )
-from nbtriage.capability_source_evidence import (
+from nbtriage.capability.teaching.source_evidence import (
     CapabilitySourceEvidencePack,
     build_capability_source_evidence,
     fixed_permission_constraints,
 )
-from nbtriage.framework_semantics import uninfo_permission_profile
 from nbtriage.model_usage import provider_response_identity
 from nbtriage.opencode_go_contracts import OPENCODE_GO_THINKING_SETTINGS_REVISION
 from nbtriage.opencode_go_semantic_adapter import normalized_opencode_go_cost_microusd

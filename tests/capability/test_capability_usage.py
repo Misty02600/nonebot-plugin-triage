@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from nbtriage.capability_annotations import validate_capability_usage_pattern
-from nbtriage.capability_usage import (
+from nbtriage.capability.teaching.annotations import validate_capability_usage_pattern
+from nbtriage.capability.teaching.usage import (
     CapabilityUsageExpressionError,
     deterministic_literal_expression,
     deterministic_usage_selector,

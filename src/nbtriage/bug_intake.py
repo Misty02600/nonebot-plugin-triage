@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from nbtriage.bug_conversation import BugConversationMessage
-from nbtriage.capability_annotations import CapabilityTeachingAnnotation
+from nbtriage.capability.teaching.annotations import CapabilityTeachingAnnotation
 
 _REPLY_USAGE = re.compile(r"^\[回复[^\]\r\n]{1,20}\]\s+")
 

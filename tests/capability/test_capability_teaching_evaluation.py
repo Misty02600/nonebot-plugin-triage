@@ -18,14 +18,14 @@ from tools.nbtriage_maintainer.capability_teaching_evaluation import (
 )
 from tools.nbtriage_maintainer.cli import main
 
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisEntryOutput,
     CapabilityAnalysisOutput,
     CapabilityAnalysisRequest,
     SemanticClaim,
     SemanticClaimKind,
 )
-from nbtriage.capability_model_adapter import CapabilityAnalysisToolRuntimeFactory
+from nbtriage.capability.teaching.model_adapter import CapabilityAnalysisToolRuntimeFactory
 
 _FIXTURE = (
     Path(__file__).resolve().parents[2]

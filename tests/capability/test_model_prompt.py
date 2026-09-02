@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import nbtriage.capability_model_prompt as prompt
-from nbtriage.capability_analysis import (
+import nbtriage.capability.teaching._prompt as prompt
+from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisBaseline,
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,

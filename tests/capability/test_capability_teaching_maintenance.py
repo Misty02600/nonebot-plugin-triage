@@ -12,7 +12,7 @@ from tools.nbtriage_maintainer.capability_teaching import (
     _ModelOutputCapture,
 )
 
-from nbtriage.capability_model_adapter import (
+from nbtriage.capability.teaching.model_adapter import (
     CapabilityModelAdapterError,
     CapabilityModelAdapterReason,
 )

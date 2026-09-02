@@ -13,7 +13,7 @@ from typing import cast
 import yaml
 from nonebot import require
 
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.records import (
     CapabilityRecord,
     CapabilitySnapshot,
     ClaimBasis,
@@ -21,11 +21,11 @@ from nbtriage.capabilities import (
     PlatformScopeKind,
     RecordState,
 )
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     SemanticConstraintKind,
     TeachingRole,
 )
-from nbtriage.capability_annotations import (
+from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
 )

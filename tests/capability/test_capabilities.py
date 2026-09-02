@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from tools.nbtriage_maintainer.cli import main
 
-import nbtriage.capabilities as capabilities
-from nbtriage.capabilities import (
+import nbtriage.capability.catalog.records as capabilities
+from nbtriage.capability.catalog.records import (
     AnalysisIssue,
     CapabilityError,
     CapabilityIndexError,

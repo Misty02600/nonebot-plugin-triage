@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 from nonebot import logger
 
-from nbtriage.capability_analysis import CapabilityAnalysisClient
-from nbtriage.capability_annotations import (
+from nbtriage.capability.teaching.analysis import CapabilityAnalysisClient
+from nbtriage.capability.teaching.annotations import (
     CAPABILITY_ANNOTATION_BUDGET_PROFILE,
     CAPABILITY_ANNOTATION_PRIVACY_POLICY,
     CAPABILITY_ANNOTATION_PROMPT_ID,
@@ -15,7 +15,7 @@ from nbtriage.capability_annotations import (
     CAPABILITY_ANNOTATION_SCHEMA_VERSION,
     CAPABILITY_ANNOTATION_TASK,
 )
-from nbtriage.capability_model_adapter import CapabilityAnalysisToolRuntimeFactory
+from nbtriage.capability.teaching.model_adapter import CapabilityAnalysisToolRuntimeFactory
 from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_SEMANTIC_API_FAMILY,
     OPENCODE_GO_THINKING_SETTINGS_REVISION,
@@ -130,7 +130,7 @@ def create_capability_annotation_client_factory(
         )
 
     def create_client() -> CapabilityAnalysisClient:
-        from nbtriage.capability_model_adapter import (
+        from nbtriage.capability.teaching.model_adapter import (
             PydanticAICapabilityAnalysisClient,
         )
 

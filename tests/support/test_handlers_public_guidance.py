@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.records import (
     CapabilityRecord,
     CapabilitySearchHit,
     Claim,
@@ -14,7 +14,7 @@ from nbtriage.capabilities import (
     PlatformScope,
     RecordState,
 )
-from nbtriage.capability_annotations import (
+from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
 )

@@ -18,8 +18,8 @@
 
 ### 相关实现与当前行为
 
-- 领域与注释合同：`src/nbtriage/capability_analysis.py`、`src/nbtriage/capability_annotations.py`
-- 模型 Prompt 与结构化输出：`src/nbtriage/capability_model_adapter.py`
+- 领域与注释合同：`src/nbtriage/capability/teaching/analysis.py`、`src/nbtriage/capability/teaching/annotations.py`
+- 模型 Prompt 与结构化输出：`src/nbtriage/capability/teaching/model_adapter.py`
 - Runtime / 源码 Evidence 适配：`src/nonebot_plugin_triage/capability/teaching/analysis.py`
 - Help 与 Answer 投影：`src/nonebot_plugin_triage/capability/teaching/help.py`、
   `src/nonebot_plugin_triage/capability/teaching/outputs.py`

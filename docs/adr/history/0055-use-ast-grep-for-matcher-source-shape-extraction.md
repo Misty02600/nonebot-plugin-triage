@@ -75,7 +75,7 @@ ast-grep 擅长结构形状搜索，不提供 Python 名称绑定、动态调用
 
 ## 落实与确认
 
-- 实施位置：`src/nbtriage/capability_source_evidence.py`；
+- 实施位置：`src/nbtriage/capability/teaching/source_evidence.py`；
 - 依赖位置：`pyproject.toml`；
 - 固定规则现已覆盖 NoneBot 官方 `on`、事件类 `on_*`、字面触发、命令、Shell 命令与 `on_type`；
   `CommandGroup.command / shell_command` 和 `MatcherGroup.on_*` 只有在构造类型与接收者绑定可以静态证明时

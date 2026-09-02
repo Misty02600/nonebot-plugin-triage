@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from nbtriage.artifact_revisions import ArtifactRevision
-from nbtriage.capability_inventory import DeclaredInventory, DeclaredPlugin
+from nbtriage.capability.catalog.inventory import DeclaredInventory, DeclaredPlugin
 
 _MAX_MODULE_NAME_LENGTH = 256
 

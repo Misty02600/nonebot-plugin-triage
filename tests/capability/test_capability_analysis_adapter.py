@@ -11,7 +11,7 @@ import pytest
 from pydantic import BaseModel
 
 import nonebot_plugin_triage.capability.teaching._navigation as capability_analysis_navigation
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.records import (
     CapabilityRecord,
     Claim,
     ClaimBasis,
@@ -21,13 +21,13 @@ from nbtriage.capabilities import (
     EvidenceRef,
     RecordState,
 )
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
     SemanticConstraintKind,
     TeachingRole,
 )
-from nbtriage.capability_source_evidence import build_capability_source_evidence
+from nbtriage.capability.teaching.source_evidence import build_capability_source_evidence
 from nbtriage.readonly_tools import (
     ReadOnlyRoot,
 )

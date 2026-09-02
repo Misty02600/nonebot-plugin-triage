@@ -38,7 +38,18 @@ from nbtriage.agent_telemetry import (
     current_agent_instrumentation,
     record_agent_response_shape,
 )
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching._prompt import (
+    ANCHORED_INSTRUCTION as ANCHORED_INSTRUCTION,
+)
+from nbtriage.capability.teaching._prompt import (
+    BASELINE_INSTRUCTION as BASELINE_INSTRUCTION,
+)
+from nbtriage.capability.teaching._prompt import CORE_INSTRUCTION as CORE_INSTRUCTION
+from nbtriage.capability.teaching._prompt import FAMILY_INSTRUCTION as FAMILY_INSTRUCTION
+from nbtriage.capability.teaching._prompt import REGEX_INSTRUCTION as REGEX_INSTRUCTION
+from nbtriage.capability.teaching._prompt import SYSTEM_INSTRUCTION as SYSTEM_INSTRUCTION
+from nbtriage.capability.teaching._prompt import _instructions_for_request
+from nbtriage.capability.teaching.analysis import (
     BaselineChangeOperation,
     BaselineMemberChange,
     BaselineMemberField,
@@ -63,7 +74,7 @@ from nbtriage.capability_analysis import (
     TeachingScene,
     validate_capability_analysis_output,
 )
-from nbtriage.capability_annotations import (
+from nbtriage.capability.teaching.annotations import (
     CAPABILITY_ANNOTATION_PROMPT_ID,
     CapabilityAnnotationError,
     CapabilityAnnotationProjectionError,
@@ -74,18 +85,7 @@ from nbtriage.capability_annotations import (
     validate_capability_usage_template,
     validate_complete_aggregate_usage,
 )
-from nbtriage.capability_model_prompt import (
-    ANCHORED_INSTRUCTION as ANCHORED_INSTRUCTION,
-)
-from nbtriage.capability_model_prompt import (
-    BASELINE_INSTRUCTION as BASELINE_INSTRUCTION,
-)
-from nbtriage.capability_model_prompt import CORE_INSTRUCTION as CORE_INSTRUCTION
-from nbtriage.capability_model_prompt import FAMILY_INSTRUCTION as FAMILY_INSTRUCTION
-from nbtriage.capability_model_prompt import REGEX_INSTRUCTION as REGEX_INSTRUCTION
-from nbtriage.capability_model_prompt import SYSTEM_INSTRUCTION as SYSTEM_INSTRUCTION
-from nbtriage.capability_model_prompt import _instructions_for_request
-from nbtriage.capability_usage import (
+from nbtriage.capability.teaching.usage import (
     MAX_PUBLIC_USAGES,
     CapabilityUsageExpressionError,
     deterministic_usage_selector,

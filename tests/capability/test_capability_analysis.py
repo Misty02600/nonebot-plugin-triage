@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     BaselineChangeOperation,
     BaselineMemberChange,
     BaselineMemberField,

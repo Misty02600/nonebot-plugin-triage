@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from enum import StrEnum
 
-from nbtriage.capability_analysis import TeachingRole, TeachingScene
+from nbtriage.capability.teaching.analysis import TeachingRole, TeachingScene
 
 
 class PublicConstraintKind(StrEnum):

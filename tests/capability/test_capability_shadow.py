@@ -15,7 +15,11 @@ from nbtriage.artifact_revisions import (
     ArtifactRevisionStatus,
     ArtifactSourceKind,
 )
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.deployment import (
+    CapabilityDeployment,
+    build_capability_deployment,
+)
+from nbtriage.capability.catalog.records import (
     AnalysisIssue,
     CapabilityIndexError,
     CapabilityRecord,
@@ -33,13 +37,9 @@ from nbtriage.capabilities import (
     SourceRevision,
     search_capability_index,
 )
-from nbtriage.capability_annotations import (
+from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
-)
-from nbtriage.capability_deployment import (
-    CapabilityDeployment,
-    build_capability_deployment,
 )
 from nonebot_plugin_triage.capability.shadow import (
     CapabilityShadowService,

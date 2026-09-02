@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.records import (
     CapabilityRecord,
     CapabilitySnapshot,
     Claim,
@@ -15,7 +15,7 @@ from nbtriage.capabilities import (
     PlatformScope,
     RecordState,
 )
-from nbtriage.capability_annotations import (
+from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
 )

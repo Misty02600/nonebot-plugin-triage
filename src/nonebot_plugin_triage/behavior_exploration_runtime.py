@@ -52,7 +52,7 @@ from nbtriage.behavior_exploration import (
     revalidate_behavior_workspace,
     transition_behavior_delivery,
 )
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.records import (
     AnalysisIssue,
     CapabilitySearchHit,
     ClaimBasis,

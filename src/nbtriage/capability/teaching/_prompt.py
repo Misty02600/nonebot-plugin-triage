@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisRequest,
     CapabilityInvocationMode,
 )

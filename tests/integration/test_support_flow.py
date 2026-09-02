@@ -709,7 +709,7 @@ async def test_guidance_never_reads_restricted_shadow_or_checks_superuser(
     from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
     from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
 
-    from nbtriage.capabilities import (
+    from nbtriage.capability.catalog.records import (
         CapabilityRecord,
         CapabilitySnapshot,
         Claim,
@@ -788,7 +788,7 @@ async def test_public_shadow_capability_guidance_is_available_to_regular_user(
     from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
     from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
 
-    from nbtriage.capabilities import (
+    from nbtriage.capability.catalog.records import (
         CapabilityRecord,
         CapabilitySnapshot,
         Claim,
@@ -833,7 +833,7 @@ async def test_public_shadow_capability_guidance_is_available_to_regular_user(
             ArtifactRevisionStatus,
             ArtifactSourceKind,
         )
-        from nbtriage.capability_deployment import build_capability_deployment
+        from nbtriage.capability.catalog.deployment import build_capability_deployment
 
         assert pyproject_path == Path("pyproject.toml")
 

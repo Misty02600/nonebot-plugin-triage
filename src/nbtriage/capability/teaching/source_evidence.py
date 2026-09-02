@@ -12,14 +12,14 @@ from pathlib import Path, PurePosixPath
 
 from ast_grep_py import SgNode, SgRoot
 
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     PermissionAlternative,
     SemanticConstraint,
     SemanticConstraintKind,
     TeachingRole,
     TeachingScene,
 )
-from nbtriage.framework_semantics import (
+from nbtriage.capability.teaching.framework_semantics import (
     PermissionSemanticProfile,
     PublicConstraintKind,
     public_permission_statement,

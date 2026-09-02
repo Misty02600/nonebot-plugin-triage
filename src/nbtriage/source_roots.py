@@ -15,7 +15,7 @@ from typing import Any, Protocol, cast
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
-from nbtriage.capability_inventory import read_declared_inventory
+from nbtriage.capability.catalog.inventory import read_declared_inventory
 from nbtriage.readonly_tools.models import ReadOnlyRoot
 
 _MODULE_NAME_PATTERN = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$", re.ASCII)

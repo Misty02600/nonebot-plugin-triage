@@ -11,7 +11,12 @@ from typing import Protocol
 
 from nonebot import logger, require
 
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.deployment import (
+    CapabilityDeployment,
+    build_capability_deployment,
+)
+from nbtriage.capability.catalog.reconciliation import PluginRuntimeStatus
+from nbtriage.capability.catalog.records import (
     CAPABILITY_INDEX_SCHEMA_VERSION,
     AnalysisIssue,
     CapabilityIndexError,
@@ -28,13 +33,11 @@ from nbtriage.capabilities import (
     capability_index_public_records,
     search_capability_index,
 )
-from nbtriage.capability_analysis import CapabilityAnalysisClient
-from nbtriage.capability_annotations import CapabilityTeachingAnnotation, CapabilityTeachingEntry
-from nbtriage.capability_deployment import (
-    CapabilityDeployment,
-    build_capability_deployment,
+from nbtriage.capability.teaching.analysis import CapabilityAnalysisClient
+from nbtriage.capability.teaching.annotations import (
+    CapabilityTeachingAnnotation,
+    CapabilityTeachingEntry,
 )
-from nbtriage.capability_reconciliation import PluginRuntimeStatus
 from nbtriage.public_guidance import (
     PUBLIC_GUIDANCE_SCHEMA_VERSION,
     PublicGuidanceFact,

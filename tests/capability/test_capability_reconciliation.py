@@ -9,12 +9,12 @@ from nbtriage.artifact_revisions import (
     ArtifactRevisionStatus,
     ArtifactSourceKind,
 )
-from nbtriage.capability_inventory import (
+from nbtriage.capability.catalog.inventory import (
     DeclaredInventory,
     DeclaredPlugin,
     DeclaredPluginKind,
 )
-from nbtriage.capability_reconciliation import (
+from nbtriage.capability.catalog.reconciliation import (
     CapabilityReconciliationError,
     PluginRuntimeStatus,
     reconcile_plugin_runtime,

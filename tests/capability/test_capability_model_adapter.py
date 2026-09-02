@@ -14,7 +14,7 @@ from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.usage import RequestUsage
 
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     BaselineChangeOperation,
     BaselineMemberField,
     CapabilityAnalysisBaseline,
@@ -35,8 +35,8 @@ from nbtriage.capability_analysis import (
     TeachingRole,
     TeachingScene,
 )
-from nbtriage.capability_annotations import project_capability_annotation
-from nbtriage.capability_model_adapter import (
+from nbtriage.capability.teaching.annotations import project_capability_annotation
+from nbtriage.capability.teaching.model_adapter import (
     ANCHORED_INSTRUCTION,
     CORE_INSTRUCTION,
     SYSTEM_INSTRUCTION,

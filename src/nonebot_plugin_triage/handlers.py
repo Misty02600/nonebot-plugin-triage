@@ -39,7 +39,7 @@ from nbtriage.bug_workflow import (
     format_problem_details,
     format_problem_list,
 )
-from nbtriage.capabilities import CapabilitySearchHit
+from nbtriage.capability.catalog.records import CapabilitySearchHit
 from nbtriage.public_guidance import PublicGuidanceExecutionStatus
 from nbtriage.support_routing import (
     SupportRoutingAction,

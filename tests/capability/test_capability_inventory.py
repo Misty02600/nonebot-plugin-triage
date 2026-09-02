@@ -4,7 +4,7 @@ import hashlib
 import importlib
 from pathlib import Path
 
-from nbtriage.capability_inventory import (
+from nbtriage.capability.catalog.inventory import (
     DeclaredPluginKind,
     read_declared_inventory,
 )

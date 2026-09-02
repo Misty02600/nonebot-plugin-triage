@@ -12,11 +12,11 @@
 
 ## 当前设计与缺陷
 
-- `src/nbtriage/capabilities.py::search_capability_index` 使用 SQLite FTS5 trigram 和标准化 lookup term 检索
+- `src/nbtriage/capability/catalog/records.py::search_capability_index` 使用 SQLite FTS5 trigram 和标准化 lookup term 检索
   Runtime `CapabilityRecord`。
 - `src/nonebot_plugin_triage/capability/shadow.py::_augment_hits_with_annotation_terms` 将公开注释 name、独立
   search term 和 summary 加入同一个候选排序，并在 limit 前按 annotation capability ID 收敛 family。
-- `src/nbtriage/capability_annotations.py::validate_capability_search_term` 要求每项是一条独立短语，拒绝用顿号、
+- `src/nbtriage/capability/teaching/annotations.py::validate_capability_search_term` 要求每项是一条独立短语，拒绝用顿号、
   逗号、分号或 `|` 把多个查询词拼成一项。
 - 当前权重是明确的首版启发式，还没有用真实问法测量 top-1/top-3、跨插件歧义、family 精确成员召回或
   summary 偶然命中。现阶段没有证据支持引入 embedding 或向量数据库。

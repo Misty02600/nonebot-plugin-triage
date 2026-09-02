@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from nbtriage.bug_agent import PydanticAIBugAssessmentAgent
-from nbtriage.capabilities import CapabilityIndexError, search_capability_index
-from nbtriage.capability_model_adapter import (
+from nbtriage.capability.catalog.records import CapabilityIndexError, search_capability_index
+from nbtriage.capability.teaching.model_adapter import (
     CapabilityAnalysisToolRuntimeFactory,
     PydanticAICapabilityAnalysisClient,
 )

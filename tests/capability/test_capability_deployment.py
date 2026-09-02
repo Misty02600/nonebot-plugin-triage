@@ -11,11 +11,11 @@ from nbtriage.artifact_revisions import (
     ArtifactSourceKind,
     DistributionFile,
 )
-from nbtriage.capability_deployment import (
+from nbtriage.capability.catalog.deployment import (
     DeploymentIssueStage,
     build_capability_deployment,
 )
-from nbtriage.capability_reconciliation import PluginRuntimeStatus
+from nbtriage.capability.catalog.reconciliation import PluginRuntimeStatus
 
 
 class EmptyMetadataAdapter:

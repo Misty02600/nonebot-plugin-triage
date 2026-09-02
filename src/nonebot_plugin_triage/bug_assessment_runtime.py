@@ -55,8 +55,8 @@ from nbtriage.bug_workflow import (
     build_problem_signature,
     evidence_receipts,
 )
-from nbtriage.capabilities import CapabilityRecord, CapabilitySearchHit
-from nbtriage.capability_annotations import CapabilityTeachingAnnotation
+from nbtriage.capability.catalog.records import CapabilityRecord, CapabilitySearchHit
+from nbtriage.capability.teaching.annotations import CapabilityTeachingAnnotation
 from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_BUG_ASSESSMENT_BUDGET_PROFILE,
     OPENCODE_GO_BUG_ASSESSMENT_EVALUATION,

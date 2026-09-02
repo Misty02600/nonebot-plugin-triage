@@ -13,7 +13,7 @@ from nonebot.matcher import matchers
 from nonebot.plugin import PluginMetadata
 from pydantic import BaseModel
 
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisEntryOutput,
     CapabilityAnalysisOutput,
     CapabilityAnalysisService,

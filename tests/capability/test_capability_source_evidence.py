@@ -2,18 +2,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nbtriage.capability_analysis import SemanticConstraintKind, TeachingRole, TeachingScene
-from nbtriage.capability_source_evidence import (
-    SourceEvidenceLimits,
-    StructuralSymbolKind,
-    build_capability_source_evidence,
-    fixed_permission_constraints,
+from nbtriage.capability.teaching.analysis import (
+    SemanticConstraintKind,
+    TeachingRole,
+    TeachingScene,
 )
-from nbtriage.framework_semantics import (
+from nbtriage.capability.teaching.framework_semantics import (
     PublicConstraintKind,
     nonebot_permission_profile,
     onebot_v11_permission_profile,
     uninfo_permission_profile,
+)
+from nbtriage.capability.teaching.source_evidence import (
+    SourceEvidenceLimits,
+    StructuralSymbolKind,
+    build_capability_source_evidence,
+    fixed_permission_constraints,
 )
 
 

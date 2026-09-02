@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.records import (
     AnalysisIssue,
     CapabilityRecord,
     CapabilitySnapshot,
@@ -18,7 +18,7 @@ from nbtriage.capabilities import (
     PlatformScope,
     RecordState,
 )
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     BaselineChangeOperation,
     BaselineMemberChange,
     BaselineMemberField,
@@ -40,7 +40,7 @@ from nbtriage.capability_analysis import (
     SemanticConstraintKind,
     TeachingRole,
 )
-from nbtriage.capability_annotations import (
+from nbtriage.capability.teaching.annotations import (
     CapabilityAnnotationError,
     CapabilityAnnotationEvidenceRef,
     CapabilityTeachingAnnotation,
@@ -50,7 +50,7 @@ from nbtriage.capability_annotations import (
     validate_capability_public_statement,
     validate_capability_usage_pattern,
 )
-from nbtriage.capability_model_adapter import (
+from nbtriage.capability.teaching.model_adapter import (
     CapabilityModelAdapterError,
     CapabilityModelAdapterReason,
 )

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from time import monotonic_ns
 
-from nbtriage.capabilities import CapabilityRecord
-from nbtriage.capability_analysis import (
+from nbtriage.capability.catalog.records import CapabilityRecord
+from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
     CapabilityIdentity,
@@ -11,11 +11,11 @@ from nbtriage.capability_analysis import (
     CapabilityInvocationTarget,
     CapabilitySourceContext,
 )
-from nbtriage.capability_source_evidence import (
+from nbtriage.capability.teaching.framework_semantics import PermissionSemanticProfile
+from nbtriage.capability.teaching.source_evidence import (
     CapabilitySourceEvidencePack,
     fixed_permission_constraints,
 )
-from nbtriage.framework_semantics import PermissionSemanticProfile
 from nonebot_plugin_triage.capability.teaching._navigation import (
     CapabilityAnalysisAdapterError,
     CapabilitySourceSliceCache,

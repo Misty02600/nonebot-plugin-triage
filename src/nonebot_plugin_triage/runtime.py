@@ -11,7 +11,7 @@ from nonebot import get_driver, logger
 
 from nbtriage.agent_telemetry import AgentTelemetryRuntime
 from nbtriage.bug_logs import CorrelatedBugLogBuffer
-from nbtriage.capability_analysis import CapabilityAnalysisClient
+from nbtriage.capability.teaching.analysis import CapabilityAnalysisClient
 from nbtriage.incident_queries import IncidentQueryService
 from nbtriage.live_incidents import LiveIncidentBuffer
 from nbtriage.live_trials import LiveTrialService

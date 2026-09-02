@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.records import (
     CapabilityRecord,
     CapabilitySnapshot,
     Claim,
@@ -15,14 +15,14 @@ from nbtriage.capabilities import (
     RecordState,
     SnapshotError,
 )
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     RateLimitPolicy,
     RateLimitScope,
     SemanticConstraintKind,
     TeachingRole,
     TeachingScene,
 )
-from nbtriage.capability_annotations import (
+from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
     CapabilityTeachingPermissionAlternative,

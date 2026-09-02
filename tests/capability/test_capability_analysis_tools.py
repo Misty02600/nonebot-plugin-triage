@@ -14,7 +14,7 @@ from pydantic_ai.messages import ModelRequest, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
 
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
     CapabilityFamilyMember,
@@ -23,8 +23,8 @@ from nbtriage.capability_analysis import (
     CapabilityInvocationTarget,
     CapabilitySourceContext,
 )
-from nbtriage.capability_annotations import CapabilityAnnotationEvidenceRef
-from nbtriage.capability_source_evidence import CapabilitySourceEvidencePack
+from nbtriage.capability.teaching.annotations import CapabilityAnnotationEvidenceRef
+from nbtriage.capability.teaching.source_evidence import CapabilitySourceEvidencePack
 from nbtriage.knowledge_index import KnowledgeEvidence
 from nbtriage.readonly_tools import (
     DefinitionNavigator,

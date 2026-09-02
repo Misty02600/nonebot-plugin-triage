@@ -18,14 +18,14 @@ from pydantic_ai.tools import RunContext
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset, ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
 
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
     CapabilitySourceContext,
 )
-from nbtriage.capability_annotations import CapabilityAnnotationEvidenceRef
-from nbtriage.capability_model_adapter import CapabilityAnalysisToolRuntime
-from nbtriage.capability_source_evidence import (
+from nbtriage.capability.teaching.annotations import CapabilityAnnotationEvidenceRef
+from nbtriage.capability.teaching.model_adapter import CapabilityAnalysisToolRuntime
+from nbtriage.capability.teaching.source_evidence import (
     CapabilitySourceEvidenceError,
     build_capability_source_evidence,
 )

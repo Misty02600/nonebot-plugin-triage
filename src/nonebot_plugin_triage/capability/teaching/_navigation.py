@@ -12,8 +12,8 @@ from enum import StrEnum
 from pathlib import Path
 from types import ModuleType
 
-from nbtriage.capability_analysis import CapabilityEvidenceUnit
-from nbtriage.capability_source_evidence import (
+from nbtriage.capability.teaching.analysis import CapabilityEvidenceUnit
+from nbtriage.capability.teaching.source_evidence import (
     CapabilitySourceEvidencePack,
     RegistrationAnchor,
     SourceSpan,

@@ -70,11 +70,11 @@
 
 ## 落实与确认
 
-- `nbtriage.capability_analysis` 与 `nbtriage.capability_annotations` 已实现有序 usages、结构化 requirements 和
+- `nbtriage.capability.teaching.analysis` 与 `nbtriage.capability.teaching.annotations` 已实现有序 usages、结构化 requirements 和
   interaction，并以新 schema / Prompt revision 失效旧缓存。
-- `nbtriage.framework_semantics` 已把 Uninfo `MEMBER()` 映射为 `custom`，ADMIN / OWNER 分别映射为
+- `nbtriage.capability.teaching.framework_semantics` 已把 Uninfo `MEMBER()` 映射为 `custom`，ADMIN / OWNER 分别映射为
   `admin` / `owner`；源码提取保留 import provenance，避免本地同名函数被误认。
-- `nbtriage.capability_source_evidence` 已删除通用 limiter 名称候选。
+- `nbtriage.capability.teaching.source_evidence` 已删除通用 limiter 名称候选。
 - Answer facts、注释同义词 / 主题补召回和独立帮助 YAML projector 已消费新结构。
 - Runtime 记录现以独立 `invocation.header` 统一命令头与可直接发送的字面触发锚点；NoneBot 命令同时记录
   当前进程的 `command_start` / `command_sep`，`on_startswith / on_endswith / on_fullmatch / on_keyword`

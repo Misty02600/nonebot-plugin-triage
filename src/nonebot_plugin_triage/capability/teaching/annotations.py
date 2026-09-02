@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from nonebot import logger
 
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.records import (
     AnalysisIssue,
     CapabilityRecord,
     CapabilitySnapshot,
@@ -20,7 +20,7 @@ from nbtriage.capabilities import (
     PlatformScopeKind,
     RecordState,
 )
-from nbtriage.capability_analysis import (
+from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisBaseline,
     CapabilityAnalysisClient,
     CapabilityAnalysisEntryBaseline,
@@ -28,7 +28,7 @@ from nbtriage.capability_analysis import (
     CapabilityAnalysisRequest,
     CapabilityAnalysisService,
 )
-from nbtriage.capability_annotations import (
+from nbtriage.capability.teaching.annotations import (
     CapabilityAnnotationError,
     CapabilityAnnotationEvidenceRef,
     CapabilityAnnotationProjectionError,
@@ -36,10 +36,10 @@ from nbtriage.capability_annotations import (
     capability_analysis_fingerprint,
     project_capability_annotation,
 )
-from nbtriage.capability_model_adapter import (
+from nbtriage.capability.teaching.model_adapter import (
     CapabilityModelAdapterError,
 )
-from nbtriage.capability_source_evidence import CapabilitySourceEvidencePack
+from nbtriage.capability.teaching.source_evidence import CapabilitySourceEvidencePack
 from nonebot_plugin_triage.capability.teaching.analysis import (
     CapabilityAnalysisAdapterError,
     CapabilitySourceSliceCache,

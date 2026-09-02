@@ -10,18 +10,13 @@ from enum import StrEnum
 from pathlib import Path
 from time import monotonic_ns
 
-from nbtriage.capabilities import CapabilityRecord, ClaimBasis, Disclosure
-from nbtriage.capability_analysis import (
+from nbtriage.capability.catalog.records import CapabilityRecord, ClaimBasis, Disclosure
+from nbtriage.capability.teaching.analysis import (
     CapabilityEvidenceUnit,
     ConfigProjection,
     UnknownConfigReference,
 )
-from nbtriage.capability_source_evidence import (
-    CapabilitySourceEvidenceError,
-    CapabilitySourceEvidencePack,
-    build_capability_source_evidence,
-)
-from nbtriage.framework_semantics import (
+from nbtriage.capability.teaching.framework_semantics import (
     FrameworkFieldSemanticProfile,
     PermissionSemanticProfile,
     nonebot_dependency_overload_profile,
@@ -29,6 +24,11 @@ from nbtriage.framework_semantics import (
     onebot_v11_permission_profile,
     uninfo_permission_profile,
     uninfo_session_field_profile,
+)
+from nbtriage.capability.teaching.source_evidence import (
+    CapabilitySourceEvidenceError,
+    CapabilitySourceEvidencePack,
+    build_capability_source_evidence,
 )
 from nonebot_plugin_triage.capability.teaching._navigation import (
     _MAX_FUNCTION_CHARS,

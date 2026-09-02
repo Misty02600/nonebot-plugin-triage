@@ -19,7 +19,7 @@ from urllib.parse import urlsplit, urlunsplit
 from arclet.alconna import Alconna, command_manager
 from arclet.alconna.base import Completion, Help, Shortcut
 
-from nbtriage.capabilities import (
+from nbtriage.capability.catalog.records import (
     AnalysisIssue,
     CapabilityError,
     CapabilityRecord,

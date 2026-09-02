@@ -5,8 +5,8 @@ import json
 from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass
 
-from nbtriage.capabilities import CapabilityRecord, ClaimBasis
-from nbtriage.capability_analysis import (
+from nbtriage.capability.catalog.records import CapabilityRecord, ClaimBasis
+from nbtriage.capability.teaching.analysis import (
     CapabilityEvidenceUnit,
     CapabilityFamilyMember,
     CapabilityGateCandidate,
@@ -15,7 +15,7 @@ from nbtriage.capability_analysis import (
     CapabilityInvocationTarget,
     SemanticConstraint,
 )
-from nbtriage.capability_source_evidence import (
+from nbtriage.capability.teaching.source_evidence import (
     CapabilitySourceEvidencePack,
     PermissionConstraintFact,
     RegistrationAnchor,
