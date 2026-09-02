@@ -5,8 +5,8 @@ from typing import cast
 import pytest
 
 import nonebot_plugin_triage.runtime as plugin_runtime
-from nonebot_plugin_triage.capability_analysis_tools import CapabilityTeachingToolProvider
-from nonebot_plugin_triage.capability_annotation_runtime import (
+from nonebot_plugin_triage.capability.teaching._tools import CapabilityTeachingToolProvider
+from nonebot_plugin_triage.capability.teaching.runtime import (
     CapabilityAnnotationRuntimeConfigurationError,
 )
 from nonebot_plugin_triage.config import NBTriageConfig

@@ -40,7 +40,7 @@ from nbtriage.capability_model_adapter import (
     CapabilityModelAdapterError,
 )
 from nbtriage.capability_source_evidence import CapabilitySourceEvidencePack
-from nonebot_plugin_triage.capability_analysis_adapter import (
+from nonebot_plugin_triage.capability.teaching.analysis import (
     CapabilityAnalysisAdapterError,
     CapabilitySourceSliceCache,
     ParameterizedHandlerCodeIdentity,
@@ -48,7 +48,7 @@ from nonebot_plugin_triage.capability_analysis_adapter import (
     build_parameterized_family_analysis_request,
     parameterized_handler_code_identity,
 )
-from nonebot_plugin_triage.capability_annotation_cache import (
+from nonebot_plugin_triage.capability.teaching.cache import (
     CapabilityAnnotationCacheError,
     CapabilityAnnotationCacheUnit,
     CapabilityAnnotationLastAttempt,

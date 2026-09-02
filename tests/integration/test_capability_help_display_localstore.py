@@ -28,7 +28,7 @@ nonebot.init(
 plugin = nonebot.load_plugin("nonebot_plugin_triage")
 assert plugin is not None
 
-from nonebot_plugin_triage.capability_help_display import (
+from nonebot_plugin_triage.capability.teaching.help import (
     resolve_capability_help_display_data_dir,
 )
 

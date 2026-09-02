@@ -19,14 +19,14 @@ from nbtriage.capability_annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
 )
-from nonebot_plugin_triage.capability_annotations import (
+from nonebot_plugin_triage.capability.teaching.annotations import (
     CapabilityAnnotationRefreshStatus,
     CapabilityTeachingUnitReason,
     CapabilityTeachingUnitStage,
     CapabilityTeachingUnitState,
     CapabilityTeachingUnitStatus,
 )
-from nonebot_plugin_triage.capability_teaching_outputs import (
+from nonebot_plugin_triage.capability.teaching.outputs import (
     CapabilityTeachingOutputError,
     CapabilityTeachingOutputWriter,
 )
@@ -93,7 +93,7 @@ def test_writer_failure_keeps_previous_generation_pointer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nonebot_plugin_triage import capability_teaching_outputs as outputs
+    from nonebot_plugin_triage.capability.teaching import outputs
 
     record = _record()
     root = tmp_path / "capability-teaching"

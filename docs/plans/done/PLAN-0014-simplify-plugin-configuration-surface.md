@@ -34,7 +34,7 @@
   是 `adapter + Bot + conversation + actor`；首轮、Reply 续问、教学、澄清、报障和拒绝路径都会先经过它。
 - `src/nonebot_plugin_triage/runtime.py::create_plugin_runtime` 另建一份 30 秒报告限流账本，并注入
   `LiveReportService`。它只在 Reply 重新关联、可信失败证据复核和授权消费之后、Incident 写入之前消费。
-- `src/nonebot_plugin_triage/capability_shadow.py::register_capability_shadow` 目前把
+- `src/nonebot_plugin_triage/capability/shadow.py::register_capability_shadow` 目前把
   `NBTRIAGE_CAPABILITY_SHADOW_PATH` 同时当作 SQLite 位置和功能启用条件；未配置路径时整个影子服务不存在。
   能力说明分支会先查显式 Provider，随后才查影子的 public 或已鉴权 maintainer 视图。
 - `NBTRIAGE_RESTRICTED_CONFIG` 会被规范化为大小写不敏感的 NoneBot 顶层键 deny-list；`FOO__BAR` 会收敛为

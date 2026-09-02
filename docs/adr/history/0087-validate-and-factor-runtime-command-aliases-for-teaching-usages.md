@@ -60,7 +60,7 @@ Migut Help 还使用 `...` 表示同一参数槽位可以重复。旧生成合�
 - `src/nbtriage/capability_usage.py` 实现有界展开、集合相等校验和确定性枚举回退；
 - `src/nbtriage/capability_model_adapter.py` 增加 `display_trigger` 输出、一次定向重试与第二次失败回退；
 - `src/nbtriage/capability_annotations.py` 在公开投影边界再次验证并替换命令正文；
-- `src/nonebot_plugin_triage/capability_analysis_adapter.py` 把 parser 多值参数改为槽位外 `...`；
+- `src/nonebot_plugin_triage/capability/teaching/analysis.py` 把 parser 多值参数改为槽位外 `...`；
 - 单元测试覆盖嵌套压缩、集合差异、预算失败、重试回退、公开投影和重复参数格式。
 - 2026-08-17 使用 OpenCode Go `deepseek-v4-flash` 做了两条 v35 诊断 smoke：嵌套别名生成
   `(禁(言|他|她)|口(他|她)|踩(他|她)) <用户>`，必填多值参数生成 `批量压缩 <图片>...`；两条的

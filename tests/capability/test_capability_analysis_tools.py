@@ -32,7 +32,7 @@ from nbtriage.readonly_tools import (
     ReadOnlyRoot,
     ReadOnlyTaskProfile,
 )
-from nonebot_plugin_triage.capability_analysis_tools import (
+from nonebot_plugin_triage.capability.teaching._tools import (
     CapabilityTeachingToolProvider,
     _EvidenceCapture,
     _navigation_toolset,
@@ -193,7 +193,7 @@ def test_teaching_tool_provider_reuses_profiles_for_same_source_revision(
         return profiles
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_tools.build_evidence_access_profiles",
+        "nonebot_plugin_triage.capability.teaching._tools.build_evidence_access_profiles",
         build_profiles,
     )
     provider = CapabilityTeachingToolProvider(pyproject_path=tmp_path / "pyproject.toml")
@@ -212,7 +212,7 @@ def test_family_teaching_runtime_exposes_only_selective_definition_navigation(
 ) -> None:
     profiles = _profiles(tmp_path)
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_tools.build_evidence_access_profiles",
+        "nonebot_plugin_triage.capability.teaching._tools.build_evidence_access_profiles",
         lambda *_args, **_kwargs: profiles,
     )
     base = _request("plugin-revision-v1")
@@ -281,11 +281,11 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
     )
     revision = "plugin-revision-v1"
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_tools.build_evidence_access_profiles",
+        "nonebot_plugin_triage.capability.teaching._tools.build_evidence_access_profiles",
         lambda *_args, **_kwargs: profiles,
     )
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_tools.build_capability_source_evidence",
+        "nonebot_plugin_triage.capability.teaching._tools.build_capability_source_evidence",
         lambda *_args, **_kwargs: _source_pack(revision),
     )
     provider = CapabilityTeachingToolProvider(pyproject_path=tmp_path / "pyproject.toml")
@@ -441,11 +441,11 @@ def test_teaching_file_tools_return_recovery_for_repeated_directory_attempts(
     profiles = _profiles(tmp_path)
     revision = "plugin-revision-v1"
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_tools.build_evidence_access_profiles",
+        "nonebot_plugin_triage.capability.teaching._tools.build_evidence_access_profiles",
         lambda *_args, **_kwargs: profiles,
     )
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_tools.build_capability_source_evidence",
+        "nonebot_plugin_triage.capability.teaching._tools.build_capability_source_evidence",
         lambda *_args, **_kwargs: _source_pack(revision),
     )
     runtime = CapabilityTeachingToolProvider(
@@ -600,11 +600,11 @@ def test_teaching_tools_keep_bot_project_tools_for_local_project_plugin(
     profiles = _profiles(tmp_path, plugin_within_bot_project=True)
     revision = "plugin-revision-v1"
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_tools.build_evidence_access_profiles",
+        "nonebot_plugin_triage.capability.teaching._tools.build_evidence_access_profiles",
         lambda *_args, **_kwargs: profiles,
     )
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_tools.build_capability_source_evidence",
+        "nonebot_plugin_triage.capability.teaching._tools.build_capability_source_evidence",
         lambda *_args, **_kwargs: _source_pack(revision),
     )
     runtime = CapabilityTeachingToolProvider(
@@ -636,11 +636,11 @@ def test_teaching_tools_offer_version_bound_framework_rag_and_capture_evidence(
     revision = "plugin-revision-v1"
     pack = {"revision": "archive-v1"}
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_tools.build_evidence_access_profiles",
+        "nonebot_plugin_triage.capability.teaching._tools.build_evidence_access_profiles",
         lambda *_args, **_kwargs: profiles,
     )
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_tools.build_capability_source_evidence",
+        "nonebot_plugin_triage.capability.teaching._tools.build_capability_source_evidence",
         lambda *_args, **_kwargs: _source_pack(revision),
     )
 
@@ -669,7 +669,7 @@ def test_teaching_tools_offer_version_bound_framework_rag_and_capture_evidence(
             ]
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_tools.KnowledgeIndexReader",
+        "nonebot_plugin_triage.capability.teaching._tools.KnowledgeIndexReader",
         FakeKnowledgeReader,
     )
     provider = CapabilityTeachingToolProvider(

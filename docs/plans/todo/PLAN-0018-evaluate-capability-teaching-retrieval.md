@@ -14,7 +14,7 @@
 
 - `src/nbtriage/capabilities.py::search_capability_index` 使用 SQLite FTS5 trigram 和标准化 lookup term 检索
   Runtime `CapabilityRecord`。
-- `src/nonebot_plugin_triage/capability_shadow.py::_augment_hits_with_annotation_terms` 将公开注释 name、独立
+- `src/nonebot_plugin_triage/capability/shadow.py::_augment_hits_with_annotation_terms` 将公开注释 name、独立
   search term 和 summary 加入同一个候选排序，并在 limit 前按 annotation capability ID 收敛 family。
 - `src/nbtriage/capability_annotations.py::validate_capability_search_term` 要求每项是一条独立短语，拒绝用顿号、
   逗号、分号或 `|` 把多个查询词拼成一项。

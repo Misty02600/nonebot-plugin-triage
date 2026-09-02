@@ -25,7 +25,7 @@ from nbtriage.public_guidance import (
     PublicGuidanceOutcome,
 )
 from nonebot_plugin_triage import handlers
-from nonebot_plugin_triage.capability_shadow import PublicCapabilitySearch
+from nonebot_plugin_triage.capability.shadow import PublicCapabilitySearch
 
 pytestmark = pytest.mark.usefixtures("isolate_live_semantic_transport")
 

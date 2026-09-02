@@ -9,7 +9,7 @@ from nbtriage.capability_annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
 )
-from nonebot_plugin_triage.capability_annotation_cache import (
+from nonebot_plugin_triage.capability.teaching.cache import (
     CapabilityAnnotationCacheError,
     CapabilityAnnotationCacheUnit,
     CapabilityAnnotationLastAttempt,

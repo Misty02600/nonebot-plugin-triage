@@ -42,24 +42,24 @@ from nbtriage.public_guidance import (
     PublicGuidanceFactField,
     PublicGuidanceRequest,
 )
-from nonebot_plugin_triage.capability_analysis_adapter import (
+from nonebot_plugin_triage.capability.discovery.registry import (
+    registered_public_alconna_capability_paths,
+)
+from nonebot_plugin_triage.capability.discovery.snapshot import build_capability_snapshot
+from nonebot_plugin_triage.capability.teaching.analysis import (
     deterministic_record_usages,
     plugin_source_revision_matches,
 )
-from nonebot_plugin_triage.capability_annotations import (
+from nonebot_plugin_triage.capability.teaching.annotations import (
     CapabilityAnnotationEvidenceValidator,
     CapabilityAnnotationService,
 )
-from nonebot_plugin_triage.capability_snapshot import build_capability_snapshot
-from nonebot_plugin_triage.capability_teaching_outputs import (
+from nonebot_plugin_triage.capability.teaching.outputs import (
     CapabilityTeachingOutputError,
     CapabilityTeachingOutputWriter,
     resolve_capability_teaching_data_dir,
 )
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
-from nonebot_plugin_triage.support_intake import (
-    registered_public_alconna_capability_paths,
-)
 
 _CAPABILITY_SHADOW_FILENAME = "capability-shadow.sqlite3"
 _CAPABILITY_ANNOTATION_DIRECTORY = "capability-annotations"

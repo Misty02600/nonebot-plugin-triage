@@ -54,26 +54,26 @@ from nbtriage.capability_model_adapter import (
     CapabilityModelAdapterError,
     CapabilityModelAdapterReason,
 )
-from nonebot_plugin_triage.capability_analysis_adapter import (
+from nonebot_plugin_triage.capability.teaching.analysis import (
     CapabilityAnalysisAdapterError,
     ParameterizedHandlerCodeIdentity,
 )
-from nonebot_plugin_triage.capability_annotation_cache import (
-    CapabilityAnnotationPluginCache,
-    read_capability_annotation_plugin_cache,
-)
-from nonebot_plugin_triage.capability_annotation_runtime import (
-    CapabilityAnnotationRuntimeConfigurationError,
-    create_capability_annotation_client_factory,
-)
-from nonebot_plugin_triage.capability_annotations import (
+from nonebot_plugin_triage.capability.teaching.annotations import (
     CapabilityAnnotationRefreshStatus,
     CapabilityAnnotationService,
     CapabilityTeachingUnitReason,
     CapabilityTeachingUnitStage,
     CapabilityTeachingUnitState,
 )
-from nonebot_plugin_triage.capability_teaching_outputs import CapabilityTeachingOutputWriter
+from nonebot_plugin_triage.capability.teaching.cache import (
+    CapabilityAnnotationPluginCache,
+    read_capability_annotation_plugin_cache,
+)
+from nonebot_plugin_triage.capability.teaching.outputs import CapabilityTeachingOutputWriter
+from nonebot_plugin_triage.capability.teaching.runtime import (
+    CapabilityAnnotationRuntimeConfigurationError,
+    create_capability_annotation_client_factory,
+)
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
 
@@ -694,7 +694,7 @@ async def test_runtime_snapshot_is_public_availability_gate(
         return _request(record.capability_id)
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         build_request,
     )
     service = CapabilityAnnotationService(
@@ -744,7 +744,7 @@ async def test_prepare_error_skips_only_the_invalid_teaching_unit(
             raise CapabilityAnalysisError("evidence units contain duplicate evidence IDs")
         return _request(record.capability_id)
 
-    import nonebot_plugin_triage.capability_annotations as capability_annotations_module
+    import nonebot_plugin_triage.capability.teaching.annotations as capability_annotations_module
 
     monkeypatch.setattr(
         capability_annotations_module, "build_capability_analysis_request", build_request
@@ -807,7 +807,7 @@ async def test_partial_refresh_activates_success_and_next_round_retries_only_fai
             return _output()
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         build_request,
     )
     service = CapabilityAnnotationService(
@@ -886,7 +886,7 @@ async def test_source_change_closes_only_its_plugin_and_discards_old_and_new_can
             return _output()
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         build_request,
     )
     service = CapabilityAnnotationService(
@@ -962,7 +962,7 @@ async def test_transport_failure_is_left_to_the_provider_sdk_retry_layer(
             return _output()
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         lambda record, _policy, **_kwargs: _request(record.capability_id),
     )
     service = CapabilityAnnotationService(
@@ -1000,7 +1000,7 @@ async def test_provider_identity_failure_stops_remaining_units_globally(
             )
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         lambda record, _policy, **_kwargs: _request(record.capability_id),
     )
     service = CapabilityAnnotationService(
@@ -1050,7 +1050,7 @@ async def test_common_plugin_source_failure_closes_plugin_before_other_units(
         raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         fail_shared_source,
     )
     service = CapabilityAnnotationService(
@@ -1091,7 +1091,7 @@ async def test_command_without_observed_handler_is_excluded_before_preparation(
         return _request(record.capability_id)
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         build_request,
     )
     service = CapabilityAnnotationService(
@@ -1133,7 +1133,7 @@ async def test_interrupted_refresh_reuses_completed_unpublished_unit(
         )
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         build_request,
     )
     cache_directory = tmp_path / "annotations"
@@ -1235,7 +1235,7 @@ async def test_casefold_colliding_plugin_files_fail_closed_without_blocking_othe
             return _output()
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         build_request,
     )
     cache_directory = tmp_path / "annotations"
@@ -1285,7 +1285,7 @@ async def test_generated_annotation_stays_pending_until_output_commit(
         )
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         build_request,
     )
     cache_directory = tmp_path / "annotations"
@@ -1327,7 +1327,7 @@ async def test_restart_does_not_reuse_shard_from_older_published_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import nonebot_plugin_triage.capability_annotations as capability_annotations_module
+    import nonebot_plugin_triage.capability.teaching.annotations as capability_annotations_module
 
     include_search_term = False
     requests: list[CapabilityAnalysisRequest] = []
@@ -1491,7 +1491,7 @@ async def test_scoped_commit_preserves_other_active_annotations_and_caches(
         )
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         build_request,
     )
     service = CapabilityAnnotationService(
@@ -1580,7 +1580,7 @@ async def test_final_evidence_recheck_discards_only_changed_unit_and_retries_it(
             )
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         build_request,
     )
     service = CapabilityAnnotationService(
@@ -1671,7 +1671,7 @@ async def test_global_model_contract_failure_does_not_publish_earlier_success(
             return _output()
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         build_request,
     )
     cache_directory = tmp_path / "annotations"
@@ -1748,7 +1748,7 @@ async def test_discarded_global_failure_is_retried_without_hiding_last_good(
             return _output()
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         build_request,
     )
     cache_directory = tmp_path / "annotations"
@@ -1824,7 +1824,7 @@ async def test_disabled_last_good_remains_disabled_when_regeneration_fails(
             return CapabilityAnalysisOutput(knowledge_enabled=False)
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         lambda record, _policy, **_kwargs: _request(record.capability_id),
     )
     service = CapabilityAnnotationService(
@@ -1871,7 +1871,7 @@ async def test_annotations_run_units_from_the_same_plugin_concurrently(
         )
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         build_request,
     )
     tracker = _PluginConcurrencyTracker()
@@ -1942,7 +1942,7 @@ async def test_analysis_starts_before_later_unit_finishes_preparation(
             return _output()
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         build_request,
     )
     service = CapabilityAnnotationService(
@@ -1982,7 +1982,7 @@ async def test_parameterized_group_closes_before_model_when_one_member_is_restri
         source_revision=f"sha256:{'1' * 64}",
     )
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.parameterized_handler_code_identity",
+        "nonebot_plugin_triage.capability.teaching.annotations.parameterized_handler_code_identity",
         lambda _record: identity,
     )
     analyzed = False
@@ -2020,7 +2020,7 @@ async def test_disabled_teaching_unit_is_counted_and_not_served(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_annotations.build_capability_analysis_request",
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
         lambda record, _policy, **_kwargs: _request(record.capability_id),
     )
     service = CapabilityAnnotationService(

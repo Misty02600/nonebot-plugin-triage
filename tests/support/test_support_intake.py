@@ -6,7 +6,7 @@ from typing import cast
 from arclet.alconna import Alconna, Args, CommandMeta, command_manager
 from nonebot.adapters import Bot, Event
 
-from nonebot_plugin_triage.support_intake import (
+from nonebot_plugin_triage.capability.discovery.registry import (
     collect_visible_alconna_capabilities,
     register_public_alconna_capability,
     unregister_public_alconna_capability,

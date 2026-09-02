@@ -59,7 +59,7 @@ from nbtriage.capabilities import (
     RecordState,
 )
 from nonebot_plugin_triage.bug_workflow_identity import BugWorkflowIdentity
-from nonebot_plugin_triage.capability_shadow import CapabilityShadowService
+from nonebot_plugin_triage.capability.shadow import CapabilityShadowService
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.task_model_runtime import (
     TaskModelRuntimeConfigurationError,

@@ -28,7 +28,7 @@ from nbtriage.capability_annotations import (
     CapabilityTeachingPermissionAlternative,
     CapabilityTeachingRequirement,
 )
-from nonebot_plugin_triage.capability_help_display import (
+from nonebot_plugin_triage.capability.teaching.help import (
     CapabilityHelpDisplayError,
     CapabilityHelpDisplayWriter,
 )

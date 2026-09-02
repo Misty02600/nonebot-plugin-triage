@@ -721,7 +721,7 @@ async def test_guidance_never_reads_restricted_shadow_or_checks_superuser(
         RecordState,
     )
     from nonebot_plugin_triage import handlers
-    from nonebot_plugin_triage.capability_shadow import CapabilityShadowService
+    from nonebot_plugin_triage.capability.shadow import CapabilityShadowService
 
     record = CapabilityRecord(
         capability_id="command:image",
@@ -800,7 +800,7 @@ async def test_public_shadow_capability_guidance_is_available_to_regular_user(
         SourceRevision,
     )
     from nonebot_plugin_triage import handlers
-    from nonebot_plugin_triage.capability_shadow import CapabilityShadowService
+    from nonebot_plugin_triage.capability.shadow import CapabilityShadowService
 
     module_name = "nonebot_plugin_triage"
     revision = "0" * 64
@@ -1290,7 +1290,7 @@ async def test_private_semantic_guidance_uses_common_routing(
     from nonebot.adapters.onebot.v11 import Bot as OneBotV11Bot
 
     from nonebot_plugin_triage import handlers
-    from nonebot_plugin_triage.support_intake import PublicCapability
+    from nonebot_plugin_triage.capability.discovery.registry import PublicCapability
 
     async def fixed_capabilities(*_: object, **__: object) -> tuple[PublicCapability, ...]:
         return (

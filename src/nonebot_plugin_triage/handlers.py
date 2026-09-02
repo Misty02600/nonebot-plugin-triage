@@ -72,7 +72,16 @@ from nonebot_plugin_triage.bug_workflow_orm import (
     BugWorkflowStoreError,
     ProblemActionError,
 )
-from nonebot_plugin_triage.capability_shadow import (
+from nonebot_plugin_triage.capability.discovery.registry import (
+    collect_visible_alconna_capabilities,
+    register_public_alconna_capability,
+)
+from nonebot_plugin_triage.capability.guidance import (
+    build_explicit_public_guidance_request,
+    format_capability_guidance,
+    matching_public_capabilities,
+)
+from nonebot_plugin_triage.capability.shadow import (
     build_public_guidance_request,
     format_public_capability_guidance,
 )
@@ -86,14 +95,7 @@ from nonebot_plugin_triage.product_contract import (
     TRIAGE_REQUEST_MAX_CHARS,
 )
 from nonebot_plugin_triage.runtime import create_plugin_runtime
-from nonebot_plugin_triage.support_intake import (
-    build_explicit_public_guidance_request,
-    collect_visible_alconna_capabilities,
-    format_capability_guidance,
-    matching_public_capabilities,
-    normalize_support_request,
-    register_public_alconna_capability,
-)
+from nonebot_plugin_triage.support_intake import normalize_support_request
 from nonebot_plugin_triage.support_responses import (
     finish_support_response,
     resolve_outgoing_receipt,

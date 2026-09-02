@@ -16,7 +16,7 @@ from nbtriage.capability_source_evidence import (
     fixed_permission_constraints,
 )
 from nbtriage.framework_semantics import PermissionSemanticProfile
-from nonebot_plugin_triage.capability_analysis_navigation import (
+from nonebot_plugin_triage.capability.teaching._navigation import (
     CapabilityAnalysisAdapterError,
     CapabilitySourceSliceCache,
     HandlerCodeIdentity,
@@ -33,7 +33,7 @@ from nonebot_plugin_triage.capability_analysis_navigation import (
     _target_plugin_locator,
     _validate_common_family_gate_definitions,
 )
-from nonebot_plugin_triage.capability_analysis_projection import (
+from nonebot_plugin_triage.capability.teaching._projection import (
     _family_fixed_constraints,
     _family_gate_candidates,
     _family_gate_projection,
@@ -47,7 +47,7 @@ from nonebot_plugin_triage.capability_analysis_projection import (
     _unresolved_gate_symbols,
     deterministic_record_usages,
 )
-from nonebot_plugin_triage.capability_analysis_source import (
+from nonebot_plugin_triage.capability.teaching._source import (
     AnalysisSourcePolicy,
     ParameterizedHandlerCodeIdentity,
     _analysis_targets,

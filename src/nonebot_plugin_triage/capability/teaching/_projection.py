@@ -24,11 +24,11 @@ from nbtriage.capability_source_evidence import (
     StructuralSymbolKind,
     fixed_permission_constraints,
 )
-from nonebot_plugin_triage.capability_analysis_navigation import (
+from nonebot_plugin_triage.capability.teaching._navigation import (
     CapabilityAnalysisAdapterError,
     _source_location_key,
 )
-from nonebot_plugin_triage.capability_analysis_source import _claim_values
+from nonebot_plugin_triage.capability.teaching._source import _claim_values
 
 _MAX_EVIDENCE_CHARS = 8_000
 
@@ -860,7 +860,7 @@ def _command_compact(record: CapabilityRecord) -> bool:
     values = _claim_values(record, "command.compact", evidence_kind="matcher_source")
     if any(not isinstance(value, bool) for value in values) or len(set(values)) > 1:
         raise CapabilityAnalysisAdapterError("capability has conflicting command compact facts")
-    return values[0] if values else False
+    return values[0] is True if values else False
 
 
 def _command_path_body(

@@ -4,15 +4,15 @@ from nonebot_plugin_alconna import SupportAdapterModule
 
 require("nonebot_plugin_orm")
 
+from nonebot_plugin_triage.capability.discovery.registry import (  # noqa: E402
+    CapabilityVisibility,
+    register_public_alconna_capability,
+    unregister_public_alconna_capability,
+)
 from nonebot_plugin_triage.config import NBTriageConfig  # noqa: E402
 from nonebot_plugin_triage.product_contract import (  # noqa: E402
     QUERY_COMMAND,
     TRIAGE_COMMAND,
-)
-from nonebot_plugin_triage.support_intake import (  # noqa: E402
-    CapabilityVisibility,
-    register_public_alconna_capability,
-    unregister_public_alconna_capability,
 )
 
 plugin_config = get_plugin_config(NBTriageConfig)

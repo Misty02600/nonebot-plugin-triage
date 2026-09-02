@@ -41,11 +41,7 @@ from nbtriage.capability_deployment import (
     CapabilityDeployment,
     build_capability_deployment,
 )
-from nonebot_plugin_triage.capability_annotations import (
-    CapabilityAnnotationRefreshStatus,
-    CapabilityAnnotationService,
-)
-from nonebot_plugin_triage.capability_shadow import (
+from nonebot_plugin_triage.capability.shadow import (
     CapabilityShadowService,
     MaintainerCapabilitySearch,
     PublicCapabilitySearch,
@@ -54,7 +50,11 @@ from nonebot_plugin_triage.capability_shadow import (
     format_public_capability_guidance,
     register_capability_shadow,
 )
-from nonebot_plugin_triage.capability_teaching_outputs import (
+from nonebot_plugin_triage.capability.teaching.annotations import (
+    CapabilityAnnotationRefreshStatus,
+    CapabilityAnnotationService,
+)
+from nonebot_plugin_triage.capability.teaching.outputs import (
     CapabilityTeachingOutputError,
     CapabilityTeachingOutputWriter,
 )
@@ -198,7 +198,7 @@ def test_default_shadow_uses_localstore_cache_and_builds_only_on_startup(
 async def test_localstore_resolution_failure_is_contained_on_startup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import nonebot_plugin_triage.capability_shadow as capability_shadow_module
+    import nonebot_plugin_triage.capability.shadow as capability_shadow_module
 
     callbacks: list[Callable[[], object]] = []
     logger = _RecordingLogger()
@@ -423,7 +423,7 @@ async def test_deployment_failure_does_not_block_snapshot_or_expose_details(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import nonebot_plugin_triage.capability_shadow as capability_shadow_module
+    import nonebot_plugin_triage.capability.shadow as capability_shadow_module
 
     private_text = "PRIVATE_PROJECT_PATH_OR_CONFIG"
 
@@ -861,7 +861,7 @@ def test_runtime_family_enumeration_stops_after_three_members(
     member_count: int,
     expected_count: int,
 ) -> None:
-    import nonebot_plugin_triage.capability_shadow as capability_shadow_module
+    import nonebot_plugin_triage.capability.shadow as capability_shadow_module
 
     records = tuple(
         CapabilityRecord(
@@ -900,7 +900,7 @@ def test_runtime_family_enumeration_stops_after_three_members(
 
 
 def test_family_search_candidates_are_deduplicated_without_merging_plugins() -> None:
-    import nonebot_plugin_triage.capability_shadow as capability_shadow_module
+    import nonebot_plugin_triage.capability.shadow as capability_shadow_module
 
     records = tuple(
         CapabilityRecord(
@@ -960,7 +960,7 @@ def test_family_search_candidates_are_deduplicated_without_merging_plugins() -> 
 
 
 def test_annotation_terms_join_runtime_hits_in_weighted_order() -> None:
-    import nonebot_plugin_triage.capability_shadow as capability_shadow_module
+    import nonebot_plugin_triage.capability.shadow as capability_shadow_module
 
     records = tuple(
         CapabilityRecord(
@@ -1234,7 +1234,7 @@ async def test_maintainer_search_failure_hides_exception_details(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import nonebot_plugin_triage.capability_shadow as capability_shadow_module
+    import nonebot_plugin_triage.capability.shadow as capability_shadow_module
 
     service = _service(
         tmp_path / "capabilities.sqlite3",
@@ -1330,7 +1330,7 @@ async def test_failed_refresh_preserves_last_complete_index_without_exception_te
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import nonebot_plugin_triage.capability_shadow as capability_shadow_module
+    import nonebot_plugin_triage.capability.shadow as capability_shadow_module
 
     path = tmp_path / "capabilities.sqlite3"
     first = _service(

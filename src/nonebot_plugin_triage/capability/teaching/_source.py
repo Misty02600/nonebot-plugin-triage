@@ -30,7 +30,7 @@ from nbtriage.framework_semantics import (
     uninfo_permission_profile,
     uninfo_session_field_profile,
 )
-from nonebot_plugin_triage.capability_analysis_navigation import (
+from nonebot_plugin_triage.capability.teaching._navigation import (
     _MAX_FUNCTION_CHARS,
     _MAX_MODULES,
     CapabilityAnalysisAdapterError,

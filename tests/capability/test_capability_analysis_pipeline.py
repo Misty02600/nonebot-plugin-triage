@@ -21,10 +21,10 @@ from nbtriage.capability_analysis import (
     SemanticClaim,
     SemanticClaimKind,
 )
-from nonebot_plugin_triage.capability_analysis_adapter import (
+from nonebot_plugin_triage.capability.discovery.snapshot import build_capability_snapshot
+from nonebot_plugin_triage.capability.teaching.analysis import (
     build_capability_analysis_request,
 )
-from nonebot_plugin_triage.capability_snapshot import build_capability_snapshot
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
 
 

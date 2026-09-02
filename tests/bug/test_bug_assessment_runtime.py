@@ -43,7 +43,7 @@ from nonebot_plugin_triage.bug_assessment_runtime import (
     UnavailableBugAssessmentService,
     create_bug_assessment_agent_factory,
 )
-from nonebot_plugin_triage.capability_shadow import (
+from nonebot_plugin_triage.capability.shadow import (
     CapabilityShadowService,
     PublicCapabilitySearch,
 )

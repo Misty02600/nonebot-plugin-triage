@@ -20,9 +20,9 @@
 
 - 领域与注释合同：`src/nbtriage/capability_analysis.py`、`src/nbtriage/capability_annotations.py`
 - 模型 Prompt 与结构化输出：`src/nbtriage/capability_model_adapter.py`
-- Runtime / 源码 Evidence 适配：`src/nonebot_plugin_triage/capability_analysis_adapter.py`
-- Help 与 Answer 投影：`src/nonebot_plugin_triage/capability_help_display.py`、
-  `src/nonebot_plugin_triage/capability_teaching_outputs.py`
+- Runtime / 源码 Evidence 适配：`src/nonebot_plugin_triage/capability/teaching/analysis.py`
+- Help 与 Answer 投影：`src/nonebot_plugin_triage/capability/teaching/help.py`、
+  `src/nonebot_plugin_triage/capability/teaching/outputs.py`
 - 评测器：`tools/nbtriage_maintainer/capability_teaching_evaluation.py`
 - 冻结 fixture：`evals/datasets/fixtures/capability-teaching-v3-forward-heldout.json`
 - 本地报告：`reports/capability-teaching-v3-forward-heldout-20260816.json`，属于忽略的本地工件，不发布。

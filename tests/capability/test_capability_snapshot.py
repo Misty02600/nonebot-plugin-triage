@@ -35,7 +35,7 @@ from nbtriage.capabilities import (
     PlatformScopeKind,
     RecordState,
 )
-from nonebot_plugin_triage.capability_snapshot import build_capability_snapshot
+from nonebot_plugin_triage.capability.discovery.snapshot import build_capability_snapshot
 
 
 @pytest.fixture

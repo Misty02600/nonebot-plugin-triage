@@ -1614,7 +1614,7 @@ def _to_core_snapshot(collected: _CollectedSnapshot) -> CapabilitySnapshot:
             source_id=collector_source_id,
             kind="runtime_collector",
             revision="1",
-            locator="nonebot_plugin_triage.capability_snapshot",
+            locator="nonebot_plugin_triage.capability.discovery.snapshot",
         )
         for error in generic_errors:
             code = f"collector_{hashlib.sha256(error.encode()).hexdigest()[:16]}"

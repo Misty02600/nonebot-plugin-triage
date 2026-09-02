@@ -67,7 +67,7 @@ from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_SEMANTIC_API_FAMILY,
 )
 from nbtriage.runtime_observations import RuntimeObservationBuffer
-from nonebot_plugin_triage.capability_shadow import CapabilityShadowService
+from nonebot_plugin_triage.capability.shadow import CapabilityShadowService
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.knowledge_pack_runtime import KnowledgePackService
 from nonebot_plugin_triage.task_model_runtime import (

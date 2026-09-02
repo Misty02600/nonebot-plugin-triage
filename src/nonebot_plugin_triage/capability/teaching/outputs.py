@@ -16,11 +16,11 @@ from nonebot import require
 
 from nbtriage.capabilities import CapabilityRecord, CapabilitySnapshot, ClaimBasis
 from nbtriage.capability_annotations import CapabilityTeachingEntry
-from nonebot_plugin_triage.capability_annotations import (
+from nonebot_plugin_triage.capability.teaching.annotations import (
     CapabilityAnnotationRefreshStatus,
     CapabilityTeachingUnitState,
 )
-from nonebot_plugin_triage.capability_help_display import (
+from nonebot_plugin_triage.capability.teaching.help import (
     CapabilityAnnotationLookup,
     CapabilityHelpDisplayPlugin,
     build_capability_help_displays,

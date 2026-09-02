@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-import nonebot_plugin_triage.capability_analysis_navigation as capability_analysis_navigation
+import nonebot_plugin_triage.capability.teaching._navigation as capability_analysis_navigation
 from nbtriage.capabilities import (
     CapabilityRecord,
     Claim,
@@ -31,7 +31,7 @@ from nbtriage.capability_source_evidence import build_capability_source_evidence
 from nbtriage.readonly_tools import (
     ReadOnlyRoot,
 )
-from nonebot_plugin_triage.capability_analysis_adapter import (
+from nonebot_plugin_triage.capability.teaching.analysis import (
     CapabilityAnalysisAdapterError,
     build_capability_analysis_request,
     build_parameterized_family_analysis_request,
@@ -570,7 +570,7 @@ async def handle():
     dependency_module = sys.modules.pop(package_name)
     monkeypatch.setitem(sys.modules, package_name, dependency_module)
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_navigation.python_dependency_navigation_roots",
+        "nonebot_plugin_triage.capability.teaching._navigation.python_dependency_navigation_roots",
         lambda: (dependency_root,),
     )
 
@@ -621,7 +621,7 @@ async def handle():
     dependency_module = sys.modules.pop(package_name)
     monkeypatch.setitem(sys.modules, package_name, dependency_module)
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_navigation.python_dependency_navigation_roots",
+        "nonebot_plugin_triage.capability.teaching._navigation.python_dependency_navigation_roots",
         lambda: (dependency_root,),
     )
 
@@ -2381,7 +2381,7 @@ matcher = on_command("secure", permission=permissions.query_permission, handlers
     monkeypatch.setitem(sys.modules, package_name, package)
     exec(compile(package_source, str(package_path), "exec"), package.__dict__)
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_navigation.python_dependency_navigation_roots",
+        "nonebot_plugin_triage.capability.teaching._navigation.python_dependency_navigation_roots",
         lambda: (dependency_root,),
     )
 
@@ -2425,7 +2425,7 @@ async def handle():
 """
     module = _loaded_module(tmp_path, monkeypatch, source)
     source_path = Path(module.__dict__["__file__"])
-    import nonebot_plugin_triage.capability_analysis_adapter as adapter_module
+    import nonebot_plugin_triage.capability.teaching.analysis as adapter_module
 
     resolve_targets = adapter_module._resolve_analysis_targets
     changed = False

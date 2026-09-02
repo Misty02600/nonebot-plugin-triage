@@ -34,15 +34,15 @@ from nonebot_plugin_triage.bug_assessment_runtime import (
 )
 from nonebot_plugin_triage.bug_workflow_identity import BugWorkflowIdentity
 from nonebot_plugin_triage.bug_workflow_orm import NoneBotORMBugWorkflowRepository
-from nonebot_plugin_triage.capability_analysis_tools import CapabilityTeachingToolProvider
-from nonebot_plugin_triage.capability_annotation_runtime import (
+from nonebot_plugin_triage.capability.shadow import (
+    CapabilityShadowService,
+    register_capability_shadow,
+)
+from nonebot_plugin_triage.capability.teaching._tools import CapabilityTeachingToolProvider
+from nonebot_plugin_triage.capability.teaching.runtime import (
     CapabilityAnnotationRuntimeConfigurationError,
     capability_annotation_analysis_revision,
     create_capability_annotation_client_factory,
-)
-from nonebot_plugin_triage.capability_shadow import (
-    CapabilityShadowService,
-    register_capability_shadow,
 )
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy

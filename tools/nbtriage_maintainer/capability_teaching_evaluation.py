@@ -1446,7 +1446,7 @@ def _analysis_adapter_runtime() -> Iterator[_AnalysisAdapterRuntime]:
                 "capability analysis adapter module state is inconsistent"
             )
         package_root = Path(__file__).resolve().parents[2] / "src" / package_name
-        if not (package_root / "capability_analysis_adapter.py").is_file():
+        if not (package_root / "capability" / "teaching" / "analysis.py").is_file():
             raise CapabilityTeachingEvaluationError(
                 "capability analysis adapter source is unavailable"
             )
@@ -1461,7 +1461,9 @@ def _analysis_adapter_runtime() -> Iterator[_AnalysisAdapterRuntime]:
 
     try:
         try:
-            adapter_module = importlib.import_module(f"{package_name}.capability_analysis_adapter")
+            adapter_module = importlib.import_module(
+                f"{package_name}.capability.teaching.analysis"
+            )
             config_module = importlib.import_module(f"{package_name}.config_policy")
         except Exception as error:
             raise CapabilityTeachingEvaluationError(
