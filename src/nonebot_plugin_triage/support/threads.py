@@ -8,7 +8,7 @@ from nonebot.message import run_postprocessor as register_run_postprocessor
 from nonebot.typing import T_State
 from nonebot_plugin_alconna import Target
 
-from nbtriage.support_threads import (
+from nbtriage.support.threads import (
     OutboundThreadReferenceIndex,
     SupportThreadTurnCoordinator,
     ThreadKind,

@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from nbtriage.support_threads import (
+from nbtriage.support.threads import (
     InMemorySupportThreadStore,
     OutboundThreadReferenceIndex,
     SupportThreadError,

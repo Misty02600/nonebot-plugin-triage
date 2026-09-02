@@ -80,7 +80,7 @@ Alconna / UniSeg 已经提供跨适配器的命令、`OriginalUniMsg`、结构�
 - `src/nonebot_plugin_triage/handlers.py` 的 Alconna `triage` Matcher 是唯一支持入口；它在同一 handler 中
   解析可选 Reply、尝试恢复 Thread，再进入新请求或续问分支。轻量 before-rule 与消息 Provider 只优化
   Alconna 的解析时机，不取代 Alconna 命令 Matcher 或 UniSeg Reply API。
-- `src/nonebot_plugin_triage/thread_references.py` 负责把通用 Reply 和当前 Target / actor 转为 HMAC Thread
+- `src/nonebot_plugin_triage/support/threads.py` 负责把通用 Reply 和当前 Target / actor 转为 HMAC Thread
   查询；它不承担命令匹配，也不读取 Reply 正文。
 - `src/nonebot_plugin_triage/onebot_v11_references.py` 只在成功群发送后把返回的 message ID 绑定到 Thread；
   入站 Reply 由 Alconna / UniSeg 统一注入，不再注册 OneBot 专用续问入口。

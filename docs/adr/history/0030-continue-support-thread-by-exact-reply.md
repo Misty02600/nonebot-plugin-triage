@@ -65,8 +65,8 @@ Reply”时，这种 Matcher 才适合作为窄续问入口。不同适配器提
 ## 落实与确认
 
 - 2026-08-12：免命令续问实现随后由 ADR-0031 收回；以下条目保留为本 ADR 当时的落实记录。
-- `src/nbtriage/support_threads.py` 提供不保存正文或平台身份的有界 Thread store，以及 latest-only 的 HMAC
-  出站引用索引；`src/nonebot_plugin_triage/thread_references.py` 负责适配层引用解析与失败关闭。
+- `src/nbtriage/support/threads.py` 提供不保存正文或平台身份的有界 Thread store，以及 latest-only 的 HMAC
+  出站引用索引；`src/nonebot_plugin_triage/support/threads.py` 负责适配层引用解析与失败关闭。
 - `src/nonebot_plugin_triage/handlers.py` 注册优先级为首次入口减一的常驻 `on_message` Matcher。Rule 只解析
   已知引用并读取 Thread；命中后 handler 才重新限流、分类和回答，且每轮都正常结束。
 - `src/nonebot_plugin_triage/onebot_v11_references.py` 已实现 OneBot V11 群聊的轻量入站 Reply Provider，并在

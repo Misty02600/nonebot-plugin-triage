@@ -39,7 +39,7 @@ from nbtriage.opencode_go_contracts import (
 )
 from nbtriage.provider_http_diagnostics import provider_http_client
 from nbtriage.public_guidance_model_adapter import PydanticAIPublicGuidanceClient
-from nbtriage.support_semantic_model_adapter import PydanticAISupportSemanticClient
+from nbtriage.support._model_adapter import PydanticAISupportSemanticClient
 
 OPENCODE_GO_MODEL_PROFILE = OpenAIModelProfile(
     supports_tools=True,

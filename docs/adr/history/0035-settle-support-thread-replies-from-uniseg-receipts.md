@@ -76,11 +76,11 @@ OneBot 出站 Provider 还承担另一项独立职责：把 Matcher 内 Bot 输�
 
 ## 落实与确认
 
-- `src/nonebot_plugin_triage/support_responses.py` 严格解析 UniSeg Receipt，并在发送边界结算或失败关闭
+- `src/nonebot_plugin_triage/support/responses.py` 严格解析 UniSeg Receipt，并在发送边界结算或失败关闭
   Thread binding。
 - `src/nonebot_plugin_triage/handlers.py` 让所有可续接教学 / 澄清回答经过统一发送 helper；终局回答继续
   直接结束，不建立新续接点。
-- `src/nonebot_plugin_triage/thread_references.py` 提供统一 settle / fail；
+- `src/nonebot_plugin_triage/support/threads.py` 提供统一 settle / fail；
   `src/nonebot_plugin_triage/onebot_v11_references.py` 只保留运行证据 correlation。
 - 单元与事件模型合同测试覆盖 OneBot / Discord 合法回执、Snowflake 规范化、频道 / 私聊 Target、Discord
   Forward 排除、错 Bot / Target、多结果和畸形平台对象；OneBot Matcher 集成测试另覆盖发送异常 / 取消、

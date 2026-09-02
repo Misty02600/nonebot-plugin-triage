@@ -18,7 +18,7 @@ from nbtriage.live_trials import LiveTrialService
 from nbtriage.message_references import PlatformMessageReferenceIndex
 from nbtriage.rate_limits import KeyedRateLimiter
 from nbtriage.runtime_observations import RuntimeObservationBuffer
-from nbtriage.support_threads import (
+from nbtriage.support.threads import (
     InMemorySupportThreadStore,
     OutboundThreadReferenceIndex,
     SupportThreadTurnCoordinator,
@@ -52,17 +52,17 @@ from nonebot_plugin_triage.knowledge_pack_runtime import (
 )
 from nonebot_plugin_triage.live_reports import LiveReportService
 from nonebot_plugin_triage.nonebot_runtime import NoneBotRuntimeObserver
-from nonebot_plugin_triage.public_guidance import PublicGuidanceServiceLike
-from nonebot_plugin_triage.semantic_assessment import (
+from nonebot_plugin_triage.support.guidance import PublicGuidanceServiceLike
+from nonebot_plugin_triage.support.semantic import (
     SemanticAssessmentService,
     SemanticAssessmentServiceLike,
-    create_semantic_assessment_service,
+)
+from nonebot_plugin_triage.support.semantic_runtime import create_semantic_assessment_service
+from nonebot_plugin_triage.support.threads import (
+    SupportThreadReferenceBridge,
 )
 from nonebot_plugin_triage.task_model_runtime import (
     is_opencode_go_profile,
-)
-from nonebot_plugin_triage.thread_references import (
-    SupportThreadReferenceBridge,
 )
 from nonebot_plugin_triage.trials import create_trial_service
 from nonebot_plugin_triage.universal_references import UniversalReferenceBridge
@@ -94,7 +94,7 @@ def _create_semantic_assessment_service(
 
 
 def _create_public_guidance_service(config: NBTriageConfig) -> PublicGuidanceServiceLike:
-    from nonebot_plugin_triage.public_guidance_runtime import create_public_guidance_service
+    from nonebot_plugin_triage.support.guidance_runtime import create_public_guidance_service
 
     return create_public_guidance_service(config)
 

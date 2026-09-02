@@ -14,11 +14,15 @@ from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_SEMANTIC_TASK,
     OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS,
 )
-from nbtriage.support_semantic_model_adapter import SUPPORT_SEMANTIC_PROMPT_ID
-from nbtriage.support_semantics import SUPPORT_SEMANTIC_SCHEMA_VERSION
+from nbtriage.support._model_adapter import SUPPORT_SEMANTIC_PROMPT_ID
+from nbtriage.support.semantics import SUPPORT_SEMANTIC_SCHEMA_VERSION
 from nbtriage.task_model_settings import ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
 from nonebot_plugin_triage.config import NBTriageConfig
-from nonebot_plugin_triage.semantic_assessment import SupportSemanticAssessmentClient
+from nonebot_plugin_triage.support.semantic import (
+    SemanticAssessmentService,
+    SupportSemanticAssessmentClient,
+    create_unavailable_semantic_assessment_service,
+)
 from nonebot_plugin_triage.task_model_runtime import (
     TaskModelRuntimeConfigurationError,
     create_task_model_binding,
@@ -85,6 +89,25 @@ class SemanticRuntimeConfigurationError(RuntimeError):
     pass
 
 
+def create_semantic_assessment_service(
+    config: NBTriageConfig,
+) -> SemanticAssessmentService:
+    if config.nbtriage_model_name is None:
+        return create_unavailable_semantic_assessment_service(
+            timeout_seconds=config.nbtriage_model_timeout_seconds
+        )
+    try:
+        client_factory = create_semantic_client_factory(config)
+    except SemanticRuntimeConfigurationError:
+        return create_unavailable_semantic_assessment_service(
+            timeout_seconds=config.nbtriage_model_timeout_seconds
+        )
+    return SemanticAssessmentService(
+        client_factory,
+        timeout_seconds=config.nbtriage_model_timeout_seconds,
+    )
+
+
 def create_opencode_go_semantic_client_factory(
     config: NBTriageConfig,
     *,
@@ -134,7 +157,7 @@ def create_semantic_client_factory(
         )
 
     def create_client() -> SupportSemanticAssessmentClient:
-        from nbtriage.support_semantic_model_adapter import (
+        from nbtriage.support._model_adapter import (
             PydanticAISupportSemanticClient,
         )
 
@@ -208,5 +231,6 @@ __all__ = (
     "SemanticRuntimeConfigurationError",
     "SemanticTaskQualification",
     "create_opencode_go_semantic_client_factory",
+    "create_semantic_assessment_service",
     "create_semantic_client_factory",
 )

@@ -72,7 +72,7 @@ def _inject_semantic_assessment(
     reported_observation: bool = False,
     status: str | None = None,
 ) -> None:
-    from nbtriage.support_semantics import (
+    from nbtriage.support.semantics import (
         SUPPORT_SEMANTIC_SCHEMA_VERSION,
         SupportAssessmentExecutionStatus,
         SupportAssessmentOutcome,
@@ -117,13 +117,13 @@ def _inject_semantic_assessment(
 
 
 def _install_isolated_support_threads(monkeypatch: pytest.MonkeyPatch) -> Any:
-    from nbtriage.support_threads import (
+    from nbtriage.support.threads import (
         InMemorySupportThreadStore,
         OutboundThreadReferenceIndex,
         SupportThreadTurnCoordinator,
     )
     from nonebot_plugin_triage import handlers
-    from nonebot_plugin_triage.thread_references import SupportThreadReferenceBridge
+    from nonebot_plugin_triage.support.threads import SupportThreadReferenceBridge
 
     store = InMemorySupportThreadStore(
         max_entries=32,

@@ -12,7 +12,7 @@ from nbtriage.public_guidance import (
     PublicGuidanceFactField,
     PublicGuidanceRequest,
 )
-from nonebot_plugin_triage.public_guidance import PublicGuidanceService
+from nonebot_plugin_triage.support.guidance import PublicGuidanceService
 
 
 def _request(question: str = "搜图怎么使用？") -> PublicGuidanceRequest:

@@ -28,7 +28,7 @@ from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
 )
 from nbtriage.rag import B1Error
-from nbtriage.support_semantic_model_adapter import (
+from nbtriage.support._model_adapter import (
     PydanticAISupportSemanticClient,
 )
 from tools.nbtriage_maintainer.agent_evaluation import (

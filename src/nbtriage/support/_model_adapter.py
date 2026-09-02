@@ -10,7 +10,7 @@ from pydantic_ai.settings import ModelSettings, merge_model_settings
 
 from nbtriage.agent_telemetry import current_agent_instrumentation
 from nbtriage.model_run_diagnostics import last_model_response
-from nbtriage.support_semantics import (
+from nbtriage.support.semantics import (
     SupportAssessmentRequest,
     SupportSemanticAssessment,
     SupportSemanticContractError,

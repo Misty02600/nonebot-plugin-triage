@@ -6,7 +6,7 @@ from threading import Lock
 from typing import NoReturn
 from weakref import WeakSet
 
-from nbtriage.support_semantics import (
+from nbtriage.support.semantics import (
     SupportAssessmentExecutionStatus,
     SupportAssessmentOutcome,
     SupportAssessmentStatus,

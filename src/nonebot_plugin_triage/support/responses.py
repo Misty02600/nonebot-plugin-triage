@@ -10,7 +10,7 @@ from nonebot_plugin_alconna import Reply, SupportAdapter, Target, UniMessage, ge
 from nonebot_plugin_alconna.matcher import AlconnaMatcher
 from nonebot_plugin_alconna.uniseg import Receipt
 
-from nonebot_plugin_triage.thread_references import (
+from nonebot_plugin_triage.support.threads import (
     OutgoingThreadBinding,
     SupportThreadReferenceBridge,
     is_scope_supplement_binding,

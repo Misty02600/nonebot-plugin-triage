@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Protocol
 
 from nbtriage.baselines import SECRET_PATTERNS
-from nbtriage.support_semantics import (
+from nbtriage.support.semantics import (
     SupportAssessmentExecutionStatus,
     SupportAssessmentOutcome,
     SupportAssessmentRequest,
@@ -15,7 +15,6 @@ from nbtriage.support_semantics import (
     parse_support_assessment_request,
     parse_support_semantic_assessment,
 )
-from nonebot_plugin_triage.config import NBTriageConfig
 
 _CODE_IDENTIFIER_SECRET_VALUE = re.compile(
     r"^(?:self|token|request|context|ctx|config|settings)\."
@@ -89,30 +88,6 @@ def create_unavailable_semantic_assessment_service(
     return SemanticAssessmentService(None, timeout_seconds=timeout_seconds)
 
 
-def create_semantic_assessment_service(
-    config: NBTriageConfig,
-) -> SemanticAssessmentService:
-    if config.nbtriage_model_name is None:
-        return create_unavailable_semantic_assessment_service(
-            timeout_seconds=config.nbtriage_model_timeout_seconds
-        )
-    from nonebot_plugin_triage.semantic_runtime import (
-        SemanticRuntimeConfigurationError,
-        create_semantic_client_factory,
-    )
-
-    try:
-        client_factory = create_semantic_client_factory(config)
-    except SemanticRuntimeConfigurationError:
-        return create_unavailable_semantic_assessment_service(
-            timeout_seconds=config.nbtriage_model_timeout_seconds
-        )
-    return SemanticAssessmentService(
-        client_factory,
-        timeout_seconds=config.nbtriage_model_timeout_seconds,
-    )
-
-
 def _failed(status: SupportAssessmentExecutionStatus) -> SupportAssessmentOutcome:
     return SupportAssessmentOutcome(
         execution_status=status,
@@ -140,6 +115,5 @@ __all__ = (
     "SupportSemanticAssessmentClient",
     "SupportSemanticAssessmentClientFactory",
     "contains_credential",
-    "create_semantic_assessment_service",
     "create_unavailable_semantic_assessment_service",
 )

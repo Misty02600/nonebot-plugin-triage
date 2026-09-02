@@ -13,7 +13,7 @@ from nonebot_plugin_alconna.matcher import AlconnaMatcher
 from nonebot_plugin_alconna.uniseg import Receipt, UniMessage
 from nonebot_plugin_alconna.uniseg.adapters.onebot11.exporter import Onebot11MessageExporter
 
-from nbtriage.support_threads import (
+from nbtriage.support.threads import (
     InMemorySupportThreadStore,
     OutboundThreadReferenceIndex,
     SupportThreadTurnCoordinator,
@@ -21,11 +21,11 @@ from nbtriage.support_threads import (
     ThreadStatus,
     TurnClaimStatus,
 )
-from nonebot_plugin_triage.support_responses import (
+from nonebot_plugin_triage.support.responses import (
     finish_support_response,
     resolve_outgoing_receipt,
 )
-from nonebot_plugin_triage.thread_references import (
+from nonebot_plugin_triage.support.threads import (
     InitialThreadBinding,
     PreparedScopeSupplementBinding,
     SupportThreadReferenceBridge,

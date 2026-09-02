@@ -58,9 +58,9 @@ Reply 引用、再读取 Thread，随后独立完成检索、更新上下文、�
 
 ## 落实与确认
 
-- `src/nbtriage/support_threads.py` 的 `SupportThreadTurnCoordinator` 负责一次性 Claim、单 Thread lease、
+- `src/nbtriage/support/threads.py` 的 `SupportThreadTurnCoordinator` 负责一次性 Claim、单 Thread lease、
   原子 complete 与失败关闭；领域测试覆盖作用域隔离、TTL、错误 token 和并发争用。
-- `src/nonebot_plugin_triage/thread_references.py` 把 Target 转为协调器 scope，并用 Matcher state 携带首轮绑定或
+- `src/nonebot_plugin_triage/support/threads.py` 把 Target 转为协调器 scope，并用 Matcher state 携带首轮绑定或
   续问 lease；run postprocessor 兜底关闭未提交的处理轮。
 - `src/nonebot_plugin_triage/onebot_v11_references.py` 只在成功群发送取得 message ID 后提交新的续接点；API
   异常、畸形结果和未消费 state 都失败关闭。

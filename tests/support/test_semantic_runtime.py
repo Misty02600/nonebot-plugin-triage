@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from nonebot_plugin_triage.config import NBTriageConfig
-from nonebot_plugin_triage.semantic_runtime import (
+from nonebot_plugin_triage.support.semantic_runtime import (
     ALIBABA_QWEN36_FLASH_SEMANTIC_QUALIFICATION,
     OPENCODE_GO_SEMANTIC_QUALIFICATION,
     QUALIFIED_SEMANTIC_TASKS,

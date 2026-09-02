@@ -3,7 +3,7 @@ from typing import TypedDict
 
 import pytest
 
-from nbtriage.support_threads import (
+from nbtriage.support.threads import (
     InMemorySupportThreadStore,
     OutboundThreadReferenceIndex,
     SupportThreadError,

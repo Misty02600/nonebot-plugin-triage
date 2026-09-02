@@ -93,13 +93,13 @@ Checkpoint 工作区；Pydantic AI Agent 首切只读取 Capability Shadow 的�
 
 | 边界 | 实现 |
 |---|---|
-| `triage` Matcher、每轮 assessment / routing 与公开能力组件 | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support_intake.py`、`src/nonebot_plugin_triage/runtime.py` |
-| 版本化 assessment 请求投影、需求信号与失败状态合同 | `src/nbtriage/support_semantics.py` |
-| OpenCode Go `Agent(output_type=SupportSemanticAssessment)` 单 output-tool client、一次性失败关闭与确定性 action 路由；旧 `LiveReportRequest` 授权仅为当前 live semantic 不可达的兼容领域能力 | `src/nbtriage/opencode_go_semantic_adapter.py`、`src/nbtriage/support_semantic_model_adapter.py`、`src/nonebot_plugin_triage/semantic_runtime.py`、`src/nonebot_plugin_triage/semantic_assessment.py`、`src/nbtriage/support_routing.py` |
+| `triage` Matcher、每轮 assessment / routing 与公开能力组件 | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support/intake.py`、`src/nonebot_plugin_triage/runtime.py` |
+| 版本化 assessment 请求投影、需求信号与失败状态合同 | `src/nbtriage/support/semantics.py` |
+| OpenCode Go `Agent(output_type=SupportSemanticAssessment)` 单 output-tool client、一次性失败关闭与确定性 action 路由；旧 `LiveReportRequest` 授权仅为当前 live semantic 不可达的兼容领域能力 | `src/nbtriage/opencode_go_semantic_adapter.py`、`src/nbtriage/support/_model_adapter.py`、`src/nonebot_plugin_triage/support/semantic_runtime.py`、`src/nonebot_plugin_triage/support/semantic.py`、`src/nbtriage/support/routing.py` |
 | SUPERUSER 鉴权后的长期 Behavior Thread、LangGraph Checkpoint、只读 Agent 与 Capability Shadow 安全证据 | `src/nbtriage/behavior_exploration.py`、`src/nbtriage/behavior_agent.py`、`src/nonebot_plugin_triage/behavior_exploration_runtime.py`、`src/nonebot_plugin_triage/handlers.py` |
 | 通用入站引用与 Target scope | `src/nonebot_plugin_triage/universal_references.py` |
 | OneBot V11 运行证据出站引用 Provider | `src/nonebot_plugin_triage/onebot_v11_references.py` |
-| scope Thread、一次补充与发送成功结算 | `src/nbtriage/support_threads.py`、`src/nonebot_plugin_triage/thread_references.py`、`src/nonebot_plugin_triage/support_responses.py` |
+| scope Thread、一次补充与发送成功结算 | `src/nbtriage/support/threads.py`、`src/nonebot_plugin_triage/support/threads.py`、`src/nonebot_plugin_triage/support/responses.py` |
 | Bug Reply / OneBot 群历史上下文 | `src/nbtriage/bug/conversation.py`、`src/nonebot_plugin_triage/bug/onebot_v11_conversation.py` |
 | HMAC 引用索引 | `src/nbtriage/message_references.py` |
 | 类型化授权校验、故障组合与窄回显 | `src/nonebot_plugin_triage/live_reports.py` |

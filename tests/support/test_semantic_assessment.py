@@ -5,7 +5,7 @@ from typing import cast
 
 import pytest
 
-from nbtriage.support_semantics import (
+from nbtriage.support.semantics import (
     SUPPORT_SEMANTIC_SCHEMA_VERSION,
     SupportAssessmentExecutionStatus,
     SupportAssessmentRequest,
@@ -14,11 +14,13 @@ from nbtriage.support_semantics import (
     SupportSemanticAssessment,
 )
 from nonebot_plugin_triage.config import NBTriageConfig
-from nonebot_plugin_triage.semantic_assessment import (
+from nonebot_plugin_triage.support.semantic import (
     SemanticAssessmentService,
+)
+from nonebot_plugin_triage.support.semantic_runtime import (
+    SemanticRuntimeConfigurationError,
     create_semantic_assessment_service,
 )
-from nonebot_plugin_triage.semantic_runtime import SemanticRuntimeConfigurationError
 
 
 def _request(text: str = "提醒为什么没有响应？") -> SupportAssessmentRequest:
@@ -68,7 +70,7 @@ def test_unavailable_semantic_transport_assembles_without_calling_model(
         raise SemanticRuntimeConfigurationError("not qualified")
 
     monkeypatch.setattr(
-        "nonebot_plugin_triage.semantic_runtime.create_semantic_client_factory",
+        "nonebot_plugin_triage.support.semantic_runtime.create_semantic_client_factory",
         reject,
     )
     service = create_semantic_assessment_service(

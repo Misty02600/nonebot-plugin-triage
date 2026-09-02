@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.runtime import create_plugin_runtime
-from nonebot_plugin_triage.semantic_assessment import SemanticAssessmentService
+from nonebot_plugin_triage.support.semantic import SemanticAssessmentService
 
 
 def test_model_config_uses_only_pydantic_ai_model_identity() -> None:

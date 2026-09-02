@@ -112,7 +112,7 @@ async def test_scope_thread_is_consumed_by_next_explicit_triage_without_reply(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.support_threads import ThreadStatus
+    from nbtriage.support.threads import ThreadStatus
     from nonebot_plugin_triage import handlers
 
     runtime = _install_isolated_support_threads(monkeypatch)
@@ -200,7 +200,7 @@ async def test_reply_cannot_select_cross_scope_thread_but_reaches_guidance(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.support_threads import ThreadStatus
+    from nbtriage.support.threads import ThreadStatus
     from nonebot_plugin_triage import handlers
 
     runtime = _install_isolated_support_threads(monkeypatch)
@@ -267,7 +267,7 @@ async def test_successful_guidance_closes_scope_so_next_triage_is_new(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.support_threads import ThreadStatus
+    from nbtriage.support.threads import ThreadStatus
     from nonebot_plugin_triage import handlers
 
     runtime = _install_isolated_support_threads(monkeypatch)
@@ -303,7 +303,7 @@ async def test_unmatched_guidance_waits_once_then_closes_after_second_miss(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.support_threads import ThreadStatus
+    from nbtriage.support.threads import ThreadStatus
     from nonebot_plugin_triage import handlers
 
     runtime = _install_isolated_support_threads(monkeypatch)
@@ -366,7 +366,7 @@ async def test_unavailable_guidance_evidence_closes_without_supplement(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.support_threads import ThreadStatus
+    from nbtriage.support.threads import ThreadStatus
     from nonebot_plugin_triage import handlers
 
     runtime = _install_isolated_support_threads(monkeypatch)
@@ -402,7 +402,7 @@ async def test_first_clarify_waits_once_and_second_unresolved_closes(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.support_threads import ThreadStatus
+    from nbtriage.support.threads import ThreadStatus
     from nonebot_plugin_triage import handlers
 
     runtime = _install_isolated_support_threads(monkeypatch)
@@ -456,7 +456,7 @@ async def test_first_bug_unknown_waits_once_and_second_unknown_closes(
         BugResponsibility,
         BugVerdict,
     )
-    from nbtriage.support_threads import ThreadStatus
+    from nbtriage.support.threads import ThreadStatus
     from nonebot_plugin_triage import handlers
 
     runtime = _install_isolated_support_threads(monkeypatch)
@@ -540,7 +540,7 @@ async def test_conclusive_bug_assessment_closes_scope(
         BugVerdict,
     )
     from nbtriage.bug.workflow import BugRecordReceipt, RecordBugCommand
-    from nbtriage.support_threads import ThreadStatus
+    from nbtriage.support.threads import ThreadStatus
     from nonebot_plugin_triage import handlers
     from nonebot_plugin_triage.bug.assessment import BugAssessmentRuntimeOutcome
 
@@ -611,7 +611,7 @@ async def test_public_precheck_misuse_reuses_guidance_and_closes_scope(
         BugResponsibility,
         BugVerdict,
     )
-    from nbtriage.support_threads import ThreadStatus
+    from nbtriage.support.threads import ThreadStatus
     from nonebot_plugin_triage import handlers
 
     runtime = _install_isolated_support_threads(monkeypatch)
@@ -671,7 +671,7 @@ async def test_failed_clarification_send_closes_scope(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.support_threads import ThreadStatus
+    from nbtriage.support.threads import ThreadStatus
     from nonebot_plugin_triage import handlers
 
     runtime = _install_isolated_support_threads(monkeypatch)
@@ -939,7 +939,7 @@ async def test_support_matcher_fails_closed_when_thread_capacity_is_reserved(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.support_threads import (
+    from nbtriage.support.threads import (
         InMemorySupportThreadStore,
         OutboundThreadReferenceIndex,
         SupportThreadInitialContext,
@@ -948,7 +948,7 @@ async def test_support_matcher_fails_closed_when_thread_capacity_is_reserved(
         TurnClaimStatus,
     )
     from nonebot_plugin_triage import handlers
-    from nonebot_plugin_triage.thread_references import SupportThreadReferenceBridge
+    from nonebot_plugin_triage.support.threads import SupportThreadReferenceBridge
 
     thread_ids = iter(("thread-occupied", "thread-attempt"))
     store = InMemorySupportThreadStore(
@@ -1084,7 +1084,7 @@ async def test_same_scope_busy_is_rejected_while_another_actor_is_isolated(
 ) -> None:
     from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
-    from nbtriage.support_threads import (
+    from nbtriage.support.threads import (
         SupportThreadInitialContext,
         ThreadKind,
         ThreadStatus,
@@ -1161,7 +1161,7 @@ async def test_thread_claim_error_fails_closed_before_new_request(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.support_threads import TurnClaimResult, TurnClaimStatus
+    from nbtriage.support.threads import TurnClaimResult, TurnClaimStatus
     from nonebot_plugin_triage import handlers
 
     runtime = _install_isolated_support_threads(monkeypatch)
@@ -1244,7 +1244,7 @@ async def test_sensitive_support_text_is_refused_before_capability_or_incident(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nbtriage.support_threads import ThreadStatus
+    from nbtriage.support.threads import ThreadStatus
     from nonebot_plugin_triage import handlers
 
     runtime = _install_isolated_support_threads(monkeypatch)

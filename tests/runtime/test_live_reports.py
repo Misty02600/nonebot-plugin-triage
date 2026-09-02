@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 import pytest
 from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
 
-from nbtriage import support_routing
 from nbtriage.incident_queries import IncidentQueryService
 from nbtriage.live_incidents import LiveIncidentBuffer
 from nbtriage.live_trials import LiveTrialService, TrialAuditEvent, TrialMode
@@ -15,8 +14,9 @@ from nbtriage.runtime_observations import (
     RuntimeObservationBuffer,
     parse_runtime_observation,
 )
-from nbtriage.support_routing import SupportRoutingAction, route_support_assessment
-from nbtriage.support_semantics import (
+from nbtriage.support import routing as support_routing
+from nbtriage.support.routing import SupportRoutingAction, route_support_assessment
+from nbtriage.support.semantics import (
     SUPPORT_SEMANTIC_SCHEMA_VERSION,
     SupportAssessmentExecutionStatus,
     SupportAssessmentOutcome,

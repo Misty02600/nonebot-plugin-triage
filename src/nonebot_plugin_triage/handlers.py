@@ -41,17 +41,17 @@ from nbtriage.bug.workflow import (
 )
 from nbtriage.capability.catalog.records import CapabilitySearchHit
 from nbtriage.public_guidance import PublicGuidanceExecutionStatus
-from nbtriage.support_routing import (
+from nbtriage.support.routing import (
     SupportRoutingAction,
     SupportRoutingDecision,
     SupportRoutingReason,
     route_support_assessment,
 )
-from nbtriage.support_semantics import (
+from nbtriage.support.semantics import (
     SUPPORT_SEMANTIC_SCHEMA_VERSION,
     SupportAssessmentRequest,
 )
-from nbtriage.support_threads import (
+from nbtriage.support.threads import (
     SupportThreadInitialContext,
     SupportTurnLease,
     ThreadKind,
@@ -96,12 +96,12 @@ from nonebot_plugin_triage.product_contract import (
     TRIAGE_REQUEST_MAX_CHARS,
 )
 from nonebot_plugin_triage.runtime import create_plugin_runtime
-from nonebot_plugin_triage.support_intake import normalize_support_request
-from nonebot_plugin_triage.support_responses import (
+from nonebot_plugin_triage.support.intake import normalize_support_request
+from nonebot_plugin_triage.support.responses import (
     finish_support_response,
     resolve_outgoing_receipt,
 )
-from nonebot_plugin_triage.thread_references import (
+from nonebot_plugin_triage.support.threads import (
     NBTRIAGE_THREAD_BINDING_STATE_KEY,
     PendingContinuationBinding,
     PreparedScopeSupplementBinding,

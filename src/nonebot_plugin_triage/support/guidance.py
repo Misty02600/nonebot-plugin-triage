@@ -13,7 +13,7 @@ from nbtriage.public_guidance import (
     parse_public_guidance_answer,
     parse_public_guidance_request,
 )
-from nonebot_plugin_triage.semantic_assessment import contains_credential
+from nonebot_plugin_triage.support.semantic import contains_credential
 
 
 class PublicGuidanceClient(Protocol):

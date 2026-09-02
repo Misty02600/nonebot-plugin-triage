@@ -13,7 +13,7 @@ from nbtriage.public_guidance import (
     PublicGuidanceRequest,
 )
 from nonebot_plugin_triage.config import NBTriageConfig
-from nonebot_plugin_triage.public_guidance_runtime import (
+from nonebot_plugin_triage.support.guidance_runtime import (
     OPENCODE_GO_PUBLIC_GUIDANCE_QUALIFICATION,
     _public_guidance_qualification,
     _same_public_guidance_target,

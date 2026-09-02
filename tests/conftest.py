@@ -60,8 +60,8 @@ def isolate_live_semantic_transport(
     from nonebot_plugin_triage.bug.assessment import (
         UnavailableBugAssessmentService,
     )
-    from nonebot_plugin_triage.public_guidance import PublicGuidanceService
-    from nonebot_plugin_triage.semantic_assessment import SemanticAssessmentService
+    from nonebot_plugin_triage.support.guidance import PublicGuidanceService
+    from nonebot_plugin_triage.support.semantic import SemanticAssessmentService
 
     monkeypatch.setattr(
         handlers,

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from nbtriage.support_routing import (
+from nbtriage.support.routing import (
     SupportRoutingAction,
     SupportRoutingReason,
     route_support_assessment,
 )
-from nbtriage.support_semantics import (
+from nbtriage.support.semantics import (
     SUPPORT_SEMANTIC_SCHEMA_VERSION,
     SupportAssessmentExecutionStatus,
     SupportAssessmentOutcome,

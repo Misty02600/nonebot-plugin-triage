@@ -21,7 +21,7 @@ from tools.nbtriage_maintainer.support_semantic_evaluation import (
     evaluate_support_semantics,
 )
 
-from nbtriage.support_semantic_model_adapter import (
+from nbtriage.support._model_adapter import (
     SUPPORT_SEMANTIC_PROMPT_ID,
     SYSTEM_INSTRUCTION,
     PydanticAISupportSemanticClient,

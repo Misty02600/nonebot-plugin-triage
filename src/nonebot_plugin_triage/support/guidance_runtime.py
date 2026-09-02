@@ -10,7 +10,7 @@ from nbtriage.public_guidance import (
     PUBLIC_GUIDANCE_SCHEMA_VERSION,
 )
 from nonebot_plugin_triage.config import NBTriageConfig
-from nonebot_plugin_triage.public_guidance import (
+from nonebot_plugin_triage.support.guidance import (
     PublicGuidanceClient,
     PublicGuidanceService,
 )

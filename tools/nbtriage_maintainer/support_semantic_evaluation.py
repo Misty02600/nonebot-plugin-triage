@@ -14,13 +14,13 @@ from nbtriage.opencode_go_semantic_adapter import (
     OPENCODE_GO_SEMANTIC_TASK,
     normalized_opencode_go_cost_microusd,
 )
-from nbtriage.support_semantic_model_adapter import (
+from nbtriage.support._model_adapter import (
     SUPPORT_SEMANTIC_PROMPT_ID,
     SYSTEM_INSTRUCTION,
     PydanticAISupportSemanticClient,
     SupportSemanticModelAdapterError,
 )
-from nbtriage.support_semantics import (
+from nbtriage.support.semantics import (
     SUPPORT_SEMANTIC_SCHEMA_VERSION,
     SupportAssessmentRequest,
 )

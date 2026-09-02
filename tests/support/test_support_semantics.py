@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from nbtriage.support_semantics import (
+from nbtriage.support.semantics import (
     SUPPORT_SEMANTIC_SCHEMA_VERSION,
     SupportAssessmentExecutionStatus,
     SupportAssessmentOutcome,

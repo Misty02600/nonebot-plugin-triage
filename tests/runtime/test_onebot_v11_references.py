@@ -19,7 +19,7 @@ from nonebot_plugin_alconna import (
 
 import nonebot_plugin_triage.onebot_v11_references as onebot_references
 from nbtriage.message_references import PlatformMessageReferenceIndex
-from nbtriage.support_threads import (
+from nbtriage.support.threads import (
     InMemorySupportThreadStore,
     OutboundThreadReferenceIndex,
     SupportThreadTurnCoordinator,
@@ -33,7 +33,7 @@ from nonebot_plugin_triage.onebot_v11_references import (
     OneBotV11OutgoingReferenceProvider,
     OneBotV11OutgoingReferenceProviderError,
 )
-from nonebot_plugin_triage.thread_references import (
+from nonebot_plugin_triage.support.threads import (
     NBTRIAGE_THREAD_BINDING_STATE_KEY,
     InitialThreadBinding,
     PendingContinuationBinding,

@@ -11,12 +11,12 @@ from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
 
-from nbtriage.support_semantic_model_adapter import (
+from nbtriage.support._model_adapter import (
     SYSTEM_INSTRUCTION,
     PydanticAISupportSemanticClient,
     SupportSemanticModelAdapterError,
 )
-from nbtriage.support_semantics import (
+from nbtriage.support.semantics import (
     SUPPORT_SEMANTIC_SCHEMA_VERSION,
     SupportAssessmentRequest,
     SupportAssessmentStatus,

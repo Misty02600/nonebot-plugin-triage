@@ -26,7 +26,7 @@ from nbtriage.reply_reports import (
     route_reply_report,
 )
 from nbtriage.runtime_observations import RuntimeObservationBuffer
-from nbtriage.support_routing import (
+from nbtriage.support.routing import (
     IncidentAuthorization,
     SupportRoutingAction,
     SupportRoutingDecision,
