@@ -24,10 +24,8 @@ from nbtriage.support.threads import (
     SupportThreadTurnCoordinator,
 )
 from nonebot_plugin_triage.agent_telemetry_runtime import create_agent_telemetry_runtime
-from nonebot_plugin_triage.behavior_exploration_runtime import (
-    BehaviorExplorationServiceLike,
-    create_behavior_exploration_service,
-)
+from nonebot_plugin_triage.behavior.contracts import BehaviorExplorationServiceLike
+from nonebot_plugin_triage.behavior.runtime import create_behavior_exploration_service
 from nonebot_plugin_triage.bug.assessment import (
     BugAssessmentServiceLike,
     create_bug_assessment_runtime_service,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from nbtriage.behavior_exploration import (
+from nbtriage.behavior.exploration import (
     BehaviorAgentCandidate,
     BehaviorAgentClaim,
     BehaviorClaimBasis,

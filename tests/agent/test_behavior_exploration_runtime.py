@@ -6,12 +6,12 @@ from typing import Any, cast
 
 import pytest
 
-from nbtriage.behavior_agent import (
+from nbtriage.behavior._agent import (
     BehaviorAgentRequest,
     BehaviorEvidenceSearchResult,
     BehaviorEvidenceToolbox,
 )
-from nbtriage.behavior_exploration import (
+from nbtriage.behavior.exploration import (
     BehaviorAgentCandidate,
     BehaviorAgentClaim,
     BehaviorClaimBasis,
@@ -21,13 +21,13 @@ from nbtriage.behavior_exploration import (
     BehaviorEvidenceSnapshot,
     BehaviorWorkspace,
 )
-from nonebot_plugin_triage.behavior_exploration_runtime import (
+from nonebot_plugin_triage.behavior.contracts import (
     BehaviorExecutionStatus,
     BehaviorExplorationOutcome,
     BehaviorExplorationRequest,
-    BehaviorExplorationService,
     BehaviorScope,
 )
+from nonebot_plugin_triage.behavior.service import BehaviorExplorationService
 from nonebot_plugin_triage.bug_workflow_identity import BugWorkflowIdentity
 
 _NOW = "2026-08-21T08:00:00+00:00"

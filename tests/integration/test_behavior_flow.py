@@ -276,7 +276,7 @@ async def test_semantic_candidate_routes_have_specific_zero_side_effect_response
     expected: str,
 ) -> None:
     from nonebot_plugin_triage import handlers
-    from nonebot_plugin_triage.behavior_exploration_runtime import (
+    from nonebot_plugin_triage.behavior.service import (
         UnavailableBehaviorExplorationService,
     )
 

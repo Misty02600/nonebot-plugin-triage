@@ -58,7 +58,7 @@ from nbtriage.support.threads import (
     TurnClaimStatus,
 )
 from nonebot_plugin_triage import plugin_config
-from nonebot_plugin_triage.behavior_exploration_runtime import (
+from nonebot_plugin_triage.behavior.contracts import (
     BehaviorExecutionStatus,
     BehaviorExplorationRequest,
     BehaviorScope,

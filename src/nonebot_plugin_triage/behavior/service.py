@@ -3,16 +3,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import json
 import os
 import secrets
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol, TypedDict, cast
+from typing import Any, TypedDict, cast
 
 import aiosqlite
 from langgraph.checkpoint.serde.encrypted import EncryptedSerializer
@@ -23,25 +21,19 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from pydantic import ValidationError
 
-from nbtriage.behavior_agent import (
-    AuthorizationGuard,
+from nbtriage.behavior._agent import (
     BehaviorAgentClient,
     BehaviorAgentError,
     BehaviorAgentPriorClaim,
     BehaviorAgentRequest,
     BehaviorAgentTurnContext,
     BehaviorAuthorizationError,
-    BehaviorEvidenceSearchResult,
     BehaviorEvidenceToolbox,
-    PydanticAIBehaviorAgentClient,
 )
-from nbtriage.behavior_exploration import (
+from nbtriage.behavior.exploration import (
     BEHAVIOR_GRAPH_REVISION,
-    BehaviorClaimBasis,
     BehaviorContractError,
     BehaviorDeliveryStatus,
-    BehaviorEvidenceFact,
-    BehaviorEvidenceSnapshot,
     BehaviorPendingTurn,
     BehaviorWorkspace,
     create_behavior_workspace,
@@ -52,186 +44,26 @@ from nbtriage.behavior_exploration import (
     revalidate_behavior_workspace,
     transition_behavior_delivery,
 )
-from nbtriage.capability.catalog.records import (
-    AnalysisIssue,
-    CapabilitySearchHit,
-    ClaimBasis,
-    RecordState,
-)
 from nonebot_plugin_triage.bug_workflow_identity import BugWorkflowIdentity
-from nonebot_plugin_triage.capability.shadow import CapabilityShadowService
-from nonebot_plugin_triage.config import NBTriageConfig
-from nonebot_plugin_triage.task_model_runtime import (
-    TaskModelRuntimeConfigurationError,
-    create_task_model_binding,
+
+from .contracts import (
+    AuthorizationGuard,
+    BehaviorExecutionStatus,
+    BehaviorExplorationOutcome,
+    BehaviorExplorationRequest,
+    BehaviorScope,
 )
+from .evidence import BehaviorEvidenceSource
 
 BEHAVIOR_CHECKPOINT_LIMIT = 2_048
 BEHAVIOR_CHECKPOINT_RESERVE = 8
 BEHAVIOR_GRAPH_RECURSION_LIMIT = 4
-BEHAVIOR_SHADOW_FACT_LIMIT = 48
-_BEHAVIOR_DATABASE_FILENAME = "behavior-checkpoints.sqlite3"
 _BEHAVIOR_LOCK_FILENAME = "behavior-checkpoints.lock"
 _BEHAVIOR_NODE_NAME = "answer_turn"
 _BEHAVIOR_TASK_NAME = "behavior-agent-v1"
 _RUNTIME_METADATA_TABLE = "nbtriage_behavior_runtime_metadata"
 _KEY_VERIFIER_NAME = "checkpoint-key-verifier-v1"
 _KEY_VERIFIER_CHALLENGE = b"nbtriage.behavior-checkpoint-key-verifier.v1"
-
-_ALLOWED_CLAIM_FIELDS = frozenset(
-    {
-        "matcher.type",
-        "plugin.module_name",
-        "invocation.header",
-        "command.path",
-        "command.header",
-        "command.literals",
-        "command.aliases",
-        "command.prefixes",
-        "command.separators",
-        "command.force_whitespace",
-        "command.enabled",
-        "command.arguments",
-        "command.components",
-        "trigger.factory",
-        "trigger.entries",
-        "handler.references",
-    }
-)
-
-
-class BehaviorExecutionStatus(StrEnum):
-    COMPLETED = "completed"
-    RECOVERED_PREVIOUS = "recovered_previous"
-    DUPLICATE = "duplicate"
-    BUSY = "busy"
-    UNAVAILABLE = "unavailable"
-    UNAUTHORIZED = "unauthorized"
-    INVALID_REQUEST = "invalid_request"
-    EVENT_CONFLICT = "event_conflict"
-    CAPACITY_EXHAUSTED = "capacity_exhausted"
-    STATE_INCOMPATIBLE = "state_incompatible"
-    FAILED = "failed"
-
-
-@dataclass(frozen=True, slots=True)
-class BehaviorScope:
-    adapter_name: str
-    bot_scope: str
-    conversation_scope: str
-    actor_scope: str
-
-    def __post_init__(self) -> None:
-        for value in (
-            self.adapter_name,
-            self.bot_scope,
-            self.conversation_scope,
-            self.actor_scope,
-        ):
-            if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 512:
-                raise ValueError("behavior scope parts must be bounded non-empty strings")
-            if "\x00" in value:
-                raise ValueError("behavior scope parts must not contain null bytes")
-
-
-@dataclass(frozen=True, slots=True)
-class BehaviorExplorationRequest:
-    scope: BehaviorScope
-    event_reference: str
-    question: str
-    requested_at: str
-    authorization_guard: AuthorizationGuard
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.scope, BehaviorScope):
-            raise TypeError("scope must be BehaviorScope")
-        if (
-            not isinstance(self.event_reference, str)
-            or not self.event_reference
-            or len(self.event_reference.encode("utf-8")) > 512
-            or "\x00" in self.event_reference
-        ):
-            raise ValueError("event_reference must be a stable bounded identifier")
-        if not callable(self.authorization_guard):
-            raise TypeError("authorization_guard must be callable")
-
-
-@dataclass(frozen=True, slots=True)
-class BehaviorExplorationOutcome:
-    status: BehaviorExecutionStatus
-    answer: str | None = None
-    turn_id: str | None = None
-    delivery_token: str | None = None
-    delivery_status: BehaviorDeliveryStatus | None = None
-
-    @property
-    def should_deliver(self) -> bool:
-        return (
-            self.answer is not None
-            and self.turn_id is not None
-            and self.delivery_token is not None
-            and self.delivery_status is BehaviorDeliveryStatus.PENDING
-        )
-
-
-class BehaviorExplorationServiceLike(Protocol):
-    @property
-    def available(self) -> bool: ...
-
-    async def startup(self) -> None: ...
-
-    async def shutdown(self) -> None: ...
-
-    async def has_active_inquiry(
-        self,
-        scope: BehaviorScope,
-        authorization_guard: AuthorizationGuard,
-    ) -> bool: ...
-
-    async def explore(
-        self,
-        request: BehaviorExplorationRequest,
-    ) -> BehaviorExplorationOutcome: ...
-
-    async def begin_delivery(
-        self,
-        scope: BehaviorScope,
-        *,
-        turn_id: str,
-        delivery_token: str,
-        authorization_guard: AuthorizationGuard,
-    ) -> bool: ...
-
-    async def finish_delivery(
-        self,
-        scope: BehaviorScope,
-        *,
-        turn_id: str,
-        delivery_token: str,
-        receipt_reference: str,
-    ) -> bool: ...
-
-    async def abandon_delivery(
-        self,
-        scope: BehaviorScope,
-        *,
-        turn_id: str,
-        delivery_token: str,
-        platform_call_started: bool,
-    ) -> None: ...
-
-    async def delete(
-        self,
-        scope: BehaviorScope,
-        authorization_guard: AuthorizationGuard,
-    ) -> bool: ...
-
-
-class BehaviorEvidenceSource(Protocol):
-    async def snapshot(self) -> BehaviorEvidenceSnapshot: ...
-
-    async def search(self, query: str) -> BehaviorEvidenceSearchResult: ...
-
 
 BehaviorAgentFactory = Callable[[], BehaviorAgentClient]
 
@@ -1069,51 +901,6 @@ class BehaviorExplorationService:
         return self._saver
 
 
-class CapabilityShadowBehaviorEvidenceSource:
-    """把维护者能力影子投影为不含源码、配置值和绝对路径的原子事实。"""
-
-    def __init__(self, shadow: CapabilityShadowService) -> None:
-        self._shadow = shadow
-
-    async def snapshot(self) -> BehaviorEvidenceSnapshot:
-        status = self._shadow.status
-        return BehaviorEvidenceSnapshot(
-            generation=status.served_generation,
-            available=status.ready,
-            partial=True,
-            stale=status.stale,
-        )
-
-    async def search(self, query: str) -> BehaviorEvidenceSearchResult:
-        snapshot = await self.snapshot()
-        if not snapshot.available:
-            return BehaviorEvidenceSearchResult(snapshot=snapshot)
-        result = await self._shadow.search_for_maintainer(query, limit=5)
-        if result is None:
-            return BehaviorEvidenceSearchResult(
-                snapshot=BehaviorEvidenceSnapshot(
-                    generation=snapshot.generation,
-                    available=False,
-                    partial=True,
-                    stale=snapshot.stale,
-                )
-            )
-        facts: list[BehaviorEvidenceFact] = []
-        for hit in result.hits:
-            facts.extend(_project_capability_hit(hit, snapshot))
-            if len(facts) >= BEHAVIOR_SHADOW_FACT_LIMIT:
-                break
-        return BehaviorEvidenceSearchResult(
-            snapshot=BehaviorEvidenceSnapshot(
-                generation=snapshot.generation,
-                available=True,
-                partial=True,
-                stale=snapshot.stale or result.stale,
-            ),
-            facts=tuple(facts[:BEHAVIOR_SHADOW_FACT_LIMIT]),
-        )
-
-
 class _ProcessFileLock:
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -1161,126 +948,6 @@ class _ProcessFileLock:
         stream.close()
 
 
-def create_behavior_exploration_service(
-    config: NBTriageConfig,
-    *,
-    identity: BugWorkflowIdentity,
-    capability_shadow: CapabilityShadowService | None,
-    path: Path | Callable[[], Path] = lambda: _behavior_checkpoint_path(),
-) -> BehaviorExplorationServiceLike:
-    if capability_shadow is None or config.nbtriage_model_name is None:
-        return UnavailableBehaviorExplorationService()
-    try:
-        binding = create_task_model_binding(config)
-
-        def create_agent() -> BehaviorAgentClient:
-            return PydanticAIBehaviorAgentClient(
-                binding.model,
-                timeout_seconds=config.nbtriage_model_timeout_seconds,
-                max_output_tokens=config.nbtriage_behavior_max_output_tokens,
-                model_settings=binding.model_settings,
-                expected_provider=binding.provider,
-                expected_model=binding.model_name,
-            )
-
-        create_agent()
-    except (BehaviorAgentError, TaskModelRuntimeConfigurationError):
-        return UnavailableBehaviorExplorationService()
-    return BehaviorExplorationService(
-        path=path,
-        identity=identity,
-        evidence_source=CapabilityShadowBehaviorEvidenceSource(capability_shadow),
-        agent_factory=create_agent,
-        max_concurrency=config.nbtriage_behavior_max_concurrency,
-    )
-
-
-def _behavior_checkpoint_path() -> Path:
-    from nonebot import require
-
-    require("nonebot_plugin_localstore")
-    from nonebot_plugin_localstore import get_data_file
-
-    return get_data_file("nonebot_plugin_triage", _BEHAVIOR_DATABASE_FILENAME)
-
-
-def _project_capability_hit(
-    hit: CapabilitySearchHit,
-    snapshot: BehaviorEvidenceSnapshot,
-) -> list[BehaviorEvidenceFact]:
-    record = hit.record
-    generation = snapshot.generation
-    if generation is None:
-        return []
-    revision = f"capability-shadow:{generation}"
-    partial = (
-        snapshot.partial or bool(record.analysis_issues) or record.state is not RecordState.VERIFIED
-    )
-    stale = snapshot.stale or record.state is RecordState.STALE
-    conflicted = (
-        record.state is RecordState.CONFLICTED
-        or AnalysisIssue.EVIDENCE_CONFLICT in record.analysis_issues
-    )
-    entries: list[tuple[str, object, BehaviorClaimBasis]] = [
-        (
-            "record",
-            {
-                "capability_id": record.capability_id,
-                "owner": record.owner,
-                "kind": record.kind,
-                "state": record.state.value,
-                "disclosure": record.disclosure.value,
-            },
-            BehaviorClaimBasis.OBSERVED_STRUCTURE,
-        )
-    ]
-    for claim in record.claims:
-        if claim.field not in _ALLOWED_CLAIM_FIELDS:
-            continue
-        basis = (
-            BehaviorClaimBasis.OBSERVED_STRUCTURE
-            if claim.basis is ClaimBasis.OBSERVED
-            else BehaviorClaimBasis.STATIC_INFERENCE
-        )
-        entries.append((claim.field, claim.value, basis))
-
-    facts: list[BehaviorEvidenceFact] = []
-    for field, value, basis in entries:
-        canonical = _canonical_json(value)
-        text = f"能力 {record.capability_id} 的 {field} 为 {canonical}。"
-        identity_payload = _canonical_json(
-            {
-                "generation": generation,
-                "capability_id": record.capability_id,
-                "field": field,
-                "basis": basis.value,
-                "value": value,
-            }
-        )
-        field_digest = hashlib.sha256(field.encode("utf-8")).hexdigest()[:16]
-        capability_digest = hashlib.sha256(record.capability_id.encode("utf-8")).hexdigest()[:16]
-        try:
-            facts.append(
-                BehaviorEvidenceFact(
-                    evidence_id=(
-                        "fact-" + hashlib.sha256(identity_payload.encode("utf-8")).hexdigest()
-                    ),
-                    source_kind="capability_shadow",
-                    locator=f"capability/{capability_digest}/{field_digest}",
-                    revision=revision,
-                    captured_at=_now(),
-                    text=text,
-                    suggested_basis=basis,
-                    partial=partial,
-                    stale=stale,
-                    conflicted=conflicted,
-                )
-            )
-        except (TypeError, ValueError, ValidationError):
-            continue
-    return facts
-
-
 def _graph_state(payload: object) -> dict[str, object]:
     if not isinstance(payload, dict) or not set(payload).issubset({"workspace", "result"}):
         return {"result": {"status": BehaviorExecutionStatus.STATE_INCOMPATIBLE.value}}
@@ -1301,29 +968,12 @@ async def _authorized(guard: AuthorizationGuard) -> bool:
         return False
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
 __all__ = (
     "BEHAVIOR_CHECKPOINT_LIMIT",
-    "BehaviorExecutionStatus",
-    "BehaviorExplorationOutcome",
-    "BehaviorExplorationRequest",
     "BehaviorExplorationService",
-    "BehaviorExplorationServiceLike",
-    "BehaviorScope",
-    "CapabilityShadowBehaviorEvidenceSource",
     "UnavailableBehaviorExplorationService",
-    "create_behavior_exploration_service",
 )

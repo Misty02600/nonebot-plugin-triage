@@ -180,8 +180,8 @@ class _BehaviorServiceProbe:
         return self.active
 
     async def explore(self, request: Any) -> Any:
-        from nbtriage.behavior_exploration import BehaviorDeliveryStatus
-        from nonebot_plugin_triage.behavior_exploration_runtime import (
+        from nbtriage.behavior.exploration import BehaviorDeliveryStatus
+        from nonebot_plugin_triage.behavior.contracts import (
             BehaviorExecutionStatus,
             BehaviorExplorationOutcome,
         )

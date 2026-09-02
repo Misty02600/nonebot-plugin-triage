@@ -11,14 +11,14 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.usage import RequestUsage
 
-from nbtriage.behavior_agent import (
+from nbtriage.behavior._agent import (
     BehaviorAgentRequest,
     BehaviorAuthorizationError,
     BehaviorEvidenceSearchResult,
     BehaviorEvidenceToolbox,
     PydanticAIBehaviorAgentClient,
 )
-from nbtriage.behavior_exploration import (
+from nbtriage.behavior.exploration import (
     BehaviorClaimBasis,
     BehaviorEvidenceFact,
     BehaviorEvidenceSnapshot,

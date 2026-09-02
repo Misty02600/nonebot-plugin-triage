@@ -15,7 +15,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings, merge_model_settings
 
 from nbtriage.agent_telemetry import current_agent_instrumentation
-from nbtriage.behavior_exploration import (
+from nbtriage.behavior.exploration import (
     BEHAVIOR_PROMPT_ID,
     BehaviorAgentCandidate,
     BehaviorClaim,
