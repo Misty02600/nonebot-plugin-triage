@@ -23,6 +23,7 @@ from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 from pydantic_ai.usage import RunUsage
 from pydantic_core import to_jsonable_python
 
+from nbtriage._model_runtime.usage import provider_response_identity
 from nbtriage.capability.catalog.records import (
     CapabilityRecord,
     Claim,
@@ -79,7 +80,6 @@ from nbtriage.capability.teaching.source_evidence import (
     build_capability_source_evidence,
     fixed_permission_constraints,
 )
-from nbtriage.model_usage import provider_response_identity
 from nbtriage.opencode_go_contracts import OPENCODE_GO_THINKING_SETTINGS_REVISION
 from nbtriage.opencode_go_semantic_adapter import normalized_opencode_go_cost_microusd
 

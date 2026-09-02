@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from nbtriage._model_runtime.failures import (
+    ProviderFailureReason,
+    classify_provider_http_status,
+)
 from nbtriage.bounded_agent import (
     AGENT_ACTION_SCHEMA_ID,
     AGENT_POLICY_ID,
@@ -48,10 +52,6 @@ from nbtriage.model_contracts import (
     B1ProviderRequestError,
     B1ProviderResponseError,
     B1ResponseRejectionReason,
-)
-from nbtriage.provider_failures import (
-    ProviderFailureReason,
-    classify_provider_http_status,
 )
 from nbtriage.rag import (
     ALLOWED_EVIDENCE_SLOTS,

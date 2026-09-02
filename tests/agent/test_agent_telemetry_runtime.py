@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from nbtriage.agent_telemetry import disable_agent_telemetry
+from nbtriage._model_runtime.telemetry import disable_agent_telemetry
 from nonebot_plugin_triage.agent_telemetry_runtime import create_agent_telemetry_runtime
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.task_model_runtime import model_connection_revision

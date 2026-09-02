@@ -26,7 +26,17 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings, merge_model_settings
 from pydantic_ai.usage import RequestUsage, RunUsage
 
-from nbtriage.agent_telemetry import current_agent_instrumentation
+from nbtriage._model_runtime.diagnostics import last_model_response as _last_model_response
+from nbtriage._model_runtime.failures import (
+    ProviderFailureReason,
+    classify_provider_http_status,
+)
+from nbtriage._model_runtime.telemetry import current_agent_instrumentation
+from nbtriage._model_runtime.usage import (
+    ProviderResponseIdentity,
+    normalized_usage_cost_microusd,
+    provider_response_identity,
+)
 from nbtriage.bounded_agent import (
     AgentActionKind,
     AgentPolicyError,
@@ -39,16 +49,6 @@ from nbtriage.bounded_agent import (
     AgentStepUsage,
     agent_action_envelope_json_schema,
     parse_agent_action,
-)
-from nbtriage.model_run_diagnostics import last_model_response as _last_model_response
-from nbtriage.model_usage import (
-    ProviderResponseIdentity,
-    normalized_usage_cost_microusd,
-    provider_response_identity,
-)
-from nbtriage.provider_failures import (
-    ProviderFailureReason,
-    classify_provider_http_status,
 )
 
 AGENT_SYSTEM_INSTRUCTION = """你是有界 NoneBot Triage Agent 中的一个步骤。

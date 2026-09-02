@@ -7,7 +7,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.test import TestModel
 
-from nbtriage.agent_telemetry import (
+from nbtriage._model_runtime.telemetry import (
     current_agent_instrumentation,
     install_local_agent_telemetry,
     record_agent_response_shape,
@@ -60,7 +60,7 @@ def test_response_shape_diagnostic_failure_does_not_escape(
     def fail_shape(_response: ModelResponse) -> dict[str, object]:
         raise RuntimeError("PRIVATE_DIAGNOSTIC_FAILURE")
 
-    monkeypatch.setattr("nbtriage.agent_telemetry._response_shape_attributes", fail_shape)
+    monkeypatch.setattr("nbtriage._model_runtime.telemetry._response_shape_attributes", fail_shape)
     try:
         record_agent_response_shape(
             ModelResponse(parts=[TextPart("PRIVATE_TEXT")]),

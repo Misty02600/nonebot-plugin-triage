@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from nbtriage._model_runtime.failures import ProviderFailureReason
 from nbtriage.bounded_agent import (
     AgentAction,
     AgentActionKind,
@@ -35,7 +36,6 @@ from nbtriage.bounded_agent import (
     parse_agent_action,
 )
 from nbtriage.evidence_receipts import EvidenceReceipt, create_evidence_receipt
-from nbtriage.provider_failures import ProviderFailureReason
 from nbtriage.rag import TrainCaseRetriever
 from nbtriage.runtime_observations import (
     ObservationKind,

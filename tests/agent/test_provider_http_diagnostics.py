@@ -4,7 +4,7 @@ import asyncio
 
 import httpx
 
-from nbtriage.provider_http_diagnostics import (
+from nbtriage._model_runtime.http_diagnostics import (
     ProviderHTTPLifecycleEvent,
     capture_provider_http_failures,
     capture_provider_http_lifecycle,

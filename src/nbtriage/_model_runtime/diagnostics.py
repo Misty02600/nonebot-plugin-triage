@@ -28,7 +28,7 @@ from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage
 
-from nbtriage.provider_http_diagnostics import (
+from nbtriage._model_runtime.http_diagnostics import (
     ProviderHTTPFailure,
     ProviderHTTPLifecycleEvent,
     capture_provider_http_failures,

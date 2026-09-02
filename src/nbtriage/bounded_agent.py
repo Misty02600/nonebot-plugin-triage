@@ -22,6 +22,7 @@ from pydantic import (
     model_validator,
 )
 
+from nbtriage._model_runtime.failures import ProviderFailureReason, classify_provider_http_status
 from nbtriage.baselines import SECRET_PATTERNS
 from nbtriage.evidence_receipts import (
     EVIDENCE_RECEIPT_REVISION_PREFIX,
@@ -32,7 +33,6 @@ from nbtriage.evidence_receipts import (
     parse_evidence_receipt,
     receipt_revision_for_observation,
 )
-from nbtriage.provider_failures import ProviderFailureReason, classify_provider_http_status
 from nbtriage.rag import (
     ALLOWED_EVIDENCE_SLOTS,
     TARGET_BODY_CHARS,

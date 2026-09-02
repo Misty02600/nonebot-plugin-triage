@@ -7,9 +7,9 @@ from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIResponsesModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.deepseek import DeepSeekProvider
 
+from nbtriage._model_runtime.http_diagnostics import provider_http_client
 from nbtriage.model_adapters import PydanticAIB1Client
 from nbtriage.model_contracts import B1ProviderError
-from nbtriage.provider_http_diagnostics import provider_http_client
 from nbtriage.pydantic_agent_adapter import PydanticAIAgentStepClient
 
 DEEPSEEK_RESPONSES_PROVIDER_ID = "deepseek-responses"

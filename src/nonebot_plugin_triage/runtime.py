@@ -9,7 +9,7 @@ from typing import Protocol
 
 from nonebot import get_driver, logger
 
-from nbtriage.agent_telemetry import AgentTelemetryRuntime
+from nbtriage._model_runtime.telemetry import AgentTelemetryRuntime
 from nbtriage.bug.logs import CorrelatedBugLogBuffer
 from nbtriage.capability.teaching.analysis import CapabilityAnalysisClient
 from nbtriage.incident_queries import IncidentQueryService

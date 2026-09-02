@@ -23,7 +23,8 @@ from pydantic_ai.settings import ModelSettings, merge_model_settings
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RunUsage
 
-from nbtriage.agent_telemetry import current_agent_instrumentation
+from nbtriage._model_runtime.diagnostics import last_model_response
+from nbtriage._model_runtime.telemetry import current_agent_instrumentation
 from nbtriage.bug.assessment import (
     BUG_ASSESSMENT_MAX_TOOL_CALLS,
     BUG_CONVERSATION_MAX_TOOL_CALLS,
@@ -32,7 +33,6 @@ from nbtriage.bug.assessment import (
     BugAssessmentToolbox,
     parse_bug_assessment_case,
 )
-from nbtriage.model_run_diagnostics import last_model_response
 
 BUG_AGENT_PROMPT_ID = "bug-assessment-agent-v1-prompt-v8-zh"
 _ALLOWED_OUTPUT_MODES = frozenset({"native", "tool"})

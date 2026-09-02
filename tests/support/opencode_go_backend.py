@@ -11,8 +11,8 @@ from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RequestUsage
 
+from nbtriage._model_runtime.http_diagnostics import provider_http_client
 from nbtriage.model_contracts import B1ProviderError
-from nbtriage.provider_http_diagnostics import provider_http_client
 from nbtriage.pydantic_agent_adapter import PydanticAIAgentStepClient
 
 OPENCODE_GO_CHAT_PROVIDER_ID = "opencode-go-chat-completions"

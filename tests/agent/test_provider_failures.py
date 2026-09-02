@@ -1,6 +1,6 @@
 import pytest
 
-from nbtriage.provider_failures import (
+from nbtriage._model_runtime.failures import (
     ProviderFailureReason,
     classify_provider_http_status,
 )

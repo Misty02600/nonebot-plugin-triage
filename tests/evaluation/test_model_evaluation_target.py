@@ -10,7 +10,7 @@ from tools.nbtriage_maintainer.model_evaluation_target import (
     model_connection_revision,
 )
 
-from nbtriage.task_model_settings import ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
+from nbtriage._model_runtime.settings import ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
 
 
 def test_alibaba_evaluation_target_preserves_endpoint_identity(

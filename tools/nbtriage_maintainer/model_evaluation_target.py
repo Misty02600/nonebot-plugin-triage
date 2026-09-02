@@ -11,9 +11,9 @@ from pydantic_ai.models import Model, infer_model
 from pydantic_ai.providers import Provider, infer_provider_class
 from pydantic_ai.settings import ModelSettings
 
+from nbtriage._model_runtime.http_diagnostics import provider_http_client
+from nbtriage._model_runtime.settings import task_model_settings
 from nbtriage.opencode_go_contracts import OPENCODE_GO_THINKING_SETTINGS_REVISION
-from nbtriage.provider_http_diagnostics import provider_http_client
-from nbtriage.task_model_settings import task_model_settings
 
 _PER_MILLION = Decimal(1_000_000)
 

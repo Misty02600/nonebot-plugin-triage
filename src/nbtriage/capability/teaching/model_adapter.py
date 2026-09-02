@@ -34,7 +34,17 @@ from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
 from pydantic_ai.usage import RunUsage
 
-from nbtriage.agent_telemetry import (
+from nbtriage._model_runtime.diagnostics import (
+    MaintenanceResponseCaptureModel,
+    captured_retry_reason,
+    captured_run_usage,
+    diagnostic_message_trace,
+    diagnostic_provider_response_trace,
+    last_model_response,
+    unexpected_behavior_reason,
+    usage_limit_name,
+)
+from nbtriage._model_runtime.telemetry import (
     current_agent_instrumentation,
     record_agent_response_shape,
 )
@@ -92,16 +102,6 @@ from nbtriage.capability.teaching.usage import (
     group_literal_expression_for_usage,
     usage_command_body_pattern,
     validate_usage_selector,
-)
-from nbtriage.model_run_diagnostics import (
-    MaintenanceResponseCaptureModel,
-    captured_retry_reason,
-    captured_run_usage,
-    diagnostic_message_trace,
-    diagnostic_provider_response_trace,
-    last_model_response,
-    unexpected_behavior_reason,
-    usage_limit_name,
 )
 
 

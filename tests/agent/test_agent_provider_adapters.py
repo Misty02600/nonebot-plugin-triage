@@ -12,6 +12,7 @@ from tools.nbtriage_maintainer.deepseek_adapter import (
     create_deepseek_responses_agent_step_client,
 )
 
+from nbtriage._model_runtime.failures import ProviderFailureReason
 from nbtriage.anthropic_adapter import create_anthropic_messages_agent_step_client
 from nbtriage.bounded_agent import (
     AgentActionKind,
@@ -20,7 +21,6 @@ from nbtriage.bounded_agent import (
     AgentStepRequestError,
 )
 from nbtriage.openai_adapter import create_openai_responses_agent_step_client
-from nbtriage.provider_failures import ProviderFailureReason
 from nbtriage.pydantic_agent_adapter import AGENT_ACTION_TOOL_NAME
 from support.opencode_go_backend import create_opencode_go_agent_step_client
 

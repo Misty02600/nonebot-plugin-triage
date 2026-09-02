@@ -13,6 +13,7 @@ from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RequestUsage
 
+from nbtriage._model_runtime.http_diagnostics import provider_http_client
 from nbtriage.bug._agent import PydanticAIBugAssessmentAgent
 from nbtriage.capability.teaching.model_adapter import (
     CapabilityAnalysisToolRuntimeFactory,
@@ -37,7 +38,6 @@ from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_SEMANTIC_TASK,
     OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS,
 )
-from nbtriage.provider_http_diagnostics import provider_http_client
 from nbtriage.public_guidance_model_adapter import PydanticAIPublicGuidanceClient
 from nbtriage.support._model_adapter import PydanticAISupportSemanticClient
 

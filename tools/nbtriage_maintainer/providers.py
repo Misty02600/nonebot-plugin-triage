@@ -6,15 +6,15 @@ from typing import Any
 
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, OpenAIError
 
+from nbtriage._model_runtime.failures import (
+    ProviderFailureReason,
+    classify_provider_http_status,
+)
 from nbtriage.model_contracts import (
     B1ProviderError,
     B1ProviderRequestError,
     B1StructuredOutput,
     build_b1_user_payload,
-)
-from nbtriage.provider_failures import (
-    ProviderFailureReason,
-    classify_provider_http_status,
 )
 from nbtriage.rag import B1ModelRequest, B1ModelResponse
 

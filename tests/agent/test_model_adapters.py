@@ -12,6 +12,7 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.usage import RequestUsage
 from tools.nbtriage_maintainer.deepseek_adapter import create_deepseek_responses_b1_client
 
+from nbtriage._model_runtime.failures import ProviderFailureReason
 from nbtriage.anthropic_adapter import create_anthropic_messages_b1_client
 from nbtriage.model_adapters import PydanticAIB1Client
 from nbtriage.model_contracts import (
@@ -21,7 +22,6 @@ from nbtriage.model_contracts import (
     B1ResponseRejectionReason,
 )
 from nbtriage.openai_adapter import create_openai_responses_b1_client
-from nbtriage.provider_failures import ProviderFailureReason
 from nbtriage.rag import build_b1_request
 
 models.ALLOW_MODEL_REQUESTS = False

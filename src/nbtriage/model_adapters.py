@@ -8,6 +8,15 @@ from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.output import OutputObjectDefinition
 from pydantic_ai.settings import ModelSettings, merge_model_settings
 
+from nbtriage._model_runtime.failures import (
+    ProviderFailureReason,
+    classify_provider_http_status,
+)
+from nbtriage._model_runtime.usage import (
+    ProviderResponseIdentity,
+    normalized_usage_cost_microusd,
+    provider_response_identity,
+)
 from nbtriage.model_contracts import (
     B1ProviderError,
     B1ProviderRequestError,
@@ -15,15 +24,6 @@ from nbtriage.model_contracts import (
     B1ResponseRejectionReason,
     B1StructuredOutput,
     build_b1_user_payload,
-)
-from nbtriage.model_usage import (
-    ProviderResponseIdentity,
-    normalized_usage_cost_microusd,
-    provider_response_identity,
-)
-from nbtriage.provider_failures import (
-    ProviderFailureReason,
-    classify_provider_http_status,
 )
 from nbtriage.rag import B1ModelRequest, B1ModelResponse
 

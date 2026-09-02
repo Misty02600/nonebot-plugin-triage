@@ -7,7 +7,7 @@ from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from typing import Any
 
-from nbtriage.model_usage import provider_response_identity
+from nbtriage._model_runtime.usage import provider_response_identity
 from nbtriage.opencode_go_semantic_adapter import (
     OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
     OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,

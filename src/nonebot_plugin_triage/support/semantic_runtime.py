@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from nonebot import logger
 
+from nbtriage._model_runtime.settings import ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
 from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_SEMANTIC_API_FAMILY,
     OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
@@ -16,7 +17,6 @@ from nbtriage.opencode_go_contracts import (
 )
 from nbtriage.support._model_adapter import SUPPORT_SEMANTIC_PROMPT_ID
 from nbtriage.support.semantics import SUPPORT_SEMANTIC_SCHEMA_VERSION
-from nbtriage.task_model_settings import ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.support.semantic import (
     SemanticAssessmentService,

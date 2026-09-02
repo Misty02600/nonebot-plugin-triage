@@ -14,7 +14,8 @@ from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings, merge_model_settings
 
-from nbtriage.agent_telemetry import current_agent_instrumentation
+from nbtriage._model_runtime.diagnostics import last_model_response
+from nbtriage._model_runtime.telemetry import current_agent_instrumentation
 from nbtriage.behavior.exploration import (
     BEHAVIOR_PROMPT_ID,
     BehaviorAgentCandidate,
@@ -23,7 +24,6 @@ from nbtriage.behavior.exploration import (
     BehaviorEvidenceSnapshot,
     BehaviorSafeTurn,
 )
-from nbtriage.model_run_diagnostics import last_model_response
 
 BEHAVIOR_AGENT_MAX_REQUESTS = 5
 BEHAVIOR_AGENT_MAX_TOOL_CALLS = 3

@@ -234,7 +234,7 @@ flowchart TD
   `deepseek-v4-flash`、非思考模式和零 SDK retry，并用假 HTTP 分别验证 B1 native JSON Schema 与 B4
   function tools。Pydantic AI 2.27.0 尚未声明 DeepSeek native schema profile，adapter 依据当前官方接口
   显式补足该能力；Provider wire 不发送 OpenAI `strict` 输出字段，tools 为 `strict=false`，参数继续由
-  Pydantic 与领域层在本地复核。共享 `model_usage.py` 从响应保留 Provider / model / request identity 与
+  Pydantic 与领域层在本地复核。共享 `_model_runtime/usage.py` 从响应保留 Provider / model / request identity 与
   可选指纹，并只在返回身份匹配请求时归一化费用；缺失或漂移会失败关闭。滚动模型别名尚未经过获授权
   线上资格门，因此仍为实验性；
 - 2026-08-11：ADR-0016 收紧插件安装面后，DeepSeek 适配器迁入

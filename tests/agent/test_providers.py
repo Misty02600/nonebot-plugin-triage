@@ -12,8 +12,8 @@ from tools.nbtriage_maintainer.providers import (
     OpenAIResponsesB1Client,
 )
 
+from nbtriage._model_runtime.failures import ProviderFailureReason
 from nbtriage.model_contracts import B1ProviderRequestError
-from nbtriage.provider_failures import ProviderFailureReason
 from nbtriage.rag import build_b1_request
 
 

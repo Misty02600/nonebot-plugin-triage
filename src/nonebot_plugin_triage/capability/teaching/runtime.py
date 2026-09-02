@@ -6,6 +6,10 @@ from dataclasses import dataclass
 
 from nonebot import logger
 
+from nbtriage._model_runtime.settings import (
+    PROVIDER_DEFAULT_SETTINGS_REVISION,
+    task_model_settings_revision,
+)
 from nbtriage.capability.teaching.analysis import CapabilityAnalysisClient
 from nbtriage.capability.teaching.annotations import (
     CAPABILITY_ANNOTATION_BUDGET_PROFILE,
@@ -19,10 +23,6 @@ from nbtriage.capability.teaching.model_adapter import CapabilityAnalysisToolRun
 from nbtriage.opencode_go_contracts import (
     OPENCODE_GO_SEMANTIC_API_FAMILY,
     OPENCODE_GO_THINKING_SETTINGS_REVISION,
-)
-from nbtriage.task_model_settings import (
-    PROVIDER_DEFAULT_SETTINGS_REVISION,
-    task_model_settings_revision,
 )
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.task_model_runtime import (

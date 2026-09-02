@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from nbtriage.provider_failures import ProviderFailureReason
+from nbtriage._model_runtime.failures import ProviderFailureReason
 from nbtriage.rag import B1Error, B1ModelRequest
 
 EvidenceSlot = Literal[

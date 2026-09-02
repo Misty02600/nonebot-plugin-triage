@@ -74,7 +74,7 @@ flowchart TD
 - `request_evidence` 只暂停，不向真实用户发送消息；当前脚本 Gate 也不执行网络或外部工具。
 
 实现见 `src/nbtriage/bounded_agent.py`、`src/nbtriage/pydantic_agent_adapter.py`、
-`src/nbtriage/model_usage.py`、`tools/nbtriage_maintainer/deepseek_adapter.py` 与
+`src/nbtriage/_model_runtime/usage.py`、`tools/nbtriage_maintainer/deepseek_adapter.py` 与
 `tools/nbtriage_maintainer/agent_evaluation.py`，选型依据见
 [ADR-0012](../../adr/0012-use-pydantic-ai-deferred-tools-behind-domain-runtime.md)。
 首轮线上失败边界与当前证据记录在本文和

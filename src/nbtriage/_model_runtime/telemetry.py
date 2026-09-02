@@ -275,7 +275,7 @@ def record_agent_response_shape(
                 separators=(",", ":"),
                 sort_keys=True,
             )
-        tracer = runtime.provider.get_tracer("nbtriage.agent_telemetry")
+        tracer = runtime.provider.get_tracer(__name__)
         with tracer.start_as_current_span(
             "nbtriage agent response shape",
             attributes=attributes,

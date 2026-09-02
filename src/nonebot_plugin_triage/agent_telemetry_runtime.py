@@ -5,7 +5,7 @@ from pathlib import Path
 
 from nonebot import logger, require
 
-from nbtriage.agent_telemetry import (
+from nbtriage._model_runtime.telemetry import (
     AgentTelemetryRuntime,
     disable_agent_telemetry,
     install_local_agent_telemetry,

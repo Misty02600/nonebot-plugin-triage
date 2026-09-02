@@ -10,11 +10,11 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pytest import MonkeyPatch
 
 import nonebot_plugin_triage.task_model_runtime as task_model_runtime
-from nbtriage.opencode_go_contracts import OPENCODE_GO_THINKING_SETTINGS_REVISION
-from nbtriage.task_model_settings import (
+from nbtriage._model_runtime.settings import (
     ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION,
     DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION,
 )
+from nbtriage.opencode_go_contracts import OPENCODE_GO_THINKING_SETTINGS_REVISION
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.task_model_runtime import (
     TaskModelRuntimeConfigurationError,
