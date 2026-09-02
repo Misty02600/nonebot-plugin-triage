@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-import nonebot_plugin_triage.capability_analysis_adapter as capability_analysis_adapter
+import nonebot_plugin_triage.capability_analysis_navigation as capability_analysis_navigation
 from nbtriage.capabilities import (
     CapabilityRecord,
     Claim,
@@ -462,14 +462,14 @@ async def handle():
 """,
     )
     navigated: list[str | None] = []
-    original = capability_analysis_adapter._cached_call_definition
+    original = capability_analysis_navigation._cached_call_definition
 
     def record_navigation(cache, navigation, call):
         navigated.append(call.terminal_name)
         return original(cache, navigation, call)
 
     monkeypatch.setattr(
-        capability_analysis_adapter,
+        capability_analysis_navigation,
         "_cached_call_definition",
         record_navigation,
     )
@@ -570,7 +570,7 @@ async def handle():
     dependency_module = sys.modules.pop(package_name)
     monkeypatch.setitem(sys.modules, package_name, dependency_module)
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_adapter.python_dependency_navigation_roots",
+        "nonebot_plugin_triage.capability_analysis_navigation.python_dependency_navigation_roots",
         lambda: (dependency_root,),
     )
 
@@ -621,7 +621,7 @@ async def handle():
     dependency_module = sys.modules.pop(package_name)
     monkeypatch.setitem(sys.modules, package_name, dependency_module)
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_adapter.python_dependency_navigation_roots",
+        "nonebot_plugin_triage.capability_analysis_navigation.python_dependency_navigation_roots",
         lambda: (dependency_root,),
     )
 
@@ -2381,7 +2381,7 @@ matcher = on_command("secure", permission=permissions.query_permission, handlers
     monkeypatch.setitem(sys.modules, package_name, package)
     exec(compile(package_source, str(package_path), "exec"), package.__dict__)
     monkeypatch.setattr(
-        "nonebot_plugin_triage.capability_analysis_adapter.python_dependency_navigation_roots",
+        "nonebot_plugin_triage.capability_analysis_navigation.python_dependency_navigation_roots",
         lambda: (dependency_root,),
     )
 
