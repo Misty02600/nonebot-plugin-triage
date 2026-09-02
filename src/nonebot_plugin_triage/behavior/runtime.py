@@ -8,9 +8,9 @@ from nbtriage.behavior._agent import (
     BehaviorAgentError,
     PydanticAIBehaviorAgentClient,
 )
-from nonebot_plugin_triage.bug_workflow_identity import BugWorkflowIdentity
 from nonebot_plugin_triage.capability.shadow import CapabilityShadowService
 from nonebot_plugin_triage.config import NBTriageConfig
+from nonebot_plugin_triage.local_identity import LocalWorkflowIdentity
 from nonebot_plugin_triage.task_model_runtime import (
     TaskModelRuntimeConfigurationError,
     create_task_model_binding,
@@ -26,7 +26,7 @@ _BEHAVIOR_DATABASE_FILENAME = "behavior-checkpoints.sqlite3"
 def create_behavior_exploration_service(
     config: NBTriageConfig,
     *,
-    identity: BugWorkflowIdentity,
+    identity: LocalWorkflowIdentity,
     capability_shadow: CapabilityShadowService | None,
     path: Path | Callable[[], Path] = lambda: _behavior_checkpoint_path(),
 ) -> BehaviorExplorationServiceLike:

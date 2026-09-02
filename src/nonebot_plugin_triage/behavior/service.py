@@ -44,7 +44,7 @@ from nbtriage.behavior.exploration import (
     revalidate_behavior_workspace,
     transition_behavior_delivery,
 )
-from nonebot_plugin_triage.bug_workflow_identity import BugWorkflowIdentity
+from nonebot_plugin_triage.local_identity import LocalWorkflowIdentity
 
 from .contracts import (
     AuthorizationGuard,
@@ -213,7 +213,7 @@ class BehaviorExplorationService:
         self,
         *,
         path: Path | Callable[[], Path],
-        identity: BugWorkflowIdentity,
+        identity: LocalWorkflowIdentity,
         evidence_source: BehaviorEvidenceSource,
         agent_factory: BehaviorAgentFactory,
         max_concurrency: int,

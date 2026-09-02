@@ -28,7 +28,7 @@ from nonebot_plugin_triage.behavior.contracts import (
     BehaviorScope,
 )
 from nonebot_plugin_triage.behavior.service import BehaviorExplorationService
-from nonebot_plugin_triage.bug_workflow_identity import BugWorkflowIdentity
+from nonebot_plugin_triage.local_identity import LocalWorkflowIdentity
 
 _NOW = "2026-08-21T08:00:00+00:00"
 _QUESTION_CANARY = "为什么路由未触发？RAW_QUESTION_CANARY_98F3"
@@ -172,7 +172,7 @@ def _service(
 ) -> BehaviorExplorationService:
     return BehaviorExplorationService(
         path=tmp_path / "behavior-checkpoints.sqlite3",
-        identity=BugWorkflowIdentity(identity_path or tmp_path / "identity.key"),
+        identity=LocalWorkflowIdentity(identity_path or tmp_path / "identity.key"),
         evidence_source=source,
         agent_factory=probe.create,
         max_concurrency=max_concurrency,

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from nonebot import require
 
+# 历史持久化文件名；修改它会使现有 Bug 幂等键和 Behavior checkpoint 失效。
 _IDENTITY_KEY_FILENAME = "bug-workflow-hmac.key"
 _IDENTITY_KEY_BYTES = 32
 
@@ -21,7 +22,7 @@ def _resolve_identity_key_file() -> Path:
     return get_data_file("nonebot_plugin_triage", _IDENTITY_KEY_FILENAME)
 
 
-class BugWorkflowIdentity:
+class LocalWorkflowIdentity:
     """用部署本地密钥把平台标识投影成可持久化的不透明身份。"""
 
     def __init__(self, path: Path | Callable[[], Path] = _resolve_identity_key_file) -> None:
@@ -69,4 +70,4 @@ class BugWorkflowIdentity:
         return key
 
 
-__all__ = ("BugWorkflowIdentity",)
+__all__ = ("LocalWorkflowIdentity",)

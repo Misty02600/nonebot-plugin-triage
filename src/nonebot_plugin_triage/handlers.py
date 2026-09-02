@@ -496,7 +496,7 @@ async def _bug_assessment_decision(
     occurrence_key: str | None = None
     correlation_digest: str | None = None
     try:
-        identity = plugin_runtime.bug_workflow_identity
+        identity = plugin_runtime.local_identity
         report_key = identity.digest(
             "bug-report",
             adapter_name(bot),
@@ -1154,13 +1154,13 @@ async def handle_query(
             await query_matcher.finish(
                 UniMessage.text("不支持这个动作；可用动作：确认Bug、确认非Bug、解决。")
             )
-        actor_scope_hmac = plugin_runtime.bug_workflow_identity.digest(
+        actor_scope_hmac = plugin_runtime.local_identity.digest(
             "maintainer-actor",
             adapter_name(bot),
             str(bot.self_id),
             event.get_user_id(),
         )
-        idempotency_key = plugin_runtime.bug_workflow_identity.digest(
+        idempotency_key = plugin_runtime.local_identity.digest(
             "maintainer-action",
             adapter_name(bot),
             str(bot.self_id),

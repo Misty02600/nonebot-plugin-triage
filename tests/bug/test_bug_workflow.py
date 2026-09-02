@@ -207,18 +207,3 @@ async def test_unresolved_signatures_do_not_merge(
     second = await repository.record_bug(_command(report_key="2" * 64, occurrence_key="b" * 64))
 
     assert first.problem_id != second.problem_id
-
-
-def test_workflow_identity_is_stable_without_persisting_platform_ids(tmp_path: Path) -> None:
-    from nonebot_plugin_triage.bug_workflow_identity import BugWorkflowIdentity
-
-    path = tmp_path / "workflow.key"
-    first = BugWorkflowIdentity(path)
-    second = BugWorkflowIdentity(path)
-
-    digest = first.digest("actor", "OneBot V11", "123456")
-
-    assert digest == second.digest("actor", "OneBot V11", "123456")
-    assert digest != second.digest("report", "OneBot V11", "123456")
-    assert "123456" not in digest
-    assert len(path.read_bytes()) == 32

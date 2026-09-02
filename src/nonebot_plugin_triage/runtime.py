@@ -31,7 +31,6 @@ from nonebot_plugin_triage.bug.assessment import (
     create_bug_assessment_runtime_service,
 )
 from nonebot_plugin_triage.bug.repository import NoneBotORMBugWorkflowRepository
-from nonebot_plugin_triage.bug_workflow_identity import BugWorkflowIdentity
 from nonebot_plugin_triage.capability.shadow import (
     CapabilityShadowService,
     register_capability_shadow,
@@ -49,6 +48,7 @@ from nonebot_plugin_triage.knowledge_pack_runtime import (
     register_knowledge_pack,
 )
 from nonebot_plugin_triage.live_reports import LiveReportService
+from nonebot_plugin_triage.local_identity import LocalWorkflowIdentity
 from nonebot_plugin_triage.nonebot_runtime import NoneBotRuntimeObserver
 from nonebot_plugin_triage.support.guidance import PublicGuidanceServiceLike
 from nonebot_plugin_triage.support.semantic import (
@@ -209,7 +209,7 @@ class NBTriagePluginRuntime:
     report_service: LiveReportService
     bug_log_buffer: CorrelatedBugLogBuffer
     bug_workflow_repository: NoneBotORMBugWorkflowRepository
-    bug_workflow_identity: BugWorkflowIdentity
+    local_identity: LocalWorkflowIdentity
     behavior_exploration_service: BehaviorExplorationServiceLike
     bug_assessment_service: BugAssessmentServiceLike
     query_service: IncidentQueryService
@@ -323,10 +323,10 @@ def create_plugin_runtime(
         annotation_max_concurrency=config.nbtriage_capability_annotation_max_concurrency,
     )
     bug_workflow_repository = NoneBotORMBugWorkflowRepository()
-    bug_workflow_identity = BugWorkflowIdentity()
+    local_identity = LocalWorkflowIdentity()
     behavior_exploration_service = create_behavior_exploration_service(
         config,
-        identity=bug_workflow_identity,
+        identity=local_identity,
         capability_shadow=capability_shadow,
     )
     _register_behavior_exploration_lifecycle(behavior_exploration_service)
@@ -349,7 +349,7 @@ def create_plugin_runtime(
         report_service=report_service,
         bug_log_buffer=bug_log_buffer,
         bug_workflow_repository=bug_workflow_repository,
-        bug_workflow_identity=bug_workflow_identity,
+        local_identity=local_identity,
         behavior_exploration_service=behavior_exploration_service,
         bug_assessment_service=bug_assessment_service,
         query_service=query_service,
