@@ -20,6 +20,7 @@ from nbtriage.capability.teaching.analysis import (
     TeachingScene,
 )
 from nbtriage.capability.teaching.framework_semantics import (
+    PermissionSemantic,
     PermissionSemanticProfile,
     PublicConstraintKind,
     public_permission_statement,
@@ -222,7 +223,7 @@ class CapabilitySourceEvidencePack:
 
 
 def fixed_permission_constraints(
-    facts: Iterable[PermissionConstraintFact],
+    facts: Iterable[PermissionConstraintFact | PermissionSemantic],
     *,
     evidence_id: str,
 ) -> tuple[SemanticConstraint, ...]:
@@ -256,7 +257,7 @@ def fixed_permission_constraints(
 
 
 def _permission_fact_alternatives(
-    fact: PermissionConstraintFact,
+    fact: PermissionConstraintFact | PermissionSemantic,
 ) -> tuple[PermissionAlternative, ...]:
     if fact.kind is PublicConstraintKind.ROLE and fact.operation == "administrator_or_owner":
         return (

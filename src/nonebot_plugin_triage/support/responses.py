@@ -16,16 +16,11 @@ from nonebot_plugin_triage.support.threads import (
     is_scope_supplement_binding,
     pop_outgoing_thread_binding,
 )
-from nonebot_plugin_triage.universal_references import adapter_name, conversation_scope
-
-
-def _bounded_message_reference(value: object) -> str | None:
-    if isinstance(value, bool) or not isinstance(value, (int, str)):
-        return None
-    normalized = str(value)
-    if not normalized or len(normalized.encode("utf-8")) > 512:
-        return None
-    return normalized
+from nonebot_plugin_triage.universal_references import (
+    adapter_name,
+    bounded_message_reference,
+    conversation_scope,
+)
 
 
 def _receipt_target(receipt: Receipt, bot: Bot) -> Target | None:
@@ -40,7 +35,7 @@ def _receipt_target(receipt: Receipt, bot: Bot) -> Target | None:
 def _onebot_message_reference(raw_result: object, reply: Reply) -> str | None:
     if not isinstance(raw_result, Mapping):
         return None
-    reference = _bounded_message_reference(raw_result.get("message_id"))
+    reference = bounded_message_reference(raw_result.get("message_id"))
     return reference if reference is not None and reply.id == reference else None
 
 
@@ -69,8 +64,8 @@ def _discord_message_reference(
         or raw_result.channel_id <= 0
     ):
         return None
-    reference = _bounded_message_reference(raw_result.id)
-    channel_id = _bounded_message_reference(raw_result.channel_id)
+    reference = bounded_message_reference(raw_result.id)
+    channel_id = bounded_message_reference(raw_result.channel_id)
     if reference is None or channel_id != expected_target.id:
         return None
     return reference if reply.id == reference else None

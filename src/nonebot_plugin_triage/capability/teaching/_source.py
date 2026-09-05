@@ -19,10 +19,9 @@ from nbtriage.capability.teaching.analysis import (
 from nbtriage.capability.teaching.framework_semantics import (
     FrameworkFieldSemanticProfile,
     PermissionSemanticProfile,
+    alconna_dispatch_profile,
+    builtin_permission_semantic_profiles,
     nonebot_dependency_overload_profile,
-    nonebot_permission_profile,
-    onebot_v11_permission_profile,
-    uninfo_permission_profile,
     uninfo_session_field_profile,
 )
 from nbtriage.capability.teaching.source_evidence import (
@@ -169,7 +168,7 @@ def plugin_source_revision_matches(
         module_name,
         _plugin_source_root(module_name),
         cache=None,
-        permission_semantic_profiles=_permission_semantic_profiles(),
+        permission_semantic_profiles=builtin_permission_semantic_profiles(),
     )
     if not _source_inventory_complete(source_pack.partial_errors):
         raise CapabilityAnalysisAdapterError("plugin source inventory is incomplete")
@@ -190,7 +189,7 @@ def _load_validated_source_evidence_pack(
         source_root,
         cache=source_pack_cache,
         permission_semantic_profiles=(
-            _permission_semantic_profiles()
+            builtin_permission_semantic_profiles()
             if permission_semantic_profiles is None
             else permission_semantic_profiles
         ),
@@ -383,17 +382,21 @@ def _source_evidence_pack(
     return pack
 
 
-def _permission_semantic_profiles() -> tuple[PermissionSemanticProfile, ...]:
-    return (
-        nonebot_permission_profile(),
-        onebot_v11_permission_profile(),
-        uninfo_permission_profile(),
-    )
-
-
 def _append_framework_semantics_evidence(
     evidence_units: list[CapabilityEvidenceUnit],
 ) -> None:
+    if _runtime_evidence_has_constraint(
+        evidence_units,
+        kind="routing",
+        operation="alconna_dispatch",
+    ):
+        _append_framework_semantic_profile(
+            evidence_units,
+            alconna_dispatch_profile(),
+            documentation="nonebot-plugin-alconna dispatch API and implementation",
+            source_reviewed_version="0.62.1",
+            locator="framework:nonebot-plugin-alconna/dispatch",
+        )
     profiles = (
         (
             nonebot_dependency_overload_profile(),
@@ -418,6 +421,32 @@ def _append_framework_semantics_evidence(
             source_reviewed_version=source_reviewed_version,
             locator=locator,
         )
+
+
+def _runtime_evidence_has_constraint(
+    evidence_units: list[CapabilityEvidenceUnit],
+    *,
+    kind: str,
+    operation: str,
+) -> bool:
+    for evidence in evidence_units:
+        if evidence.source_kind != "runtime_capability_facts":
+            continue
+        try:
+            payload = json.loads(evidence.content)
+        except (TypeError, ValueError):
+            continue
+        constraints = payload.get("constraints") if isinstance(payload, dict) else None
+        if not isinstance(constraints, list):
+            continue
+        if any(
+            isinstance(item, dict)
+            and item.get("kind") == kind
+            and item.get("operation") == operation
+            for item in constraints
+        ):
+            return True
+    return False
 
 
 def _append_framework_semantic_profile(
@@ -462,7 +491,10 @@ def _python_evidence_uses_framework_annotation(
 ) -> bool:
     annotations = frozenset(profile.annotations)
     for evidence in evidence_units:
-        if evidence.source_kind != "python_function":
+        if evidence.source_kind not in {
+            "python_function",
+            "python_dependency_function",
+        }:
             continue
         try:
             tree = ast.parse(evidence.content)

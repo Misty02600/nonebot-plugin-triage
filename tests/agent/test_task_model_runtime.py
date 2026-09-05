@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import Mapping
 
 import httpx
 import pytest
-from pydantic_ai.messages import ModelResponse
+from pydantic_ai import models
+from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart
+from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pytest import MonkeyPatch
 
+import nonebot_plugin_triage.capability.teaching.runtime as teaching_runtime
 import nonebot_plugin_triage.task_model_runtime as task_model_runtime
 from nbtriage._model_runtime.settings import (
     ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION,
@@ -17,10 +22,49 @@ from nbtriage._model_runtime.settings import (
 from nbtriage.opencode_go_contracts import OPENCODE_GO_THINKING_SETTINGS_REVISION
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.task_model_runtime import (
+    TaskModelBinding,
     TaskModelRuntimeConfigurationError,
     create_task_model_binding,
     model_connection_revision,
 )
+
+
+def test_annotation_http_pool_follows_configured_concurrency(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    observed_limits: list[httpx.Limits] = []
+    model = FunctionModel(
+        lambda _messages, _info: ModelResponse(parts=[]),
+        model_name="fixture-model",
+    )
+
+    def bind_model(
+        _config: NBTriageConfig,
+        *,
+        environ: Mapping[str, str] | None,
+        http_limits: httpx.Limits,
+    ) -> TaskModelBinding:
+        del environ
+        observed_limits.append(http_limits)
+        return TaskModelBinding(
+            model=model,
+            provider=model.system,
+            model_name=model.model_name,
+            api_family="pydantic-ai",
+        )
+
+    monkeypatch.setattr(teaching_runtime, "create_task_model_binding", bind_model)
+
+    teaching_runtime.create_capability_annotation_client_factory(
+        NBTriageConfig(
+            nbtriage_model_name="fixture:fixture-model",
+            nbtriage_capability_annotation_max_concurrency=73,
+        )
+    )
+
+    assert len(observed_limits) == 1
+    assert observed_limits[0].max_connections == 73
+    assert observed_limits[0].max_keepalive_connections == 73
 
 
 def test_model_id_without_backend_uses_pydantic_ai_inference(
@@ -83,7 +127,13 @@ def test_unknown_openai_compatible_url_uses_generic_openai_chat_model(
         nbtriage_model_base_url="https://model.example/v1",
     )
 
-    binding = create_task_model_binding(config)
+    binding = create_task_model_binding(
+        config,
+        http_limits=httpx.Limits(
+            max_connections=50,
+            max_keepalive_connections=50,
+        ),
+    )
 
     assert isinstance(binding.model, OpenAIChatModel)
     assert binding.provider == "openai"
@@ -99,7 +149,11 @@ def test_openai_responses_model_id_keeps_api_family_distinct(
     monkeypatch.setenv("OPENAI_API_KEY", "test-only")
 
     binding = create_task_model_binding(
-        NBTriageConfig(nbtriage_model_name="openai:shared-model-name")
+        NBTriageConfig(nbtriage_model_name="openai:shared-model-name"),
+        http_limits=httpx.Limits(
+            max_connections=50,
+            max_keepalive_connections=50,
+        ),
     )
 
     assert binding.provider == "openai"
@@ -154,22 +208,51 @@ def test_native_deepseek_v4_binding_matches_high_thinking_contract(
 ) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-only-key")
     observed_timeouts: list[float] = []
+    observed_limits: list[httpx.Limits | None] = []
     clients: list[httpx.AsyncClient] = []
+    requests: list[dict[str, object]] = []
 
-    def create_http_client(*, timeout_seconds: float) -> httpx.AsyncClient:
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "cap-fixture",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "deepseek-v4-flash",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "OK"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    def create_http_client(
+        *,
+        timeout_seconds: float,
+        limits: httpx.Limits | None,
+    ) -> httpx.AsyncClient:
         observed_timeouts.append(timeout_seconds)
-        client = httpx.AsyncClient(timeout=timeout_seconds)
+        observed_limits.append(limits)
+        client = httpx.AsyncClient(timeout=timeout_seconds, transport=httpx.MockTransport(respond))
         clients.append(client)
         return client
 
     monkeypatch.setattr(task_model_runtime, "provider_http_client", create_http_client)
 
     try:
+        limits = httpx.Limits(max_connections=50, max_keepalive_connections=50)
         binding = create_task_model_binding(
             NBTriageConfig(
                 nbtriage_model_name="deepseek:deepseek-v4-flash",
-                nbtriage_model_timeout_seconds=300,
-            )
+                nbtriage_model_timeout_seconds=400,
+            ),
+            http_limits=limits,
         )
 
         assert binding.provider == "deepseek"
@@ -180,7 +263,21 @@ def test_native_deepseek_v4_binding_matches_high_thinking_contract(
         assert binding.model_settings.get("parallel_tool_calls") is False
         assert binding.model_settings.get("tool_choice") == "auto"
         assert binding.model_settings.get("temperature") == 0
-        assert observed_timeouts == [300]
+        assert observed_timeouts == [400]
+        assert observed_limits == [limits]
+        with models.override_allow_model_requests(True):
+            asyncio.run(
+                binding.model.request(
+                    [ModelRequest(parts=[UserPromptPart("Reply OK")])],
+                    {**binding.model_settings, "max_tokens": 32768},
+                    ModelRequestParameters(),
+                )
+            )
+        assert requests[0]["max_tokens"] == 32768
+        assert "max_completion_tokens" not in requests[0]
+        assert requests[0]["reasoning_effort"] == "high"
+        assert binding.model.profile.get("openai_chat_thinking_field") == "reasoning_content"
+        assert binding.model.profile.get("openai_chat_send_back_thinking_parts") == "field"
     finally:
         for client in clients:
             asyncio.run(client.aclose())
@@ -230,5 +327,55 @@ def test_custom_endpoint_fails_when_provider_does_not_support_override(
             NBTriageConfig(
                 nbtriage_model_name="fixture:model",
                 nbtriage_model_base_url="https://model.example/v1",
-            )
+            ),
+            http_limits=httpx.Limits(max_connections=50),
         )
+
+
+def test_custom_endpoint_keeps_native_transport_when_http_client_is_rejected(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    attempts: list[bool] = []
+    model = FunctionModel(
+        lambda _messages, _info: ModelResponse(parts=[]),
+        model_name="fixture-model",
+    )
+
+    class ProviderRejectingHttpClient:
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            http_client: object | None = None,
+        ) -> None:
+            assert base_url == "https://model.example/v1"
+            attempts.append(http_client is not None)
+            if http_client is not None:
+                raise ValueError("custom HTTP clients are not supported")
+
+    def resolve(_model_id: str, *, provider_factory):
+        provider_factory("fixture")
+        return model
+
+    monkeypatch.setattr(task_model_runtime, "infer_model", resolve)
+    monkeypatch.setattr(
+        task_model_runtime,
+        "infer_provider_class",
+        lambda _provider_name: ProviderRejectingHttpClient,
+    )
+    monkeypatch.setattr(
+        task_model_runtime,
+        "provider_http_client",
+        lambda **_kwargs: object(),
+    )
+
+    binding = create_task_model_binding(
+        NBTriageConfig(
+            nbtriage_model_name="fixture:model",
+            nbtriage_model_base_url="https://model.example/v1",
+        ),
+        http_limits=httpx.Limits(max_connections=50),
+    )
+
+    assert binding.model is model
+    assert attempts == [True, False]

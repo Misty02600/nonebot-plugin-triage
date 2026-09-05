@@ -23,12 +23,13 @@ CORE_INSTRUCTION = """\
 - 每条 claim 与 constraint 都必须引用本轮允许的 Evidence；未知配置不能被引用或推断。
 - claim 或 constraint 直接使用 config_projections 中的当前标量值时，同一字段必须列出对应的 reference_id；不得只写配置值而漏掉引用。
 - 当前教学只描述本次部署实际启用的行为。配置投影已经关闭的处理分支必须省略，不得改写成“若开启”后继续保留；启用路径使用了当前配置值时必须引用对应 reference_id。
+- 若当前配置已关闭该教学单元的全部业务执行路径，则返回 knowledge_enabled=false 且 entries 为空；仅返回未启用提示不视为仍有可教学的业务功能。仅部分路径关闭时，保留仍启用的部分。
 - 判断公开业务语义时，实际条件、数据流、赋值、运算、状态更新和调度逻辑优先于注释、docstring、变量名、日志和用户提示文字。提示文字可以证明用户会看到什么，不能在与可执行行为冲突或含糊时单独证明其描述的数值、状态或因果关系。
 - 不得暴露源码路径、Python 符号、Matcher、Rule、Permission、handler、配置键、环境变量、Evidence ID 或实现细节；所有公开字段都直接说明功能，不写“根据证据”“源码表明”“从代码可见”等分析过程措辞。
 - 权限或访问控制只描述用户可见的资格、适用分支与拒绝效果。密钥、令牌、凭据、认证头、请求参数及其传输方式属于实现机制；即使 Evidence 能证明，或它们只影响特定 Option 或业务分支，也必须省略，不能为了满足 behavior_boundary 的分支说明要求而公开。
 - 只描述用户看得见、用得上的行为。静态证据不能证明某次请求一定通过，也不能证明外部服务健康。
 - 内部持久化只有在其用户可观察效果有教学价值时才说明。应描述“重启后仍保留”“下次调用仍生效”等公开效果，不得描述保存到本地文件、数据库、LocalStore、缓存或配置字段；无法证明跨重启效果时直接省略。
-- gate_candidates 只是静态层发现的疑似执行控制点，不等于已经存在约束。你必须逐项调查并解释为 constraint、no_constraint 或 unresolved。同一注册表达式中的多个未解析 Permission 符号会合并为一个候选；若它是复合 OR，必须在这一条 permission constraint 的 alternatives 中完整解释，不能把同一表达式拆成互不相干的候选。`gate_resolutions[].candidate_id` 负责给每个候选下结论；公开角色、场景、资格或限流前提使用 `constraints[].gate_candidate_ids` 关联，能力自身的业务准备状态使用 `behavior_boundary` claim 的 `gate_candidate_ids` 关联。两种关联都只是内部覆盖关系，不是 Evidence ID、entry ID 或 Permission alternative，也不表达 AND / OR。
+- gate_candidates 只是静态层发现的疑似执行控制点，不等于已经存在约束。owner 与 symbol 只定位候选所属对象和字段或符号，不证明其公开语义；缺失时依据所引 Evidence 定位。必须逐项依据当前 Evidence 给出 constraint、no_constraint 或 unresolved；现有材料足够时直接完成，不要求额外工具调查，只有缺少明确事实时才补证。同一注册表达式中的多个未解析 Permission 符号会合并为一个候选；若它是复合 OR，必须在这一条 permission constraint 的 alternatives 中完整解释，不能把同一表达式拆成互不相干的候选。`gate_resolutions[].candidate_id` 负责给每个候选下结论；公开角色、场景、资格或限流前提使用 `constraints[].gate_candidate_ids` 关联，能力自身的业务准备状态使用 `behavior_boundary` claim 的 `gate_candidate_ids` 关联。两种关联都只是内部覆盖关系，不是 Evidence ID、entry ID 或 Permission alternative，也不表达 AND / OR。
 - 解释请求 JSON 中已有 gate_candidates 的真实执行条件必须关联该 candidate_id，并且同一 entry 只能选择一个公开语义所有者。Handler、helper 或其他当前 Evidence 直接证明的真实执行前提即使没有对应候选也必须公开，此时 gate_candidate_ids 留空。没有 gate candidate 不等于没有执行限制。no_constraint 只允许在函数定义、框架事实或当前运行配置明确证明它不会限制使用时选择，且不得把“不限流”“没有权限限制”等整体无约束结论写进公开字段；真实的正向限制可以说明有 Evidence 支持的适用对象或豁免对象。unresolved 表示补证后仍不能确认。
 - 如果完整门禁定义表明布尔结果直接由当前运行配置决定，而当前投影值已经使门禁放行，例如 `return enabled` 且 `enabled=true`，该门禁必须解释为 no_constraint。不要把已经满足的内部开关写成 access、summary、behavior_boundary 或其他公开使用前提。
 - platform_scope 是模型外拥有的 Runtime 路由事实，不属于公开教学语义。不得根据 Adapter、平台声明或源码导入把它生成或重复为 access、scene、summary、behavior_boundary 或其他公开字段；消费者需要平台过滤时直接使用当前 CapabilityRecord。
@@ -39,7 +40,7 @@ CORE_INSTRUCTION = """\
 输出指导：
 - 请求 JSON 中的 invocations 是模型必须逐项返回的功能入口；knowledge_enabled=true 时，entries 的 entry_id 必须与它完全一致，不得自行合并、拆分或新增入口。
 - requires_mention=true 时，每条 anchored usage 必须在 command_body 紧前写 `@bot `；regex 与 complete usage 必须包含且只包含一个 `@bot` 占位。回复上下文仍放在最前，例如 `[回复图片] @bot 识图`。
-- 每个 entry 必须恰好包含一条 name、一条 summary 和至少一条 usage。name 是简短功能名；summary 在一句话内说明用途和仅凭 usage 难以理解的重要参数含义，两者都有价值时应同时说明，不把它们当成二选一；不要逐字重复 usage。summary 作为帮助图中的短行，默认不加句末句号。参数占位优先简洁，如 `<用户>`、`<话题>`、`<文本>`。
+- 每个 entry 必须恰好包含一条 name、一条 summary 和至少一条 usage。name 是简短功能名；summary 在一句话内说明用途和仅凭 usage 难以理解的重要参数含义，两者都有价值时应同时说明，不把它们当成二选一；不重复解释 usage 已清楚展示的同义入口或参数结构。summary 作为帮助图中的短行，默认不加句末句号。参数占位优先简洁，如 `<用户>`、`<话题>`、`<文本>`。
 - `<参数>` 表示当次调用必须提供；`[参数]` 表示可省略。可选 Option 放入方括号；同义触发或 Option 别名可用 `(A|B)`。`[图片] [文字]` 表示可分别组合，`[图片|文字]` 表示二选一，不得混用。
 - 同一参数可以重复提供多次时，把省略号写在完整参数槽位之后：`<参数>...` 表示至少一项、`[参数]...` 表示零项或多项。mention 是完整输入原子，必须整体放入槽位，例如必填重复写成 `<@用户>...`，不得写成 `@用户...` 或 `@<用户>...`；也不要重复 `@bot` 调用占位，或为了展示重复性把同一个参数连续写很多遍。Runtime parser 已提供 canonical_usages 时，仍只能命名匿名槽位，不得自行增删 `...`。
 - 同一位置由当前证据明确给出的备选值不超过四个时可以直接枚举；五至六个时使用一个简短概念槽位，并在 summary 说明这些选项；七个及以上使用概念槽位，可以简单概括共同类别，但不逐项解释。聚合能力的成员槽位是必填时使用 `<成员名>`，不要用表示可省略的方括号。
@@ -48,15 +49,17 @@ CORE_INSTRUCTION = """\
 - 只有当前 Evidence 明确显示 Handler 会读取被回复的消息或媒体时，才允许生成 `[回复图片]`、`[回复表情包]` 等回复上下文；不得因为命令涉及图片、Bot 或常见聊天习惯而猜测支持回复。回复上下文不要添加“消息”；需要提及 Bot 时使用 `@bot`。
 - 后续交互不要写进 usage；只在确实有助使用时作为 behavior_boundary 简洁说明。
 - search_term 同时承载同义检索词和能力支持对象；每条只能是一条可直接成为用户查询的独立短语，不得把多个词用顿号、逗号、分号或 `|` 拼进同一 statement。不得虚构命令，也不得写成使用说明。
-- behavior_boundary 只记录 usage 无法表达的输入格式、后续交互、处理范围、结果范围、能力所需的业务准备状态或其他业务边界。业务准备状态描述能力或业务流程当前是否已进入可执行阶段，不是调用者持有什么身份或资格；它即使限制整个 entry，也仍属于 behavior_boundary，不得伪装成 permission 或 access。若该边界解释当前 gate candidate，必须在本轮重新输出这条 claim 并填写 gate_candidate_ids；不得只依赖 previous baseline。普通必填/可选参数不得重复成 behavior_boundary。调用者角色、会话场景、使用资格和限流不得重复写进 behavior_boundary；如果某项角色或资格只限制特定 Option、子命令、输入类别、业务对象或结果分支，而其他成功路径不需要它，则必须在 behavior_boundary 中准确说明适用分支，不得提升为整个 entry 的 requirement。
-- 业务准备状态必须属于用户能够通过公开业务操作理解、改变或满足的业务流程状态。普通用户无法操作的运行配置、基础设施或外部服务就绪条件不是业务准备状态，不得进入教学合同；只保留有教学价值且 Evidence 支持的用户可观察效果。
-- constraints 只记录整个教学 entry 的共同角色、会话场景、使用资格和限流前提。一个作为 entry-wide 前提、实际判断调用者身份、场景或可配置资格的 NoneBot Permission 必须输出为一条 kind=permission，并把所有允许执行的路径放进 permission_alternatives；仅因业务准备状态通过 Permission 形式注册，不得把它分类为 permission。Handler 内部调用 Permission 但只限制部分业务分支时，不生成全局 permission。alternatives 固定按 OR 理解，不能拆成多条彼此独立、会被误解为 AND 的 requirement。rate_limit 仍是独立前提。普通命令参数、回复上下文和 `@bot` 由 usage 唯一表达，永远不生成 constraint。
-- permission alternative 按能力入口实际执行的判断分类：会话类别使用 scene；入口直接比较调用者身份或角色时使用 role；入口查询可配置权限、ACL、名单或开放状态时使用 access。不得根据某种身份通常如何获得资格反推 role；权限系统内部的默认授予、预分配或动态映射只说明如何取得 access，只有入口布尔表达式直接包含角色分支时才保留 role。
+- behavior_boundary 记录 usage 无法表达的输入格式、后续交互、处理范围、结果范围或其他业务边界；普通必填/可选参数不得重复。执行条件按以下顺序确定唯一公开归属：
+  1. 先检查 fixed_constraints：已覆盖的条件由模型外保留，不重复输出；尚未覆盖的条件继续分类。
+  2. 区分业务准备状态与调用者身份、场景、资格或限流。业务准备状态表示用户可通过公开业务操作理解、改变或满足的流程状态，即使限制整个 entry 或通过 Permission 注册，也只写 behavior_boundary，不写 permission/access。普通用户无法操作的运行配置、基础设施或外部服务就绪条件不属于业务准备状态，不进入教学合同。
+  3. 对身份、场景、资格和限流判断适用范围：constraints 只表达整个 entry 的共同执行前提。仅限制某个 Option、子命令、输入类别、业务对象或结果分支的角色/资格，应在 behavior_boundary 说明对应分支，不得提升为全局 requirement；全局条件不得重复写进边界。
+  4. 对需要新增的全局条件选择结构：实际判断身份、场景或可配置资格的 NoneBot Permission，每个表达式使用一条 kind=permission，全部允许路径放进 permission_alternatives（OR），不拆成多条独立 requirement；非 Permission 的身份、场景或资格条件分别使用独立 role、scene、access constraint。rate_limit 使用独立 constraint。普通参数、回复上下文和 @bot 只由 usage 表达。
+- behavior_boundary 若解释当前 gate candidate，必须在本轮重新输出并填写 gate_candidate_ids，不得只依赖 previous baseline。
+- role、scene、access 表示条件的业务含义，不决定它必须位于顶层：按上一步选择独立 constraint 或 permission alternative 后，会话类别使用 scene，入口直接比较调用者身份或角色使用 role，入口查询可配置权限、ACL、名单或开放状态使用 access。不得根据身份通常如何获得资格反推 role；权限系统内部的默认授予、预分配或动态映射只说明如何取得 access，只有入口布尔表达式直接包含角色分支时才保留 role。
 - 非 Permission 的 scene constraint 使用 allowed_scenes 完整列出源码允许的所有原子场景；不得为了适配单值而缩窄 statement。原子场景只有 private、group、guild、channel_text、channel_category、channel_voice，不创建 non_private 或 guild_or_channel 等组合值。该枚举是当前合同的封闭集合；Handler 对明确原子场景进入 finish、return、raise 等终止分支时，直接从全集排除该原子，不为重新确认这一集合运算继续导航框架或 Adapter 源码。只有被判断字段无法对应现有原子场景时才补证。Permission 内的每条 scene alternative 仍只表示一个原子 OR 分支。
 - role 的具体值按当前 Evidence 和 Schema 选择；无法无损归约为已知角色时使用 custom，不依据角色名称或数字等级擅自展开。access 只表示当前用户、群或场景还需取得授权、名单或开放资格，调用者本人不必是授权者。动态授权名单未知不等于 unresolved，也不是关闭教学知识的理由。
 - access 的公开文字只保留 Evidence 证明的资格效果，不得泄露名单、ID、配置键或断言当前主体命中名单，也不得猜测授权主体、原因或控制方式；默认开放时只说明资格可能受设置影响，默认关闭时只说明使用前需取得对应权限。业务准备状态属于 behavior_boundary。rate_limit 按 Schema 填写 policy 和 scope；引用数值配置时公开说明必须包含数值。
 - 一项能力的 Handler、提示或帮助文字不能证明另一项能力的详细合同；跨条目生成详细用法、输入格式或交互方式时，必须同时具有目标条目的当前 Runtime 调用事实或实现 Evidence。
-- 同一公开事实只能选择一个语义所有者：usage 已表达的参数结构不得重复；调用频率只写 rate_limit；整个 entry 的所有成功路径都直接要求的调用者身份只写 role；整个 entry 的会话类别只写 scene；整个 entry 查询的可配置权限、名单或开放资格只写 access；只限制部分业务分支的角色或资格以及业务准备状态只写 behavior_boundary。
 - 没有 previous_annotation 时 baseline_changes 必须为空。
 - 只通过已配置的结构化输出直接填写 knowledge_enabled、entries 和 gate_resolutions 三个顶层字段；不得添加 payload、output 或 result 包装，也不得把对象序列化成 JSON 字符串。
 """

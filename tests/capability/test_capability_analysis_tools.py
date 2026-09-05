@@ -410,6 +410,19 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
     assert provider.evidence_is_current(_request(revision), manifest) is True
     handler.write_text("def handle():\n    return True\n", encoding="utf-8")
     assert provider.evidence_is_current(_request(revision), manifest) is False
+    validation = provider.validate_evidence_currentness(_request(revision), manifest)
+    assert validation.current is False
+    assert [item.to_dict() for item in validation.mismatches] == [
+        {
+            "evidence_id": target_evidence.evidence_id,
+            "source_kind": target_evidence.source_kind,
+            "locator": "target_plugin/handler.py",
+            "root_name": "target_plugin",
+            "expected_revision": target_evidence.revision,
+            "actual_revision": ("sha256:" + hashlib.sha256(handler.read_bytes()).hexdigest()),
+            "reason": "revision_changed",
+        }
+    ]
 
     dependency = profiles.navigation_profile.root("python_purelib")
     assert dependency is not None

@@ -319,7 +319,7 @@ def create_plugin_runtime(
         annotation_client_factory=capability_annotation_client_factory,
         config_policy=config_value_policy,
         annotation_analysis_revision=capability_annotation_analysis_revision(config),
-        annotation_evidence_validator=capability_teaching_tools.evidence_is_current,
+        annotation_evidence_validator=capability_teaching_tools.validate_evidence_currentness,
         annotation_max_concurrency=config.nbtriage_capability_annotation_max_concurrency,
     )
     bug_workflow_repository = NoneBotORMBugWorkflowRepository()

@@ -106,7 +106,11 @@ from nonebot_plugin_triage.support.threads import (
     PendingContinuationBinding,
     PreparedScopeSupplementBinding,
 )
-from nonebot_plugin_triage.universal_references import adapter_name, conversation_scope
+from nonebot_plugin_triage.universal_references import (
+    adapter_name,
+    bounded_message_reference,
+    conversation_scope,
+)
 
 plugin_runtime = create_plugin_runtime(plugin_config)
 
@@ -333,21 +337,8 @@ def _report_request(
         bot_scope=str(bot.self_id),
         actor_scope=event.get_user_id(),
         target=target,
-        reply_reference=_reply_reference(replies[0]) if replies else None,
+        reply_reference=bounded_message_reference(replies[0].id) if replies else None,
     )
-
-
-def _bounded_message_reference(value: object) -> str | None:
-    if isinstance(value, bool) or not isinstance(value, (int, str)):
-        return None
-    normalized = str(value)
-    if not normalized or len(normalized.encode("utf-8")) > 512:
-        return None
-    return normalized
-
-
-def _reply_reference(reply: Reply) -> str | None:
-    return _bounded_message_reference(reply.id)
 
 
 def _reply_visible_text(message: OriginalUniMsg) -> str | None:
@@ -1217,7 +1208,7 @@ async def _finish_bounded_query_messages(message: str, *, max_chars: int = 3_500
 def _event_identity(event: Event) -> str:
     for name in ("message_id", "id"):
         value = getattr(event, name, None)
-        bounded = _bounded_message_reference(value)
+        bounded = bounded_message_reference(value)
         if bounded is not None:
             return f"{event.get_event_name()}:{bounded}"
     timestamp = getattr(event, "time", None)
@@ -1227,10 +1218,10 @@ def _event_identity(event: Event) -> str:
 def _stable_event_identity(event: Event) -> str | None:
     """只接受平台提供的稳定事件标识，不为长期 Thread 伪造回退值。"""
     for name in ("message_id", "id"):
-        value = _bounded_message_reference(getattr(event, name, None))
+        value = bounded_message_reference(getattr(event, name, None))
         if value is None:
             continue
-        reference = _bounded_message_reference(f"{name}:{value}")
+        reference = bounded_message_reference(f"{name}:{value}")
         if reference is not None:
             return reference
     return None

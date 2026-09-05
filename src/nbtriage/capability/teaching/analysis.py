@@ -290,6 +290,8 @@ class CapabilityGateCandidate:
     kind: CapabilityGateKind
     entry_ids: tuple[str, ...]
     evidence_ids: tuple[str, ...]
+    owner: str | None = None
+    symbol: str | None = None
 
     def __post_init__(self) -> None:
         _bounded_text(self.candidate_id, "gate candidate_id", max_length=128)
@@ -306,6 +308,10 @@ class CapabilityGateCandidate:
         if len(self.entry_ids) != len(set(self.entry_ids)):
             raise CapabilityAnalysisError("gate candidate entry_ids must be unique")
         _evidence_ids(self.evidence_ids, "gate candidate evidence_ids")
+        if self.owner is not None:
+            _bounded_text(self.owner, "gate candidate owner", max_length=512)
+        if self.symbol is not None:
+            _bounded_text(self.symbol, "gate candidate symbol", max_length=8_000)
 
 
 @dataclass(frozen=True)
@@ -916,15 +922,19 @@ def _projected_config_literals(value: object) -> tuple[str, ...]:
     if isinstance(value, bool) or value is None:
         return ()
     if isinstance(value, int):
-        return (str(value),)
-    if isinstance(value, float):
+        literals = (str(value),)
+    elif isinstance(value, float):
         literals = [str(value)]
         if value.is_integer():
             literals.append(str(int(value)))
-        return tuple(dict.fromkeys(literals))
-    if isinstance(value, str) and value:
-        return (value,)
-    return ()
+        literals = tuple(dict.fromkeys(literals))
+    elif isinstance(value, str) and value:
+        literals = (value,)
+    else:
+        return ()
+    return tuple(
+        literal for literal in literals if literal.casefold() not in {"0", "1", "true", "false"}
+    )
 
 
 def _validate_text_config_value_references(

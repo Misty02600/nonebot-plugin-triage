@@ -203,6 +203,7 @@ def create_opencode_go_chat_model(
     api_key: str,
     model: str,
     timeout_seconds: float,
+    http_limits: httpx.Limits | None = None,
 ) -> OpenCodeGoChatModel:
     sdk_client = AsyncOpenAI(
         api_key=api_key,
@@ -212,6 +213,7 @@ def create_opencode_go_chat_model(
         http_client=provider_http_client(
             timeout_seconds=timeout_seconds,
             request_hooks=(_place_model_first,),
+            limits=http_limits,
         ),
     )
     return OpenCodeGoChatModel(

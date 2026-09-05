@@ -4,10 +4,12 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
+from inspect import signature
 from typing import Any, cast
 
+import httpx
 from pydantic_ai.models import Model, infer_model
-from pydantic_ai.providers import Provider, infer_provider_class
+from pydantic_ai.providers import Provider, infer_provider, infer_provider_class
 from pydantic_ai.settings import ModelSettings
 
 from nbtriage._model_runtime.http_diagnostics import provider_http_client
@@ -39,6 +41,7 @@ def create_task_model_binding(
     config: NBTriageConfig,
     *,
     environ: Mapping[str, str] | None = None,
+    http_limits: httpx.Limits | None = None,
 ) -> TaskModelBinding:
     """按公开 transport 配置构造一个 Pydantic AI 模型，并保留实际身份。
 
@@ -47,6 +50,8 @@ def create_task_model_binding(
             ``provider:model`` 模型 ID。
         environ: 仅供已知连接预设和测试读取 API Key；通用 Pydantic AI
             Provider 仍使用其官方环境变量解析。
+        http_limits: 当前任务需要覆盖 Provider 默认连接池时使用的原生
+            HTTPX 限制；未提供时保留 Provider 默认行为。
 
     Returns:
         绑定实际 Pydantic AI Model、Provider 身份和模型设置的运行对象。
@@ -76,6 +81,7 @@ def create_task_model_binding(
                 api_key=api_key,
                 model=configured_model.split(":", 1)[1],
                 timeout_seconds=config.nbtriage_model_timeout_seconds,
+                http_limits=http_limits,
             )
             return _binding(
                 model,
@@ -88,19 +94,41 @@ def create_task_model_binding(
             config.nbtriage_model_base_url is None
             and configured_model.split(":", 1)[0] == "deepseek"
         ):
+            from pydantic_ai.models.openai import OpenAIChatModel
+            from pydantic_ai.profiles.openai import OpenAIModelProfile
+            from pydantic_ai.providers.deepseek import DeepSeekProvider
+
+            model = OpenAIChatModel(
+                configured_model.split(":", 1)[1],
+                provider=DeepSeekProvider(
+                    api_key=environment.get("DEEPSEEK_API_KEY"),
+                    http_client=provider_http_client(
+                        timeout_seconds=config.nbtriage_model_timeout_seconds,
+                        limits=http_limits,
+                    ),
+                ),
+                # Partial profile 保留原生 thinking/工具能力，只修正官方输出额度字段。
+                profile=OpenAIModelProfile(openai_chat_supports_max_completion_tokens=False),
+            )
+        elif config.nbtriage_model_base_url is None and http_limits is None:
+            model = infer_model(configured_model)
+        elif config.nbtriage_model_base_url is None:
+            assert http_limits is not None
             model = infer_model(
                 configured_model,
-                provider_factory=_deepseek_provider_factory(
+                provider_factory=_http_limited_provider_factory(
                     timeout_seconds=config.nbtriage_model_timeout_seconds,
-                    api_key=environment.get("DEEPSEEK_API_KEY"),
+                    http_limits=http_limits,
                 ),
             )
-        elif config.nbtriage_model_base_url is None:
-            model = infer_model(configured_model)
         else:
             model = infer_model(
                 configured_model,
-                provider_factory=_base_url_provider_factory(config.nbtriage_model_base_url),
+                provider_factory=_base_url_provider_factory(
+                    config.nbtriage_model_base_url,
+                    timeout_seconds=config.nbtriage_model_timeout_seconds,
+                    http_limits=http_limits,
+                ),
             )
         model_settings, settings_revision = task_model_settings(model)
         return _binding(
@@ -137,12 +165,21 @@ def _binding(
     )
 
 
-def _base_url_provider_factory(base_url: str) -> Callable[[str], Provider[Any]]:
+def _base_url_provider_factory(
+    base_url: str,
+    *,
+    timeout_seconds: float,
+    http_limits: httpx.Limits | None,
+) -> Callable[[str], Provider[Any]]:
     def create_provider(provider_name: str) -> Provider[Any]:
         provider_class = infer_provider_class(provider_name)
-        constructor = cast(Callable[..., Provider[Any]], provider_class)
         try:
-            return constructor(base_url=base_url)
+            return _construct_provider(
+                provider_class,
+                constructor_kwargs={"base_url": base_url},
+                timeout_seconds=timeout_seconds,
+                http_limits=http_limits,
+            )
         except TypeError as error:
             raise TaskModelRuntimeConfigurationError(
                 f"provider {provider_name} does not support a base URL override"
@@ -151,24 +188,52 @@ def _base_url_provider_factory(base_url: str) -> Callable[[str], Provider[Any]]:
     return create_provider
 
 
-def _deepseek_provider_factory(
+def _http_limited_provider_factory(
     *,
     timeout_seconds: float,
-    api_key: str | None,
+    http_limits: httpx.Limits,
 ) -> Callable[[str], Provider[Any]]:
     def create_provider(provider_name: str) -> Provider[Any]:
-        if provider_name != "deepseek":
-            raise TaskModelRuntimeConfigurationError(
-                f"unexpected provider for DeepSeek transport: {provider_name}"
-            )
-        from pydantic_ai.providers.deepseek import DeepSeekProvider
-
-        return DeepSeekProvider(
-            api_key=api_key,
-            http_client=provider_http_client(timeout_seconds=timeout_seconds),
+        if provider_name.startswith("gateway/"):
+            return infer_provider(provider_name)
+        provider_class = infer_provider_class(provider_name)
+        return _construct_provider(
+            provider_class,
+            constructor_kwargs={},
+            timeout_seconds=timeout_seconds,
+            http_limits=http_limits,
         )
 
     return create_provider
+
+
+def _construct_provider(
+    provider_class: type[Provider[Any]],
+    *,
+    constructor_kwargs: Mapping[str, object],
+    timeout_seconds: float,
+    http_limits: httpx.Limits | None,
+) -> Provider[Any]:
+    constructor = cast(Callable[..., Provider[Any]], provider_class)
+    try:
+        parameters = signature(provider_class).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if http_limits is None or "http_client" not in parameters:
+        return constructor(**constructor_kwargs)
+    try:
+        return constructor(
+            **constructor_kwargs,
+            http_client=provider_http_client(
+                timeout_seconds=timeout_seconds,
+                limits=http_limits,
+            ),
+        )
+    except (TypeError, ValueError) as http_client_error:
+        try:
+            return constructor(**constructor_kwargs)
+        except (TypeError, ValueError) as native_error:
+            raise http_client_error from native_error
 
 
 def _pydantic_ai_api_family(model_id: str) -> str:

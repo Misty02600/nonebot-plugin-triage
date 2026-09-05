@@ -86,6 +86,7 @@ from nbtriage.capability.teaching.analysis import (
 )
 from nbtriage.capability.teaching.annotations import (
     CAPABILITY_ANNOTATION_PROMPT_ID,
+    CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT,
     CapabilityAnnotationError,
     CapabilityAnnotationProjectionError,
     project_capability_annotation,
@@ -745,6 +746,7 @@ def _alias_literals(target: CapabilityInvocationTarget) -> tuple[str, ...]:
 def _alias_pattern_failures(
     entries: Sequence[_AnalysisEntryOutput],
     targets: Mapping[str, CapabilityInvocationTarget],
+    standard_usages: Mapping[str, Sequence[str]],
 ) -> tuple[tuple[_AnalysisEntryOutput, CapabilityInvocationTarget, str], ...]:
     failures: list[tuple[_AnalysisEntryOutput, CapabilityInvocationTarget, str]] = []
     for entry in entries:
@@ -763,21 +765,23 @@ def _alias_pattern_failures(
         except CapabilityUsageExpressionError as error:
             failures.append((entry, target, str(error)))
             continue
-        usage_error = _display_trigger_usage_error(entry, target, entry.display_trigger)
+        usage_error = _display_trigger_usage_error(
+            standard_usages.get(entry.entry_id, ()), target, entry.display_trigger
+        )
         if usage_error is not None:
             failures.append((entry, target, usage_error))
     return tuple(failures)
 
 
 def _display_trigger_usage_error(
-    entry: _AnalysisEntryOutput,
+    standard_usages: Sequence[str],
     target: CapabilityInvocationTarget,
     display_trigger: str,
 ) -> str | None:
     assert target.command_body is not None
     pattern = usage_command_body_pattern(target.command_body)
     grouped_trigger = group_literal_expression_for_usage(display_trigger)
-    for usage in (item.statement for item in entry.claims if item.kind == "usage"):
+    for usage in standard_usages:
         rendered, substitutions = re.subn(
             pattern,
             lambda _match: grouped_trigger,
@@ -793,12 +797,28 @@ def _display_trigger_usage_error(
     return None
 
 
-class _NextRequestTotalTokenLimits(UsageLimits):
-    """允许当前响应完成校验，把累计 total-token 超限延迟到下一请求前。"""
+class _NextRequestTokenLimits(UsageLimits):
+    """允许已付费响应完成校验，把 token 超限延迟到下一请求前。"""
+
+    _received_oversized_input = False
 
     def check_tokens(self, usage: RunUsage) -> None:
         response_limits = replace(self, total_tokens_limit=None)
         UsageLimits.check_tokens(response_limits, usage)
+
+    def check_per_request_input_tokens(self, request_input_tokens: int) -> None:
+        limit = self.per_request_input_tokens_limit
+        if limit is not None and request_input_tokens > limit:
+            self._received_oversized_input = True
+
+    def check_before_request(self, usage: RunUsage) -> None:
+        if self._received_oversized_input:
+            limit = self.per_request_input_tokens_limit
+            raise UsageLimitExceeded(
+                "The next request would follow a response whose input exceeded "
+                f"the per_request_input_tokens_limit of {limit}"
+            )
+        UsageLimits.check_before_request(self, usage)
 
 
 def _error_chain_contains_timeout(error: BaseException) -> bool:
@@ -885,7 +905,7 @@ class PydanticAICapabilityAnalysisClient:
         tool_runtime_factory: CapabilityAnalysisToolRuntimeFactory | None = None,
         max_requests: int = 10,
         max_tool_calls: int = 7,
-        total_tokens_limit: int = 160_000,
+        total_tokens_limit: int = CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT,
         cost_limit_usd: Decimal = Decimal("0.05"),
         capture_diagnostics: bool = False,
     ) -> None:
@@ -932,7 +952,6 @@ class PydanticAICapabilityAnalysisClient:
         self._last_validation_failure: str | None = None
         self._last_validation_detail_code: str | None = None
         self._alias_retry_used = False
-        self._projection_retry_used = False
         self._called = False
         self._active_tool_runtime: CapabilityAnalysisToolRuntime | None = None
         self._last_response: ModelResponse | None = None
@@ -967,7 +986,7 @@ class PydanticAICapabilityAnalysisClient:
                     timeout=self._request_timeout_seconds,
                 ),
             ),
-            retries={"tools": 0, "output": 1},
+            retries={"tools": 0, "output": 2},
             end_strategy="early",
             tool_timeout=min(timeout_seconds, 15.0),
         )
@@ -978,8 +997,7 @@ class PydanticAICapabilityAnalysisClient:
             ctx: RunContext[CapabilityAnalysisRequest],
             output: _AnalysisOutput,
         ) -> _AnalysisOutput:
-            if not self._projection_retry_used:
-                self._last_validation_detail_code = None
+            self._last_validation_detail_code = None
             captured_evidence = (
                 self._active_tool_runtime.evidence_units()
                 if self._active_tool_runtime is not None
@@ -992,31 +1010,34 @@ class PydanticAICapabilityAnalysisClient:
                     captured_evidence,
                     allow_alias_fallback=self._alias_retry_used,
                 )
-            except _AliasPatternValidationError as error:
-                self._alias_retry_used = True
-                self._last_validation_failure = error.detail
+            except (CapabilityAnalysisError, CapabilityAnnotationError, ExceptionGroup) as error:
+                failures = error.exceptions if isinstance(error, ExceptionGroup) else (error,)
+                corrections: list[str] = []
+                for failure in failures:
+                    if isinstance(failure, _AliasPatternValidationError):
+                        self._alias_retry_used = True
+                        corrections.append(
+                            "field=display_trigger: 必须无损合并 Runtime 已确认的全部固定入口，"
+                            "展开集合必须完全一致且每个局部备选位置最多四项；"
+                            "无法满足时使用 null 并保留标准可执行 usage，不得使用概念槽位。"
+                            f"{failure.detail}"
+                        )
+                    elif isinstance(failure, CapabilityAnnotationProjectionError):
+                        self._last_validation_detail_code = f"projection_{failure.code.value}"
+                        corrections.append(
+                            f"公开教学投影失败；错误码：{self._last_validation_detail_code}；"
+                            f"原因：{failure}"
+                        )
+                    else:
+                        corrections.append(str(failure))
+                self._last_validation_failure = "\n".join(corrections)
+                if len(failures) > 1:
+                    self._last_validation_detail_code = "multiple_output_validation"
                 raise ModelRetry(
-                    "display_trigger 必须先无损合并 Runtime 已确认的全部固定入口，"
-                    "展开集合必须完全一致且每个局部备选位置最多四项；"
-                    "无法满足时使用 null 并保留标准可执行 usage，不得使用概念槽位；"
-                    f"只修正 display_trigger，其他字段保持不变。{error.detail}"
+                    "请一并修正以下已确认错误，并重新提交完整对象。"
+                    "仅修改所列错误涉及的字段；依赖前置条件的检查可能在修正后继续进行。\n"
+                    + self._last_validation_failure
                 ) from error
-            except CapabilityAnnotationProjectionError as error:
-                detail_code = f"projection_{error.code.value}"
-                self._last_validation_failure = detail_code
-                self._last_validation_detail_code = detail_code
-                if self._projection_retry_used:
-                    raise UnexpectedModelBehavior(
-                        f"capability annotation public projection failed: {detail_code}"
-                    ) from error
-                self._projection_retry_used = True
-                raise ModelRetry(
-                    "公开教学投影失败；只修正对应字段并重新提交完整对象。"
-                    f"错误码：{detail_code}；原因：{error}"
-                ) from error
-            except (CapabilityAnalysisError, CapabilityAnnotationError) as error:
-                self._last_validation_failure = str(error)
-                raise ModelRetry(str(error)) from error
             return output
 
     @property
@@ -1103,7 +1124,6 @@ class PydanticAICapabilityAnalysisClient:
             )
         self._called = True
         self._alias_retry_used = False
-        self._projection_retry_used = False
         self._last_validation_detail_code = None
         run_deadline = _CapabilityRunDeadline(self._timeout_seconds)
         tool_runtime = (
@@ -1141,9 +1161,9 @@ class PydanticAICapabilityAnalysisClient:
                             instructions=_instructions_for_request(request),
                             deps=request,
                             metadata=_analysis_metadata(request),
-                            retries={"tools": 1, "output": 1},
+                            retries={"tools": 1, "output": 2},
                             toolsets=analysis_toolsets,
-                            usage_limits=_NextRequestTotalTokenLimits(
+                            usage_limits=_NextRequestTokenLimits(
                                 cost_limit=self._cost_limit_usd,
                                 request_limit=self._max_requests,
                                 output_tokens_limit=(
@@ -1344,6 +1364,154 @@ class _AliasPatternValidationError(CapabilityAnnotationError):
         super().__init__(self.detail)
 
 
+def _validate_entry_usages(
+    entry: _AnalysisEntryOutput,
+    target: CapabilityInvocationTarget,
+    request: CapabilityAnalysisRequest,
+) -> list[str]:
+    usage_claims = [claim for claim in entry.claims if claim.kind == "usage"]
+    usages = [claim.statement for claim in usage_claims]
+    if target.mode is CapabilityInvocationMode.COMPLETE and len(usages) != 1:
+        raise CapabilityAnnotationError("complete invocation requires exactly one aggregate usage")
+    if target.mode is not CapabilityInvocationMode.COMPLETE and len(usages) > MAX_PUBLIC_USAGES:
+        raise CapabilityAnnotationError(
+            "teaching entry allows at most three usages; larger fixed "
+            "alternatives must be merged without changing their structure"
+        )
+    if target.mode is CapabilityInvocationMode.COMPLETE:
+        validate_complete_aggregate_usage(usages[0])
+        category_error = _complete_family_usage_category_error(entry, request)
+        if category_error is not None:
+            raise CapabilityAnnotationError(category_error)
+    if (
+        target.mode is CapabilityInvocationMode.COMPLETE
+        and _complete_usage_embeds_distinct_invocations(usages[0])
+    ):
+        raise CapabilityAnnotationError(
+            "参数化聚合的圆括号只能枚举简短成员值；"
+            "请先改为 Evidence 支持的一条真实共同用法；"
+            "只有无法形成共同用法时才关闭整个知识"
+        )
+    standard_usage_indexes: set[int] = set()
+    if target.mode in {
+        CapabilityInvocationMode.COMPLETE,
+        CapabilityInvocationMode.REGEX,
+    }:
+        standard_usage_indexes = set(range(len(usages)))
+    elif target.canonical_usages:
+        for template in target.canonical_usages:
+            for index, usage in enumerate(usages):
+                if index in standard_usage_indexes:
+                    continue
+                try:
+                    validate_capability_usage_template(usage, template)
+                except CapabilityAnnotationError:
+                    continue
+                standard_usage_indexes.add(index)
+                break
+            else:
+                raise CapabilityAnnotationError(
+                    "every parser-provided structural template must be preserved; "
+                    f"entry_id={entry.entry_id}, field=usage, required_template={template!r}, "
+                    f"submitted_usages={usages!r}。请修正标准 usage 的参数结构，"
+                    "保留命令、括号、顺序、Option、别名与重复标记，仅槽位名称可改写；"
+                    "shortcut 不能替代标准用法。此错误不要求修改 display_trigger。"
+                )
+    elif target.mode is CapabilityInvocationMode.ANCHORED and target.command_body is not None:
+        standard_usage_indexes = {
+            index
+            for index, usage in enumerate(usages)
+            if len(
+                re.findall(
+                    usage_command_body_pattern(target.command_body),
+                    usage,
+                )
+            )
+            == 1
+        }
+        if not standard_usage_indexes:
+            raise CapabilityAnnotationError(
+                "anchored entry must preserve a standard command usage; "
+                f"entry_id={entry.entry_id}, field=usage, "
+                f"command_body={target.command_body!r}, submitted_usages={usages!r}"
+            )
+    shortcut_usage_indexes = set(range(len(usages))) - standard_usage_indexes
+    if shortcut_usage_indexes:
+        if len(shortcut_usage_indexes) > target.shortcut_count:
+            raise CapabilityAnnotationError("shortcut usages exceed the registered shortcut count")
+        shortcut_evidence_ids = set(target.shortcut_evidence_ids)
+        for index in shortcut_usage_indexes:
+            if not shortcut_evidence_ids.intersection(usage_claims[index].evidence_ids):
+                raise CapabilityAnnotationError(
+                    "shortcut usage must cite registered shortcut Evidence; "
+                    f"entry_id={entry.entry_id}, field=usage[{index}].evidence_ids, "
+                    f"statement={usages[index]!r}"
+                )
+    if (
+        not target.canonical_usages
+        and target.mode is CapabilityInvocationMode.ANCHORED
+        and target.command_body is not None
+        and _has_redundant_anchored_usage(
+            [usages[index] for index in sorted(standard_usage_indexes)],
+            target.command_body,
+        )
+    ):
+        raise CapabilityAnnotationError(
+            "同一 entry 中可省略的参数必须用一条方括号用法表示，不得同时输出省略版和带参数版"
+        )
+    for index, usage in enumerate(usages):
+        validate_capability_usage_pattern(usage)
+        is_shortcut = index in shortcut_usage_indexes
+        if (
+            not is_shortcut
+            and not target.canonical_usages
+            and target.mode is CapabilityInvocationMode.ANCHORED
+            and target.command_body is not None
+            and len(
+                re.findall(
+                    usage_command_body_pattern(target.command_body),
+                    usage,
+                )
+            )
+            != 1
+        ):
+            raise CapabilityAnnotationError("anchored usage must contain command_body exactly once")
+        if (
+            target.requires_mention
+            and target.command_body is not None
+            and (
+                len(re.findall(r"(?<!\S)@bot(?=\s)", usage)) != 1
+                if is_shortcut
+                else len(
+                    re.findall(
+                        usage_command_body_pattern(
+                            target.command_body,
+                            requires_mention=True,
+                        ),
+                        usage,
+                    )
+                )
+                != 1
+            )
+        ):
+            raise CapabilityAnnotationError(
+                "mention-required usage must place @bot before command_body"
+            )
+        if (
+            target.requires_mention
+            and target.mode
+            in {
+                CapabilityInvocationMode.COMPLETE,
+                CapabilityInvocationMode.REGEX,
+            }
+            and len(re.findall(r"(?<!\S)@bot(?=\s)", usage)) != 1
+        ):
+            raise CapabilityAnnotationError(
+                "mention-required non-anchored usage must contain one @bot placeholder"
+            )
+    return [usages[index] for index in sorted(standard_usage_indexes)]
+
+
 def _validate_analysis_output_contract(
     output: _AnalysisOutput,
     request: CapabilityAnalysisRequest,
@@ -1352,6 +1520,8 @@ def _validate_analysis_output_contract(
     allow_alias_fallback: bool,
 ) -> None:
     """用正常输出路径的全部合同校验候选，供在线校验与超时恢复共用。
+
+    汇总不同入口及独立检查的错误；前置条件失败时不执行依赖检查。
 
     Args:
         output: 已通过 Pydantic 结构解析的模型候选。
@@ -1362,173 +1532,69 @@ def _validate_analysis_output_contract(
     Raises:
         CapabilityAnalysisError: Evidence、gate 或领域合同不成立。
         CapabilityAnnotationError: usage、别名或公开投影合同不成立。
+        ExceptionGroup: 同一候选存在多个已确认的独立合同错误。
     """
 
-    _validate_gate_resolution_output(output, request)
+    targets = {item.entry_id: item for item in request.invocations}
+    if output.knowledge_enabled and {item.entry_id for item in output.entries} != set(targets):
+        raise CapabilityAnnotationError("entries must exactly match the request invocations")
+
+    errors: list[Exception] = []
+    try:
+        _validate_gate_resolution_output(output, request)
+    except CapabilityAnnotationError as error:
+        errors.append(CapabilityAnnotationError(f"field=gate_resolutions: {error}"))
+    gate_valid = not errors
+
     if output.knowledge_enabled:
-        targets = {item.entry_id: item for item in request.invocations}
-        if {item.entry_id for item in output.entries} != set(targets):
-            raise CapabilityAnnotationError("entries must exactly match the request invocations")
-        alias_failures = _alias_pattern_failures(output.entries, targets)
-        if alias_failures and not allow_alias_fallback:
-            raise _AliasPatternValidationError(alias_failures)
-        for entry, target, _reason in alias_failures:
-            fallback = deterministic_usage_selector(_alias_literals(target))
-            entry.display_trigger = (
-                fallback
-                if fallback is not None
-                and _display_trigger_usage_error(entry, target, fallback) is None
-                else None
-            )
+        standard_usages: dict[str, list[str]] = {}
         for entry in output.entries:
             target = targets[entry.entry_id]
-            usage_claims = [claim for claim in entry.claims if claim.kind == "usage"]
-            usages = [claim.statement for claim in usage_claims]
-            if target.mode is CapabilityInvocationMode.COMPLETE and len(usages) != 1:
-                raise CapabilityAnnotationError(
-                    "complete invocation requires exactly one aggregate usage"
+            try:
+                standard_usages[entry.entry_id] = _validate_entry_usages(entry, target, request)
+            except (CapabilityAnalysisError, CapabilityAnnotationError) as error:
+                errors.append(
+                    CapabilityAnnotationError(f"entry_id={entry.entry_id}, field=usage: {error}")
                 )
-            if (
-                target.mode is not CapabilityInvocationMode.COMPLETE
-                and len(usages) > MAX_PUBLIC_USAGES
-            ):
-                raise CapabilityAnnotationError(
-                    "teaching entry allows at most three usages; larger fixed "
-                    "alternatives must be merged without changing their structure"
+            try:
+                _validate_rate_limit_config_values(entry, request)
+            except (CapabilityAnalysisError, CapabilityAnnotationError) as error:
+                errors.append(
+                    CapabilityAnnotationError(
+                        f"entry_id={entry.entry_id}, field=constraints: {error}"
+                    )
                 )
-            if target.mode is CapabilityInvocationMode.COMPLETE:
-                validate_complete_aggregate_usage(usages[0])
-                category_error = _complete_family_usage_category_error(entry, request)
-                if category_error is not None:
-                    raise CapabilityAnnotationError(category_error)
-            if (
-                target.mode is CapabilityInvocationMode.COMPLETE
-                and _complete_usage_embeds_distinct_invocations(usages[0])
-            ):
-                raise CapabilityAnnotationError(
-                    "参数化聚合的圆括号只能枚举简短成员值；"
-                    "请先改为 Evidence 支持的一条真实共同用法；"
-                    "只有无法形成共同用法时才关闭整个知识"
+
+        # 表达式自身可独立校验；只有标准 usage 合法时才检查替换后的展示。
+        alias_failures = _alias_pattern_failures(output.entries, targets, standard_usages)
+        if alias_failures and not allow_alias_fallback:
+            errors.append(_AliasPatternValidationError(alias_failures))
+        elif alias_failures:
+            for entry, target, _reason in alias_failures:
+                fallback = deterministic_usage_selector(_alias_literals(target))
+                entry.display_trigger = (
+                    fallback
+                    if fallback is not None
+                    and _display_trigger_usage_error(
+                        standard_usages.get(entry.entry_id, ()), target, fallback
+                    )
+                    is None
+                    else None
                 )
-            standard_usage_indexes: set[int] = set()
-            if target.mode in {
-                CapabilityInvocationMode.COMPLETE,
-                CapabilityInvocationMode.REGEX,
-            }:
-                standard_usage_indexes = set(range(len(usages)))
-            elif target.canonical_usages:
-                for template in target.canonical_usages:
-                    for index, usage in enumerate(usages):
-                        if index in standard_usage_indexes:
-                            continue
-                        try:
-                            validate_capability_usage_template(usage, template)
-                        except CapabilityAnnotationError:
-                            continue
-                        standard_usage_indexes.add(index)
-                        break
-                    else:
-                        raise CapabilityAnnotationError(
-                            "every parser-provided structural template must be preserved"
-                        )
-            elif (
-                target.mode is CapabilityInvocationMode.ANCHORED and target.command_body is not None
-            ):
-                standard_usage_indexes = {
-                    index
-                    for index, usage in enumerate(usages)
-                    if len(
-                        re.findall(
-                            usage_command_body_pattern(target.command_body),
-                            usage,
-                        )
-                    )
-                    == 1
-                }
-                if not standard_usage_indexes:
-                    raise CapabilityAnnotationError(
-                        "anchored entry must preserve a standard command usage"
-                    )
-            shortcut_usage_indexes = set(range(len(usages))) - standard_usage_indexes
-            if shortcut_usage_indexes:
-                if len(shortcut_usage_indexes) > target.shortcut_count:
-                    raise CapabilityAnnotationError(
-                        "shortcut usages exceed the registered shortcut count"
-                    )
-                shortcut_evidence_ids = set(target.shortcut_evidence_ids)
-                for index in shortcut_usage_indexes:
-                    if not shortcut_evidence_ids.intersection(usage_claims[index].evidence_ids):
-                        raise CapabilityAnnotationError(
-                            "shortcut usage must cite registered shortcut Evidence"
-                        )
-            if (
-                not target.canonical_usages
-                and target.mode is CapabilityInvocationMode.ANCHORED
-                and target.command_body is not None
-                and _has_redundant_anchored_usage(
-                    [usages[index] for index in sorted(standard_usage_indexes)],
-                    target.command_body,
-                )
-            ):
-                raise CapabilityAnnotationError(
-                    "同一 entry 中可省略的参数必须用一条方括号用法表示，"
-                    "不得同时输出省略版和带参数版"
-                )
-            for index, usage in enumerate(usages):
-                validate_capability_usage_pattern(usage)
-                is_shortcut = index in shortcut_usage_indexes
-                if (
-                    not is_shortcut
-                    and not target.canonical_usages
-                    and target.mode is CapabilityInvocationMode.ANCHORED
-                    and target.command_body is not None
-                    and len(
-                        re.findall(
-                            usage_command_body_pattern(target.command_body),
-                            usage,
-                        )
-                    )
-                    != 1
-                ):
-                    raise CapabilityAnnotationError(
-                        "anchored usage must contain command_body exactly once"
-                    )
-                if (
-                    target.requires_mention
-                    and target.command_body is not None
-                    and (
-                        len(re.findall(r"(?<!\S)@bot(?=\s)", usage)) != 1
-                        if is_shortcut
-                        else len(
-                            re.findall(
-                                usage_command_body_pattern(
-                                    target.command_body,
-                                    requires_mention=True,
-                                ),
-                                usage,
-                            )
-                        )
-                        != 1
-                    )
-                ):
-                    raise CapabilityAnnotationError(
-                        "mention-required usage must place @bot before command_body"
-                    )
-                if (
-                    target.requires_mention
-                    and target.mode
-                    in {
-                        CapabilityInvocationMode.COMPLETE,
-                        CapabilityInvocationMode.REGEX,
-                    }
-                    and len(re.findall(r"(?<!\S)@bot(?=\s)", usage)) != 1
-                ):
-                    raise CapabilityAnnotationError(
-                        "mention-required non-anchored usage must contain one @bot placeholder"
-                    )
-            _validate_rate_limit_config_values(entry, request)
-    domain_output = _to_domain_output(output, captured_evidence)
-    validate_capability_analysis_output(request, domain_output)
+
+    # 领域校验依赖 gate 结构；公开投影依赖前述全部检查，避免连带误报。
+    domain_output: CapabilityAnalysisOutput | None = None
+    if gate_valid:
+        try:
+            domain_output = _to_domain_output(output, captured_evidence)
+            validate_capability_analysis_output(request, domain_output)
+        except (CapabilityAnalysisError, CapabilityAnnotationError) as error:
+            errors.append(error)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise ExceptionGroup("output contract validation failed", errors)
+    assert domain_output is not None
     project_capability_annotation(
         request,
         domain_output,
@@ -1582,6 +1648,8 @@ def _build_payload(request: CapabilityAnalysisRequest) -> str:
                 "kind": item.kind.value,
                 "entry_ids": list(item.entry_ids),
                 "evidence_ids": list(item.evidence_ids),
+                "owner": item.owner,
+                "symbol": item.symbol,
             }
             for item in request.gate_candidates
         ],

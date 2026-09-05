@@ -551,6 +551,36 @@ def test_service_accepts_projected_value_with_same_field_config_reference() -> N
     assert result == output
 
 
+@pytest.mark.parametrize("value", [0, 1, True, False, "true", "false"])
+def test_service_does_not_infer_low_information_config_references(value: object) -> None:
+    request = replace(
+        _request(),
+        config_projections=(ConfigProjection("cfg-low-info", "plugin_config.value", value),),
+        unknown_config=(),
+    )
+    output = replace(
+        _output(),
+        entries=(
+            replace(
+                _output().entries[0],
+                claims=(
+                    SemanticClaim(
+                        SemanticClaimKind.SUMMARY,
+                        "随机增长 0～1cm；true 和 false 也可能是普通示例文字",
+                        ("ev-handler",),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    result = asyncio.run(
+        CapabilityAnalysisService(FakeCapabilityAnalysisClient(output)).analyze(request)
+    )
+
+    assert result == output
+
+
 def test_service_requires_exactly_one_summary_claim() -> None:
     output = replace(
         _output(),

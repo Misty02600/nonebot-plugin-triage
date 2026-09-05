@@ -16,7 +16,7 @@ def test_model_control_plane_is_a_base_dependency() -> None:
     dependencies = set(project["dependencies"])
 
     assert "jedi==0.20.0" in dependencies
-    assert "pydantic-ai-harness==0.20.0" in dependencies
+    assert "pydantic-ai-harness==0.22.0" in dependencies
     assert "pydantic-ai-slim==2.28.0" in dependencies
 
 

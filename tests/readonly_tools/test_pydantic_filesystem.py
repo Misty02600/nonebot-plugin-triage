@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Any, ClassVar, Self, cast
 
@@ -118,6 +120,9 @@ def test_task_policy_can_deny_generated_outputs_without_changing_other_tasks(
     assert path_is_allowed(teaching, root, "evals/gold/commands.yml") is False
     assert path_is_allowed(bug, root, "help-display/search-image.yml") is True
     assert path_is_allowed(bug, root, "logs/error.log") is True
+    for extension in ("db", "sqlite", "sqlite3"):
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            assert path_is_allowed(bug, root, f"nested/state.{extension}{suffix}") is False
 
     migut_help_path = tmp_path / "migut-help-data"
     migut_help_path.mkdir()
@@ -128,6 +133,44 @@ def test_task_policy_can_deny_generated_outputs_without_changing_other_tasks(
         policy=teaching_read_only_policy(),
     )
     assert path_is_allowed(direct_migut_help, migut_help_root, "help.yml") is False
+
+
+@pytest.mark.parametrize("target_inside_root", (False, True))
+async def test_file_walkers_do_not_follow_links_outside_the_authorized_paths(
+    tmp_path: Path,
+    target_inside_root: bool,
+) -> None:
+    from pydantic_ai import ModelRetry
+    from pydantic_ai_harness import FileSystem
+
+    root = tmp_path / "project"
+    root.mkdir()
+    target = (root if target_inside_root else tmp_path) / "restricted"
+    target.mkdir()
+    (target / "hidden.txt").write_text("BOUNDARY_MARKER", encoding="utf-8")
+    (root / "visible.txt").write_text("PUBLIC_MARKER", encoding="utf-8")
+    link = root / "linked"
+    if os.name == "nt":
+        import_module("_winapi").CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+    try:
+        policy = ReadOnlyPolicyProfile(task_denied_patterns=("restricted", "restricted/*"))
+        toolset = FileSystem(
+            root_dir=root,
+            denied_patterns=policy.denied_patterns_for(ReadOnlyRoot("project", root)),
+        ).get_toolset()
+        with pytest.raises(ModelRetry):
+            await toolset.read_file("linked/hidden.txt")
+        assert await toolset.search_files("BOUNDARY_MARKER") == "No matches found."
+        assert await toolset.find_files("**/hidden.txt") == "No matches found."
+        assert "linked" not in await toolset.list_directory()
+        assert "PUBLIC_MARKER" in await toolset.search_files("PUBLIC_MARKER")
+    finally:
+        if os.name == "nt":
+            link.rmdir()
+        else:
+            link.unlink()
 
 
 def test_installed_harness_exposes_only_prefixed_read_tools(tmp_path: Path) -> None:

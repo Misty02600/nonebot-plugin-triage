@@ -5,7 +5,11 @@ import json
 from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass
 
-from nbtriage.capability.catalog.records import CapabilityRecord, ClaimBasis
+from nbtriage.capability.catalog.records import (
+    CapabilityRecord,
+    ClaimBasis,
+    ConstraintEvaluability,
+)
 from nbtriage.capability.teaching.analysis import (
     CapabilityEvidenceUnit,
     CapabilityFamilyMember,
@@ -14,6 +18,10 @@ from nbtriage.capability.teaching.analysis import (
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
     SemanticConstraint,
+)
+from nbtriage.capability.teaching.framework_semantics import (
+    PermissionSemantic,
+    builtin_permission_semantic_profiles,
 )
 from nbtriage.capability.teaching.source_evidence import (
     CapabilitySourceEvidencePack,
@@ -341,21 +349,6 @@ def _family_member_hints(record: CapabilityRecord) -> list[list[object]]:
             ),
         )
     ]
-
-
-def _invocation_payload(item: CapabilityInvocationTarget) -> dict[str, object]:
-    return {
-        "entry_id": item.entry_id,
-        "mode": item.mode.value,
-        "command_body": item.command_body,
-        "regex_pattern": item.regex_pattern,
-        "regex_flags": list(item.regex_flags),
-        "canonical_usages": list(item.canonical_usages),
-        "aliases": list(item.aliases),
-        "requires_mention": item.requires_mention,
-        "shortcut_count": item.shortcut_count,
-        "shortcut_evidence_ids": list(item.shortcut_evidence_ids),
-    }
 
 
 def _family_gate_projection(
@@ -1015,6 +1008,7 @@ def _gate_candidates(
     record: CapabilityRecord,
     runtime_evidence: CapabilityEvidenceUnit,
     fixed_permission_facts: tuple[PermissionConstraintFact, ...],
+    runtime_fixed_constraints: tuple[SemanticConstraint, ...] = (),
 ) -> tuple[CapabilityGateCandidate, ...]:
     entry_ids = tuple(item.entry_id for item in invocations)
     candidates: list[CapabilityGateCandidate] = []
@@ -1041,6 +1035,8 @@ def _gate_candidates(
             if symbol_kind is StructuralSymbolKind.PERMISSION
             else CapabilityGateKind.RULE
         )
+        if gate_kind is CapabilityGateKind.PERMISSION and runtime_fixed_constraints:
+            continue
         candidates.append(
             _gate_candidate(
                 gate_kind,
@@ -1057,6 +1053,8 @@ def _gate_candidates(
             ("rule", CapabilityGateKind.RULE),
         ):
             if field_name not in registration.opaque_fields:
+                continue
+            if gate_kind is CapabilityGateKind.PERMISSION and runtime_fixed_constraints:
                 continue
             candidates.append(
                 _gate_candidate(
@@ -1076,7 +1074,7 @@ def _gate_candidates(
         )
         for item in gate_symbols
     }
-    if fixed_permission_facts:
+    if fixed_permission_facts or runtime_fixed_constraints:
         covered_kinds.add(CapabilityGateKind.PERMISSION)
     covered_kinds.update(
         gate_kind
@@ -1111,6 +1109,48 @@ def _gate_candidates(
         )
     unique = {item.candidate_id: item for item in candidates}
     return tuple(unique[key] for key in sorted(unique))
+
+
+def _runtime_fixed_permission_constraints(
+    record: CapabilityRecord,
+    *,
+    evidence_id: str,
+) -> tuple[SemanticConstraint, ...]:
+    known = {
+        (semantic.kind.value, semantic.operation): semantic
+        for profile in builtin_permission_semantic_profiles()
+        for semantic in profile.permissions
+        if semantic.runtime_checkers
+    }
+    facts: list[PermissionSemantic] = []
+    for constraint in record.constraints:
+        if (
+            constraint.kind != "permission"
+            or constraint.evaluability is not ConstraintEvaluability.STRUCTURED
+        ):
+            continue
+        if constraint.operation == "superuser":
+            facts.append(known[("role", "superuser")])
+            continue
+        if constraint.operation != "alternatives":
+            continue
+        raw_alternatives = constraint.payload.get("alternatives")
+        if not isinstance(raw_alternatives, list):
+            continue
+        parsed: list[PermissionSemantic] = []
+        for item in raw_alternatives:
+            if not isinstance(item, Mapping):
+                break
+            kind, operation = item.get("kind"), item.get("operation")
+            if not isinstance(kind, str) or not isinstance(operation, str):
+                break
+            semantic = known.get((kind, operation))
+            if semantic is None:
+                break
+            parsed.append(semantic)
+        else:
+            facts.extend(parsed)
+    return fixed_permission_constraints(facts, evidence_id=evidence_id)
 
 
 def _unresolved_gate_symbols(
@@ -1194,6 +1234,8 @@ def _gate_candidate(
         kind=kind,
         entry_ids=entry_ids,
         evidence_ids=(evidence_id,),
+        owner=owner,
+        symbol=symbol,
     )
 
 

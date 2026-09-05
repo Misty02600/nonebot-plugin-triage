@@ -144,6 +144,7 @@ def provider_http_client(
     *,
     timeout_seconds: float,
     request_hooks: Sequence[Callable[[httpx.Request], Awaitable[None]]] = (),
+    limits: httpx.Limits | None = None,
 ) -> httpx.AsyncClient:
     event_hooks: dict[str, list[Callable[..., Awaitable[None]]]] = {
         "request": [record_provider_http_request, *request_hooks],
@@ -152,6 +153,11 @@ def provider_http_client(
     return httpx.AsyncClient(
         timeout=timeout_seconds,
         event_hooks=event_hooks,
+        limits=(
+            limits
+            if limits is not None
+            else httpx.Limits(max_connections=100, max_keepalive_connections=20)
+        ),
     )
 
 

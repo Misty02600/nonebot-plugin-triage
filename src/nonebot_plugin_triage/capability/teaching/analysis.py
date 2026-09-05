@@ -42,6 +42,7 @@ from nonebot_plugin_triage.capability.teaching._projection import (
     _gate_candidates,
     _invocation_targets,
     _runtime_fact_evidence,
+    _runtime_fixed_permission_constraints,
     _selected_registrations,
     _source_structure_evidence,
     _unresolved_gate_symbols,
@@ -174,6 +175,14 @@ def build_capability_analysis_request(
         selected_registrations,
         gate_symbols,
     )
+    runtime_fixed_constraints = (
+        ()
+        if fixed_permission_facts
+        else _runtime_fixed_permission_constraints(
+            record,
+            evidence_id=runtime_evidence.evidence_id,
+        )
+    )
     _record_preparation_timing(preparation_timings, "runtime_projection", stage_started_ns)
     stage_started_ns = monotonic_ns()
     gate_names = frozenset(item.symbol.rpartition(".")[2] for item in gate_symbols)
@@ -264,9 +273,12 @@ def build_capability_analysis_request(
         evidence_units=tuple(evidence_units),
         config_projections=projections,
         unknown_config=unknown,
-        fixed_constraints=fixed_permission_constraints(
-            fixed_permission_facts,
-            evidence_id=structure_evidence.evidence_id,
+        fixed_constraints=(
+            fixed_permission_constraints(
+                fixed_permission_facts,
+                evidence_id=structure_evidence.evidence_id,
+            )
+            or runtime_fixed_constraints
         ),
         invocations=invocations,
         gate_candidates=_gate_candidates(
@@ -277,6 +289,7 @@ def build_capability_analysis_request(
             record=record,
             runtime_evidence=runtime_evidence,
             fixed_permission_facts=fixed_permission_facts,
+            runtime_fixed_constraints=runtime_fixed_constraints,
         ),
     )
 

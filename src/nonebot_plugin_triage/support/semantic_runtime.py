@@ -141,15 +141,7 @@ def create_semantic_client_factory(
         binding.connection_revision,
         binding.settings_revision,
     )
-    verified_qualification = next(
-        (
-            candidate
-            for candidate in qualified_tasks
-            if _same_semantic_target(candidate, qualification)
-        ),
-        None,
-    )
-    verified = verified_qualification is not None
+    verified = any(_same_semantic_target(candidate, qualification) for candidate in qualified_tasks)
     if not verified:
         logger.info(
             "NoneBot Triage semantic assessment is using an unverified model combination: {}",

@@ -40,6 +40,11 @@ from nbtriage.capability.teaching.model_adapter import (
     CapabilityModelAdapterError,
 )
 from nbtriage.capability.teaching.source_evidence import CapabilitySourceEvidencePack
+from nonebot_plugin_triage.capability.teaching._evidence_validation import (
+    EvidenceMismatch,
+    EvidenceMismatchReason,
+    EvidenceValidationResult,
+)
 from nonebot_plugin_triage.capability.teaching.analysis import (
     CapabilityAnalysisAdapterError,
     CapabilitySourceSliceCache,
@@ -64,7 +69,8 @@ _MAX_PREPARATION_CONCURRENCY = 4
 
 CapabilityAnalysisClientFactory = Callable[[], CapabilityAnalysisClient]
 CapabilityAnnotationEvidenceValidator = Callable[
-    [CapabilityAnalysisRequest, tuple[CapabilityAnnotationEvidenceRef, ...]], bool
+    [CapabilityAnalysisRequest, tuple[CapabilityAnnotationEvidenceRef, ...]],
+    bool | EvidenceValidationResult,
 ]
 CapabilityAnnotationSourceRevisionValidator = Callable[[str, str], bool]
 CapabilityAnnotationPublishedGenerationResolver = Callable[[], str | None]
@@ -123,6 +129,7 @@ class CapabilityTeachingUnitStatus:
     attempts: int = 0
     member_capability_ids: tuple[str, ...] = ()
     evidence_manifest: tuple[CapabilityAnnotationEvidenceRef, ...] = ()
+    evidence_mismatches: tuple[EvidenceMismatch, ...] = ()
 
     def __post_init__(self) -> None:
         for value, label, maximum in (
@@ -170,6 +177,12 @@ class CapabilityTeachingUnitStatus:
             not isinstance(item, CapabilityAnnotationEvidenceRef) for item in self.evidence_manifest
         ):
             raise ValueError("evidence_manifest is invalid")
+        if (
+            not isinstance(self.evidence_mismatches, tuple)
+            or len(self.evidence_mismatches) > 32
+            or any(not isinstance(item, EvidenceMismatch) for item in self.evidence_mismatches)
+        ):
+            raise ValueError("evidence_mismatches is invalid")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -184,6 +197,7 @@ class CapabilityTeachingUnitStatus:
             "attempts": self.attempts,
             "member_capability_ids": list(self.member_capability_ids),
             "evidence_manifest": [item.to_dict() for item in self.evidence_manifest],
+            "evidence_mismatches": [item.to_dict() for item in self.evidence_mismatches],
         }
 
 
@@ -262,6 +276,7 @@ class _AnalysisAttempt:
     detail_code: str | None = None
     attempts: int = 0
     global_stop: bool = False
+    evidence_mismatches: tuple[EvidenceMismatch, ...] = ()
 
 
 def _cache_last_attempt(attempt: _AnalysisAttempt) -> CapabilityAnnotationLastAttempt:
@@ -344,7 +359,7 @@ class CapabilityAnnotationService:
         source_revision_validator: CapabilityAnnotationSourceRevisionValidator | None = None,
         published_generation_resolver: CapabilityAnnotationPublishedGenerationResolver
         | None = None,
-        max_analysis_concurrency: int = 10,
+        max_analysis_concurrency: int = 50,
     ) -> None:
         if not callable(client_factory):
             raise TypeError("client_factory must be callable")
@@ -500,8 +515,7 @@ class CapabilityAnnotationService:
             cache_directory = self._resolved_cache_directory()
         except Exception as error:
             logger.warning(
-                "NoneBot Triage 教学注释缓存目录不可用；保留插件缓存未重绑定："
-                "error_type={}",
+                "NoneBot Triage 教学注释缓存目录不可用；保留插件缓存未重绑定：error_type={}",
                 type(error).__name__,
             )
             return
@@ -733,6 +747,9 @@ class CapabilityAnnotationService:
                                 plugin_source_pack_caches[module_name],
                                 plugin_source_slice_caches[module_name],
                             )
+                            validation = await asyncio.to_thread(
+                                self._validate_evidence, item.request, ()
+                            )
                     except (
                         CapabilityAnalysisAdapterError,
                         CapabilityAnalysisError,
@@ -745,6 +762,31 @@ class CapabilityAnnotationService:
                         _increment_skip_reason(skip_reason_counts, reason.value)
                         if _plugin_shared_preparation_failure(error):
                             blocked_plugins.add(module_name)
+                        return
+
+                    if not validation.current:
+                        reason = CapabilityTeachingUnitReason.EVIDENCE_CHANGED
+                        detail_code = _evidence_changed_detail_code(validation)
+                        skipped.append(
+                            _unit_status(
+                                item,
+                                state=CapabilityTeachingUnitState.SKIPPED,
+                                stage=CapabilityTeachingUnitStage.PREPARE,
+                                reason=reason,
+                                detail_code=detail_code,
+                                attempts=0,
+                                annotation=None,
+                                evidence_mismatches=validation.mismatches,
+                            )
+                        )
+                        _increment_skip_reason(skip_reason_counts, reason.value)
+                        logger.warning(
+                            "NoneBot Triage 教学注释初始 Evidence 不可验证；未调用模型："
+                            "plugin_module={}, unit_id={}, detail_code={}",
+                            _safe_log_identifier(module_name),
+                            _safe_log_identifier(item.request.capability.capability_id),
+                            detail_code,
+                        )
                         return
 
                     source_context = item.request.source_context
@@ -938,37 +980,40 @@ class CapabilityAnnotationService:
             source_revalidation_finished_ns = monotonic_ns()
             finalize_started_ns = source_revalidation_finished_ns
 
-            evidence_changed_fallbacks: set[str] = set()
+            evidence_changed_fallbacks: dict[str, EvidenceValidationResult] = {}
             for item in prepared:
                 if item.plugin_module in source_changed_plugins:
                     continue
                 unit_id = item.request.capability.capability_id
                 annotation = base_annotations.get(unit_id)
-                if annotation is None or self._cached_evidence_is_current(
-                    item.request,
-                    annotation,
-                ):
+                if annotation is None:
                     continue
-                evidence_changed_fallbacks.add(unit_id)
+                validation = self._validate_evidence(item.request, annotation.evidence_manifest)
+                if validation.current:
+                    continue
+                evidence_changed_fallbacks[unit_id] = validation
                 base_annotations.pop(unit_id, None)
                 active_fallbacks.pop(unit_id, None)
 
             revalidated_attempts: list[_AnalysisAttempt] = []
             for attempt in attempts:
-                if (
-                    attempt.annotation is not None
-                    and attempt.item.plugin_module not in source_changed_plugins
-                    and not self._cached_evidence_is_current(
+                validation = (
+                    self._validate_evidence(
                         attempt.item.request,
-                        attempt.annotation,
+                        attempt.annotation.evidence_manifest,
                     )
-                ):
+                    if attempt.annotation is not None
+                    and attempt.item.plugin_module not in source_changed_plugins
+                    else EvidenceValidationResult.valid()
+                )
+                if not validation.current:
                     revalidated_attempts.append(
                         replace(
                             attempt,
                             annotation=None,
                             reason=CapabilityTeachingUnitReason.EVIDENCE_CHANGED,
-                            detail_code=CapabilityTeachingUnitReason.EVIDENCE_CHANGED.value,
+                            detail_code=_evidence_changed_detail_code(validation),
+                            evidence_mismatches=validation.mismatches,
                         )
                     )
                 else:
@@ -981,12 +1026,14 @@ class CapabilityAnnotationService:
                 unit_id = item.request.capability.capability_id
                 if unit_id not in evidence_changed_fallbacks or unit_id in attempt_by_unit:
                     continue
+                validation = evidence_changed_fallbacks[unit_id]
                 attempt = _AnalysisAttempt(
                     item,
                     None,
                     CapabilityTeachingUnitStage.CACHE_VALIDATION,
                     CapabilityTeachingUnitReason.EVIDENCE_CHANGED,
-                    CapabilityTeachingUnitReason.EVIDENCE_CHANGED.value,
+                    _evidence_changed_detail_code(validation),
+                    evidence_mismatches=validation.mismatches,
                 )
                 revalidated_attempts.append(attempt)
                 attempt_by_unit[unit_id] = attempt
@@ -1048,6 +1095,7 @@ class CapabilityAnnotationService:
                 unit_id = item.request.capability.capability_id
                 attempt = attempt_by_unit.get(unit_id)
                 annotation = candidate_annotations.get(unit_id)
+                evidence_mismatches = attempt.evidence_mismatches if attempt is not None else ()
                 if item.plugin_module in source_changed_plugins:
                     is_trigger = (
                         attempt is not None
@@ -1149,6 +1197,7 @@ class CapabilityAnnotationService:
                         detail_code=detail_code,
                         attempts=attempts_count,
                         annotation=annotation,
+                        evidence_mismatches=evidence_mismatches,
                     )
                 )
             units = tuple(
@@ -1194,9 +1243,10 @@ class CapabilityAnnotationService:
                 published_generation,
             )
             replaced_unit_ids = frozenset(current_fingerprints)
-            if plugin_module is not None and (
-                previous_plugin_cache := cache_by_plugin.get(plugin_module)
-            ) is not None:
+            if (
+                plugin_module is not None
+                and (previous_plugin_cache := cache_by_plugin.get(plugin_module)) is not None
+            ):
                 replaced_unit_ids = replaced_unit_ids.union(
                     item.analysis_unit_id for item in previous_plugin_cache.units
                 )
@@ -1358,62 +1408,46 @@ class CapabilityAnnotationService:
         refresh_id: str,
     ) -> _AnalysisAttempt:
         stage = CapabilityTeachingUnitStage.CLIENT_CREATE
-        stage_started_at = 0.0
-        reason = CapabilityTeachingUnitReason.UNKNOWN
-        detail_code: str | None = None
-        attempts = 0
-        for attempt_number in range(1, 3):
-            attempts = attempt_number
-            try:
-                stage = CapabilityTeachingUnitStage.CLIENT_CREATE
-                stage_started_at = perf_counter()
-                client = self._client_factory()
-                stage = CapabilityTeachingUnitStage.AGENT_RUN
-                stage_started_at = perf_counter()
-                output = await CapabilityAnalysisService(client).analyze(item.request)
-                stage = CapabilityTeachingUnitStage.OUTPUT_PROJECTION
-                stage_started_at = perf_counter()
-                annotation = project_capability_annotation(
-                    item.request,
-                    output,
-                    analysis_revision=self._analysis_revision,
-                )
-                break
-            except Exception as error:
-                reason = _annotation_failure_reason(error)
-                detail_code = _annotation_failure_detail(error, stage)
-                if attempt_number < 2 and _retryable_annotation_failure(
-                    reason,
-                    stage,
-                ):
-                    await asyncio.sleep(0)
-                    continue
-                logger.warning(
-                    "NoneBot Triage 教学注释单元分析失败：refresh_id={}, "
-                    "plugin_module={}, unit_label={}, unit_id={}, stage={}, reason={}, "
-                    "detail_code={}, duration_ms={}",
-                    refresh_id,
-                    _safe_log_identifier(item.plugin_module),
-                    _teaching_unit_log_label(item),
-                    _safe_log_identifier(item.request.capability.capability_id),
-                    stage.value,
-                    reason.value,
-                    detail_code,
-                    max(0, round((perf_counter() - stage_started_at) * 1000)),
-                )
-                return _AnalysisAttempt(
-                    item,
-                    None,
-                    stage,
-                    reason,
-                    detail_code,
-                    attempts,
-                    _global_stop_failure(reason, detail_code),
-                )
-        else:  # pragma: no cover - both loop exits return or break
-            raise AssertionError("bounded annotation attempt loop did not terminate")
+        stage_started_at = perf_counter()
+        try:
+            client = self._client_factory()
+            stage = CapabilityTeachingUnitStage.AGENT_RUN
+            stage_started_at = perf_counter()
+            output = await CapabilityAnalysisService(client).analyze(item.request)
+            stage = CapabilityTeachingUnitStage.OUTPUT_PROJECTION
+            stage_started_at = perf_counter()
+            annotation = project_capability_annotation(
+                item.request,
+                output,
+                analysis_revision=self._analysis_revision,
+            )
+        except Exception as error:
+            reason = _annotation_failure_reason(error)
+            detail_code = _annotation_failure_detail(error, stage)
+            logger.warning(
+                "NoneBot Triage 教学注释单元分析失败：refresh_id={}, "
+                "plugin_module={}, unit_label={}, unit_id={}, stage={}, reason={}, "
+                "detail_code={}, duration_ms={}",
+                refresh_id,
+                _safe_log_identifier(item.plugin_module),
+                _teaching_unit_log_label(item),
+                _safe_log_identifier(item.request.capability.capability_id),
+                stage.value,
+                reason.value,
+                detail_code,
+                max(0, round((perf_counter() - stage_started_at) * 1000)),
+            )
+            return _AnalysisAttempt(
+                item,
+                None,
+                stage,
+                reason,
+                detail_code,
+                1,
+                _global_stop_failure(reason, detail_code),
+            )
 
-        return _AnalysisAttempt(item, annotation, stage, attempts=attempts)
+        return _AnalysisAttempt(item, annotation, stage, attempts=1)
 
     def _resolved_cache_directory(self) -> Path:
         if self._cache_directory is None:
@@ -1760,17 +1794,50 @@ class CapabilityAnnotationService:
         request: CapabilityAnalysisRequest,
         annotation: CapabilityTeachingAnnotation,
     ) -> bool:
+        return self._validate_evidence(request, annotation.evidence_manifest).current
+
+    def _validate_evidence(
+        self,
+        request: CapabilityAnalysisRequest,
+        manifest: tuple[CapabilityAnnotationEvidenceRef, ...],
+    ) -> EvidenceValidationResult:
         has_initial_dependency_evidence = any(
             item.source_kind == "python_dependency_function" for item in request.evidence_units
         )
-        if not annotation.evidence_manifest and not has_initial_dependency_evidence:
-            return True
+        if not manifest and not has_initial_dependency_evidence:
+            return EvidenceValidationResult.valid()
+        references = manifest
+        if not references:
+            references = tuple(
+                CapabilityAnnotationEvidenceRef(
+                    evidence_id=item.evidence_id,
+                    source_kind=item.source_kind,
+                    locator=item.locator,
+                    revision=item.revision,
+                )
+                for item in request.evidence_units
+                if item.source_kind == "python_dependency_function" and item.locator is not None
+            )
         if self._evidence_validator is None:
-            return False
+            return _generic_evidence_validation(
+                references,
+                EvidenceMismatchReason.VALIDATOR_UNAVAILABLE,
+            )
         try:
-            return self._evidence_validator(request, annotation.evidence_manifest)
+            result = self._evidence_validator(request, manifest)
         except Exception:
-            return False
+            return _generic_evidence_validation(
+                references,
+                EvidenceMismatchReason.VALIDATOR_ERROR,
+            )
+        if isinstance(result, EvidenceValidationResult):
+            return result
+        if result is True:
+            return EvidenceValidationResult.valid()
+        return _generic_evidence_validation(
+            references,
+            EvidenceMismatchReason.VALIDATOR_REJECTED,
+        )
 
 
 def _elapsed_ms(started_ns: int, finished_ns: int) -> int:
@@ -1822,6 +1889,41 @@ def _valid_sha256_digest(value: object) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _generic_evidence_validation(
+    references: tuple[CapabilityAnnotationEvidenceRef, ...],
+    reason: EvidenceMismatchReason,
+) -> EvidenceValidationResult:
+    if not references:
+        references = (
+            CapabilityAnnotationEvidenceRef(
+                evidence_id="evidence:validation:unknown",
+                source_kind="unknown",
+                locator="unknown",
+                revision="unknown",
+            ),
+        )
+    return EvidenceValidationResult.invalid(
+        *(
+            EvidenceMismatch(
+                evidence_id=reference.evidence_id,
+                source_kind=reference.source_kind,
+                locator=reference.locator,
+                root_name=reference.locator.partition("/")[0] or None,
+                expected_revision=reference.revision,
+                actual_revision=None,
+                reason=reason,
+            )
+            for reference in references
+        )
+    )
+
+
+def _evidence_changed_detail_code(validation: EvidenceValidationResult) -> str:
+    if validation.current or not validation.mismatches:
+        return CapabilityTeachingUnitReason.EVIDENCE_CHANGED.value
+    return f"evidence_{validation.mismatches[0].reason.value}"
 
 
 def _fallback_unit_state(
@@ -1890,16 +1992,6 @@ def _annotation_failure_detail(
     return reason.value
 
 
-def _retryable_annotation_failure(
-    reason: CapabilityTeachingUnitReason,
-    stage: CapabilityTeachingUnitStage,
-) -> bool:
-    return (
-        reason is CapabilityTeachingUnitReason.OUTPUT_VALIDATION
-        and stage is CapabilityTeachingUnitStage.AGENT_RUN
-    )
-
-
 def _global_stop_failure(
     reason: CapabilityTeachingUnitReason,
     detail_code: str | None,
@@ -1950,6 +2042,7 @@ def _unit_status(
     detail_code: str | None,
     attempts: int,
     annotation: CapabilityTeachingAnnotation | None,
+    evidence_mismatches: tuple[EvidenceMismatch, ...] = (),
 ) -> CapabilityTeachingUnitStatus:
     return CapabilityTeachingUnitStatus(
         unit_id=item.request.capability.capability_id,
@@ -1963,6 +2056,7 @@ def _unit_status(
         attempts=attempts,
         member_capability_ids=item.member_capability_ids,
         evidence_manifest=annotation.evidence_manifest if annotation is not None else (),
+        evidence_mismatches=evidence_mismatches[:32],
     )
 
 

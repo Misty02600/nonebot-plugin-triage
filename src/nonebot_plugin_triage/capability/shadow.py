@@ -648,7 +648,7 @@ def register_capability_shadow(
     config_policy: ConfigValuePolicy | None = None,
     annotation_analysis_revision: str | None = None,
     annotation_evidence_validator: CapabilityAnnotationEvidenceValidator | None = None,
-    annotation_max_concurrency: int = 10,
+    annotation_max_concurrency: int = 50,
 ) -> CapabilityShadowService:
     """注册后台能力快照刷新，并把 LocalStore 路径解析延后到启动阶段。"""
     if startup_registrar is None:
@@ -1254,21 +1254,6 @@ def _observed_command_header(claims: tuple[Claim, ...]) -> str | None:
     for claim in claims:
         if (
             claim.field != "command.header"
-            or claim.basis is not ClaimBasis.OBSERVED
-            or not isinstance(claim.value, str)
-        ):
-            continue
-        cleaned = _safe_trigger_text(claim.value)
-        if cleaned is not None and len(cleaned) <= 64:
-            candidates.add(cleaned)
-    return next(iter(candidates)) if len(candidates) == 1 else None
-
-
-def _observed_invocation_header(claims: tuple[Claim, ...]) -> str | None:
-    candidates: set[str] = set()
-    for claim in claims:
-        if (
-            claim.field != "invocation.header"
             or claim.basis is not ClaimBasis.OBSERVED
             or not isinstance(claim.value, str)
         ):

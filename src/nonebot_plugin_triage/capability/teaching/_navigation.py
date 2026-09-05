@@ -1001,7 +1001,7 @@ def _annotation_dependency_provider_from_definition(
             values.append(statement.value)
     if len(values) != 1:
         return None
-    provider = _annotated_dependency_provider(values[0])
+    provider = _annotated_dependency_provider(values[0], allow_factory=False)
     return (
         _navigation_call_site(
             definition.relative_path,
@@ -1320,6 +1320,8 @@ def _function_parameter_dependencies(
 
 def _annotated_dependency_provider(
     annotation: ast.expr,
+    *,
+    allow_factory: bool = True,
 ) -> ast.Name | ast.Attribute | None:
     if (
         not isinstance(annotation, ast.Subscript)
@@ -1337,8 +1339,11 @@ def _annotated_dependency_provider(
             or len(metadata.args) != 1
         ):
             continue
-        provider = metadata.args[0]
-        if isinstance(provider, ast.Name | ast.Attribute):
+        provider = _static_dependency_provider(
+            metadata.args[0],
+            allow_factory=allow_factory,
+        )
+        if provider is not None:
             providers.append(provider)
     return providers[0] if len(providers) == 1 else None
 
@@ -1350,8 +1355,60 @@ def _depends_provider(expression: ast.expr | None) -> ast.Name | ast.Attribute |
         or len(expression.args) != 1
     ):
         return None
-    provider = expression.args[0]
-    return provider if isinstance(provider, ast.Name | ast.Attribute) else None
+    return _static_dependency_provider(expression.args[0])
+
+
+def _static_dependency_provider(
+    provider: ast.expr,
+    *,
+    allow_factory: bool = True,
+) -> ast.Name | ast.Attribute | None:
+    if isinstance(provider, ast.Name | ast.Attribute) and _is_static_symbol_chain(provider):
+        return provider
+    if (
+        not allow_factory
+        or not isinstance(provider, ast.Call)
+        or not isinstance(provider.func, ast.Name | ast.Attribute)
+        or not _is_static_symbol_chain(provider.func)
+    ):
+        return None
+    if any(not _is_safe_dependency_factory_literal(argument) for argument in provider.args):
+        return None
+    if any(
+        keyword_argument.arg is None
+        or not _is_safe_dependency_factory_literal(keyword_argument.value)
+        for keyword_argument in provider.keywords
+    ):
+        return None
+    return provider.func
+
+
+def _is_static_symbol_chain(expression: ast.Name | ast.Attribute) -> bool:
+    current: ast.expr = expression
+    while isinstance(current, ast.Attribute):
+        current = current.value
+    return isinstance(current, ast.Name)
+
+
+def _is_safe_dependency_factory_literal(expression: ast.expr) -> bool:
+    if isinstance(expression, ast.Constant):
+        return True
+    if isinstance(expression, ast.Tuple | ast.List | ast.Set):
+        return all(_is_safe_dependency_factory_literal(item) for item in expression.elts)
+    if isinstance(expression, ast.Dict):
+        return all(
+            key is not None
+            and _is_safe_dependency_factory_literal(key)
+            and _is_safe_dependency_factory_literal(value)
+            for key, value in zip(expression.keys, expression.values, strict=True)
+        )
+    return (
+        isinstance(expression, ast.UnaryOp)
+        and isinstance(expression.op, ast.UAdd | ast.USub)
+        and isinstance(expression.operand, ast.Constant)
+        and isinstance(expression.operand.value, int | float | complex)
+        and not isinstance(expression.operand.value, bool)
+    )
 
 
 def _function_call_sites(

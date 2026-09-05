@@ -22,7 +22,7 @@ def test_model_config_uses_only_pydantic_ai_model_identity() -> None:
     assert config.nbtriage_model_max_output_tokens == 240
     assert config.nbtriage_behavior_max_output_tokens == 1_200
     assert config.nbtriage_behavior_max_concurrency == 2
-    assert config.nbtriage_capability_annotation_max_concurrency == 10
+    assert config.nbtriage_capability_annotation_max_concurrency == 50
 
     with pytest.raises(ValidationError, match="was removed"):
         NBTriageConfig.model_validate({"nbtriage_model_enabled": True})

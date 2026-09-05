@@ -35,7 +35,12 @@ from nbtriage.capability.teaching.analysis import (
     TeachingRole,
     TeachingScene,
 )
-from nbtriage.capability.teaching.annotations import project_capability_annotation
+from nbtriage.capability.teaching.annotations import (
+    CapabilityAnnotationProjectionCode,
+    CapabilityAnnotationProjectionError,
+    capability_analysis_fingerprint,
+    project_capability_annotation,
+)
 from nbtriage.capability.teaching.model_adapter import (
     ANCHORED_INSTRUCTION,
     CORE_INSTRUCTION,
@@ -250,8 +255,15 @@ def test_agent_payload_marks_fixed_permission_as_model_external() -> None:
     ]
 
 
-def test_agent_preserves_parser_usage_and_accepts_cited_shortcut_usage() -> None:
+@pytest.mark.parametrize(
+    ("parser_template", "needs_correction"), [(True, False), (False, False), (True, True)]
+)
+def test_agent_preserves_standard_usage_and_accepts_cited_shortcuts_with_aliases(
+    parser_template: bool, needs_correction: bool
+) -> None:
     shortcut_evidence_id = "evidence-shortcuts"
+    standard_usage = "搜图 [图片] [(--type|-t) <周期>]"
+    template = "搜图 [slot:0] [(--type|-t) <slot:1>]"
     base_request = _request()
     request = replace(
         base_request,
@@ -260,7 +272,7 @@ def test_agent_preserves_parser_usage_and_accepts_cited_shortcut_usage() -> None
             CapabilityEvidenceUnit(
                 shortcut_evidence_id,
                 "runtime_capability_facts",
-                '{"command.shortcuts":[{"pattern":"今日找图"}]}',
+                '{"command.shortcuts":[{"pattern":"今日搜图"},{"pattern":"今日找图"}]}',
                 "sha256:shortcuts",
             ),
         ),
@@ -269,29 +281,47 @@ def test_agent_preserves_parser_usage_and_accepts_cited_shortcut_usage() -> None
                 "root",
                 CapabilityInvocationMode.ANCHORED,
                 "搜图",
-                canonical_usages=("搜图 [slot:0]",),
-                shortcut_count=1,
+                canonical_usages=(template,) if parser_template else (),
+                aliases=("找图",),
+                shortcut_count=2,
                 shortcut_evidence_ids=(shortcut_evidence_id,),
             ),
         ),
     )
-    output = _output(usage="搜图 [图片]")
+    output = _output(usage=standard_usage)
     entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
+    entry["display_trigger"] = "(搜图|找图)"
     claims = cast(list[dict[str, object]], entry["claims"])
-    claims.append(
+    claims.extend(
         {
             "kind": "usage",
-            "statement": "今日找图",
+            "statement": shortcut,
             "evidence_ids": [shortcut_evidence_id],
             "config_reference_ids": [],
         }
+        for shortcut in ("今日搜图", "今日找图")
     )
+    provider_calls = 0
+    corrections: list[str] = []
+
+    def respond(messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal provider_calls
+        provider_calls += 1
+        corrections.extend(
+            str(part.content) for part in messages[-1].parts if isinstance(part, RetryPromptPart)
+        )
+        claims[2]["statement"] = (
+            standard_usage.replace("<周期>", "周期")
+            if needs_correction and provider_calls == 1
+            else standard_usage
+        )
+        return ModelResponse(
+            parts=[TextPart(json.dumps(output, ensure_ascii=False))], finish_reason="stop"
+        )
+
     client = PydanticAICapabilityAnalysisClient(
         FunctionModel(
-            lambda _messages, _info: ModelResponse(
-                parts=[TextPart(json.dumps(output, ensure_ascii=False))],
-                finish_reason="stop",
-            ),
+            respond,
             model_name="fixture-model",
             profile=_NATIVE_PROFILE,
         ),
@@ -300,17 +330,42 @@ def test_agent_preserves_parser_usage_and_accepts_cited_shortcut_usage() -> None
 
     result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
 
+    assert provider_calls == (2 if needs_correction else 1)
+    assert result.entries[0].display_trigger == "(搜图|找图)"
+    if needs_correction:
+        assert len(corrections) == 1
+        assert "entry_id=root, field=usage" in corrections[0]
+        assert template in corrections[0]
+        assert "此错误不要求修改 display_trigger" in corrections[0]
     assert [
         claim.statement
         for claim in result.entries[0].claims
         if claim.kind is SemanticClaimKind.USAGE
-    ] == ["搜图 [图片]", "今日找图"]
+    ] == [standard_usage, "今日搜图", "今日找图"]
     annotation = project_capability_annotation(
         request,
         result,
         analysis_revision="shortcut-test",
     )
-    assert annotation.entries[0].usages == ("搜图 [图片]", "今日找图")
+    assert annotation.entries[0].usages == (
+        "(搜图|找图) [图片] [(--type|-t) <周期>]",
+        "今日搜图",
+        "今日找图",
+    )
+
+    from nbtriage.capability.teaching.model_adapter import _AnalysisOutput
+
+    claims[-1]["evidence_ids"] = ["evidence-handler"]
+    with pytest.raises(ValueError, match="shortcut usage must cite registered shortcut Evidence"):
+        _validate_analysis_output_contract(
+            _AnalysisOutput.model_validate(output), request, (), allow_alias_fallback=False
+        )
+    claims.pop()
+    claims.pop(2)
+    with pytest.raises(ValueError, match=r"must preserve|must be preserved"):
+        _validate_analysis_output_contract(
+            _AnalysisOutput.model_validate(output), request, (), allow_alias_fallback=False
+        )
 
 
 def test_agent_preserves_compact_parser_separators_when_naming_slots() -> None:
@@ -349,6 +404,69 @@ def test_agent_preserves_compact_parser_separators_when_naming_slots() -> None:
     )
 
     assert annotation.entries[0].usages == ("@bot (提醒|叫我)[时间]",)
+
+
+@pytest.mark.parametrize("profile", [_NATIVE_PROFILE, _TOOL_PROFILE], ids=["native", "tool"])
+def test_output_correction_collects_independent_errors_across_entries(
+    profile: ModelProfile,
+) -> None:
+    calls = 0
+    corrections: list[str] = []
+    request = replace(
+        _request(),
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "搜图",
+                canonical_usages=("搜图 <slot:0>",),
+                aliases=("找图",),
+                shortcut_count=1,
+                shortcut_evidence_ids=("evidence-handler",),
+            ),
+            CapabilityInvocationTarget(
+                "other",
+                CapabilityInvocationMode.ANCHORED,
+                "查图",
+                canonical_usages=("查图 <slot:0>",),
+            ),
+        ),
+    )
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        corrections.extend(
+            str(part.content) for part in messages[-1].parts if isinstance(part, RetryPromptPart)
+        )
+        output = _output(usage="搜图 图片" if calls == 1 else "搜图 <图片>")
+        entries = cast(list[dict[str, object]], output["entries"])
+        entries[0]["display_trigger"] = "(搜图|未知入口)" if calls == 1 else "(搜图|找图)"
+        entries.append(
+            {**_entry(usage="查图 图片" if calls == 1 else "查图 <图片>"), "entry_id": "other"}
+        )
+        return ModelResponse(
+            parts=(
+                [ToolCallPart(info.output_tools[0].name, output, f"output-{calls}")]
+                if info.output_tools
+                else [TextPart(json.dumps(output, ensure_ascii=False))]
+            )
+        )
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=profile), max_output_tokens=240
+    )
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+
+    assert calls == 2
+    assert len(corrections) == 1
+    assert "entry_id=root, field=usage" in corrections[0]
+    assert "entry_id=other, field=usage" in corrections[0]
+    assert "field=display_trigger" in corrections[0]
+    assert "shortcut usage must cite" not in corrections[0]
+    assert "只修正 display_trigger" not in corrections[0]
+    assert len(result.entries) == 2
+    assert result.entries[0].display_trigger == "(搜图|找图)"
 
 
 def test_agent_accepts_typed_scene_and_evidenced_rate_limit_exemption() -> None:
@@ -483,7 +601,7 @@ def test_maintenance_diagnostics_capture_redacted_http_error() -> None:
     )
 
 
-def test_total_token_limit_accepts_received_valid_response_and_output_retry_stays_bounded() -> None:
+def test_total_token_limit_accepts_received_valid_response_but_blocks_further_correction() -> None:
     def run(*, repair_second_response: bool):
         provider_calls = 0
 
@@ -519,7 +637,62 @@ def test_total_token_limit_accepts_received_valid_response_and_output_retry_stay
     with pytest.raises(CapabilityModelAdapterError) as error_info:
         asyncio.run(CapabilityAnalysisService(invalid_client).analyze(_request()))
 
-    assert error_info.value.reason_code is CapabilityModelAdapterReason.OUTPUT_VALIDATION
+    assert error_info.value.reason_code is CapabilityModelAdapterReason.BUDGET
+    assert invalid_calls() == 2
+
+
+def test_per_request_input_limit_accepts_received_final_result_but_blocks_retry() -> None:
+    def run(*, repair_second_response: bool):
+        provider_calls = 0
+
+        def read_dependency() -> str:
+            return "bounded evidence"
+
+        def respond(_messages, info: AgentInfo) -> ModelResponse:
+            nonlocal provider_calls
+            provider_calls += 1
+            if provider_calls == 1:
+                return ModelResponse(
+                    parts=[ToolCallPart("read_dependency", {}, "call-read")],
+                    usage=RequestUsage(input_tokens=10, output_tokens=5),
+                    finish_reason="tool_call",
+                )
+            output = _output()
+            if not repair_second_response:
+                entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
+                entry["entry_id"] = "other"
+            return ModelResponse(
+                parts=[ToolCallPart(info.output_tools[0].name, output, "call-output")],
+                usage=RequestUsage(input_tokens=65_000, output_tokens=5),
+                finish_reason="tool_call",
+            )
+
+        runtime = CapabilityAnalysisToolRuntime(
+            toolsets=(FunctionToolset(tools=[read_dependency]),),
+            evidence_units=tuple,
+            validate_source_context=lambda: True,
+        )
+        client = PydanticAICapabilityAnalysisClient(
+            FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
+            max_output_tokens=240,
+            total_tokens_limit=100_000,
+            tool_runtime_factory=lambda _request: runtime,
+        )
+        return client, lambda: provider_calls
+
+    valid_client, valid_calls = run(repair_second_response=True)
+    result = asyncio.run(CapabilityAnalysisService(valid_client).analyze(_request()))
+
+    assert result.entries[0].entry_id == "root"
+    assert valid_calls() == 2
+    assert valid_client.last_usage is not None
+    assert valid_client.last_usage.input_tokens == 65_010
+
+    invalid_client, invalid_calls = run(repair_second_response=False)
+    with pytest.raises(CapabilityModelAdapterError) as error_info:
+        asyncio.run(CapabilityAnalysisService(invalid_client).analyze(_request()))
+
+    assert error_info.value.reason_code is CapabilityModelAdapterReason.BUDGET
     assert invalid_calls() == 2
 
 
@@ -822,6 +995,8 @@ def test_agent_receives_aliases_and_retries_missing_required_mention() -> None:
         calls += 1
         observed["messages"] = messages
         output = _output(usage="状态" if calls == 1 else "@bot 状态")
+        entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
+        entry["display_trigger"] = "(状态|运行状态)"
         return ModelResponse(
             parts=[TextPart(json.dumps(output, ensure_ascii=False))],
             finish_reason="stop",
@@ -1339,27 +1514,60 @@ def test_output_validation_failure_preserves_provider_usage() -> None:
     assert client.last_usage.output_tokens == 10 * provider_calls
 
 
-def test_public_projection_failure_gets_one_precise_correction() -> None:
+@pytest.mark.parametrize("profile", [_NATIVE_PROFILE, _TOOL_PROFILE], ids=["native", "tool"])
+@pytest.mark.parametrize("repair_third_response", [True, False], ids=["repaired", "exhausted"])
+def test_public_projection_uses_two_output_corrections(
+    profile: ModelProfile, repair_third_response: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     provider_calls = 0
+    corrections: list[str] = []
 
-    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+    def project(*args, **kwargs):
+        if provider_calls < 3 or not repair_third_response:
+            raise CapabilityAnnotationProjectionError(
+                CapabilityAnnotationProjectionCode.PUBLIC_MEMBERS,
+                "reconciled behavior_boundaries exceeds its public member limit",
+            )
+        return project_capability_annotation(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "nbtriage.capability.teaching.model_adapter.project_capability_annotation", project
+    )
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
         nonlocal provider_calls
         provider_calls += 1
-        return _native_response(
-            summary=(
-                "根据图片\u200b查找相似内容。" if provider_calls == 1 else "根据图片查找相似内容。"
+        if provider_calls > 1:
+            corrections.extend(
+                str(part.content)
+                for part in messages[-1].parts
+                if isinstance(part, RetryPromptPart)
             )
-        )
+        output = _output()
+        if info.output_tools:
+            return ModelResponse(
+                parts=[ToolCallPart(info.output_tools[0].name, output, f"output-{provider_calls}")],
+                finish_reason="tool_call",
+            )
+        return ModelResponse(parts=[TextPart(json.dumps(output, ensure_ascii=False))])
 
     client = PydanticAICapabilityAnalysisClient(
-        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        FunctionModel(respond, model_name="fixture-model", profile=profile),
         max_output_tokens=240,
     )
 
-    result = asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+    if repair_third_response:
+        result = asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+        assert result.entries[0].claims[1].statement == "根据图片查找相似内容。"
+    else:
+        with pytest.raises(CapabilityModelAdapterError) as error_info:
+            asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
+        assert error_info.value.reason_code is CapabilityModelAdapterReason.OUTPUT_VALIDATION
+        assert error_info.value.detail_code == "projection_public_members"
 
-    assert result.entries[0].claims[1].statement == "根据图片查找相似内容。"
-    assert provider_calls == 2
+    assert provider_calls == 3
+    assert len(corrections) == 2
+    assert all("projection_public_members" in correction for correction in corrections)
 
 
 def test_agent_retries_evidence_reference_outside_current_request() -> None:
@@ -1466,6 +1674,15 @@ def test_completed_final_result_can_be_revalidated_after_cancellation() -> None:
 
 
 def test_agent_can_resolve_gate_as_no_constraint_with_definition_evidence() -> None:
+    observed: dict[str, Any] = {}
+
+    def respond(messages, _info: AgentInfo) -> ModelResponse:
+        observed["messages"] = messages
+        return ModelResponse(
+            parts=[TextPart(json.dumps(output, ensure_ascii=False))],
+            finish_reason="stop",
+        )
+
     output = _output()
     output["gate_resolutions"] = [
         {
@@ -1492,15 +1709,14 @@ def test_agent_can_resolve_gate_as_no_constraint_with_definition_evidence() -> N
                 CapabilityGateKind.PERMISSION,
                 ("root",),
                 ("evidence-handler",),
+                owner="search",
+                symbol="allow_all",
             ),
         ),
     )
     client = PydanticAICapabilityAnalysisClient(
         FunctionModel(
-            lambda _messages, _info: ModelResponse(
-                parts=[TextPart(json.dumps(output, ensure_ascii=False))],
-                finish_reason="stop",
-            ),
+            respond,
             model_name="fixture-model",
             profile=_NATIVE_PROFILE,
         ),
@@ -1511,6 +1727,25 @@ def test_agent_can_resolve_gate_as_no_constraint_with_definition_evidence() -> N
 
     assert result.knowledge_enabled is True
     assert result.gate_resolutions[0].outcome.value == "no_constraint"
+    prompt = cast(UserPromptPart, observed["messages"][0].parts[0])
+    payload = json.loads(cast(str, prompt.content))
+    assert payload["gate_candidates"] == [
+        {
+            "candidate_id": "gate:allow-all",
+            "kind": "permission",
+            "entry_ids": ["root"],
+            "evidence_ids": ["evidence-handler"],
+            "owner": "search",
+            "symbol": "allow_all",
+        }
+    ]
+    without_location = replace(
+        request,
+        gate_candidates=(replace(request.gate_candidates[0], owner=None, symbol=None),),
+    )
+    assert capability_analysis_fingerprint(
+        request, analysis_revision="test"
+    ) != capability_analysis_fingerprint(without_location, analysis_revision="test")
 
 
 def test_agent_retries_enabled_output_with_unresolved_gate_then_closes() -> None:

@@ -36,13 +36,17 @@ from nbtriage.capability.teaching.usage import (
 )
 
 CAPABILITY_ANNOTATION_SCHEMA_VERSION = 11
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v92-zh"
-CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v55"
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v95-zh"
+CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v58"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
 )
-CAPABILITY_ANNOTATION_BUDGET_PROFILE = "background-unit-concurrency10-10req-7read-navigation-tools-160line-160k-reserve-finalize-16384out-0.05usd-schema10"
+CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT = 192_000
+CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
+    "background-unit-10req-7read-navigation-tools-160line-"
+    "192k-reserve-finalize-32768out-0.05usd-schema11"
+)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SEARCH_TERM_LIST_SEPARATOR = re.compile(r"[,，、;；|]")
 _REQUIREMENT_KIND_ORDER = {
@@ -483,6 +487,8 @@ def capability_analysis_fingerprint(
                 "kind": item.kind.value,
                 "entry_ids": list(item.entry_ids),
                 "evidence_ids": list(item.evidence_ids),
+                "owner": item.owner,
+                "symbol": item.symbol,
             }
             for item in request.gate_candidates
         ],
@@ -1226,6 +1232,7 @@ __all__ = (
     "CAPABILITY_ANNOTATION_REQUEST_REVISION",
     "CAPABILITY_ANNOTATION_SCHEMA_VERSION",
     "CAPABILITY_ANNOTATION_TASK",
+    "CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT",
     "CapabilityAnnotationError",
     "CapabilityAnnotationEvidenceRef",
     "CapabilityAnnotationProjectionCode",

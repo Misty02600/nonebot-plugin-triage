@@ -107,6 +107,15 @@ class UniversalReferenceBridge:
         self._dropped_count += 1
 
 
+def bounded_message_reference(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    normalized = str(value)
+    if not normalized or len(normalized.encode("utf-8")) > 512:
+        return None
+    return normalized
+
+
 def adapter_name(bot: Bot) -> str:
     name = bot.adapter.get_name()
     if not isinstance(name, str) or not name:

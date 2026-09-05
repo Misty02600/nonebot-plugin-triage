@@ -46,8 +46,13 @@ HARD_DENIED_PATTERNS = (
     "*.sqlite3",
     "*.db-wal",
     "*.db-shm",
+    "*.db-journal",
     "*.sqlite-wal",
     "*.sqlite-shm",
+    "*.sqlite-journal",
+    "*.sqlite3-wal",
+    "*.sqlite3-shm",
+    "*.sqlite3-journal",
 )
 
 

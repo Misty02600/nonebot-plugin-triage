@@ -5,7 +5,7 @@ from pydantic_ai.settings import ModelSettings
 
 PROVIDER_DEFAULT_SETTINGS_REVISION = "provider-default"
 ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION = "alibaba-qwen3.6-non-thinking-v2"
-DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION = "deepseek-v4-thinking-high-v1"
+DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION = "deepseek-v4-thinking-high-max-tokens-v2"
 OPENAI_RESPONSES_PRIVACY_SETTINGS_REVISION = "openai-responses-no-store-v1"
 
 

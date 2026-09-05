@@ -147,12 +147,12 @@ uv run nb orm upgrade
 | `NBTRIAGE_KNOWLEDGE_PACK_SHA256` | 未设置 | 与 URL 成对固定 knowledge pack 压缩包的 64 位十六进制 SHA-256；下载内容不匹配时拒绝安装。它校验制品身份，不表示制品来源或许可证已自动获准。 |
 | `NBTRIAGE_MODEL_NAME` | 未设置 | 使用 Pydantic AI 的 `provider:model` 选择 Provider、API 族和精确模型，例如 `alibaba:qwen-max`；任意 OpenAI-compatible Chat 服务使用 `openai-chat:<模型 ID>`。这是唯一的 transport 选择字段。held-out 只标记项目已经验证的精确组合，未评测模型不会因此被拒绝运行。未设置时插件仍能启动并提供确定性能力索引，但不会生成教学注释、执行语义分类或调用 Answer / Behavior Agent。 |
 | `NBTRIAGE_MODEL_BASE_URL` | 未设置 | 可选覆盖所选 Provider 的部署端地址，例如中国大陆百炼或自建 OpenAI-compatible Chat endpoint。它不替代 `provider:model`；已知 Provider 保留其 ModelProfile，通用兼容服务应显式选择 `openai-chat:`。Provider 构造器不支持地址覆盖时失败关闭。外部地址必须为 HTTPS，HTTP 只允许本机 loopback，且 URL 不得携带凭据、query 或 fragment。 |
-| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 单次语义、公开能力回答或自动教学注释请求的最长等待时间，也是 Behavior Agent 一轮 ReAct 的总 timeout。显式 Provider SDK 对瞬时连接、限流和 5xx 最多进行两次传输重试；教学层不会因此重跑整个 Agent，只保留输出 / 投影 correction。Bug Agent 使用独立的 120 秒任务上限。与已发布评测预算不同只会使组合显示为未验证，不会成为运行禁令。 |
-| `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 单次语义 assessment 与 Answer Agent 结构化输出的 token 上限。自动教学注释使用任务内固定的 16384 output token；Bug Agent 使用独立的 800 output token、最多 8 次请求、6 次实际证据读取和 0.50 美元单轮预算。它不限制用户输入长度；与已发布评测预算不同会使用新的未验证质量标签。 |
+| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 范围 `0 < seconds ≤ 400`。单次语义、公开能力回答的最长等待时间，也是自动教学注释与 Behavior Agent 一轮分析的总 timeout。显式 Provider SDK 对瞬时连接、限流和 5xx 最多进行两次传输重试；教学层不会因此重跑整个 Agent，只保留输出 / 投影 correction。Bug Agent 使用独立的 120 秒任务上限。与已发布评测预算不同只会使组合显示为未验证，不会成为运行禁令。 |
+| `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 单次语义 assessment 与 Answer Agent 结构化输出的 token 上限。自动教学注释使用任务内固定的 32768 output token（包含 Provider 计入输出的 reasoning token），单元累计仍限制为 192k；Bug Agent 使用独立的 800 output token、最多 8 次请求、6 次实际证据读取和 0.50 美元单轮预算。它不限制用户输入长度；与已发布评测预算不同会使用新的未验证质量标签。 |
 | `NBTRIAGE_BEHAVIOR_MAX_OUTPUT_TOKENS` | `1200` | Behavior Agent 单次 Provider 响应的 output token 上限，范围 `256..8192`。每轮另有固定的最多 5 次模型请求、3 次只读证据检索、60000 total token 和 0.50 美元预算；该值不改变长期工作区的 6000 字投递与 64 KiB State 上限。 |
 | `NBTRIAGE_BEHAVIOR_MAX_CONCURRENCY` | `2` | 不同 Behavior Thread 同时占用模型的全局上限，范围 `1..16`；同一 Thread 始终只允许一个活动 Turn，第二个请求直接返回忙碌而不排队。它不把 SQLite saver 升级为多进程协调后端。 |
 | `NBTRIAGE_AGENT_TRACE_ENABLED` | `true` | 模型 transport 已配置时，把脱敏后的 Pydantic AI Agent / model / tool spans 写入本插件 LocalStore data 下的 `agent-traces.jsonl`；固定按 10 MiB、5 个备份轮转。文件只含调用结构、耗时、状态、Provider/model、token、费用、安全关联 ID，以及响应 part 类型和正文/工具参数长度等无内容形状，不含 Prompt、源码、模型原文、工具参数/结果或配置值。设为 `false` 时不解析路径、不创建文件。 |
-| `NBTRIAGE_CAPABILITY_ANNOTATION_MAX_CONCURRENCY` | `10` | 自动教学注释同时运行的教学单元数上限，范围 `1..32`；同一插件的不同单元也可以并行，设为 `1` 可恢复全局串行。它不改变单次请求 timeout，较慢 Provider 继续通过 `NBTRIAGE_MODEL_TIMEOUT_SECONDS` 调整。 |
+| `NBTRIAGE_CAPABILITY_ANNOTATION_MAX_CONCURRENCY` | `50` | 自动教学注释同时运行的教学单元数上限，接受任意正整数；同一插件的不同单元也可以并行，设为 `1` 可恢复全局串行。HTTP 连接池会跟随该值，但 Provider、网关或操作系统仍可能施加更低的实际并发限制。它不改变单次请求 timeout，较慢 Provider 继续通过 `NBTRIAGE_MODEL_TIMEOUT_SECONDS` 调整。 |
 | `NBTRIAGE_RESTRICTED_CONFIG` | `[]` | JSON 数组，列出禁止把实际值交给能力分析模型的 NoneBot 顶层配置键；键名大小写不敏感，`FOO__BAR` 等嵌套写法按顶层 `foo` 整项限制。命中后在读取实际值前拒绝；它不会删除 NoneBot 配置、禁止分析公开 schema/源码，也不表示未列出的整份 `.env` 会被发送。 |
 | `NBTRIAGE_EVIDENCE_DENIED_PATTERNS` | `[]` | JSON 数组，为所有只读源码与文件证据根追加相对 POSIX glob 拒绝项；例如 `"private/**"`。它只能在内置硬拒绝之外继续缩小范围，不能重新允许 `.env`、凭据、越界路径或 symlink 外跳。教学和 Bug 仍分别应用自己的任务级拒绝与日志准入规则。 |
 
@@ -260,7 +260,7 @@ token。教学注释还会写入独立的无内容 response-shape span，记录�
 尝试的完整 assistant 文本、thinking、tool call/result、correction，以及 Provider 返回的有界脱敏 HTTP
 错误正文写入显式本地忽略路径；该文件不保存初始 Prompt、请求体、认证头或 API key，但 reasoning、工具
 返回与上游错误仍可能包含真实插件源码或其他敏感上下文，必须按敏感本地工件管理。配套 `--unbounded` 会移除
-项目侧请求、工具、token、输出和成本止损，但仍保留 Agent 超时与有限单元重试；不影响生产 trace 默认脱敏。
+项目侧请求、工具、token、输出和成本止损，但仍保留 Agent 超时与轮内输出纠错，不自动重跑整个单元；不影响生产 trace 默认脱敏。
 同一 Prompt、request、源码和已发布 generation 下，维护者可加 `--retry-failed` 复用成功单元，只重新生成
 失败、缺失或 stale 单元；合同 revision 变化时旧成功缓存同样失效，因此首次运行新合同仍会全量生成。
 该维护命令会把目标插件自己的 LocalStore cache/config/data 重定向到本次临时目录，避免插件加载或旧数据迁移
@@ -331,7 +331,8 @@ runtime 成功注册、插件源码与其他生成输入未变、动态证据 re
 落后、插件加载失败或本轮未观察到的能力都不会成为普通用户可见的“幽灵帮助”。插件文件
 直接使用安全的 `module_name.json`，不建立 hash fallback 或文件名映射；非法 module name 或同轮大小写折叠
 冲突只关闭相关插件的教学增强。未评测模型也可以生成，但仍须通过
-相同的模型外闭合检查，并以未验证质量标签记录。当前 schema 10 的公开 entry 只保存
+相同的模型外闭合检查，并以未验证质量标签记录。Prompt、request 与 Schema 版本以
+[教学合同常量](src/nbtriage/capability/teaching/annotations.py)为准。当前教学 Schema 的公开 entry 只保存
 `name / summary / usages / search_terms / behavior_boundaries / requirements`。独立条件继续使用
 `role / scene / access / rate_limit`；一个 Permission 的组合资格使用带 OR alternatives 的单一 requirement。
 `role` 表示调用者本人身份，`access` 表示用户、群或场景已取得由高权限主体控制的脱敏使用资格，业务准备状态进入
@@ -364,7 +365,7 @@ schema、Evidence 闭合、投影、安全、预算、工具和源码提取均�
 过窄 Oracle：自定义角色同义文案、`baseline_changes.replace.new_value` 已形成正确最终边界却仍被要求重复 claim，
 以及 `@值班员` 的正确详细改写未逐字等于期望；剩余一条是模型把按群名单限制错分为 `scene` 而非 `access`。
 v13 分数保持冻结，不用事后改 Oracle 冒充通过。
-当前 Prompt v71 / request v35 保留全部 family 成员调用事实，并把无损列式成员清单与唯一 Parser shapes 分离去重；模型输入不再重复 Runtime 已拥有的 `platform_scope`。独立 scene requirement 携带完整原子 `allowed_scenes` 集合，同一注册表达式中的复合 Permission 只形成一个候选。真实限额允许在同一 requirement 中说明有 Evidence 支持的豁免对象，不再用公开短语黑名单误杀。现有 Evidence 不足以支持或否定拟公开事实时，Agent 可以从已知符号、路径或调用位置按需补证，不限定为配置或授权问题；定义导航和根内文本搜索分别负责理解符号与定位使用位置；初始和动态 Python Evidence 提供请求内位置句柄，唯一目标一次调用即完成 Jedi 跳转、revision 复核和可引用读取。role 按入口直接身份判断生成，access 按可配置权限、名单或开放资格查询生成；权限系统内部的角色预授权不反向展开为目标能力 role。Alconna 联合输入不会再退化为 `typing.Any`，Uniseg `At` 会作为直接 `@用户` 输入参与聚合 usage 完整性校验；七个及以上 family 成员只做简短类别概括，不在 summary 或行为边界重复完整成员名单；tool-mode 与 native-mode 都直接提交顶层教学分析对象，不接受 `output` 包装或 JSON 字符串；输出格式或投影错误只纠正一次；
+当前教学合同保留全部 family 成员调用事实，并把无损列式成员清单与唯一 Parser shapes 分离去重；模型输入不再重复 Runtime 已拥有的 `platform_scope`。独立 scene requirement 携带完整原子 `allowed_scenes` 集合，同一注册表达式中的复合 Permission 只形成一个候选。真实限额允许在同一 requirement 中说明有 Evidence 支持的豁免对象，不再用公开短语黑名单误杀。现有 Evidence 不足以支持或否定拟公开事实时，Agent 可以从已知符号、路径或调用位置按需补证，不限定为配置或授权问题；定义导航和根内文本搜索分别负责理解符号与定位使用位置；初始和动态 Python Evidence 提供请求内位置句柄，唯一目标一次调用即完成 Jedi 跳转、revision 复核和可引用读取。role 按入口直接身份判断生成，access 按可配置权限、名单或开放资格查询生成；权限系统内部的角色预授权不反向展开为目标能力 role。Alconna 联合输入不会再退化为 `typing.Any`，Uniseg `At` 会作为直接 `@用户` 输入参与聚合 usage 完整性校验；七个及以上 family 成员只做简短类别概括，不在 summary 或行为边界重复完整成员名单；tool-mode 与 native-mode 都直接提交顶层教学分析对象，不接受 `output` 包装或 JSON 字符串；输出格式或投影错误最多纠正两次；
 普通命令明确保持 anchor-only。合同继续移除 family 初始 Evidence 条目总数上限、过滤
 Alconna 内建辅助 Option，并把公开投影失败纳入一次定向纠错；展示继续采用 `≤3 / 4–6 / ≥7` 阈值。
 family 异构输入无法用一个词准确概括时使用由当前 Evidence 命名的概念槽位，Prompt 不提供固定成品词；四至六类在 summary 说明，七类及以上可以简单概括共同类别，但不逐类展开，

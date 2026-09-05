@@ -22,15 +22,17 @@ from nonebot import (
     on_type,
 )
 from nonebot.adapters.onebot.v11 import MessageEvent
+from nonebot.adapters.onebot.v11.permission import GROUP_ADMIN, GROUP_OWNER
 from nonebot.matcher import matchers
-from nonebot.permission import SUPERUSER, Permission
+from nonebot.permission import SUPERUSER, Permission, SuperUser
 from nonebot.plugin import PluginMetadata
-from nonebot.rule import CommandRule, Rule
+from nonebot.rule import CommandRule, IsTypeRule, Rule, is_type
 from nonebot_plugin_alconna import At, Image, Text, on_alconna
 from pydantic import BaseModel
 
 from nbtriage.capability.catalog.records import (
     AnalysisIssue,
+    ConstraintEvaluability,
     Disclosure,
     PlatformScopeKind,
     RecordState,
@@ -167,10 +169,12 @@ def test_command_uses_current_nonebot_prefixes_and_separators(
     assert _record_values(record, "invocation.header")
 
 
+@pytest.mark.parametrize("type_first", [True, False])
 def test_collects_literal_and_regex_trigger_forms_but_keeps_type_conservative(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     matcher_cleanup: list[type[object]],
+    type_first: bool,
 ) -> None:
     matchers_by_factory = {
         "on_startswith": on_startswith(("hello", "你好")),
@@ -181,6 +185,15 @@ def test_collects_literal_and_regex_trigger_forms_but_keeps_type_conservative(
         "on_type": on_type(MessageEvent),
     }
     matcher_cleanup.extend(matchers_by_factory.values())
+    for matcher in matchers_by_factory.values():
+        matcher.rule &= is_type(MessageEvent)
+        # 固定两种遍历顺序，避免测试也依赖 Rule.checkers 的 set 顺序。
+        checkers = sorted(
+            matcher.rule.checkers,
+            key=lambda dependent: isinstance(dependent.call, IsTypeRule),
+            reverse=type_first,
+        )
+        monkeypatch.setattr(matcher.rule, "checkers", tuple(checkers))
     plugin = _plugin(tmp_path, monkeypatch, set(matchers_by_factory.values()))
 
     snapshot = build_capability_snapshot(plugins=[plugin])
@@ -195,6 +208,10 @@ def test_collects_literal_and_regex_trigger_forms_but_keeps_type_conservative(
     ):
         record = records[factory]
         assert AnalysisIssue.DYNAMIC_ENTRY not in record.analysis_issues
+        assert any(
+            constraint.payload.get("observed") == "rule:opaque:IsTypeRule"
+            for constraint in record.constraints
+        )
     assert _record_values(records["on_regex"], "invocation.header") == ()
     assert _record_values(records["on_regex"], "trigger.regex_flags") == (["ignore_case"],)
     assert AnalysisIssue.DYNAMIC_ENTRY in records["on_type"].analysis_issues
@@ -386,6 +403,17 @@ def test_alconna_dispatch_matchers_only_expose_their_own_subcommand_scope(
         )
 
         assert len(snapshot.records) == 3
+        assert all(
+            any(
+                constraint.kind == "routing" and constraint.operation == "alconna_dispatch"
+                for constraint in record.constraints
+            )
+            for record in snapshot.records
+        )
+        assert all(
+            all(constraint.kind != "rule" for constraint in record.constraints)
+            for record in snapshot.records
+        )
         components = [_record_values(record, "command.components") for record in snapshot.records]
         assert components.count(()) == 1
         scoped = {values[0][0]["name"]: values[0][0] for values in components if values}
@@ -478,6 +506,79 @@ def test_superuser_or_custom_permission_is_not_superuser_only(
     assert "permission:superuser" not in observed
     assert any(value.startswith("permission:opaque:") for value in observed)
     assert calls == 0
+
+
+def test_duplicate_superuser_permissions_remain_restricted(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    permission = Permission(SuperUser()) | Permission(SuperUser())
+    matcher = on_command("duplicate-superuser", permission=permission)
+    matcher_cleanup.append(matcher)
+    plugin = _plugin(tmp_path, monkeypatch, {matcher})
+
+    (record,) = build_capability_snapshot(plugins=[plugin]).records
+
+    assert record.disclosure is Disclosure.RESTRICTED
+    observed = {constraint.payload["observed"] for constraint in record.constraints}
+    assert observed == {"permission:superuser"}
+
+
+def test_resolves_loaded_known_permission_alternatives_without_source_expression(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    permission_opt = SUPERUSER | GROUP_OWNER | GROUP_ADMIN
+    matcher = on_command("configured-permission", permission=permission_opt)
+    matcher_cleanup.append(matcher)
+    plugin = _plugin(tmp_path, monkeypatch, {matcher})
+
+    (record,) = build_capability_snapshot(plugins=[plugin]).records
+
+    (constraint,) = record.constraints
+    assert constraint.kind == "permission"
+    assert constraint.operation == "alternatives"
+    assert constraint.evaluability is ConstraintEvaluability.STRUCTURED
+    assert constraint.payload["alternatives"] == [
+        {"kind": "role", "operation": "administrator"},
+        {"kind": "role", "operation": "owner"},
+        {"kind": "role", "operation": "superuser"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("checker_name", "operation"),
+    [("_private", "private_chat"), ("_group", "group_chat"), ("_guild", "guild_or_channel")],
+)
+def test_loaded_uninfo_scene_permission_is_structured_without_executing_checker(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+    checker_name: str,
+    operation: str,
+) -> None:
+    async def checker() -> bool:
+        raise AssertionError("snapshot must not execute permission checkers")
+
+    checker.__module__ = "nonebot_plugin_uninfo.permission"
+    checker.__qualname__ = checker_name
+    matcher = on_command("scene-permission", permission=Permission(checker))
+    matcher_cleanup.append(matcher)
+    plugin = _plugin(tmp_path, monkeypatch, {matcher})
+
+    (record,) = build_capability_snapshot(plugins=[plugin]).records
+    (constraint,) = record.constraints
+    assert constraint.evaluability is ConstraintEvaluability.STRUCTURED
+    assert constraint.payload["alternatives"] == [{"kind": "scene", "operation": operation}]
+
+    async def custom() -> bool:
+        raise AssertionError("snapshot must not execute custom checkers")
+
+    matcher.permission |= Permission(custom)
+    (opaque,) = build_capability_snapshot(plugins=[plugin]).records
+    assert all(item.evaluability is ConstraintEvaluability.OPAQUE for item in opaque.constraints)
 
 
 def test_plain_message_and_passive_matchers_remain_low_confidence_unresolved(

@@ -20,6 +20,7 @@ class PermissionSemantic:
     operation: str
     teaching_role: TeachingRole | None = None
     teaching_scene: TeachingScene | None = None
+    runtime_checkers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class PermissionSemanticProfile:
                     "teaching_scene": (
                         item.teaching_scene.value if item.teaching_scene is not None else None
                     ),
+                    "runtime_checkers": list(item.runtime_checkers),
                 }
                 for item in self.permissions
             ],
@@ -58,6 +60,12 @@ class PermissionSemanticProfile:
         if not separator or module not in self.import_roots:
             return None
         return next((item for item in self.permissions if item.symbol == symbol), None)
+
+    def resolve_runtime_checker(self, qualified_name: str) -> PermissionSemantic | None:
+        return next(
+            (item for item in self.permissions if qualified_name in item.runtime_checkers),
+            None,
+        )
 
 
 @dataclass(frozen=True)
@@ -115,17 +123,20 @@ def uninfo_permission_profile() -> PermissionSemanticProfile:
                 PublicConstraintKind.SCENE,
                 "private_chat",
                 teaching_scene=TeachingScene.PRIVATE,
+                runtime_checkers=("nonebot_plugin_uninfo.permission._private",),
             ),
             PermissionSemantic(
                 "GROUP",
                 PublicConstraintKind.SCENE,
                 "group_chat",
                 teaching_scene=TeachingScene.GROUP,
+                runtime_checkers=("nonebot_plugin_uninfo.permission._group",),
             ),
             PermissionSemantic(
                 "GUILD",
                 PublicConstraintKind.SCENE,
                 "guild_or_channel",
+                runtime_checkers=("nonebot_plugin_uninfo.permission._guild",),
             ),
         ),
     )
@@ -141,6 +152,7 @@ def nonebot_permission_profile() -> PermissionSemanticProfile:
                 PublicConstraintKind.ROLE,
                 "superuser",
                 TeachingRole.SUPERUSER,
+                runtime_checkers=("nonebot.permission.SuperUser",),
             ),
         ),
     )
@@ -159,14 +171,24 @@ def onebot_v11_permission_profile() -> PermissionSemanticProfile:
                 PublicConstraintKind.ROLE,
                 "administrator",
                 TeachingRole.ADMIN,
+                runtime_checkers=("nonebot.adapters.onebot.v11.permission._group_admin",),
             ),
             PermissionSemantic(
                 "GROUP_OWNER",
                 PublicConstraintKind.ROLE,
                 "owner",
                 TeachingRole.OWNER,
+                runtime_checkers=("nonebot.adapters.onebot.v11.permission._group_owner",),
             ),
         ),
+    )
+
+
+def builtin_permission_semantic_profiles() -> tuple[PermissionSemanticProfile, ...]:
+    return (
+        nonebot_permission_profile(),
+        onebot_v11_permission_profile(),
+        uninfo_permission_profile(),
     )
 
 
@@ -273,7 +295,23 @@ def nonebot_dependency_overload_profile() -> FrameworkFieldSemanticProfile:
         fields=(
             FrameworkFieldSemantic(
                 "typed dependency overload",
-                "NoneBot 依赖函数的 Bot、Event 和 Matcher 参数类型注解参与重载筛选；实际对象不匹配时不会执行该依赖函数。",
+                "NoneBot 的 Handler 及其依赖函数的 Bot、Event 和 Matcher 参数类型注解都参与运行时检查；"
+                "实际对象不匹配时不会执行相应函数。Handler 声明 event: GroupMessageEvent 时，"
+                "私聊事件不会执行该 Handler；同一 Matcher 的其他 Handler 应分别判断。",
+            ),
+        ),
+    )
+
+
+def alconna_dispatch_profile() -> FrameworkFieldSemanticProfile:
+    return FrameworkFieldSemanticProfile(
+        component="nonebot-plugin-alconna",
+        annotations=(),
+        fields=(
+            FrameworkFieldSemantic(
+                "AlconnaMatcher.dispatch",
+                "dispatch 按已经解析的 Alconna path 选择同一命令的 Matcher 分支；"
+                "它是命令路由，不表示额外的角色、资格、场景或业务执行限制。",
             ),
         ),
     )
@@ -306,6 +344,8 @@ __all__ = (
     "PermissionSemantic",
     "PermissionSemanticProfile",
     "PublicConstraintKind",
+    "alconna_dispatch_profile",
+    "builtin_permission_semantic_profiles",
     "nonebot_dependency_overload_profile",
     "nonebot_permission_profile",
     "onebot_v11_permission_profile",

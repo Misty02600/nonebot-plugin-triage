@@ -96,7 +96,10 @@ revision 复核和唯一目标的稳定有界读取，并在同一次调用中�
 文件变化或句柄失效时 fail-closed。
 Handler 或本地 helper 的参数若直接写成 `Annotated[..., Depends(provider)]`、默认值
 `parameter: Type = Depends(provider)`，或经 Jedi 唯一定位的插件内类型别名静态展开成前一种形式，provider
-函数也沿同一深度、字符和 revision 边界加入初始 Evidence；
+函数也沿同一深度、字符和 revision 边界加入初始 Evidence。`Depends(factory(...))` 只在原调用表达式直接可见、
+factory 是唯一可定位的纯名称或属性链、且参数为空或全部为静态字面量时，把工厂源码和原表达式作为同一
+依赖关系提供；类型别名中的工厂不在未提供别名绑定 Evidence 时单独展开。系统不会执行工厂，动态参数、lambda、
+运行时包装和多候选仍不猜测；
 该导航不根据 provider、参数或局部变量名模型外推断业务语义，也不会因此读取 LocalStore 动态文件。
 Handler 与本地 helper 的普通函数调用只在首包自动展开两层；到达第二层后不再先执行 Jedi 再丢弃结果，
 而是只为已展示调用保留请求内 `navigation_ref`。普通单元可以按需继续打开定义；gate、参数依赖与静态
@@ -182,11 +185,17 @@ generation 都不是 active teaching contract。源码、Evidence、配置值、
 - 公开措辞由 Prompt 约束，不根据插件的 Evidence ID、locator、配置源码符号或函数名动态生成字符串黑名单。
   敏感值在输入准入时排除，公开投影继续验证文本、usage、Evidence 引用、配置引用与 requirement 结构；
   Help / Answer 渲染不复制源码正文或定位信息。
+- 请求准备完成后，复用 Evidence 校验检查初始依赖源码；不能验证时在调用模型前记录 `prepare` 阶段失败
+  与具体原因。可选源码工具不可用本身不阻止生成；已有 Evidence 仍须可验证。发布前继续复核初始依赖与
+  动态 Evidence，不能用准备阶段的检查代替最终时效检查。
 - 模型输出通过内部 Schema 与 Evidence 闭包后，还必须投影成公开 entry。投影失败以稳定的
-  `projection_*` 错误码反馈给同一 Agent 定向修正一次；第二次仍失败才关闭该单元。单元状态、cache
+  `projection_*` 错误码反馈给同一 Agent，与其他输出校验共用最多两次纠错额度，并受同一轮时间、token
+  和请求预算约束；额度或预算耗尽后记录失败，不从头重跑 Agent。单元状态、cache
   `last_attempt.detail_code` 和警告日志只记录稳定码，不记录真实源码或模型全文。
 - 瞬时连接、限流和 5xx 由 Provider SDK 在同一逻辑模型请求内最多重试两次；教学服务不再因此从头重跑
-  整个 Agent 单元。显式维护诊断会按 SDK attempt 保存有界脱敏的失败响应，生产 trace 不保存正文。
+  整个 Agent 单元。每个待分析单元在一次刷新中只启动一次 Agent；后续刷新或维护 `--retry-failed`
+  仍可定向重测失败项并复用有效成功结果。历史缓存中的两次尝试记录继续可读。
+  显式维护诊断会按 SDK attempt 保存有界脱敏的失败响应，生产 trace 不保存正文。
 - Runtime 同一 command entry 的完整 literal 集合由模型外拥有。模型只提出可选的紧凑 `display_trigger`；
   Triage 展开后必须与 Runtime 集合完全相等，首次错误定向重试，第二次仍错则使用确定性完整枚举。最终 usage
   才把已校验的触发表达式替换进固定参数结构；别名压缩失败不会关闭原本正确的知识。Alconna 的 `Help`、

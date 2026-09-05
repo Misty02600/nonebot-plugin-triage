@@ -90,9 +90,7 @@ def build_read_only_file_toolsets(
                 max_find_results=profile.policy.max_find_results,
             )
             filtered = capability.get_toolset().filtered(
-                lambda context, definition, allowed=allowed_tool_names: _is_selected_read_only_tool(
-                    context, definition, allowed
-                )
+                lambda _context, definition, allowed=allowed_tool_names: definition.name in allowed
             )
             prefixed = filtered.prefixed(root.name)
             bounded = _bounded_read_file_toolset(
@@ -113,18 +111,6 @@ def build_read_only_file_toolsets(
         toolsets=tuple(toolsets),
         exposed_tool_names=tuple(names),
     )
-
-
-def _is_read_only_tool(_context: object, tool_definition: _ToolDefinition) -> bool:
-    return tool_definition.name in READ_ONLY_FILE_TOOL_NAMES
-
-
-def _is_selected_read_only_tool(
-    context: object,
-    tool_definition: _ToolDefinition,
-    allowed: frozenset[str],
-) -> bool:
-    return _is_read_only_tool(context, tool_definition) and tool_definition.name in allowed
 
 
 def _load_filesystem_factory() -> FileSystemFactory:

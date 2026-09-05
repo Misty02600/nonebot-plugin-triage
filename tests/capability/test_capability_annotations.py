@@ -54,6 +54,7 @@ from nbtriage.capability.teaching.model_adapter import (
     CapabilityModelAdapterError,
     CapabilityModelAdapterReason,
 )
+from nonebot_plugin_triage.capability.teaching._tools import CapabilityTeachingToolProvider
 from nonebot_plugin_triage.capability.teaching.analysis import (
     CapabilityAnalysisAdapterError,
     ParameterizedHandlerCodeIdentity,
@@ -76,6 +77,7 @@ from nonebot_plugin_triage.capability.teaching.runtime import (
 )
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
+from nonebot_plugin_triage.evidence_access import EvidenceAccessError
 
 _PUBLISHED_GENERATION = "f" * 64
 
@@ -777,10 +779,15 @@ async def test_prepare_error_skips_only_the_invalid_teaching_unit(
     assert pipeline_log[1][-2] == '{"request_validation": 1}'
 
 
+@pytest.mark.parametrize(
+    "reason_code",
+    (CapabilityModelAdapterReason.BUDGET, CapabilityModelAdapterReason.OUTPUT_VALIDATION),
+)
 @pytest.mark.asyncio
 async def test_partial_refresh_activates_success_and_next_round_retries_only_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    reason_code: CapabilityModelAdapterReason,
 ) -> None:
     attempts: dict[str, int] = {}
     failing = {"command:failed"}
@@ -801,8 +808,8 @@ async def test_partial_refresh_activates_success_and_next_round_retries_only_fai
             attempts[capability_id] = attempts.get(capability_id, 0) + 1
             if capability_id in failing:
                 raise CapabilityModelAdapterError(
-                    "private budget detail",
-                    reason_code=CapabilityModelAdapterReason.BUDGET,
+                    "private failure detail",
+                    reason_code=reason_code,
                 )
             return _output()
 
@@ -1103,9 +1110,7 @@ async def test_command_without_observed_handler_is_excluded_before_preparation(
     record = _record("command:container", Disclosure.PUBLIC)
     record = replace(
         record,
-        claims=tuple(
-            claim for claim in record.claims if claim.field != "handler.references"
-        ),
+        claims=tuple(claim for claim in record.claims if claim.field != "handler.references"),
     )
 
     status = await service.refresh(CapabilitySnapshot.create((record,)))
@@ -1528,6 +1533,74 @@ async def test_scoped_commit_preserves_other_active_annotations_and_caches(
 
 
 @pytest.mark.asyncio
+async def test_unverifiable_initial_dependency_skips_model_but_optional_tools_do_not(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependency = CapabilityEvidenceUnit(
+        "evidence:dependency",
+        "python_dependency_function",
+        "def acquire():\n    return True\n",
+        f"sha256:{'6' * 64}",
+        "python_purelib/demo/dependency.py:acquire:1",
+    )
+
+    def build_request(
+        record: CapabilityRecord,
+        _policy: ConfigValuePolicy,
+        **_kwargs: object,
+    ) -> CapabilityAnalysisRequest:
+        request = _request(record.capability_id)
+        if record.capability_id == "command:dependency":
+            request = replace(request, evidence_units=(*request.evidence_units, dependency))
+        return request
+
+    def unavailable_profiles(_source_context: CapabilitySourceContext) -> None:
+        raise EvidenceAccessError("target plugin source root is unavailable")
+
+    provider = CapabilityTeachingToolProvider()
+    monkeypatch.setattr(provider, "_profiles", unavailable_profiles)
+    assert provider.create_runtime(_request()) is None
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
+        build_request,
+    )
+    clients: list[FakeCapabilityAnalysisClient] = []
+
+    def create_client() -> FakeCapabilityAnalysisClient:
+        client = FakeCapabilityAnalysisClient(_output())
+        clients.append(client)
+        return client
+
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations",
+        client_factory=create_client,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+        evidence_validator=provider.validate_evidence_currentness,
+    )
+    status = await service.refresh(
+        CapabilitySnapshot.create(
+            tuple(
+                _record(capability_id, Disclosure.PUBLIC)
+                for capability_id in ("command:dependency", "command:optional-tools")
+            )
+        )
+    )
+
+    assert len(clients) == 1
+    assert clients[0].requests[0].capability.capability_id == "command:optional-tools"
+    assert status.generated_count == status.skipped_count == 1
+    assert status.failed_count == 0
+    unit = next(item for item in status.units if item.unit_id == "command:dependency")
+    assert unit.stage is CapabilityTeachingUnitStage.PREPARE
+    assert unit.attempts == 0
+    assert unit.detail_code == "evidence_access_profile_unavailable"
+    assert unit.evidence_mismatches[0].evidence_id == dependency.evidence_id
+    assert service.get_pending("command:dependency") is None
+
+
+@pytest.mark.asyncio
 async def test_final_evidence_recheck_discards_only_changed_unit_and_retries_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1617,6 +1690,19 @@ async def test_final_evidence_recheck_discards_only_changed_unit_and_retries_it(
     assert second.failed_count == 1
     assert units["command:a"].state is CapabilityTeachingUnitState.FAILED
     assert units["command:a"].reason is CapabilityTeachingUnitReason.EVIDENCE_CHANGED
+    assert units["command:a"].detail_code == "evidence_validator_rejected"
+    assert [item.to_dict() for item in units["command:a"].evidence_mismatches] == [
+        {
+            "evidence_id": "evidence:file:dependency",
+            "source_kind": "approved_file_excerpt",
+            "locator": "python_purelib/plugin.a/dependency.py",
+            "root_name": "python_purelib",
+            "expected_revision": f"sha256:{'6' * 64}",
+            "actual_revision": None,
+            "reason": "validator_rejected",
+        }
+    ]
+    assert units["command:a"].to_dict()["evidence_mismatches"]
     assert units["command:b"].state is CapabilityTeachingUnitState.GENERATED
     assert service.get_pending("command:a") is None
     assert service.get_pending("command:b") is not None

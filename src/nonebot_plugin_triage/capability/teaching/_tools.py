@@ -46,6 +46,11 @@ from nbtriage.readonly_tools import (
     normalized_locator,
     path_is_allowed,
 )
+from nonebot_plugin_triage.capability.teaching._evidence_validation import (
+    EvidenceMismatch,
+    EvidenceMismatchReason,
+    EvidenceValidationResult,
+)
 from nonebot_plugin_triage.evidence_access import (
     EvidenceAccessError,
     EvidenceAccessProfiles,
@@ -704,6 +709,13 @@ class CapabilityTeachingToolProvider:
         request: CapabilityAnalysisRequest,
         manifest: tuple[CapabilityAnnotationEvidenceRef, ...],
     ) -> bool:
+        return self.validate_evidence_currentness(request, manifest).current
+
+    def validate_evidence_currentness(
+        self,
+        request: CapabilityAnalysisRequest,
+        manifest: tuple[CapabilityAnnotationEvidenceRef, ...],
+    ) -> EvidenceValidationResult:
         dependency_manifest = tuple(
             CapabilityAnnotationEvidenceRef(
                 evidence_id=item.evidence_id,
@@ -716,41 +728,78 @@ class CapabilityTeachingToolProvider:
         )
         references = (*manifest, *dependency_manifest)
         if not references:
-            return True
+            return EvidenceValidationResult.valid()
         source_context = request.source_context
         if source_context is None:
-            return False
+            return _unavailable_evidence_validation(
+                references,
+                EvidenceMismatchReason.SOURCE_CONTEXT_UNAVAILABLE,
+            )
         try:
             profiles = self._profiles(source_context)
         except (EvidenceAccessError, ReadOnlyToolsError):
-            return False
+            return _unavailable_evidence_validation(
+                references,
+                EvidenceMismatchReason.ACCESS_PROFILE_UNAVAILABLE,
+            )
+        mismatches: list[EvidenceMismatch] = []
         for reference in references:
             if reference.source_kind.startswith("knowledge_"):
                 if self._knowledge_pack_revision is None:
-                    return False
+                    mismatches.append(
+                        _evidence_mismatch(
+                            reference,
+                            EvidenceMismatchReason.KNOWLEDGE_PACK_UNAVAILABLE,
+                        )
+                    )
+                    continue
                 current_revision = self._knowledge_pack_revision()
                 if current_revision is None or not reference.revision.startswith(
                     f"pack:{current_revision}:"
                 ):
-                    return False
+                    mismatches.append(
+                        _evidence_mismatch(
+                            reference,
+                            (
+                                EvidenceMismatchReason.KNOWLEDGE_PACK_UNAVAILABLE
+                                if current_revision is None
+                                else EvidenceMismatchReason.REVISION_CHANGED
+                            ),
+                            actual_revision=(
+                                None if current_revision is None else f"pack:{current_revision}"
+                            ),
+                        )
+                    )
                 continue
             if reference.source_kind == "python_dependency_function":
-                if not _file_evidence_is_current(
+                mismatch = _file_evidence_mismatch(
                     profiles.navigation_profile,
                     reference,
                     strip_symbol_suffix=True,
-                ):
-                    return False
+                )
+                if mismatch is not None:
+                    mismatches.append(mismatch)
                 continue
             if reference.source_kind != _DYNAMIC_EVIDENCE_SOURCE_KIND:
-                return False
-            if not _file_evidence_is_current(
+                mismatches.append(
+                    _evidence_mismatch(
+                        reference,
+                        EvidenceMismatchReason.UNSUPPORTED_SOURCE_KIND,
+                    )
+                )
+                continue
+            mismatch = _file_evidence_mismatch(
                 profiles.navigation_profile,
                 reference,
                 strip_symbol_suffix=False,
-            ):
-                return False
-        return True
+            )
+            if mismatch is not None:
+                mismatches.append(mismatch)
+        return (
+            EvidenceValidationResult.invalid(*mismatches)
+            if mismatches
+            else EvidenceValidationResult.valid()
+        )
 
     def _knowledge_toolset(
         self,
@@ -1209,20 +1258,67 @@ def _file_state(
     return _FileState(locator=locator, revision=hashlib.sha256(raw).hexdigest())
 
 
-def _file_evidence_is_current(
+def _file_evidence_mismatch(
     access: ReadOnlyTaskProfile,
     reference: CapabilityAnnotationEvidenceRef,
     *,
     strip_symbol_suffix: bool,
-) -> bool:
+) -> EvidenceMismatch | None:
     root_name, separator, locator = reference.locator.partition("/")
     if strip_symbol_suffix:
         locator = locator.partition(":")[0]
     root = access.root(root_name)
     if not separator or root is None or not locator:
-        return False
+        reason = (
+            EvidenceMismatchReason.ROOT_UNAVAILABLE
+            if separator and root is None
+            else EvidenceMismatchReason.INVALID_LOCATOR
+        )
+        return _evidence_mismatch(reference, reason, root_name=root_name or None)
     state = _file_state(access, root, locator)
-    return state is not None and f"sha256:{state.revision}" == reference.revision
+    if state is None:
+        return _evidence_mismatch(
+            reference,
+            EvidenceMismatchReason.FILE_UNAVAILABLE,
+            root_name=root_name,
+        )
+    actual_revision = f"sha256:{state.revision}"
+    if actual_revision == reference.revision:
+        return None
+    return _evidence_mismatch(
+        reference,
+        EvidenceMismatchReason.REVISION_CHANGED,
+        root_name=root_name,
+        actual_revision=actual_revision,
+    )
+
+
+def _evidence_mismatch(
+    reference: CapabilityAnnotationEvidenceRef,
+    reason: EvidenceMismatchReason,
+    *,
+    root_name: str | None = None,
+    actual_revision: str | None = None,
+) -> EvidenceMismatch:
+    inferred_root = reference.locator.partition("/")[0] or None
+    return EvidenceMismatch(
+        evidence_id=reference.evidence_id,
+        source_kind=reference.source_kind,
+        locator=reference.locator,
+        root_name=root_name if root_name is not None else inferred_root,
+        expected_revision=reference.revision,
+        actual_revision=actual_revision,
+        reason=reason,
+    )
+
+
+def _unavailable_evidence_validation(
+    references: tuple[CapabilityAnnotationEvidenceRef, ...],
+    reason: EvidenceMismatchReason,
+) -> EvidenceValidationResult:
+    return EvidenceValidationResult.invalid(
+        *(_evidence_mismatch(reference, reason) for reference in references)
+    )
 
 
 def _known_file_failure(

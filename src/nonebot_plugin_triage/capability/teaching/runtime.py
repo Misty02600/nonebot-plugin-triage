@@ -4,6 +4,7 @@ import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+import httpx
 from nonebot import logger
 
 from nbtriage._model_runtime.settings import (
@@ -33,7 +34,7 @@ from nonebot_plugin_triage.task_model_runtime import (
     unverified_evaluation_id,
 )
 
-CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS = 16_384
+CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS = 32_768
 CAPABILITY_ANNOTATION_EVALUATION = unverified_evaluation_id(
     task=CAPABILITY_ANNOTATION_TASK,
     prompt_id=CAPABILITY_ANNOTATION_PROMPT_ID,
@@ -42,6 +43,7 @@ CAPABILITY_ANNOTATION_ANALYSIS_REVISION = (
     f"{CAPABILITY_ANNOTATION_TASK}:{CAPABILITY_ANNOTATION_PROMPT_ID}:"
     f"{CAPABILITY_ANNOTATION_REQUEST_REVISION}:"
     f"{OPENCODE_GO_THINKING_SETTINGS_REVISION}:"
+    f"{CAPABILITY_ANNOTATION_BUDGET_PROFILE}:"
     f"{CAPABILITY_ANNOTATION_EVALUATION}"
 )
 
@@ -113,8 +115,16 @@ def create_capability_annotation_client_factory(
     ),
     tool_runtime_factory: CapabilityAnalysisToolRuntimeFactory | None = None,
 ) -> Callable[[], CapabilityAnalysisClient]:
+    max_concurrency = config.nbtriage_capability_annotation_max_concurrency
     try:
-        binding = create_task_model_binding(config, environ=environ)
+        binding = create_task_model_binding(
+            config,
+            environ=environ,
+            http_limits=httpx.Limits(
+                max_connections=max_concurrency,
+                max_keepalive_connections=max_concurrency,
+            ),
+        )
     except TaskModelRuntimeConfigurationError as error:
         raise CapabilityAnnotationRuntimeConfigurationError(str(error)) from error
     qualification = _capability_annotation_qualification(

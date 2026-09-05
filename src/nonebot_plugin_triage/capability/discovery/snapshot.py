@@ -36,6 +36,10 @@ from nbtriage.capability.catalog.records import (
     SnapshotError,
     SourceRevision,
 )
+from nbtriage.capability.teaching.framework_semantics import (
+    PermissionSemantic,
+    builtin_permission_semantic_profiles,
+)
 from nonebot_plugin_triage.config_policy import normalize_config_root
 from nonebot_plugin_triage.config_references import (
     ConfigReference,
@@ -537,7 +541,8 @@ def _candidate_from_matcher(
 def _runtime_trigger(
     matcher: object,
 ) -> tuple[str | None, tuple[str, ...], tuple[str, ...]]:
-    for dependent in _safe_collection(getattr(getattr(matcher, "rule", None), "checkers", ())):
+    checkers = _safe_collection(getattr(getattr(matcher, "rule", None), "checkers", ()))
+    for dependent in checkers:
         call = getattr(dependent, "call", None)
         for class_name, factory in (
             ("StartswithRule", "on_startswith"),
@@ -557,6 +562,10 @@ def _runtime_trigger(
             entries = _safe_trigger_entries(getattr(call, "keywords", ()))
             if entries:
                 return "on_keyword", entries, ()
+
+    # 事件类型过滤可与文字入口并存，不能因无序 checker 遍历而覆盖文字入口。
+    for dependent in checkers:
+        call = getattr(dependent, "call", None)
         if _object_has_base(call, "nonebot.rule", "IsTypeRule"):
             entries = tuple(
                 sorted(
@@ -958,11 +967,22 @@ def _matcher_constraints(matcher: object) -> tuple[tuple[str, ...], bool]:
         getattr(dependent, "call", None)
         for dependent in _safe_collection(getattr(permission, "checkers", ()))
     )
-    superuser_only = bool(permission_calls) and all(
-        _qualified_type_name(call) == "nonebot.permission.SuperUser" for call in permission_calls
+    permission_semantics = tuple(_runtime_permission_semantic(call) for call in permission_calls)
+    resolved_permission = bool(permission_calls) and all(
+        semantic is not None for semantic in permission_semantics
     )
+    known_permission_semantics = tuple(
+        semantic for semantic in permission_semantics if semantic is not None
+    )
+    permission_alternatives = {
+        f"{semantic.kind.value}.{semantic.operation}" for semantic in known_permission_semantics
+    }
+    superuser_only = resolved_permission and permission_alternatives == {"role.superuser"}
     if superuser_only:
         constraints.add("permission:superuser")
+    elif resolved_permission:
+        alternatives = "|".join(sorted(permission_alternatives))
+        constraints.add(f"permission:alternatives:{alternatives}")
     else:
         constraints.update(
             f"permission:opaque:{_safe_type_name(call)}" for call in permission_calls
@@ -974,6 +994,9 @@ def _matcher_constraints(matcher: object) -> tuple[tuple[str, ...], bool]:
         if _object_has_base(call, "nonebot.rule", "CommandRule"):
             continue
         if _object_has_base(call, "nonebot_plugin_alconna.rule", "AlconnaRule"):
+            continue
+        if _object_has_base(call, "nonebot_plugin_alconna.params", "_Dispatch"):
+            constraints.add("routing:alconna_dispatch")
             continue
         if any(
             _object_has_base(call, "nonebot.rule", class_name)
@@ -996,6 +1019,31 @@ def _matcher_constraints(matcher: object) -> tuple[tuple[str, ...], bool]:
     if getattr(matcher, "_default_type_updater", None) is not None:
         constraints.add("type_updater:opaque")
     return tuple(sorted(constraints)), superuser_only
+
+
+def _runtime_permission_semantic(call: object) -> PermissionSemantic | None:
+    qualified_name = _callable_qualified_name(call)
+    if qualified_name is None:
+        return None
+    return next(
+        (
+            semantic
+            for profile in builtin_permission_semantic_profiles()
+            if (semantic := profile.resolve_runtime_checker(qualified_name)) is not None
+        ),
+        None,
+    )
+
+
+def _callable_qualified_name(value: object) -> str | None:
+    module = getattr(value, "__module__", None)
+    qualname = getattr(value, "__qualname__", None)
+    if isinstance(module, str) and isinstance(qualname, str):
+        return f"{module}.{qualname}"
+    value_type = type(value)
+    if isinstance(value_type.__module__, str) and isinstance(value_type.__qualname__, str):
+        return f"{value_type.__module__}.{value_type.__qualname__}"
+    return None
 
 
 def _platform_scope(plugin: PluginIdentity) -> PlatformScope:
@@ -1853,6 +1901,25 @@ def _core_constraint(
     label: str,
     evidence_ids: tuple[str, ...],
 ) -> Constraint:
+    alternatives_prefix = "permission:alternatives:"
+    if label.startswith(alternatives_prefix):
+        alternatives = tuple(
+            token.split(".", 1) for token in label.removeprefix(alternatives_prefix).split("|")
+        )
+        constraint_id = hashlib.sha256(f"{candidate_id}:{label}".encode()).hexdigest()[:24]
+        return Constraint(
+            constraint_id=constraint_id,
+            kind="permission",
+            operation="alternatives",
+            evaluability=ConstraintEvaluability.STRUCTURED,
+            payload={
+                "observed": label,
+                "alternatives": [
+                    {"kind": kind, "operation": operation} for kind, operation in alternatives
+                ],
+            },
+            evidence_ids=evidence_ids,
+        )
     structured = label == "permission:superuser"
     kind, _, operation = label.partition(":")
     if not operation:

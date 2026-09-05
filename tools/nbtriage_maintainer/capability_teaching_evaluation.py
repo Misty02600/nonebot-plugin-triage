@@ -108,7 +108,7 @@ _QUALIFIED_API_FAMILY = "chat-completions"
 _QUALIFIED_CONNECTION_REVISION = "provider-default"
 _QUALIFIED_SETTINGS_REVISION = OPENCODE_GO_THINKING_SETTINGS_REVISION
 CAPABILITY_TEACHING_QUALIFIED_TIMEOUT_SECONDS = 300.0
-CAPABILITY_TEACHING_QUALIFIED_MAX_OUTPUT_TOKENS = 16_384
+CAPABILITY_TEACHING_QUALIFIED_MAX_OUTPUT_TOKENS = 32_768
 _OPTION_PATTERN = re.compile(r"(?<![\w-])--?[A-Za-z][A-Za-z0-9_-]*")
 _FIXTURE_SCHEMA_VERSIONS = frozenset({3, 4})
 _CAPABILITY_SCHEMA_VERSIONS = frozenset({6, 7, CAPABILITY_ANNOTATION_SCHEMA_VERSION})
@@ -1461,9 +1461,7 @@ def _analysis_adapter_runtime() -> Iterator[_AnalysisAdapterRuntime]:
 
     try:
         try:
-            adapter_module = importlib.import_module(
-                f"{package_name}.capability.teaching.analysis"
-            )
+            adapter_module = importlib.import_module(f"{package_name}.capability.teaching.analysis")
             config_module = importlib.import_module(f"{package_name}.config_policy")
         except Exception as error:
             raise CapabilityTeachingEvaluationError(
