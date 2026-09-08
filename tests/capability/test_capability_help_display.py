@@ -289,7 +289,10 @@ def test_writer_projects_any_rate_limit_to_migut_help_cooldown_marker(
     assert command["description"] == "搜索图片出处"
 
 
-def test_writer_only_projects_lossless_native_permission_shapes(tmp_path: Path) -> None:
+@pytest.mark.parametrize("common_scenes", [(), (TeachingScene.GROUP,)])
+def test_writer_only_projects_lossless_native_permission_shapes(
+    tmp_path: Path, common_scenes: tuple[TeachingScene, ...]
+) -> None:
     record = _record(
         "plugin.manage:matcher",
         module_name="plugin_manage",
@@ -308,6 +311,7 @@ def test_writer_only_projects_lossless_native_permission_shapes(tmp_path: Path) 
                     CapabilityTeachingRequirement(
                         kind=SemanticConstraintKind.PERMISSION,
                         text="群管理员或群主可用。",
+                        allowed_scenes=common_scenes,
                         alternatives=(
                             CapabilityTeachingPermissionAlternative(
                                 kind=SemanticConstraintKind.ROLE,
@@ -383,7 +387,7 @@ def test_writer_only_projects_lossless_native_permission_shapes(tmp_path: Path) 
         for item in yaml.safe_load(path.read_text(encoding="utf-8"))["commands"]
     }
 
-    assert commands["管理 设置"]["permission"] == "admin"
+    assert commands["管理 设置"].get("permission") == (None if common_scenes else "admin")
     assert "permission" not in commands["管理 切换"]
     assert "permission" not in commands["管理 频道"]
 

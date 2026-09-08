@@ -36,8 +36,11 @@ from nbtriage.capability.teaching.analysis import (
     TeachingScene,
 )
 from nbtriage.capability.teaching.annotations import (
+    CapabilityAnnotationError,
     CapabilityAnnotationProjectionCode,
     CapabilityAnnotationProjectionError,
+    CapabilityTeachingAnnotation,
+    _validated_usage,
     capability_analysis_fingerprint,
     project_capability_annotation,
 )
@@ -49,8 +52,10 @@ from nbtriage.capability.teaching.model_adapter import (
     CapabilityModelAdapterError,
     CapabilityModelAdapterReason,
     PydanticAICapabilityAnalysisClient,
+    _AnalysisEntryOutput,
     _completed_analysis_output_candidate,
     _validate_analysis_output_contract,
+    _validate_entry_usages,
 )
 
 models.ALLOW_MODEL_REQUESTS = False
@@ -165,6 +170,7 @@ def test_agent_uses_native_output_and_bounded_source_payload() -> None:
             "command_body": "搜图",
             "regex_pattern": None,
             "regex_flags": [],
+            "keywords": [],
             "canonical_usages": [],
             "aliases": [],
             "requires_mention": False,
@@ -186,20 +192,39 @@ def test_agent_uses_native_output_and_bounded_source_payload() -> None:
     }
 
 
-def test_regex_usage_is_valid_without_command_or_shortcut_contract() -> None:
-    request = replace(
-        _request(),
-        invocations=(
+@pytest.mark.parametrize(
+    ("target", "usage"),
+    [
+        (
             CapabilityInvocationTarget(
                 "root",
                 CapabilityInvocationMode.REGEX,
                 regex_pattern=r"^(日群友|日群主|日管理|透群友|透群主|透管理)$",
             ),
+            "(日|透)(群友 [@用户]|群主|管理)",
         ),
+        (
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.KEYWORD,
+                keywords=("查找",),
+                requires_mention=True,
+            ),
+            "@bot <范围>查找<对象>",
+        ),
+    ],
+)
+def test_text_usage_is_valid_without_command_or_shortcut_contract(
+    target: CapabilityInvocationTarget,
+    usage: str,
+) -> None:
+    request = replace(
+        _request(),
+        invocations=(target,),
     )
 
     def respond(_messages, _info: AgentInfo) -> ModelResponse:
-        return _native_response(usage="(日|透)(群友 [@用户]|群主|管理)")
+        return _native_response(usage=usage)
 
     client = PydanticAICapabilityAnalysisClient(
         FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
@@ -209,7 +234,44 @@ def test_regex_usage_is_valid_without_command_or_shortcut_contract() -> None:
 
     result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
 
-    assert result.entries[0].claims[2].statement == "(日|透)(群友 [@用户]|群主|管理)"
+    assert result.entries[0].claims[2].statement == usage
+    annotation = project_capability_annotation(request, result, analysis_revision="text-test")
+    assert annotation.entries[0].usages == (usage,)
+
+
+@pytest.mark.parametrize(
+    ("usage", "valid"),
+    [
+        ("@bot 帮我查找<对象>", True),
+        ("@bot <范围>查找<对象>", True),
+        ("查找<对象> @bot", True),
+        ("@bot 搜寻<对象>", True),
+        ("@bot <查找对象>", False),
+        ("@bot 搜索<对象>", False),
+        ("查找<对象>", False),
+    ],
+)
+def test_keyword_usage_contract_matches_final_projection(usage: str, valid: bool) -> None:
+    target = CapabilityInvocationTarget(
+        "root",
+        CapabilityInvocationMode.KEYWORD,
+        keywords=("查找", "搜寻"),
+        requires_mention=True,
+    )
+    request = replace(_request(), invocations=(target,))
+    entry = _AnalysisEntryOutput.model_validate(_entry(usage=usage))
+    if not valid:
+        with pytest.raises(CapabilityAnnotationError):
+            _validate_entry_usages(entry, target, request)
+        with pytest.raises(CapabilityAnnotationError):
+            _validated_usage(usage, target=target)
+        return
+    assert _validate_entry_usages(entry, target, request) == [usage]
+    assert _validated_usage(usage, target=target) == usage
+    changed = replace(request, invocations=(replace(target, keywords=("查找",)),))
+    assert capability_analysis_fingerprint(request, analysis_revision="test") != (
+        capability_analysis_fingerprint(changed, analysis_revision="test")
+    )
 
 
 def test_agent_payload_marks_fixed_permission_as_model_external() -> None:
@@ -256,13 +318,14 @@ def test_agent_payload_marks_fixed_permission_as_model_external() -> None:
 
 
 @pytest.mark.parametrize(
-    ("parser_template", "needs_correction"), [(True, False), (False, False), (True, True)]
+    ("parser_template", "invalid_slot"),
+    [(True, None), (False, None), (True, "周期"), (True, "<" + "名" * 41 + ">")],
 )
 def test_agent_preserves_standard_usage_and_accepts_cited_shortcuts_with_aliases(
-    parser_template: bool, needs_correction: bool
+    parser_template: bool, invalid_slot: str | None
 ) -> None:
     shortcut_evidence_id = "evidence-shortcuts"
-    standard_usage = "搜图 [图片] [(--type|-t) <周期>]"
+    standard_usage = "搜图 [图片] [(--type|-t) <周期 或日期>]"
     template = "搜图 [slot:0] [(--type|-t) <slot:1>]"
     base_request = _request()
     request = replace(
@@ -311,8 +374,8 @@ def test_agent_preserves_standard_usage_and_accepts_cited_shortcuts_with_aliases
             str(part.content) for part in messages[-1].parts if isinstance(part, RetryPromptPart)
         )
         claims[2]["statement"] = (
-            standard_usage.replace("<周期>", "周期")
-            if needs_correction and provider_calls == 1
+            standard_usage.replace("<周期 或日期>", invalid_slot)
+            if invalid_slot is not None and provider_calls == 1
             else standard_usage
         )
         return ModelResponse(
@@ -330,13 +393,15 @@ def test_agent_preserves_standard_usage_and_accepts_cited_shortcuts_with_aliases
 
     result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
 
-    assert provider_calls == (2 if needs_correction else 1)
+    assert provider_calls == (2 if invalid_slot is not None else 1)
     assert result.entries[0].display_trigger == "(搜图|找图)"
-    if needs_correction:
+    if invalid_slot is not None:
         assert len(corrections) == 1
         assert "entry_id=root, field=usage" in corrections[0]
         assert template in corrections[0]
         assert "此错误不要求修改 display_trigger" in corrections[0]
+        if invalid_slot.startswith("<"):
+            assert "参数槽位名称须为 1 至 40 个字符" in corrections[0]
     assert [
         claim.statement
         for claim in result.entries[0].claims
@@ -348,7 +413,7 @@ def test_agent_preserves_standard_usage_and_accepts_cited_shortcuts_with_aliases
         analysis_revision="shortcut-test",
     )
     assert annotation.entries[0].usages == (
-        "(搜图|找图) [图片] [(--type|-t) <周期>]",
+        "(搜图|找图) [图片] [(--type|-t) <周期 或日期>]",
         "今日搜图",
         "今日找图",
     )
@@ -1791,7 +1856,20 @@ def test_agent_retries_enabled_output_with_unresolved_gate_then_closes() -> None
     assert result.gate_resolutions[0].outcome.value == "unresolved"
 
 
-def test_agent_requires_real_constraint_to_link_gate_candidate() -> None:
+@pytest.mark.parametrize(
+    ("scenes", "branches", "restricted"),
+    [
+        ((), ("admin", "owner"), False),
+        (("group",), ("superuser", "admin", "owner"), False),
+        (("group",), ("superuser", "superuser"), True),
+        ((), ("superuser", "private"), False),
+        ((), ("superuser", "access"), False),
+        ((), ("private",), False),
+    ],
+)
+def test_agent_requires_real_constraint_to_link_gate_candidate(
+    scenes: tuple[str, ...], branches: tuple[str, ...], restricted: bool
+) -> None:
     calls = 0
     retry_prompts: list[str] = []
 
@@ -1810,20 +1888,28 @@ def test_agent_requires_real_constraint_to_link_gate_candidate() -> None:
         entry["constraints"] = [
             {
                 "kind": "permission",
-                "statement": "满足以下任一条件：群管理员或群主",
+                "statement": "满足当前场景与使用资格要求",
                 "evidence_ids": ["evidence-handler", "evidence-definition"],
                 "config_reference_ids": [],
                 "role": None,
+                "allowed_scenes": list(scenes),
                 "rate_limit_policy": None,
                 "rate_limit_scope": None,
                 "gate_candidate_ids": [] if calls == 1 else ["gate:admin"],
                 "permission_alternatives": [
                     {
-                        "kind": "role",
-                        "statement": "群管理员或群主",
-                        "role": "admin",
-                        "scene": None,
+                        "kind": (
+                            "scene"
+                            if branch == "private"
+                            else "access"
+                            if branch == "access"
+                            else "role"
+                        ),
+                        "statement": "使用资格",
+                        "role": branch if branch not in {"private", "access"} else None,
+                        "scene": "private" if branch == "private" else None,
                     }
+                    for branch in branches
                 ],
             }
         ]
@@ -1872,8 +1958,19 @@ def test_agent_requires_real_constraint_to_link_gate_candidate() -> None:
     assert any("candidate_id=gate:admin" in item for item in retry_prompts)
     assert any("missing_entry_ids=root" in item for item in retry_prompts)
     assert any("gate_candidate_ids" in item for item in retry_prompts)
-    assert result.entries[0].constraints[0].permission_alternatives[0].role is TeachingRole.ADMIN
-    assert result.entries[0].constraints[0].gate_candidate_ids == ("gate:admin",)
+    constraint = result.entries[0].constraints[0]
+    assert constraint.allowed_scenes == tuple(TeachingScene(scene) for scene in scenes)
+    assert constraint.gate_candidate_ids == ("gate:admin",)
+    annotation = project_capability_annotation(request, result, analysis_revision="fixture-v1")
+    assert CapabilityTeachingAnnotation.from_dict(annotation.to_dict()) == annotation
+    requirement = annotation.entries[0].requirements[0]
+    assert requirement.allowed_scenes == constraint.allowed_scenes
+    assert len(requirement.alternatives) == len(branches)
+    assert annotation.entries[0].superuser_only is restricted
+    old_payload = annotation.to_dict()
+    old_payload["schema_version"] = annotation.schema_version - 1
+    with pytest.raises(CapabilityAnnotationError):
+        CapabilityTeachingAnnotation.from_dict(old_payload)
 
 
 def test_agent_accepts_business_state_permission_gate_as_behavior_boundary() -> None:

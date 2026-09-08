@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -21,18 +22,25 @@ from nbtriage.capability.teaching.analysis import (
     CapabilityIdentity,
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
+    CapabilityPluginEntry,
     CapabilitySourceContext,
+    validate_capability_analysis_output,
 )
 from nbtriage.capability.teaching.annotations import CapabilityAnnotationEvidenceRef
+from nbtriage.capability.teaching.framework_semantics import builtin_permission_semantic_profiles
+from nbtriage.capability.teaching.model_adapter import _AnalysisOutput, _to_domain_output
 from nbtriage.capability.teaching.source_evidence import CapabilitySourceEvidencePack
 from nbtriage.knowledge_index import KnowledgeEvidence
 from nbtriage.readonly_tools import (
+    DefinitionLocation,
     DefinitionNavigator,
     PythonNavigationProfile,
     ReadOnlyRoot,
     ReadOnlyTaskProfile,
 )
+from nonebot_plugin_triage.capability.teaching._source import _permission_framework_evidence
 from nonebot_plugin_triage.capability.teaching._tools import (
+    CapabilityAnalysisToolsError,
     CapabilityTeachingToolProvider,
     _EvidenceCapture,
     _navigation_toolset,
@@ -155,8 +163,11 @@ def test_single_file_plugin_shared_roots_keep_their_runtime_scope(tmp_path: Path
 
     site_aliased = _with_target_plugin_alias(site_profiles)
 
-    assert site_aliased.file_profile.root("target_plugin").allowed_patterns == ("demo_plugin.py",)
-    assert site_aliased.navigation_profile.root("target_plugin").allowed_patterns == (
+    file_root = site_aliased.file_profile.root("target_plugin")
+    navigation_root = site_aliased.navigation_profile.root("target_plugin")
+    assert file_root is not None and navigation_root is not None
+    assert file_root.allowed_patterns == ("demo_plugin.py",)
+    assert navigation_root.allowed_patterns == (
         "*.py",
         "*.pyi",
         "**/*.py",
@@ -238,6 +249,17 @@ def test_family_teaching_runtime_exposes_only_selective_definition_navigation(
                 evidence_ids=("evidence:runtime",),
             ),
         ),
+        plugin_entries=(
+            CapabilityPluginEntry(
+                "command:related",
+                ("相关入口",),
+                (
+                    DefinitionLocation(
+                        "target_plugin", "other.py", 1, 0, "other", None, "function", "1" * 64
+                    ),
+                ),
+            ),
+        ),
     )
     runtime = CapabilityTeachingToolProvider(
         pyproject_path=tmp_path / "pyproject.toml"
@@ -261,11 +283,16 @@ def test_family_teaching_runtime_exposes_only_selective_definition_navigation(
     assert observed_tools == {"python_open_definition"}
     assert "工具预算有限" in observed_instruction
     assert "不得逐成员打开定义" in observed_instruction
+    assert "相关入口" in observed_instruction
+    assert '"navigation_ref":"nav:' in observed_instruction
+    assert "仅发现线索，不可引用" in observed_instruction
 
 
+@pytest.mark.parametrize("explicit_limit", [False, True])
 def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    explicit_limit: bool,
 ) -> None:
     profiles = _profiles(tmp_path)
     dependency = profiles.navigation_profile.root("python_purelib")
@@ -312,7 +339,14 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
                 parts=[
                     ToolCallPart(
                         "target_plugin_read_file",
-                        {"path": "handler.py", "offset": 0, "limit": 20},
+                        {
+                            "path": "handler.py",
+                            **(
+                                {"limit": profiles.file_profile.policy.max_read_lines}
+                                if explicit_limit
+                                else {}
+                            ),
+                        },
                         "call-read",
                     )
                 ]
@@ -509,8 +543,11 @@ def test_teaching_file_tools_return_recovery_for_repeated_directory_attempts(
     assert results[1]["suggested_tools"] == ["python_open_definition"]
 
 
+@pytest.mark.parametrize("from_plugin_index", [False, True])
 def test_initial_python_evidence_exposes_request_bound_navigation_handles(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    from_plugin_index: bool,
 ) -> None:
     profiles = _with_target_plugin_alias(_profiles(tmp_path))
     source = "def helper():\n    return 1\n\ndef handle():\n    return helper()\n"
@@ -532,10 +569,11 @@ def test_initial_python_evidence_exposes_request_bound_navigation_handles(
             source_root_names=tuple(root.name for root in access.roots),
         )
     )
+    capture = _EvidenceCapture("command:demo")
     registry = _NavigationRegistry(
         access=access,
         navigator=navigator,
-        capture=_EvidenceCapture("command:demo"),
+        capture=capture,
     )
 
     sidecar = registry.initial_sidecar((evidence,))
@@ -545,10 +583,39 @@ def test_initial_python_evidence_exposes_request_bound_navigation_handles(
         for item in cast(tuple[dict[str, object], ...], sidecar[0]["navigation_targets"])
         if item["display"] == "helper"
     )
+    if from_plugin_index:
+
+        def no_jedi(*_args: object) -> None:
+            raise AssertionError("known handler must not require Jedi")
+
+        monkeypatch.setattr(navigator, "go_to_definition", no_jedi)
+        index = registry.plugin_entry_sidecar(
+            (
+                CapabilityPluginEntry(
+                    "command:other",
+                    ("其他入口",),
+                    (
+                        DefinitionLocation(
+                            "target_plugin",
+                            "handler.py",
+                            1,
+                            0,
+                            "helper",
+                            None,
+                            "function",
+                            revision,
+                        ),
+                    ),
+                ),
+            )
+        )
+        target = cast(tuple[dict[str, object], ...], index[0]["handlers"])[0]
+        assert capture.units() == ()
     result = registry.open_definition(cast(str, target["navigation_ref"]))
     assert result["resolved"] is True
     assert result["citable"] is True
     assert "def helper" in cast(str, result["content"])
+    assert len(capture.units()) == 1
 
     handler.write_text("def helper():\n    return 2\n", encoding="utf-8")
     stale = registry.open_definition(cast(str, target["navigation_ref"]))
@@ -604,6 +671,138 @@ def test_initial_python_evidence_exposes_imported_annotation_navigation_handle(
     result = registry.open_definition(cast(str, target["navigation_ref"]))
     assert result["resolved"] is True
     assert "class Target" in cast(str, result["content"])
+
+
+@pytest.mark.parametrize("in_initial_request", [False, True])
+def test_permission_semantics_are_citable_deduplicated_and_revision_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, in_initial_request: bool
+) -> None:
+    profiles = _with_target_plugin_alias(_profiles(tmp_path))
+    source = (
+        "from nonebot_plugin_uninfo import ADMIN as manager\n"
+        "from nonebot_plugin_uninfo.permission import ADMIN\n"
+        "def helper():\n    return manager()\n"
+    )
+    handler = profiles.plugin_source_root.path / "handler.py"
+    handler.write_text(source, encoding="utf-8")
+    revision = hashlib.sha256(handler.read_bytes()).hexdigest()
+    unit = CapabilityEvidenceUnit(
+        "evidence:function:helper",
+        "python_function",
+        "def helper():\n    return manager()",
+        f"sha256:{revision}",
+        "target_plugin/handler.py:helper:3",
+    )
+    fact = _permission_framework_evidence("nonebot_plugin_uninfo.ADMIN")
+    assert fact is not None
+    initial = (fact,) if in_initial_request else ()
+    capture = _EvidenceCapture("command:demo", initial)
+    registry = _NavigationRegistry(
+        access=profiles.navigation_profile,
+        navigator=DefinitionNavigator(
+            PythonNavigationProfile(
+                access=profiles.navigation_profile,
+                project_root_name="target_plugin",
+                source_root_names=tuple(root.name for root in profiles.navigation_profile.roots),
+            )
+        ),
+        capture=capture,
+    )
+    facts = registry.framework_evidence(unit)
+    assert len(facts) == 1
+    assert {
+        item["role"] for item in json.loads(cast(str, facts[0]["content"]))["alternatives"]
+    } == {"admin", "owner"}
+    assert registry.framework_evidence(unit) == facts
+    assert capture.units() == (() if in_initial_request else (fact,))
+    for field in ("content", "revision", "source_kind", "locator"):
+        with pytest.raises(CapabilityAnalysisToolsError, match="evidence_identity_conflict"):
+            capture.record_framework((replace(fact, **{field: "conflicting"}),))
+    assert registry.framework_evidence(unit) == facts  # 冲突不覆盖已登记事实。
+
+    # 直接打开已定位的依赖定义也返回同一条事实，不要求文件自身再次 import ADMIN。
+    dependency = profiles.navigation_profile.root("python_purelib")
+    assert dependency is not None
+    path = dependency.path / "nonebot_plugin_uninfo" / "permission.py"
+    path.parent.mkdir()
+    path.write_text(
+        'def ADMIN():\n    return ROLE_IN("ADMINISTRATOR", "OWNER")\n', encoding="utf-8"
+    )
+    index = registry.plugin_entry_sidecar(
+        (
+            CapabilityPluginEntry(
+                "command:other",
+                ("其他入口",),
+                (
+                    DefinitionLocation(
+                        "python_purelib",
+                        "nonebot_plugin_uninfo/permission.py",
+                        1,
+                        0,
+                        "ADMIN",
+                        "nonebot_plugin_uninfo.permission.ADMIN",
+                        "function",
+                        hashlib.sha256(path.read_bytes()).hexdigest(),
+                    ),
+                ),
+            ),
+        )
+    )
+    target = cast(tuple[dict[str, object], ...], index[0]["handlers"])[0]
+    opened = registry.open_definition(cast(str, target["navigation_ref"]))
+    assert opened["framework_evidence"] == facts
+    assert len(capture.units()) == (1 if in_initial_request else 2)
+    request = _request("revision")
+    request = replace(request, evidence_units=(*request.evidence_units, *initial))
+    candidate = _AnalysisOutput.model_validate(
+        {
+            "knowledge_enabled": True,
+            "entries": [
+                {
+                    "entry_id": "root",
+                    "claims": [
+                        {
+                            "kind": kind,
+                            "statement": text,
+                            "evidence_ids": [fact.evidence_id, opened["evidence_id"]],
+                        }
+                        for kind, text in (
+                            ("name", "示例"),
+                            ("summary", "演示功能"),
+                            ("usage", "demo"),
+                        )
+                    ],
+                }
+            ],
+        }
+    )
+    output = _to_domain_output(candidate, capture.units())
+    validate_capability_analysis_output(request, output)
+    assert fact.evidence_id in output.entries[0].claims[0].evidence_ids
+    provider = CapabilityTeachingToolProvider(pyproject_path=tmp_path / "pyproject.toml")
+    monkeypatch.setattr(provider, "_profiles", lambda *_args: profiles)
+    references = tuple(
+        CapabilityAnnotationEvidenceRef(
+            item.evidence_id,
+            item.source_kind,
+            cast(str, item.locator),
+            item.revision,
+        )
+        for item in (*initial, *capture.units())
+    )
+    assert provider.evidence_is_current(_request("revision"), references)
+    changed = tuple(replace(item, revision="sha256:outdated") for item in references)
+    assert not provider.evidence_is_current(_request("revision"), changed)
+    handler.write_text("def helper(): return False\n", encoding="utf-8")
+    assert registry.framework_evidence(unit) == ()
+
+    # 供给覆盖现有所有 profile，而不是只给 ADMIN 写特例。
+    for profile in builtin_permission_semantic_profiles():
+        for permission in profile.permissions:
+            for root in profile.import_roots:
+                assert _permission_framework_evidence(f"{root}.{permission.symbol}") is not None
+            for checker in permission.runtime_checkers:
+                assert _permission_framework_evidence(checker) is not None
 
 
 def test_teaching_tools_keep_bot_project_tools_for_local_project_plugin(

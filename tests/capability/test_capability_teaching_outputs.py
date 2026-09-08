@@ -15,9 +15,16 @@ from nbtriage.capability.catalog.records import (
     PlatformScope,
     RecordState,
 )
+from nbtriage.capability.teaching.analysis import (
+    SemanticConstraintKind,
+    TeachingRole,
+    TeachingScene,
+)
 from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
+    CapabilityTeachingPermissionAlternative,
+    CapabilityTeachingRequirement,
 )
 from nonebot_plugin_triage.capability.teaching.annotations import (
     CapabilityAnnotationRefreshStatus,
@@ -73,6 +80,42 @@ def test_writer_activates_help_and_answer_files_with_one_generation_pointer(
 ) -> None:
     record = _record()
     annotation = _annotation("搜索图片出处。")
+    public_entry = replace(
+        annotation.entries[0],
+        requirements=(
+            CapabilityTeachingRequirement(
+                kind=SemanticConstraintKind.PERMISSION,
+                text="仅群聊中具有使用资格的成员可用",
+                allowed_scenes=(TeachingScene.GROUP,),
+                alternatives=(
+                    CapabilityTeachingPermissionAlternative(
+                        kind=SemanticConstraintKind.ACCESS,
+                        text="已取得使用资格",
+                    ),
+                ),
+            ),
+        ),
+    )
+    private_entry = replace(
+        annotation.entries[0],
+        entry_id="maintenance",
+        name="受限维护说明",
+        requirements=(
+            CapabilityTeachingRequirement(
+                kind=SemanticConstraintKind.PERMISSION,
+                text="仅群聊中的超级用户可用。",
+                allowed_scenes=(TeachingScene.GROUP,),
+                alternatives=(
+                    CapabilityTeachingPermissionAlternative(
+                        kind=SemanticConstraintKind.ROLE,
+                        role=TeachingRole.SUPERUSER,
+                        text="超级用户",
+                    ),
+                ),
+            ),
+        ),
+    )
+    annotation = replace(annotation, entries=(public_entry, private_entry))
     root = tmp_path / "capability-teaching"
 
     paths = CapabilityTeachingOutputWriter(root).refresh(
@@ -87,6 +130,11 @@ def test_writer_activates_help_and_answer_files_with_one_generation_pointer(
     assert set(paths) == {help_path, answer_path}
     assert "搜图 [图片]" in help_path.read_text(encoding="utf-8")
     assert "搜索图片出处" in answer_path.read_text(encoding="utf-8")
+    assert "仅群聊中具有使用资格的成员可用" in answer_path.read_text(encoding="utf-8")
+    assert "仅群聊中具有使用资格的成员可用" not in help_path.read_text(encoding="utf-8")
+    assert "受限维护说明" not in help_path.read_text(encoding="utf-8")
+    assert "受限维护说明" not in answer_path.read_text(encoding="utf-8")
+    assert private_entry in annotation.entries
 
 
 def test_writer_failure_keeps_previous_generation_pointer(

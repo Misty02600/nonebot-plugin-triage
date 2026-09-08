@@ -230,7 +230,7 @@ def fixed_permission_constraints(
     """把版本限定、已识别的 Permission 事实投影为模型不可移除的公开约束。"""
 
     alternatives = {
-        alternative for fact in facts for alternative in _permission_fact_alternatives(fact)
+        alternative for fact in facts for alternative in permission_fact_alternatives(fact)
     }
     if not alternatives:
         return ()
@@ -256,7 +256,7 @@ def fixed_permission_constraints(
     )
 
 
-def _permission_fact_alternatives(
+def permission_fact_alternatives(
     fact: PermissionConstraintFact | PermissionSemantic,
 ) -> tuple[PermissionAlternative, ...]:
     if fact.kind is PublicConstraintKind.ROLE and fact.operation == "administrator_or_owner":
@@ -1745,4 +1745,5 @@ __all__ = (
     "StructuralSymbolKind",
     "build_capability_source_evidence",
     "fixed_permission_constraints",
+    "permission_fact_alternatives",
 )

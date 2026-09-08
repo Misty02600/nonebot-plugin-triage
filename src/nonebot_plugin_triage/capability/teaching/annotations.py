@@ -27,6 +27,7 @@ from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisError,
     CapabilityAnalysisRequest,
     CapabilityAnalysisService,
+    CapabilityPluginEntry,
 )
 from nbtriage.capability.teaching.annotations import (
     CapabilityAnnotationError,
@@ -45,6 +46,8 @@ from nonebot_plugin_triage.capability.teaching._evidence_validation import (
     EvidenceMismatchReason,
     EvidenceValidationResult,
 )
+from nonebot_plugin_triage.capability.teaching._navigation import _ParsedModule
+from nonebot_plugin_triage.capability.teaching._source import _plugin_entry
 from nonebot_plugin_triage.capability.teaching.analysis import (
     CapabilityAnalysisAdapterError,
     CapabilitySourceSliceCache,
@@ -261,6 +264,7 @@ class _PreparationPlan:
     records: tuple[CapabilityRecord, ...]
     expected_unit_id: str
     regular: bool
+    plugin_entries: tuple[CapabilityPluginEntry, ...] = ()
 
     @property
     def plugin_module(self) -> str:
@@ -1713,6 +1717,30 @@ class CapabilityAnnotationService:
             _PreparationPlan(tuple(records), identity.analysis_unit_id, False)
             for identity, records in family_records.items()
         )
+        # 按已准入的教学单元建索引，不向首包展开 family 的成员清单。
+        entries_by_plugin: dict[str, list[CapabilityPluginEntry]] = {}
+        parsed_by_plugin: dict[str, dict[str, _ParsedModule | None]] = {}
+        for plan in plans:
+            module = plan.plugin_module
+            try:
+                entry = _plugin_entry(
+                    plan.records, plan.expected_unit_id, parsed_by_plugin.setdefault(module, {})
+                )
+            except CapabilityAnalysisAdapterError:
+                # 导航线索不可用不影响当前单元按原路径准备和报告失败。
+                continue
+            entries_by_plugin.setdefault(module, []).append(entry)
+        plans = [
+            replace(
+                plan,
+                plugin_entries=tuple(
+                    entry
+                    for entry in entries_by_plugin.get(plan.plugin_module, ())
+                    if entry.unit_id != plan.expected_unit_id
+                ),
+            )
+            for plan in plans
+        ]
         return tuple(plans), tuple(skipped_units), tuple(sorted(skip_reasons.items()))
 
     def _prepare_one(
@@ -1745,6 +1773,7 @@ class CapabilityAnnotationService:
                 preparation_timings=preparation_timings,
             )
         )
+        request = replace(request, plugin_entries=plan.plugin_entries)
         request_finished_ns = monotonic_ns()
         fingerprint_started_ns = request_finished_ns
         fingerprint = capability_analysis_fingerprint(

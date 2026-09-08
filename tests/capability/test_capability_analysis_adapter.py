@@ -15,23 +15,38 @@ from pydantic import BaseModel
 import nonebot_plugin_triage.capability.teaching._navigation as capability_analysis_navigation
 from nbtriage.capability.catalog.records import (
     CapabilityRecord,
+    CapabilitySnapshot,
     Claim,
     ClaimBasis,
     Constraint,
     ConstraintEvaluability,
     Disclosure,
     EvidenceRef,
+    PlatformScope,
     RecordState,
+    SourceRevision,
 )
 from nbtriage.capability.teaching.analysis import (
+    CapabilityAnalysisOutput,
+    CapabilityEvidenceUnit,
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
+    FakeCapabilityAnalysisClient,
     SemanticConstraintKind,
     TeachingRole,
+)
+from nbtriage.capability.teaching.annotations import (
+    _validated_usage,
+    capability_analysis_fingerprint,
 )
 from nbtriage.capability.teaching.source_evidence import build_capability_source_evidence
 from nbtriage.readonly_tools import (
     ReadOnlyRoot,
+)
+from nonebot_plugin_triage.capability.teaching._source import (
+    _append_framework_semantics_evidence,
+    _permission_evidence_from_source,
+    _plugin_entry,
 )
 from nonebot_plugin_triage.capability.teaching.analysis import (
     CapabilityAnalysisAdapterError,
@@ -40,6 +55,7 @@ from nonebot_plugin_triage.capability.teaching.analysis import (
     parameterized_handler_code_identity,
     plugin_source_revision_matches,
 )
+from nonebot_plugin_triage.capability.teaching.annotations import CapabilityAnnotationService
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
 
 
@@ -283,6 +299,79 @@ def _source_revision(module: ModuleType) -> str:
     assert isinstance(source_path, str)
     content = Path(source_path).read_text(encoding="utf-8")
     return f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
+
+
+def test_plugin_entry_index_is_scoped_and_bound_to_runtime_handlers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(tmp_path, monkeypatch, "async def handle():\n    return True\n")
+    other = _loaded_module(tmp_path, monkeypatch, "async def handle():\n    return True\n")
+
+    def record(name: str, owner: ModuleType = module) -> CapabilityRecord:
+        return replace(
+            _record(
+                owner.__name__,
+                capability_id=f"command:{name}",
+                handlers=[_handler_reference(owner, "handle", 1)],
+                config_references=[],
+                command_header=name,
+                command_aliases=[f"{name}别名"],
+            ),
+            platform_scope=PlatformScope.all(),
+            analysis_issues=(),
+        )
+
+    first, second = record("查看"), record("修改")
+    hidden = replace(record("管理"), disclosure=Disclosure.RESTRICTED)
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=lambda: FakeCapabilityAnalysisClient(CapabilityAnalysisOutput(False)),
+        config_policy=ConfigValuePolicy(),
+        analysis_revision="test",
+    )
+    plans, skipped, _ = service._plan_preparation(
+        CapabilitySnapshot.create(
+            (first, second, hidden, record("外部", other)),
+            tuple(
+                SourceRevision(f"source:{kind}", kind, "test", "fixture")
+                for kind in ("plugin", "runtime")
+            ),
+        )
+    )
+    assert not skipped
+    plan = next(plan for plan in plans if plan.expected_unit_id == first.capability_id)
+    assert len(plan.plugin_entries) == 1
+    entry = plan.plugin_entries[0]
+    assert entry.unit_id == second.capability_id
+    assert entry.triggers == ("修改", "修改别名")
+    assert len(entry.handlers) == 1
+    assert entry.handlers[0].line == 1
+    assert entry.handlers[0].source_revision == _source_revision(module).removeprefix("sha256:")
+    prepared = service._prepare_one(
+        plan, {}, capability_analysis_navigation.CapabilitySourceSliceCache()
+    )
+    assert prepared.request.plugin_entries == plan.plugin_entries
+    assert prepared.fingerprint != capability_analysis_fingerprint(
+        replace(prepared.request, plugin_entries=()), analysis_revision="test"
+    )
+    family = _plugin_entry((first, second), "family:test", {})
+    assert family.member_count == 2
+    assert family.triggers == ("查看", "查看别名")
+    assert len(family.handlers) == 1
+    changed = replace(
+        second,
+        claims=tuple(
+            replace(
+                claim,
+                value=[{**item, "source_revision": f"sha256:{'0' * 64}"} for item in claim.value],
+            )
+            if claim.field == "handler.references"
+            else claim
+            for claim in second.claims
+        ),
+    )
+    assert _plugin_entry((changed,), changed.capability_id, {}).handlers == ()
 
 
 def test_plugin_source_revision_recheck_detects_package_inventory_and_content_changes(
@@ -948,6 +1037,7 @@ matcher = on_alconna("仓库", handlers=[handle])
                 {
                     "kind": "subcommand",
                     "name": "搜索",
+                    "aliases": ("search", "搜索", "search"),
                     "arguments": (
                         {
                             "name": "主题",
@@ -970,6 +1060,7 @@ matcher = on_alconna("仓库", handlers=[handle])
                 {
                     "kind": "subcommand",
                     "name": "详情",
+                    "aliases": ("info",),
                     "arguments": (
                         {
                             "name": "编号",
@@ -981,6 +1072,20 @@ matcher = on_alconna("仓库", handlers=[handle])
                     ),
                     "components": (),
                 },
+                {
+                    "kind": "subcommand",
+                    "name": "管理",
+                    "aliases": ("admin",),
+                    "components": (
+                        {
+                            "kind": "subcommand",
+                            "name": "查看",
+                            "aliases": ("show", "查看"),
+                            "arguments": (),
+                            "components": (),
+                        },
+                    ),
+                },
             ],
         ),
         ConfigValuePolicy(),
@@ -989,11 +1094,26 @@ matcher = on_alconna("仓库", handlers=[handle])
     assert [item.command_body for item in request.invocations] == [
         "仓库 搜索",
         "仓库 详情",
+        "仓库 管理 查看",
     ]
     assert [item.canonical_usages for item in request.invocations] == [
         ("仓库 搜索 <slot:0> [--quiet|-q]",),
         ("仓库 详情 <slot:0>",),
+        (),
     ]
+    assert [item.aliases for item in request.invocations] == [
+        ("仓库 search",),
+        ("仓库 info",),
+        ("仓库 admin show", "仓库 admin 查看", "仓库 管理 show"),
+    ]
+    assert (
+        _validated_usage(
+            "仓库 搜索 <主题> [--quiet|-q]",
+            target=request.invocations[0],
+            display_trigger="仓库 (搜索|search)",
+        )
+        == "仓库 (搜索|search) <主题> [--quiet|-q]"
+    )
 
 
 def test_alconna_compact_controls_command_and_option_separators(
@@ -1045,6 +1165,7 @@ matcher = on_alconna("词云", handlers=[handle])
                 {
                     "kind": "subcommand",
                     "name": "帮助",
+                    "aliases": ("说明",),
                     "compact": None,
                     "arguments": (
                         {
@@ -1083,7 +1204,7 @@ matcher = on_alconna("词云", handlers=[handle])
     (subcommand_target,) = compact_subcommand.invocations
     assert subcommand_target.mode is CapabilityInvocationMode.ANCHORED
     assert subcommand_target.command_body == "词云帮助"
-    assert subcommand_target.aliases == ("云帮助",)
+    assert subcommand_target.aliases == ("云帮助", "云说明", "词云说明")
     assert subcommand_target.canonical_usages == ("词云帮助 [slot:0] [(-n|--num)<slot:1>]",)
 
 
@@ -1179,21 +1300,25 @@ async def handle_enable():
     )
 
 
-def test_regex_invocation_keeps_pattern_and_flags_without_inventing_command_body(
+@pytest.mark.parametrize("factory", ["on_regex", "on_keyword"])
+def test_text_invocation_keeps_trigger_without_inventing_command_body(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    factory: str,
 ) -> None:
+    pattern = r"^(jj|牛牛)(排行榜|排名)$"
+    expression = repr(pattern) if factory == "on_regex" else repr({pattern})
     module = _loaded_module(
         tmp_path,
         monkeypatch,
-        """\
-def on_regex(*args, **kwargs):
+        f"""\
+def {factory}(*args, **kwargs):
     return object()
 
 async def handle_rank():
     return True
 
-matcher = on_regex(r"^(jj|牛牛)(排行榜|排名)$", handlers=[handle_rank])
+matcher = {factory}({expression}, handlers=[handle_rank])
 """,
     )
     request = build_capability_analysis_request(
@@ -1203,13 +1328,22 @@ matcher = on_regex(r"^(jj|牛牛)(排行榜|排名)$", handlers=[handle_rank])
             handlers=[_handler_reference(module, "handle_rank", 4)],
             config_references=[],
             command_header=None,
-            trigger_factory="on_regex",
+            trigger_factory=factory,
             trigger_entries=[r"^(jj|牛牛)(排行榜|排名)$"],
-            trigger_regex_flags=["ignore_case"],
+            trigger_regex_flags=["ignore_case"] if factory == "on_regex" else None,
         ),
         ConfigValuePolicy(),
     )
 
+    if factory == "on_keyword":
+        assert request.invocations == (
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.KEYWORD,
+                keywords=(r"^(jj|牛牛)(排行榜|排名)$",),
+            ),
+        )
+        return
     assert request.invocations == (
         CapabilityInvocationTarget(
             "root",
@@ -1850,6 +1984,71 @@ matcher = on_command("secure", permission=ADMIN(), handlers=[handle])
         TeachingRole.OWNER,
     }
     assert fixed.evidence_ids == (structure.evidence_id,)
+
+
+def test_custom_gate_receives_api_semantics_without_becoming_fixed_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    uninfo = ModuleType("nonebot_plugin_uninfo")
+    uninfo.ADMIN = lambda: True  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, uninfo.__name__, uninfo)
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """\
+from nonebot_plugin_uninfo import ADMIN as manager
+
+def on_command(*args, **kwargs):
+    return object()
+
+async def handle():
+    return True
+
+async def custom_gate():
+    return manager()
+
+matcher = on_command("secure", permission=custom_gate, handlers=[handle])
+""",
+    )
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle", 6)],
+            config_references=[],
+            command_header="secure",
+        ),
+        ConfigValuePolicy(),
+    )
+    facts = [
+        json.loads(item.content)
+        for item in request.evidence_units
+        if item.source_kind == "framework_permission_semantics"
+    ]
+    assert len(facts) == 1
+    assert facts[0]["symbol"] == "nonebot_plugin_uninfo.ADMIN"
+    assert {item["role"] for item in facts[0]["alternatives"]} == {"admin", "owner"}
+    assert request.fixed_constraints == ()
+    assert len(request.gate_candidates) == 1
+    # 同名函数、相对导入、其他包和星号导入不建立已知 API 映射。
+    assert (
+        _permission_evidence_from_source(
+            "from .permission import ADMIN\nfrom other import OWNER\n"
+            "from nonebot_plugin_uninfo import *\ndef ADMIN(): pass\n"
+        )
+        == ()
+    )
+
+    dependency_units = [
+        CapabilityEvidenceUnit(
+            "evidence:dependency",
+            "python_dependency_function",
+            'def ADMIN():\n    return ROLE_IN("ADMINISTRATOR", "OWNER")',
+            "sha256:dependency",
+            "python_purelib/nonebot_plugin_uninfo/permission.py:ADMIN:68",
+        )
+    ]
+    _append_framework_semantics_evidence(dependency_units)
+    assert [json.loads(item.content) for item in dependency_units[1:]] == facts
 
 
 def test_includes_resolved_onebot_group_roles_without_dependency_navigation(

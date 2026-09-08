@@ -13,6 +13,7 @@ from time import monotonic_ns
 from nbtriage.capability.catalog.records import CapabilityRecord, ClaimBasis, Disclosure
 from nbtriage.capability.teaching.analysis import (
     CapabilityEvidenceUnit,
+    CapabilityPluginEntry,
     ConfigProjection,
     UnknownConfigReference,
 )
@@ -28,7 +29,9 @@ from nbtriage.capability.teaching.source_evidence import (
     CapabilitySourceEvidenceError,
     CapabilitySourceEvidencePack,
     build_capability_source_evidence,
+    permission_fact_alternatives,
 )
+from nbtriage.readonly_tools.jedi_navigation import DefinitionLocation
 from nonebot_plugin_triage.capability.teaching._navigation import (
     _MAX_FUNCTION_CHARS,
     _MAX_MODULES,
@@ -384,7 +387,28 @@ def _source_evidence_pack(
 
 def _append_framework_semantics_evidence(
     evidence_units: list[CapabilityEvidenceUnit],
+    *,
+    parsed_modules: Mapping[str, _ParsedModule] | None = None,
 ) -> None:
+    for evidence in tuple(evidence_units):
+        if evidence.source_kind == "python_dependency_function" and evidence.locator:
+            path = evidence.locator.partition("/")[2].partition(":")[0]
+            module_name = path.removesuffix(".py").removesuffix(".pyi").replace("/", ".")
+            for unit in _permission_evidence_from_source(
+                evidence.content, module_name=module_name.removesuffix(".__init__")
+            ):
+                if unit not in evidence_units:
+                    evidence_units.append(unit)
+    # 模块导入只用于选择相关 API 文档，不证明该单元实际执行了这些 API。
+    for parsed in (parsed_modules or {}).values():
+        if any(
+            item.revision == parsed.revision
+            and (item.locator or "").startswith(f"target_plugin/{parsed.locator}:")
+            for item in evidence_units
+        ):
+            for unit in _permission_evidence_from_source(parsed.source):
+                if unit not in evidence_units:
+                    evidence_units.append(unit)
     if _runtime_evidence_has_constraint(
         evidence_units,
         kind="routing",
@@ -421,6 +445,89 @@ def _append_framework_semantics_evidence(
             source_reviewed_version=source_reviewed_version,
             locator=locator,
         )
+
+
+def _permission_framework_evidence(qualified_name: str) -> CapabilityEvidenceUnit | None:
+    """返回已有 Permission profile 的局部 API 事实，不生成单元执行约束。"""
+    for profile in builtin_permission_semantic_profiles():
+        semantic = profile.resolve(qualified_name) or profile.resolve_runtime_checker(
+            qualified_name
+        )
+        if semantic is None:
+            continue
+        canonical = f"{profile.import_roots[0]}.{semantic.symbol}"
+        content = json.dumps(
+            {
+                "component": profile.component,
+                "symbol": canonical,
+                "profile_revision": profile.revision,
+                "operation": semantic.operation,
+                "contract": (
+                    "这是框架 API 的已知角色/场景分类，不是完整执行条件或当前单元的固定 requirement。"
+                    "导入存在不证明该 API 被执行；结合实际调用、分支和返回路径判断。"
+                    "alternatives 表示已知分类的 OR 分支，不能据此丢弃源码中的其他条件；角色不隐含群聊场景，"
+                    "具体称谓由场景确定。不要把权限引擎内部授予机制当成入口角色要求。"
+                ),
+                "alternatives": [
+                    {
+                        "kind": item.kind.value,
+                        "role": item.role.value if item.role is not None else None,
+                        "scene": item.scene.value if item.scene is not None else None,
+                    }
+                    for item in permission_fact_alternatives(semantic)
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        return CapabilityEvidenceUnit(
+            evidence_id=f"evidence:framework:{digest}",
+            source_kind="framework_permission_semantics",
+            content=content,
+            revision=f"sha256:{digest}",
+            locator=f"framework:permission/{canonical}",
+        )
+    return None
+
+
+def _permission_evidence_from_source(
+    source: str, *, module_name: str | None = None
+) -> tuple[CapabilityEvidenceUnit, ...]:
+    """按显式绝对导入选取 API 文档；不解析别名执行身份、星号导入或任意调用图。"""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError):
+        return ()
+    names: set[str] = set()
+    profiles = builtin_permission_semantic_profiles()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                for profile in profiles:
+                    if alias.name in profile.import_roots:
+                        names.update(f"{alias.name}.{item.symbol}" for item in profile.permissions)
+    if module_name is not None:
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                names.add(f"{module_name}.{node.name}")
+            elif isinstance(node, ast.Assign):
+                names.update(
+                    f"{module_name}.{target.id}"
+                    for target in node.targets
+                    if isinstance(target, ast.Name)
+                )
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names.add(f"{module_name}.{node.target.id}")
+    units = {
+        unit.evidence_id: unit
+        for name in sorted(names)
+        if (unit := _permission_framework_evidence(name)) is not None
+    }
+    return tuple(units.values())
 
 
 def _runtime_evidence_has_constraint(
@@ -595,6 +702,54 @@ def _valid_qualname(value: object) -> bool:
 
 def _handler_references(record: CapabilityRecord) -> tuple[_FunctionReference, ...]:
     return _runtime_handler_references(record, role=None)
+
+
+def _plugin_entry(
+    records: tuple[CapabilityRecord, ...],
+    unit_id: str,
+    parsed_modules: dict[str, _ParsedModule | None],
+) -> CapabilityPluginEntry:
+    """每个教学单元只建一行索引；共享模块解析，但不展开 helper 或调用 Jedi。"""
+    record = records[0]
+    module_root = _plugin_module_root(record)
+    triggers = tuple(
+        sorted(
+            {
+                value
+                for claim in record.claims
+                if claim.basis is ClaimBasis.OBSERVED
+                and claim.field
+                in {"invocation.header", "command.header", "command.aliases", "trigger.entries"}
+                for value in (claim.value if isinstance(claim.value, list) else (claim.value,))
+                if isinstance(value, str) and value
+            }
+        )
+    )
+    definitions: list[DefinitionLocation] = []
+    for reference in _handler_references(record):
+        if reference.module not in parsed_modules:
+            parsed_modules[reference.module] = _load_parsed_module(
+                reference.module, module_root, _plugin_source_root(module_root)
+            )
+        parsed = parsed_modules[reference.module]
+        if parsed is None or parsed.revision != reference.source_revision:
+            continue
+        function = _select_reference_function(parsed, reference)
+        if function is None:
+            continue
+        definitions.append(
+            DefinitionLocation(
+                root_name="target_plugin",
+                relative_path=parsed.locator,
+                line=function.lineno,
+                column=function.col_offset,
+                name=function.name,
+                full_name=f"{reference.module}.{reference.qualname or function.name}",
+                kind="function",
+                source_revision=parsed.revision.removeprefix("sha256:"),
+            )
+        )
+    return CapabilityPluginEntry(unit_id, triggers, tuple(definitions), len(records))
 
 
 def _handler_wrapper_references(record: CapabilityRecord) -> tuple[_FunctionReference, ...]:

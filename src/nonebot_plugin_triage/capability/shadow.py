@@ -279,7 +279,7 @@ class CapabilityShadowService:
             annotation_lookup = (
                 self._annotation_service.get if self._annotation_service is not None else None
             )
-            capability_ids = tuple(
+            capability_ids = frozenset(
                 record.capability_id
                 for record in public_records
                 if _record_is_publicly_servable(
@@ -302,7 +302,11 @@ class CapabilityShadowService:
             if self._annotation_service is not None:
                 hits = _augment_hits_with_annotation_terms(
                     hits,
-                    public_records,
+                    tuple(
+                        record
+                        for record in public_records
+                        if record.capability_id in capability_ids
+                    ),
                     query,
                     self._annotation_service.get,
                     limit=limit,
@@ -341,7 +345,7 @@ class CapabilityShadowService:
         annotation_capability_ids = ()
         if self._annotation_service is not None:
             bound_annotations = tuple(
-                (hit.record.capability_id, annotation)
+                (hit.record.capability_id, replace(annotation, entries=annotation.public_entries))
                 for hit in safe_hits
                 if (annotation := self._annotation_service.get(hit.record.capability_id))
                 is not None
@@ -357,6 +361,11 @@ class CapabilityShadowService:
                 hit.record.capability_id
                 for hit in safe_hits
                 if _query_exactly_selects_member(query, hit.record)
+                and (
+                    annotation_lookup is None
+                    or (annotation := annotation_lookup(hit.record.capability_id)) is None
+                    or annotation.entries == annotation.public_entries
+                )
             ),
         )
 
@@ -821,13 +830,15 @@ def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
         return ""
     lines = [header]
     description = _public_claim_text(primary.claims, "description", limit=240)
-    if description is None and annotation is not None and annotation.entries:
-        description = annotation.entries[0].summary
+    if description is None and annotation is not None and annotation.public_entries:
+        description = annotation.public_entries[0].summary
     if description:
         lines.append(description)
     usage = _public_claim_text(primary.claims, "usage", limit=240)
     rendered_usages: tuple[str, ...] = ()
-    exact_member = primary.capability_id in result.exact_member_capability_ids
+    exact_member = primary.capability_id in result.exact_member_capability_ids and (
+        annotation is None or annotation.entries == annotation.public_entries
+    )
     if usage is None and exact_member:
         rendered_usages = deterministic_record_usages(
             primary,
@@ -836,7 +847,9 @@ def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
     if usage:
         lines.append(f"用法：{usage}")
     elif annotation is not None and not rendered_usages:
-        rendered_usages = tuple(usage for entry in annotation.entries for usage in entry.usages)
+        rendered_usages = tuple(
+            usage for entry in annotation.public_entries for usage in entry.usages
+        )
     if not usage and annotation is not None and rendered_usages:
         lines.append(f"用法：{' / '.join(rendered_usages)}")
         usage = rendered_usages[0]
@@ -929,7 +942,9 @@ def build_public_guidance_request(
                 basis=PublicGuidanceFactBasis.DECLARED,
             )
         annotation = annotations.get(record.capability_id)
-        exact_member = record.capability_id in result.exact_member_capability_ids
+        exact_member = record.capability_id in result.exact_member_capability_ids and (
+            annotation is None or annotation.entries == annotation.public_entries
+        )
         _append_annotation_guidance_facts(
             facts,
             capability=label,
@@ -975,7 +990,7 @@ def _append_annotation_guidance_facts(
                 text=invocation,
                 basis=PublicGuidanceFactBasis.OBSERVED,
             )
-    for entry in annotation.entries:
+    for entry in annotation.public_entries:
         entry_capability = entry.name or capability
         if entry.summary:
             _append_public_guidance_fact(
@@ -1042,7 +1057,7 @@ def _annotation_guidance(
     return tuple(
         dict.fromkeys(
             text
-            for entry in annotation.entries
+            for entry in annotation.public_entries
             for text in (
                 *entry.behavior_boundaries,
                 *(item.text for item in entry.requirements),
@@ -1056,7 +1071,9 @@ def _annotation_requires_mention(
 ) -> bool:
     return bool(
         annotation is not None
-        and any("@bot" in usage.split() for entry in annotation.entries for usage in entry.usages)
+        and any(
+            "@bot" in usage.split() for entry in annotation.public_entries for usage in entry.usages
+        )
     )
 
 
@@ -1096,7 +1113,10 @@ def _augment_hits_with_annotation_terms(
         if annotation is None:
             continue
         score = max(
-            (_annotation_retrieval_score(normalized_query, entry) for entry in annotation.entries),
+            (
+                _annotation_retrieval_score(normalized_query, entry)
+                for entry in annotation.public_entries
+            ),
             default=0.0,
         )
         if score <= 0:
@@ -1307,8 +1327,8 @@ def _public_capability_label(
     if factory == "on_fullmatch" and all(len(entry) <= 32 for entry in entries):
         suffix = " 等" if len(entries) > 4 else ""
         return f"完整匹配：{'、'.join(entries[:4])}{suffix}"
-    if factory == "on_regex" and annotation is not None and annotation.entries:
-        return annotation.entries[0].name
+    if factory == "on_regex" and annotation is not None and annotation.public_entries:
+        return annotation.public_entries[0].name
     return None
 
 
@@ -1319,6 +1339,7 @@ def _record_is_publicly_servable_without_adapter(
 ) -> bool:
     return (
         record.disclosure is Disclosure.PUBLIC
+        and (annotation is None or bool(annotation.public_entries))
         and not record.analysis_issues
         and record.state in {RecordState.VERIFIED, RecordState.CANDIDATE}
         and record.platform_scope.kind is not PlatformScopeKind.UNKNOWN

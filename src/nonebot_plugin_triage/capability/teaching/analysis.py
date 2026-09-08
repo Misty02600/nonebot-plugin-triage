@@ -248,7 +248,7 @@ def build_capability_analysis_request(
         source_chars=source_chars,
         cache=source_slice_cache,
     )
-    _append_framework_semantics_evidence(evidence_units)
+    _append_framework_semantics_evidence(evidence_units, parsed_modules=parsed_modules)
     _record_preparation_timing(preparation_timings, "source_slices", stage_started_ns)
 
     stage_started_ns = monotonic_ns()
@@ -497,7 +497,7 @@ def build_parameterized_family_analysis_request(
         source_chars=source_chars,
         cache=active_source_slice_cache,
     )
-    _append_framework_semantics_evidence(evidence_units)
+    _append_framework_semantics_evidence(evidence_units, parsed_modules=parsed_modules)
     _record_preparation_timing(preparation_timings, "source_slices", stage_started_ns)
     stage_started_ns = monotonic_ns()
     projections, unknown = _project_referenced_config(

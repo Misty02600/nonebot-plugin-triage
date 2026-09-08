@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from importlib.metadata import PackageNotFoundError, version
 from io import BytesIO
 from pathlib import Path
@@ -21,6 +21,7 @@ from pydantic_ai.toolsets.wrapper import WrapperToolset
 from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
+    CapabilityPluginEntry,
     CapabilitySourceContext,
 )
 from nbtriage.capability.teaching.annotations import CapabilityAnnotationEvidenceRef
@@ -50,6 +51,10 @@ from nonebot_plugin_triage.capability.teaching._evidence_validation import (
     EvidenceMismatch,
     EvidenceMismatchReason,
     EvidenceValidationResult,
+)
+from nonebot_plugin_triage.capability.teaching._source import (
+    _permission_evidence_from_source,
+    _permission_framework_evidence,
 )
 from nonebot_plugin_triage.evidence_access import (
     EvidenceAccessError,
@@ -116,9 +121,25 @@ _NavigationAnchor = _SourceNavigationAnchor | _DefinitionNavigationAnchor
 
 
 class _EvidenceCapture:
-    def __init__(self, capability_id: str) -> None:
+    def __init__(
+        self,
+        capability_id: str,
+        initial_evidence: tuple[CapabilityEvidenceUnit, ...] = (),
+    ) -> None:
         self._capability_id = capability_id
         self._units: dict[str, CapabilityEvidenceUnit] = {}
+        for unit in initial_evidence:
+            self._register(unit)
+        self._initial_ids = frozenset(self._units)
+
+    def _register(self, unit: CapabilityEvidenceUnit) -> CapabilityEvidenceUnit:
+        existing = self._units.get(unit.evidence_id)
+        if existing is not None:
+            if existing != unit:
+                raise CapabilityAnalysisToolsError("evidence_identity_conflict")
+            return existing
+        self._units[unit.evidence_id] = unit
+        return unit
 
     def record(
         self,
@@ -154,11 +175,19 @@ class _EvidenceCapture:
             revision=f"sha256:{state.revision}",
             locator=f"{root.name}/{state.locator}",
         )
-        self._units[evidence_id] = unit
-        return unit
+        return self._register(unit)
 
     def units(self) -> tuple[CapabilityEvidenceUnit, ...]:
-        return tuple(self._units[key] for key in sorted(self._units))
+        # 初始事实仍可被工具返回和引用，但不能再次作为 output 的新增 Evidence。
+        return tuple(
+            self._units[key] for key in sorted(self._units) if key not in self._initial_ids
+        )
+
+    def record_framework(
+        self, units: tuple[CapabilityEvidenceUnit, ...]
+    ) -> tuple[dict[str, object], ...]:
+        unique = {unit.evidence_id: self._register(unit) for unit in units}
+        return tuple(asdict(unit) for unit in unique.values())
 
     def record_knowledge(
         self,
@@ -173,8 +202,7 @@ class _EvidenceCapture:
             revision=f"pack:{pack_revision}:{evidence.revision}",
             locator=f"knowledge/{evidence.component}/{evidence.locator}",
         )
-        self._units[unit.evidence_id] = unit
-        return unit
+        return self._register(unit)
 
 
 class _InvalidFileAttemptRegistry:
@@ -195,7 +223,7 @@ class _InvalidFileAttemptRegistry:
 
 
 class _NavigationRegistry:
-    """把模型已见 Evidence 中的 Python 位置绑定成请求内短期句柄。"""
+    """把 Evidence 位置或已确认的入口定义绑定成请求内短期句柄。"""
 
     def __init__(
         self,
@@ -302,6 +330,30 @@ class _NavigationRegistry:
             remaining -= len(targets)
         return tuple(sidecar)
 
+    def framework_evidence(
+        self, evidence: CapabilityEvidenceUnit, *, qualified_name: str | None = None
+    ) -> tuple[dict[str, object], ...]:
+        source = _python_source_locator(self._access, evidence)
+        if source is None:
+            return ()
+        root_name, path, revision = source
+        loaded = self._load_source(
+            root_name=root_name, relative_path=path, expected_revision=revision
+        )
+        if loaded is None:
+            return ()
+        # 完整模块仅用来选取导入 API 的说明；不会把未读的函数体变成 Evidence。
+        module_name = path.removesuffix(".py").removesuffix(".pyi").replace("/", ".")
+        semantic = _permission_framework_evidence(qualified_name) if qualified_name else None
+        return self._capture.record_framework(
+            (
+                *_permission_evidence_from_source(
+                    loaded[2], module_name=module_name.removesuffix(".__init__")
+                ),
+                *((semantic,) if semantic else ()),
+            )
+        )
+
     def open_definition(self, navigation_ref: str) -> dict[str, object]:
         anchor = self._anchors.get(navigation_ref)
         if anchor is None:
@@ -350,6 +402,27 @@ class _NavigationRegistry:
                 for item in result.definitions
             ],
         }
+
+    def plugin_entry_sidecar(
+        self, entries: tuple[CapabilityPluginEntry, ...]
+    ) -> tuple[dict[str, object], ...]:
+        return tuple(
+            {
+                "unit_id": entry.unit_id,
+                "triggers": entry.triggers,
+                "member_count": entry.member_count,
+                "handlers": tuple(
+                    {
+                        "navigation_ref": self._register_definition(handler),
+                        "path": handler.relative_path,
+                        "line": handler.line,
+                        "display": handler.full_name or handler.name,
+                    }
+                    for handler in entry.handlers
+                ),
+            }
+            for entry in entries
+        )
 
     def _register_definition(self, definition: DefinitionLocation) -> str:
         key = (
@@ -439,6 +512,7 @@ class _NavigationRegistry:
             },
             "content": unit.content,
             "navigation_targets": targets,
+            "framework_evidence": self.framework_evidence(unit, qualified_name=anchor.display),
         }
 
     def _load_source(
@@ -545,6 +619,7 @@ class _EvidenceRecordingToolset(WrapperToolset[Any]):
             "revision": unit.revision,
             "content": unit.content,
             "navigation_targets": navigation_targets,
+            "framework_evidence": self._navigation.framework_evidence(unit),
         }
 
 
@@ -591,7 +666,7 @@ class CapabilityTeachingToolProvider:
             return None
         try:
             profiles = self._profiles(source_context)
-            capture = _EvidenceCapture(request.capability.capability_id)
+            capture = _EvidenceCapture(request.capability.capability_id, request.evidence_units)
             expose_bot_project = _request_uses_bot_project(request, profiles)
             tool_names = {
                 root.name: (
@@ -665,6 +740,7 @@ class CapabilityTeachingToolProvider:
             navigation_toolset = _navigation_toolset(
                 navigation,
                 initial_navigation=initial_navigation,
+                plugin_entries=navigation.plugin_entry_sidecar(request.plugin_entries),
                 selective_family=bool(request.family_members),
             )
         except (
@@ -744,6 +820,25 @@ class CapabilityTeachingToolProvider:
             )
         mismatches: list[EvidenceMismatch] = []
         for reference in references:
+            if reference.source_kind == "framework_permission_semantics":
+                prefix = "framework:permission/"
+                current = (
+                    _permission_framework_evidence(reference.locator.removeprefix(prefix))
+                    if reference.locator is not None and reference.locator.startswith(prefix)
+                    else None
+                )
+                if current is None or (
+                    current.evidence_id != reference.evidence_id
+                    or current.revision != reference.revision
+                ):
+                    mismatches.append(
+                        _evidence_mismatch(
+                            reference,
+                            EvidenceMismatchReason.REVISION_CHANGED,
+                            actual_revision=current.revision if current else None,
+                        )
+                    )
+                continue
             if reference.source_kind.startswith("knowledge_"):
                 if self._knowledge_pack_revision is None:
                     mismatches.append(
@@ -862,16 +957,17 @@ def _navigation_toolset(
     navigation: _NavigationRegistry,
     *,
     initial_navigation: tuple[dict[str, object], ...],
+    plugin_entries: tuple[dict[str, object], ...] = (),
     selective_family: bool = False,
     timeout_seconds: float = _NAVIGATION_TOOL_TIMEOUT_SECONDS,
 ) -> AbstractToolset[Any]:
     async def open_definition(navigation_ref: str) -> dict[str, object]:
-        """打开 Evidence 标注的 Python 定义并返回可引用源码；例如 Evidence 给出
+        """打开 Evidence 标注或同插件入口索引提供的 Python 定义并返回可引用源码；例如 Evidence 给出
         `nav:abc` 时调用 `python_open_definition(navigation_ref="nav:abc")`，不要把依赖
         包名交给 `file_info`。
 
         Args:
-            navigation_ref: Evidence 提供的位置句柄。
+            navigation_ref: Evidence 或同插件入口索引提供的位置句柄。
         """
         return await asyncio.to_thread(navigation.open_definition, navigation_ref)
 
@@ -887,18 +983,27 @@ def _navigation_toolset(
         if selective_family
         else ""
     )
+    plugin_index = (
+        "同插件其他教学入口索引（仅发现线索，不可引用；family 的 triggers 仅为代表成员，"
+        "member_count 为成员数）："
+        + json.dumps(plugin_entries, ensure_ascii=False, separators=(",", ":"))
+        if plugin_entries
+        else ""
+    )
     toolset = FunctionToolset(
         tools=[open_definition],
         timeout=timeout_seconds,
         instructions=(
-            "python_open_definition 是当前 Evidence 中已标注 Python 位置的定义导航入口；"
+            "python_open_definition 打开当前 Evidence 或同插件入口索引标注的定义；"
             "文件 search_files 只在单个根内做文本搜索，不能替代跨依赖的符号导航。"
-            "navigation_ref 必须原样使用初始 sidecar 或 read_file/open_definition 返回的值；"
+            "navigation_ref 必须原样使用初始 sidecar、同插件入口索引或 read_file/open_definition 返回的值；"
             "不要计算行列、复制源码哈希或把依赖包目录交给 file_info。"
-            "唯一目标会在一次调用内完成 Jedi 跳转、revision 复核和稳定读取，并返回可直接引用的 "
+            "已定位的 Handler 直接读取，其他符号先经 Jedi 定位；唯一目标会在一次调用内完成 "
+            "revision 复核和稳定读取，并返回可直接引用的 "
             "evidence_id；多个目标时只从返回的 candidates 中选择一个 navigation_ref 再打开。"
             f"{family_boundary}"
             f"{sidecar}"
+            f"{plugin_index}"
         ),
     )
     return cast(AbstractToolset[Any], toolset.prefixed("python"))
@@ -965,7 +1070,9 @@ def _evidence_line_range(
 ) -> tuple[int, int] | None:
     if read_arguments is not None:
         offset = read_arguments.get("offset", 0)
-        limit = read_arguments.get("limit", default_limit)
+        limit = read_arguments.get("limit")
+        if limit is None:
+            limit = default_limit
         if (
             not isinstance(offset, int)
             or isinstance(offset, bool)

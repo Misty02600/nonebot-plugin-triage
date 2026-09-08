@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
+from nbtriage.readonly_tools.jedi_navigation import DefinitionLocation
+
 
 class CapabilityAnalysisError(ValueError):
     pass
@@ -74,6 +76,7 @@ class CapabilityInvocationMode(StrEnum):
     """区分确定入口与需要模型完整概括的参数化入口。"""
 
     ANCHORED = "anchored"
+    KEYWORD = "keyword"
     REGEX = "regex"
     COMPLETE = "complete"
 
@@ -178,6 +181,7 @@ class CapabilityInvocationTarget:
     shortcut_evidence_ids: tuple[str, ...] = ()
     regex_pattern: str | None = None
     regex_flags: tuple[str, ...] = ()
+    keywords: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _bounded_text(self.entry_id, "invocation entry_id", max_length=128)
@@ -189,6 +193,12 @@ class CapabilityInvocationTarget:
             _bounded_text(self.command_body, "invocation command_body", max_length=256)
         elif self.command_body is not None:
             raise CapabilityAnalysisError("non-anchored invocation must not define command_body")
+        if not isinstance(self.keywords, tuple) or len(self.keywords) != len(set(self.keywords)):
+            raise CapabilityAnalysisError("invocation keywords must be a unique tuple")
+        for keyword in self.keywords:
+            _bounded_text(keyword, "invocation keyword", max_length=256)
+        if bool(self.keywords) != (self.mode is CapabilityInvocationMode.KEYWORD):
+            raise CapabilityAnalysisError("only keyword invocations require keywords")
         if self.mode is CapabilityInvocationMode.REGEX:
             if self.regex_pattern is None:
                 raise CapabilityAnalysisError("regex invocation requires regex_pattern")
@@ -361,6 +371,16 @@ class UnknownConfigReference:
 
 
 @dataclass(frozen=True)
+class CapabilityPluginEntry:
+    """同插件入口的发现线索，不包含其他单元的教学结论或可引用源码。"""
+
+    unit_id: str
+    triggers: tuple[str, ...]
+    handlers: tuple[DefinitionLocation, ...]
+    member_count: int = 1
+
+
+@dataclass(frozen=True)
 class CapabilityAnalysisRequest:
     capability: CapabilityIdentity
     evidence_units: tuple[CapabilityEvidenceUnit, ...]
@@ -372,6 +392,7 @@ class CapabilityAnalysisRequest:
     invocations: tuple[CapabilityInvocationTarget, ...] = ()
     family_members: tuple[CapabilityFamilyMember, ...] = ()
     gate_candidates: tuple[CapabilityGateCandidate, ...] = ()
+    plugin_entries: tuple[CapabilityPluginEntry, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.capability, CapabilityIdentity):
@@ -620,8 +641,10 @@ class SemanticConstraint:
         if self.kind is SemanticConstraintKind.SCENE:
             if not self.allowed_scenes:
                 raise CapabilityAnalysisError("scene constraint requires allowed scenes")
-        elif self.allowed_scenes:
-            raise CapabilityAnalysisError("only scene constraints may define allowed scenes")
+        elif self.allowed_scenes and self.kind is not SemanticConstraintKind.PERMISSION:
+            raise CapabilityAnalysisError(
+                "only scene or permission constraints may define allowed scenes"
+            )
         if self.kind is SemanticConstraintKind.RATE_LIMIT:
             if self.rate_limit_policy is None or self.rate_limit_scope is None:
                 raise CapabilityAnalysisError("rate-limit constraint requires policy and scope")

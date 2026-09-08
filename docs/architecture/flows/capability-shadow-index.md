@@ -50,6 +50,16 @@ Fullmatch、Keywords、Regex 与 IsType Rule 保存确定的 runtime 入口事�
 形成 `invocation.header`。正则、事件类型、空命令及其他动态或被动入口保留 `dynamic_entry`，不通过 CST
 猜测 handler 效果、Matcher 角色或跨 Matcher 支撑关系。
 
+教学请求单独保留 `on_keyword` 的 `keyword` 模式与完整字面关键词集合，不把索引用的代表 header 当作独立
+命令词。usage 只校验真实关键词与必要的 `@bot`，不强加词边界、句首位置或 mention 紧贴关键词；完整调用
+结构仍由 Handler Evidence 支持。关键词不转换为正则，普通命令与 Alconna 的结构校验不变。
+
+教学规划按插件构建一次已准入单元的入口索引，向各单元提供其他入口的触发文字、别名和已确认的 Handler
+导航位置；family 只保留代表成员及成员数。索引不包含其他单元的生成结果，不作为可引用 Evidence，也不
+自动推断共享权限或业务关系。模型按需使用现有 `python_open_definition` 稳定读取后才能引用源码，继续
+使用本单元预算，无需等待其他单元生成。索引进入请求 fingerprint，定义位置绑定源码 revision；不能唯一
+确认的位置不生成导航句柄。现有流水线并发及发布边界不变。
+
 ## 普通查询门禁
 
 普通 ServingView 在召回前要求：
@@ -64,6 +74,12 @@ Fullmatch、Keywords、Regex 与 IsType Rule 保存确定的 runtime 入口事�
 能力 ID 白名单在 FTS 排名和 `limit` 前应用，结果反序列化后再次执行 ServingView 检查。`restricted`、平台不
 匹配和带 issue 的记录不会先进入模型再被隐藏。维护者域必须先在模型外完成 SUPERUSER 鉴权。
 
+当前有效教学注释只能进一步收紧披露：某个 entry 的全局 `permission.alternatives` 按结构去重后仅有
+`role=superuser` 时，普通检索、Answer、确定性帮助及帮助导出均排除该 entry；其余 OR 组合不据此隐藏。
+同单元的其他公开 entry 保留，全部排除时该记录不进入公开候选，教学补召回也遵守前述能力白名单。
+行为边界中的局部权限文字不参与此判断。原始 Runtime disclosure、保存的注释与执行鉴权不变，维护者仍可
+查看原始记录；这不是对所有自定义权限的完整静态证明。
+
 自动教学注释沿用同一门禁，并且必须由当前 runtime 记录反向定位已经加载的模块。它不会遍历静态制品并把
 “源码存在”解释成“Bot 当前可用”；加载失败、`not_observed`、restricted、平台未知或带 issue 的能力即使留有
 旧注释 cache，本轮也不会提供。注释无需逐条人工审核，但仍不能绕过运行时注册、披露、平台和 Evidence
@@ -77,6 +93,14 @@ Provider SDK、密钥、网络、任务传输能力或输出校验不可用时�
 完整 `allowed_scenes` 原子集合；原子值为 `private / group / guild / channel_text / channel_category /
 channel_voice`。同一注册表达式内的复合 Permission 合并为一个候选并按 OR 分支解释，每条场景 alternative
 只保存一个原子值。
+Schema 12 中，一个 `permission` 还可使用 `allowed_scenes` 保存 Evidence 已明确证明的共同场景：集合内为
+OR，与非空 `alternatives` 为 AND；空集合只表示不附加共同场景，不表示整个 entry 适用所有场景，也不代替
+未知门禁。场景自身构成替代允许路径时仍使用 scene alternative；不把外层可绕过的场景提升成共同条件。
+一个 gate 仍关联一个 permission，其他独立场景 gate 保持独立 requirement，requirements 之间为 AND。
+已证明的嵌套角色 OR 可展开，但不展开权限系统内部的默认授予关系，也不依据平台等级推测角色集合。
+这只是共同场景的表达扩展，不新增通用布尔树或复杂权限的关闭政策。Migut Help 不投影带共同场景的原生
+权限标签、不追加权限文字到最小 description；Answer 保留完整条件。共同场景不会改变仅超级用户分支的
+披露限制，实际鉴权仍由原插件执行。旧 schema 缓存不迁移，新模型合同需重新验证。
 业务数据或其他准备状态进入 `behavior_boundary`。当前 Handler 提到另一条命令的提示文字
 不能单独证明该命令的当前详细用法，必须同时存在目标命令当前的 Runtime 或实现 Evidence。
 
@@ -218,6 +242,13 @@ generation 都不是 active teaching contract。源码、Evidence、配置值、
   仍可读取最近快照并看到 partial / stale 标记。
 - 已识别的 NoneBot `SUPERUSER` 与 Uninfo 角色 / 场景 Permission 使用一个带 OR alternatives 的公开
   `permission` requirement 表达；若同一表达式仍有未知分支，不把已知分支单独发布成 fixed AND。
+- 已有 Permission profile 同时作为局部框架 API Evidence 供给：初始源码模块的显式绝对导入、已预载依赖
+  定义，以及后续稳定源码读取 / 定义导航都可附带相关语义。注册表达式可归属时的 fixed constraint 与这类
+  API 文档不同；导入存在不证明该 API 被执行，也不决定自定义 gate 的 AND / OR、场景或业务边界。
+  API 文档与源码分开引用，使用同一份现有角色 / 场景映射、去重 ID 和内容 revision；动态引用在复用与发布前
+  重新校验。不新增角色表、任意布尔推导或额外 Jedi 调用，未知 API 仍按源码或既有文档工具补证。
+- 请求内 Evidence 统一登记：初始与动态材料同 ID 且全部字段一致时复用，字段不同则拒绝身份冲突；
+  工具可以再次返回初始事实供引用，但输出只携带真正新增的 Evidence，不重复登记或静默覆盖初始事实。
 - `gate_candidate_ids` 只关联静态层已经发现并解释为 constraint 的候选；Handler/helper Evidence 直接证明的
   其他执行限制仍可形成 requirement 并把该数组留空。没有 gate candidate 不等于没有执行限制。
   `opaque` Permission、Rule 和 handler 条件只表示无法静态求值；能力说明不等于执行授权，实际执行仍由原插件裁决。

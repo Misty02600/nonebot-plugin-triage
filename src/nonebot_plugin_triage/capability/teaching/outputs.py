@@ -393,7 +393,7 @@ def _build_answer_documents(
         ):
             continue
         seen.add((module_name, annotation.capability_id))
-        grouped.setdefault(module_name, []).extend(annotation.entries)
+        grouped.setdefault(module_name, []).extend(annotation.public_entries)
 
     result: dict[str, str] = {}
     module_names = set(grouped).union(coverage)

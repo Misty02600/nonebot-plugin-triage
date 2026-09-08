@@ -95,6 +95,7 @@ from nbtriage.capability.teaching.annotations import (
     validate_capability_usage_pattern,
     validate_capability_usage_template,
     validate_complete_aggregate_usage,
+    validate_keyword_usage,
 )
 from nbtriage.capability.teaching.usage import (
     MAX_PUBLIC_USAGES,
@@ -563,7 +564,8 @@ class _PermissionAlternativeOutput(_StrictModel):
         Literal["scene", "role", "access"],
         Field(
             description=(
-                "同一 NoneBot Permission 中的一条 OR 分支：scene=私聊、群聊或频道类场景；"
+                "同一 NoneBot Permission 中的一条 OR 分支，与其余 alternatives 为 OR，"
+                "与父 permission 的非空 allowed_scenes 为 AND；scene=私聊、群聊或频道类场景；"
                 "role=能力入口直接检查的当前调用者角色；access=能力入口查询的可配置权限、"
                 "ACL、名单或开放资格。只按入口实际判断分类；权限系统内部把某个角色预先授予"
                 "一项资格，不得反向展开成该能力的 role 分支。"
@@ -612,7 +614,8 @@ class _ConstraintOutput(_StrictModel):
         Literal["permission", "scene", "role", "access", "rate_limit"],
         Field(
             description=(
-                "影响能力能否执行的公开前提：permission=一个 Permission 的 OR 分支组；"
+                "影响能力能否执行的公开前提：permission=一个 Permission 的 OR 分支组，"
+                "可用 allowed_scenes 附加全部允许路径共同要求的场景；"
                 "scene/role/access 仅用于非 Permission 的前提，其中 scene 用 allowed_scenes "
                 "完整列出全部允许的原子会话场景，role 是调用者身份，"
                 "access 是可配置权限、名单或开放资格。按能力入口实际执行的判断分类，"
@@ -642,7 +645,10 @@ class _ConstraintOutput(_StrictModel):
         Field(
             max_length=6,
             description=(
-                "非 Permission 的场景前提允许的完整原子场景集合：private=私聊，group=群聊，"
+                "scene constraint 的完整允许场景，或 permission 全部允许路径共同要求的场景集合；"
+                "集合内部为 OR，与 permission_alternatives 为 AND。permission 中为空表示不附加"
+                "共同场景条件，不表示 entry 适用所有场景，也不代替未知条件。"
+                "private=私聊，group=群聊，"
                 "guild=频道，channel_text=频道文字，channel_category=频道分类，"
                 "channel_voice=频道语音。必须与 statement 的允许范围一致。"
             ),
@@ -662,7 +668,14 @@ class _ConstraintOutput(_StrictModel):
         ),
     ] = []
     permission_alternatives: Annotated[
-        list[_PermissionAlternativeOutput], Field(max_length=16)
+        list[_PermissionAlternativeOutput],
+        Field(
+            max_length=16,
+            description=(
+                "Permission 的非空 OR 允许分支；共同场景由同条 constraint 的 allowed_scenes "
+                "附加。不要求与函数调用一一对应，Evidence 明确证明的嵌套角色 OR 可以展开。"
+            ),
+        ),
     ] = []
 
     @model_validator(mode="after")
@@ -673,13 +686,13 @@ class _ConstraintOutput(_StrictModel):
                 raise ValueError("role constraint requires role metadata")
         elif self.role is not None:
             raise ValueError("only role constraints may define role metadata")
-        if self.kind == "scene":
-            if not self.allowed_scenes:
+        if self.kind in {"scene", "permission"}:
+            if self.kind == "scene" and not self.allowed_scenes:
                 raise ValueError("scene constraint requires allowed scenes")
             if len(self.allowed_scenes) != len(set(self.allowed_scenes)):
-                raise ValueError("scene constraint allowed scenes must be unique")
+                raise ValueError("constraint allowed scenes must be unique")
         elif self.allowed_scenes:
-            raise ValueError("only scene constraints may define allowed scenes")
+            raise ValueError("only scene or permission constraints may define allowed scenes")
         if self.kind == "rate_limit":
             if self.rate_limit_policy is None or self.rate_limit_scope is None:
                 raise ValueError("rate-limit constraint requires policy and scope")
@@ -1396,16 +1409,19 @@ def _validate_entry_usages(
     if target.mode in {
         CapabilityInvocationMode.COMPLETE,
         CapabilityInvocationMode.REGEX,
+        CapabilityInvocationMode.KEYWORD,
     }:
         standard_usage_indexes = set(range(len(usages)))
     elif target.canonical_usages:
         for template in target.canonical_usages:
+            usage_errors: list[str] = []
             for index, usage in enumerate(usages):
                 if index in standard_usage_indexes:
                     continue
                 try:
                     validate_capability_usage_template(usage, template)
-                except CapabilityAnnotationError:
+                except CapabilityAnnotationError as error:
+                    usage_errors.append(f"usage[{index}]: {error}")
                     continue
                 standard_usage_indexes.add(index)
                 break
@@ -1413,7 +1429,8 @@ def _validate_entry_usages(
                 raise CapabilityAnnotationError(
                     "every parser-provided structural template must be preserved; "
                     f"entry_id={entry.entry_id}, field=usage, required_template={template!r}, "
-                    f"submitted_usages={usages!r}。请修正标准 usage 的参数结构，"
+                    f"submitted_usages={usages!r}; details={'; '.join(usage_errors)}。"
+                    "请按具体原因修正槽位命名或标准 usage 的参数结构，"
                     "保留命令、括号、顺序、Option、别名与重复标记，仅槽位名称可改写；"
                     "shortcut 不能替代标准用法。此错误不要求修改 display_trigger。"
                 )
@@ -1461,6 +1478,8 @@ def _validate_entry_usages(
         )
     for index, usage in enumerate(usages):
         validate_capability_usage_pattern(usage)
+        if target.mode is CapabilityInvocationMode.KEYWORD:
+            validate_keyword_usage(usage, target)
         is_shortcut = index in shortcut_usage_indexes
         if (
             not is_shortcut
@@ -1620,6 +1639,7 @@ def _build_payload(request: CapabilityAnalysisRequest) -> str:
                 "command_body": item.command_body,
                 "regex_pattern": item.regex_pattern,
                 "regex_flags": list(item.regex_flags),
+                "keywords": list(item.keywords),
                 "canonical_usages": list(item.canonical_usages),
                 "aliases": list(item.aliases),
                 "requires_mention": item.requires_mention,

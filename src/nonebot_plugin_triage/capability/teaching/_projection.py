@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass
+from itertools import product
 
 from nbtriage.capability.catalog.records import (
     CapabilityRecord,
@@ -687,14 +688,25 @@ def _invocation_targets(
         for value in _claim_values(record, "trigger.factory", evidence_kind="matcher_source")
         if isinstance(value, str) and value
     }
-    regex_patterns = tuple(
+    trigger_entries = tuple(
         value
         for raw in _claim_values(record, "trigger.entries", evidence_kind="matcher_source")
         for value in (raw if isinstance(raw, list) else ())
         if isinstance(value, str) and value
     )
+    if trigger_factories == {"on_keyword"}:
+        if not trigger_entries:
+            raise CapabilityAnalysisAdapterError("keyword capability has no deterministic keywords")
+        return (
+            CapabilityInvocationTarget(
+                entry_id="root",
+                mode=CapabilityInvocationMode.KEYWORD,
+                keywords=tuple(sorted(set(trigger_entries))),
+                requires_mention=requires_mention,
+            ),
+        )
     if trigger_factories == {"on_regex"}:
-        if len(regex_patterns) != 1:
+        if len(trigger_entries) != 1:
             raise CapabilityAnalysisAdapterError(
                 "regex capability has no unique deterministic pattern"
             )
@@ -716,7 +728,7 @@ def _invocation_targets(
             CapabilityInvocationTarget(
                 entry_id="root",
                 mode=CapabilityInvocationMode.REGEX,
-                regex_pattern=regex_patterns[0],
+                regex_pattern=trigger_entries[0],
                 regex_flags=regex_flags,
                 requires_mention=requires_mention,
             ),
@@ -830,8 +842,8 @@ def _invocation_targets(
             canonical_usages=((f"@bot {canonical}",) if requires_mention else (canonical,))
             if canonical is not None
             else (),
-            aliases=tuple(
-                _command_path_body(alias, path, compact=command_compact) for alias in aliases
+            aliases=_subcommand_aliases(
+                header, aliases, path, command_components, compact=command_compact
             ),
             requires_mention=requires_mention,
             shortcut_count=shortcut_count,
@@ -866,6 +878,52 @@ def _command_path_body(
         return header
     head = f"{header}{path[0]}" if compact else f"{header} {path[0]}"
     return " ".join((head, *path[1:]))
+
+
+def _subcommand_aliases(
+    header: str,
+    aliases: tuple[str, ...],
+    path: tuple[str, ...],
+    components: list[object],
+    *,
+    compact: bool,
+) -> tuple[str, ...]:
+    """沿同一子命令路径组合各层别名，不将兄弟节点混成等价入口。"""
+    choices: list[tuple[str, ...]] = [(header, *aliases)]
+    nested: object = components
+    for name in path:
+        if not isinstance(nested, (list, tuple)):
+            raise CapabilityAnalysisAdapterError("subcommand path has no matching component")
+        component = next(
+            (
+                item
+                for item in nested
+                if isinstance(item, Mapping)
+                and item.get("kind") == "subcommand"
+                and item.get("name") == name
+            ),
+            None,
+        )
+        if component is None:
+            raise CapabilityAnalysisAdapterError("subcommand path has no matching component")
+        raw_aliases = component.get("aliases", ())
+        valid_aliases = (
+            alias
+            for alias in (raw_aliases if isinstance(raw_aliases, (list, tuple)) else ())
+            if isinstance(alias, str) and alias.strip()
+        )
+        choices.append(tuple(dict.fromkeys((name, *valid_aliases))))
+        nested = component.get("components", ())
+    canonical = _command_path_body(header, path, compact=compact)
+    result: set[str] = set()
+    for root, *segments in product(*choices):
+        body = _command_path_body(root, tuple(segments), compact=compact)
+        if body != canonical:
+            result.add(body)
+        # 与现有 invocation 合同一致，超限报错而不是静默漏掉部分入口。
+        if len(result) > 16:
+            raise CapabilityAnalysisAdapterError("subcommand invocation aliases exceed 16 items")
+    return tuple(sorted(result, key=lambda item: (item.casefold(), item)))
 
 
 def _argument_preserving_alias_shortcut_count(

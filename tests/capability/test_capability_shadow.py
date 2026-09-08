@@ -37,9 +37,16 @@ from nbtriage.capability.catalog.records import (
     SourceRevision,
     search_capability_index,
 )
+from nbtriage.capability.teaching.analysis import (
+    SemanticConstraintKind,
+    TeachingRole,
+    TeachingScene,
+)
 from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
+    CapabilityTeachingPermissionAlternative,
+    CapabilityTeachingRequirement,
 )
 from nonebot_plugin_triage.capability.shadow import (
     CapabilityShadowService,
@@ -54,6 +61,7 @@ from nonebot_plugin_triage.capability.teaching.annotations import (
     CapabilityAnnotationRefreshStatus,
     CapabilityAnnotationService,
 )
+from nonebot_plugin_triage.capability.teaching.help import build_capability_help_displays
 from nonebot_plugin_triage.capability.teaching.outputs import (
     CapabilityTeachingOutputError,
     CapabilityTeachingOutputWriter,
@@ -1099,6 +1107,107 @@ def test_public_guidance_projects_observed_non_command_triggers(
     )
 
     assert message == f"{expected}\n公开的消息触发能力\n当前索引还没有可靠的完整用法。"
+
+
+@pytest.mark.parametrize(
+    ("alternatives", "hidden"),
+    [
+        (("superuser",), True),
+        (("superuser", "superuser"), True),
+        (("superuser", "admin"), False),
+        (("superuser", "custom"), False),
+        (("superuser", "private"), False),
+        (("superuser", "access"), False),
+        ((), False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_teaching_superuser_permission_only_tightens_public_disclosure(
+    tmp_path: Path, alternatives: tuple[str, ...], hidden: bool
+) -> None:
+    record = CapabilityRecord(
+        capability_id="command:manage",
+        owner="demo",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(Claim("command.header", "管理", ClaimBasis.OBSERVED),),
+    )
+    entry = CapabilityTeachingEntry(
+        "root",
+        name="维护说明",
+        summary="查看管理状态。",
+        usages=("管理",),
+        behavior_boundaries=("部分维护动作仅超级用户可执行。",),
+        requirements=(
+            CapabilityTeachingRequirement(
+                kind=SemanticConstraintKind.PERMISSION,
+                text="需满足指定身份或资格。",
+                alternatives=tuple(
+                    CapabilityTeachingPermissionAlternative(
+                        kind=SemanticConstraintKind.SCENE
+                        if value == "private"
+                        else (
+                            SemanticConstraintKind.ACCESS
+                            if value == "access"
+                            else SemanticConstraintKind.ROLE
+                        ),
+                        text=f"允许条件 {index}",
+                        role=TeachingRole(value) if value not in {"private", "access"} else None,
+                        scene=TeachingScene.PRIVATE if value == "private" else None,
+                    )
+                    for index, value in enumerate(alternatives)
+                ),
+            ),
+        )
+        if alternatives
+        else (),
+    )
+    annotation = CapabilityTeachingAnnotation(record.capability_id, "a" * 64, entries=(entry,))
+    assert entry.superuser_only is hidden
+
+    class AnnotationView:
+        def get(self, capability_id: str) -> CapabilityTeachingAnnotation | None:
+            return annotation if capability_id == record.capability_id else None
+
+    snapshot = _aligned_snapshot((record,))
+    service = _service(
+        tmp_path / "capabilities.sqlite3",
+        snapshot_builder=lambda **_: snapshot,
+        annotation_service=cast(CapabilityAnnotationService, AnnotationView()),
+    )
+    service.refresh()
+    for query in ("管理", "维护说明"):
+        result = await service.search_public(query, object)
+        assert result is not None
+        assert bool(result.hits) is not hidden
+    maintainer_result = await service.search_for_maintainer("管理")
+    assert maintainer_result is not None and maintainer_result.hits
+    assert record.disclosure is Disclosure.PUBLIC
+    raw_result = PublicCapabilitySearch(
+        hits=(CapabilitySearchHit(record, 100),),
+        partial=False,
+        annotations=(annotation,),
+        annotation_capability_ids=(record.capability_id,),
+    )
+    assert bool(format_public_capability_guidance(raw_result)) is not hidden
+    assert (build_public_guidance_request("管理", raw_result) is not None) is not hidden
+    assert bool(build_capability_help_displays(snapshot, AnnotationView().get)) is not hidden
+
+    if hidden:
+        public_entry = replace(entry, entry_id="public", name="普通说明", requirements=())
+        annotation = replace(annotation, entries=(entry, public_entry))
+        result = await service.search_public("普通说明", object)
+        assert result is not None and result.hits
+        assert result.annotations[0].entries == (public_entry,)
+        request = build_public_guidance_request("普通说明", result)
+        assert request is not None
+        assert all(fact.capability != "维护说明" for fact in request.facts)
+        displays = build_capability_help_displays(snapshot, AnnotationView().get)
+        assert [item.name for item in displays[0].commands] == ["普通说明"]
+        exact_result = await service.search_public("管理", object)
+        assert exact_result is not None and exact_result.exact_member_capability_ids == ()
 
 
 @pytest.mark.asyncio

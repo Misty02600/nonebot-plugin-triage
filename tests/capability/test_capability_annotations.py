@@ -49,6 +49,7 @@ from nbtriage.capability.teaching.annotations import (
     project_capability_annotation,
     validate_capability_public_statement,
     validate_capability_usage_pattern,
+    validate_capability_usage_template,
 )
 from nbtriage.capability.teaching.model_adapter import (
     CapabilityModelAdapterError,
@@ -411,25 +412,47 @@ def test_parser_owned_usage_allows_slot_naming_but_rejects_structure_changes() -
         project_capability_annotation(request, output, analysis_revision="analysis-v1")
 
     base_entry = _entry()
-    valid_output = CapabilityAnalysisOutput(
-        entries=(
-            replace(
-                base_entry,
-                claims=tuple(
-                    replace(claim, statement="订阅 添加 <主题> [-q|--quiet]")
-                    if claim.kind is SemanticClaimKind.USAGE
-                    else claim
-                    for claim in base_entry.claims
+    for name in ("主题", "主题 ID", "编号 或名称", "编号|名称"):
+        usage = f"订阅 添加 <{name}> [-q|--quiet]"
+        valid_output = CapabilityAnalysisOutput(
+            entries=(
+                replace(
+                    base_entry,
+                    claims=tuple(
+                        replace(claim, statement=usage)
+                        if claim.kind is SemanticClaimKind.USAGE
+                        else claim
+                        for claim in base_entry.claims
+                    ),
                 ),
-            ),
+            )
         )
-    )
-    annotation = project_capability_annotation(
-        request,
-        valid_output,
-        analysis_revision="analysis-v1",
-    )
-    assert annotation.entries[0].usages == ("订阅 添加 <主题> [-q|--quiet]",)
+        annotation = project_capability_annotation(
+            request,
+            valid_output,
+            analysis_revision="analysis-v1",
+        )
+        assert annotation.entries[0].usages == (usage,)
+
+    template = "订阅 添加 <slot:0> [-q|--quiet]"
+    for invalid in (
+        "订阅 添加 [主题 ID] [-q|--quiet]",
+        "订阅 添加 <主题 ID>... [-q|--quiet]",
+        "订阅 添加 [-q|--quiet] <主题 ID>",
+        "订阅 添加 <主题(ID)> [-q|--quiet]",
+    ):
+        with pytest.raises(CapabilityAnnotationError):
+            validate_capability_usage_template(invalid, template)
+    for name in ("", " ", "主题 ", "名" * 41):
+        with pytest.raises(CapabilityAnnotationError, match="参数槽位名称"):
+            validate_capability_usage_template(f"订阅 添加 <{name}> [-q|--quiet]", template)
+    assert validate_capability_usage_template(
+        "对比 <主题 ID> <主题 ID>", "对比 <slot:0> <slot:0>"
+    ) == "对比 <主题 ID> <主题 ID>"
+    with pytest.raises(CapabilityAnnotationError):
+        validate_capability_usage_template(
+            "对比 <主题 ID> <名称>", "对比 <slot:0> <slot:0>"
+        )
 
     alternative_request = replace(
         request,
@@ -568,7 +591,14 @@ def test_complete_usage_requires_bounded_member_selector() -> None:
 
 @pytest.mark.parametrize(
     "usage",
-    ("批量 <图片...>", "批量 [图片...]", "批量 ...<图片>"),
+    (
+        "批量 <图片...>",
+        "批量 [图片...]",
+        "批量 ...<图片>",
+        "批量 名字...",
+        "批量 (<图片>...文字|all)",
+        "批量 (名字...|all)",
+    ),
 )
 def test_usage_repetition_requires_ellipsis_after_complete_slot(usage: str) -> None:
     with pytest.raises(CapabilityAnnotationError):
@@ -581,6 +611,13 @@ def test_usage_repetition_accepts_required_and_optional_slots() -> None:
     assert validate_capability_usage_pattern("添加名单 <名字>... <@用户>...") == (
         "添加名单 <名字>... <@用户>..."
     )
+    for usage in (
+        "批量 (all|<编号>...)",
+        "批量 (<编号>...|all)",
+        "批量 (all|(<编号>...|[图片]...))",
+        "批量 (all|<编号>... [-r])",
+    ):
+        assert validate_capability_usage_pattern(usage) == usage
     for invalid in ("添加名单 @用户...", "添加名单 @<用户>...", "添加名单 @bot..."):
         with pytest.raises(CapabilityAnnotationError):
             validate_capability_usage_pattern(invalid)

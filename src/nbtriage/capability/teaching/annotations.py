@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -35,9 +35,9 @@ from nbtriage.capability.teaching.usage import (
     validate_usage_selector,
 )
 
-CAPABILITY_ANNOTATION_SCHEMA_VERSION = 11
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v95-zh"
-CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v58"
+CAPABILITY_ANNOTATION_SCHEMA_VERSION = 12
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v102-zh"
+CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v65"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
@@ -45,7 +45,7 @@ CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
 CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT = 192_000
 CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
     "background-unit-10req-7read-navigation-tools-160line-"
-    "192k-reserve-finalize-32768out-0.05usd-schema11"
+    "192k-reserve-finalize-32768out-0.05usd-schema12"
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SEARCH_TERM_LIST_SEPARATOR = re.compile(r"[,，、;；|]")
@@ -182,16 +182,18 @@ class CapabilityTeachingRequirement:
                 raise CapabilityAnnotationError("role requirement requires role metadata")
         elif self.role is not None:
             raise CapabilityAnnotationError("only role requirements may define role metadata")
-        if self.kind is SemanticConstraintKind.SCENE:
+        if self.kind in {SemanticConstraintKind.SCENE, SemanticConstraintKind.PERMISSION}:
             if (
                 not isinstance(self.allowed_scenes, tuple)
-                or not self.allowed_scenes
+                or (self.kind is SemanticConstraintKind.SCENE and not self.allowed_scenes)
                 or len(self.allowed_scenes) != len(set(self.allowed_scenes))
                 or any(not isinstance(scene, TeachingScene) for scene in self.allowed_scenes)
             ):
-                raise CapabilityAnnotationError("scene requirement requires unique allowed scenes")
+                raise CapabilityAnnotationError("requirement allowed scenes are invalid")
         elif self.allowed_scenes:
-            raise CapabilityAnnotationError("only scene requirements may define allowed scenes")
+            raise CapabilityAnnotationError(
+                "only scene or permission requirements may define allowed scenes"
+            )
         if self.kind is SemanticConstraintKind.RATE_LIMIT:
             if not isinstance(self.rate_limit_policy, RateLimitPolicy) or not isinstance(
                 self.rate_limit_scope, RateLimitScope
@@ -273,6 +275,16 @@ class CapabilityTeachingEntry:
     search_terms: tuple[str, ...] = ()
     behavior_boundaries: tuple[str, ...] = ()
     requirements: tuple[CapabilityTeachingRequirement, ...] = ()
+
+    @property
+    def superuser_only(self) -> bool:
+        """只识别全局 Permission 的全部 OR 分支均为超级用户的情况。"""
+        return any(
+            requirement.kind is SemanticConstraintKind.PERMISSION
+            and {(item.kind, item.role) for item in requirement.alternatives}
+            == {(SemanticConstraintKind.ROLE, TeachingRole.SUPERUSER)}
+            for requirement in self.requirements
+        )
 
     def __post_init__(self) -> None:
         _bounded_identifier(self.entry_id, "entry_id", max_length=128)
@@ -361,6 +373,11 @@ class CapabilityTeachingAnnotation:
     entries: tuple[CapabilityTeachingEntry, ...] = ()
     evidence_manifest: tuple[CapabilityAnnotationEvidenceRef, ...] = field(default=(), repr=False)
     schema_version: int = CAPABILITY_ANNOTATION_SCHEMA_VERSION
+
+    @property
+    def public_entries(self) -> tuple[CapabilityTeachingEntry, ...]:
+        """收紧教学披露，不替代 Runtime 的公开资格与有效性检查。"""
+        return tuple(entry for entry in self.entries if not entry.superuser_only)
 
     def __post_init__(self) -> None:
         if self.schema_version != CAPABILITY_ANNOTATION_SCHEMA_VERSION:
@@ -459,6 +476,7 @@ def capability_analysis_fingerprint(
                 "command_body": item.command_body,
                 "regex_pattern": item.regex_pattern,
                 "regex_flags": list(item.regex_flags),
+                "keywords": list(item.keywords),
                 "canonical_usages": list(item.canonical_usages),
                 "aliases": list(item.aliases),
                 "requires_mention": item.requires_mention,
@@ -520,6 +538,7 @@ def capability_analysis_fingerprint(
             }
             for item in request.fixed_constraints
         ],
+        "plugin_entries": [asdict(entry) for entry in request.plugin_entries],
         "source_context": (
             {
                 "module_name": request.source_context.module_name,
@@ -882,7 +901,7 @@ def validate_capability_usage_pattern(
     if re.search(r"(?<!\S)@(?=[<\[])", normalized):
         raise CapabilityAnnotationError("mention 必须完整写入参数槽位，例如 <@用户> 或 [@用户]")
     if re.search(r"(?<![>\]])\.\.\.", normalized) or re.search(
-        r"\.\.\.(?!\s|$)",
+        r"\.\.\.(?!\s|[)|]|$)",
         normalized,
     ):
         raise CapabilityAnnotationError("省略号只能紧跟一个完整参数槽位")
@@ -901,7 +920,7 @@ def validate_capability_usage_pattern(
 
 
 _STRUCTURAL_USAGE_SLOT = re.compile(r"(?P<opening><|\[)slot:(?P<index>\d+)(?P<closing>>|\])")
-_PUBLIC_USAGE_SLOT = r"[^<>\[\](){}\s]{1,40}"
+_PUBLIC_USAGE_SLOT = r"[^<>\[\](){}\r\n]*"
 
 
 def validate_capability_usage_template(value: str, template: str) -> str:
@@ -940,8 +959,14 @@ def validate_capability_usage_template(value: str, template: str) -> str:
         raise CapabilityAnnotationError(
             "usage must preserve the parser-provided structure while naming every slot"
         )
-    if any(re.fullmatch(r"slot:\d+", value) for value in match.groupdict().values()):
-        raise CapabilityAnnotationError("usage must replace every internal slot identifier")
+    for name in match.groupdict().values():
+        if not 1 <= len(name) <= 40 or name != name.strip():
+            raise CapabilityAnnotationError(
+                "参数槽位名称须为 1 至 40 个字符且首尾无空白；"
+                "名称内部允许空格或 |，无需删除有证据支持的输入形式"
+            )
+        if re.fullmatch(r"slot:\d+", name):
+            raise CapabilityAnnotationError("usage must replace every internal slot identifier")
     return normalized
 
 
@@ -971,6 +996,15 @@ def validate_complete_aggregate_usage(value: str) -> str:
     if slots.difference(_GENERIC_INPUT_SLOTS):
         return normalized
     raise CapabilityAnnotationError("complete aggregate usage requires a member selector")
+
+
+def validate_keyword_usage(value: str, target: CapabilityInvocationTarget) -> None:
+    """校验固定触发词，不把占位名视作用户实际输入，也不推断 Handler 语法。"""
+    literals = re.sub(r"<[^<>]*>|\[[^\[\]]*\]", "", value)
+    if not any(keyword in literals for keyword in target.keywords):
+        raise CapabilityAnnotationError("keyword usage must preserve a literal trigger keyword")
+    if target.requires_mention and len(re.findall(r"(?<!\S)@bot(?=$|\s)", value)) != 1:
+        raise CapabilityAnnotationError("mention-required keyword usage must contain one @bot")
 
 
 def _validated_usage(
@@ -1025,6 +1059,8 @@ def _validated_usage(
         )
     if target.mode is CapabilityInvocationMode.COMPLETE:
         validate_complete_aggregate_usage(normalized)
+    if target.mode is CapabilityInvocationMode.KEYWORD:
+        validate_keyword_usage(normalized, target)
     if (
         target.mode
         in {

@@ -221,7 +221,7 @@ def build_capability_help_displays(
     for module_name, entries in sorted(grouped.items(), key=lambda item: item[0].casefold()):
         commands: dict[tuple[str, str], CapabilityHelpDisplayCommand] = {}
         for _record, annotation in entries:
-            for entry in annotation.entries:
+            for entry in annotation.public_entries:
                 command = entry.name
                 if command is None:
                     continue
@@ -335,6 +335,9 @@ def _required_role(annotation: CapabilityTeachingEntry) -> TeachingRole | None:
         item for item in annotation.requirements if item.kind is SemanticConstraintKind.PERMISSION
     )
     if len(permissions) != 1:
+        return None
+    # 原生 permission 无法携带共同场景，不将这个完整条件降成无场景的角色标签。
+    if permissions[0].allowed_scenes:
         return None
     alternatives = permissions[0].alternatives
     if any(alternative.kind is not SemanticConstraintKind.ROLE for alternative in alternatives):

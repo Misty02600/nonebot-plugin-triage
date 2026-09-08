@@ -334,7 +334,6 @@ def test_alconna_shortcut_preserves_empty_command_prefix(
     command.shortcut(
         "enable",
         {"command": "assist", "args": [""], "prefix": True},
-        compact=None,
     )
     matcher_cleanup.append(matcher)
     plugin = _plugin(tmp_path, monkeypatch, {matcher})
@@ -386,7 +385,7 @@ def test_alconna_dispatch_matchers_only_expose_their_own_subcommand_scope(
     command = Alconna(
         "bili",
         Subcommand("help"),
-        Subcommand("new", Args["uid", str]["count?", int]),
+        Subcommand("new", Args["uid", str]["count?", int], alias=["add"]),
         Subcommand("list"),
         namespace=f"snapshot-{uuid4().hex}",
     )
@@ -419,6 +418,7 @@ def test_alconna_dispatch_matchers_only_expose_their_own_subcommand_scope(
         scoped = {values[0][0]["name"]: values[0][0] for values in components if values}
         assert set(scoped) == {"help", "new"}
         assert scoped["help"]["components"] == []
+        assert set(scoped["new"]["aliases"]) == {"new", "add"}
         assert [item["name"] for item in scoped["new"]["arguments"]] == ["uid", "count"]
     finally:
         for matcher in (main, help_matcher, new_matcher):

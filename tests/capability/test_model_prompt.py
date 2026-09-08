@@ -26,6 +26,8 @@ def _request(
                 mode,
                 command_body="搜图",
             )
+        elif mode is CapabilityInvocationMode.KEYWORD:
+            invocation = CapabilityInvocationTarget(f"entry-{index}", mode, keywords=("查找",))
         elif mode is CapabilityInvocationMode.REGEX:
             invocation = CapabilityInvocationTarget(
                 f"entry-{index}",
@@ -58,6 +60,11 @@ def _request(
 
 def test_prompt_fragments_follow_request_structure() -> None:
     cases = (
+        (
+            (CapabilityInvocationMode.KEYWORD,),
+            False,
+            (prompt.CORE_INSTRUCTION, prompt.KEYWORD_INSTRUCTION),
+        ),
         (
             (CapabilityInvocationMode.ANCHORED,),
             False,
@@ -128,6 +135,10 @@ def test_prompt_preserves_unique_model_only_contracts() -> None:
                 "entries 的 entry_id 必须与它完全一致",
                 "不得添加 payload、output 或 result 包装",
                 "mention 是完整输入原子，必须整体放入槽位",
+                "优先在槽位内部用 `|` 简洁列举；这仍是一个参数",
+                "共同场景与分支组为 AND",
+                "若存在绕过该场景的允许路径，不得将其提为共同场景",
+                "Evidence 已明确证明的嵌套角色 OR 可以展开",
             ),
         ),
         "anchored": (
@@ -142,7 +153,11 @@ def test_prompt_preserves_unique_model_only_contracts() -> None:
         ),
         "regex": (
             prompt.REGEX_INSTRUCTION,
-            ("只属于某个分支的参数必须留在该分支内部",),
+            (
+                "只属于某个分支的参数必须留在该分支内部",
+                "转换为统一的帮助记法",
+                "固定字面字符按实际输入保留",
+            ),
         ),
         "family": (
             prompt.FAMILY_INSTRUCTION,
