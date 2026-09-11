@@ -289,7 +289,9 @@ def test_writer_projects_any_rate_limit_to_migut_help_cooldown_marker(
     assert command["description"] == "搜索图片出处"
 
 
-@pytest.mark.parametrize("common_scenes", [(), (TeachingScene.GROUP,)])
+@pytest.mark.parametrize(
+    "common_scenes", [(), (TeachingScene.GROUP,), (TeachingScene.NON_PRIVATE,)]
+)
 def test_writer_only_projects_lossless_native_permission_shapes(
     tmp_path: Path, common_scenes: tuple[TeachingScene, ...]
 ) -> None:

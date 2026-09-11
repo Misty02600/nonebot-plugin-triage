@@ -446,12 +446,60 @@ def test_parser_owned_usage_allows_slot_naming_but_rejects_structure_changes() -
     for name in ("", " ", "主题 ", "名" * 41):
         with pytest.raises(CapabilityAnnotationError, match="参数槽位名称"):
             validate_capability_usage_template(f"订阅 添加 <{name}> [-q|--quiet]", template)
-    assert validate_capability_usage_template(
-        "对比 <主题 ID> <主题 ID>", "对比 <slot:0> <slot:0>"
-    ) == "对比 <主题 ID> <主题 ID>"
+    assert (
+        validate_capability_usage_template("对比 <主题 ID> <主题 ID>", "对比 <slot:0> <slot:0>")
+        == "对比 <主题 ID> <主题 ID>"
+    )
     with pytest.raises(CapabilityAnnotationError):
+        validate_capability_usage_template("对比 <主题 ID> <名称>", "对比 <slot:0> <slot:0>")
+
+    template = "@bot 标注 <slot:0> [slot:1]... [--quiet|-q]"
+    for usage in (
+        "[回复图片] @bot 标注 <主题> [说明]... [--quiet|-q]",
+        "[回复图片] @bot 标注 <主题> [--quiet|-q]",
+    ):
+        assert (
+            validate_capability_usage_template(usage, template, allow_reply_context=True) == usage
+        )
+        with pytest.raises(CapabilityAnnotationError):
+            validate_capability_usage_template(usage, template)
+    for invalid in (
+        "[回复图片] @bot 标注 [--quiet|-q]",
+        "[回复图片] @bot 标注 [主题] [--quiet|-q]",
+        "[回复图片] @bot 标注 <主题> [说明] [--quiet|-q]",
+        "[回复图片] @bot 标注 <主题> [--quiet]",
+        "[回复图片] 标注 <主题> [--quiet|-q]",
+        "[回复图片] @bot 标注 <主题> <说明> [--quiet|-q]",
+        "[回复图片] @bot 删除 <主题> [--quiet|-q]",
+    ):
+        with pytest.raises(CapabilityAnnotationError):
+            validate_capability_usage_template(invalid, template, allow_reply_context=True)
+
+    template = "@bot 标注 [slot:0] <slot:1>... [(--style|-s) <slot:2>]"
+    for usage in (
+        "<回复图片> @bot 标注 [说明] [(--style|-s) <风格>]",
+        "<回复图片> @bot 标注 [(--style|-s) <风格>]",
+    ):
+        assert (
+            validate_capability_usage_template(usage, template, allow_reply_context=True) == usage
+        )
+        with pytest.raises(CapabilityAnnotationError):
+            validate_capability_usage_template(usage, template)
+    for usage in (
+        "[回复图片] @bot 标注 [说明] [(--style|-s) <风格>]",
+        "<回复图片> @bot 标注 [说明] [(--style|-s)]",
+        "<回复图片> @bot 标注 [说明] [(--style|-s) [风格]]",
+        "<回复图片> @bot 标注 [说明]",
+        "<回复图片> @bot 标注 <图片> [说明] [(--style|-s) <风格>]",
+        "<回复图片> @bot 标注 [说明] <图片> [(--style|-s) <风格>]",
+        "@bot 标注 <回复图片> [说明] [(--style|-s) <风格>]",
+        "<回复图片> <回复消息> @bot 标注 [说明] [(--style|-s) <风格>]",
+    ):
+        with pytest.raises(CapabilityAnnotationError):
+            validate_capability_usage_template(usage, template, allow_reply_context=True)
+    with pytest.raises(CapabilityAnnotationError, match="ambiguous"):
         validate_capability_usage_template(
-            "对比 <主题 ID> <名称>", "对比 <slot:0> <slot:0>"
+            "<回复消息> 标注 <内容>", "标注 <slot:0> <slot:1>", allow_reply_context=True
         )
 
     alternative_request = replace(

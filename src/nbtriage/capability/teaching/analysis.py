@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
-from nbtriage.readonly_tools.jedi_navigation import DefinitionLocation
+from nbtriage.readonly_tools.python_navigation import DefinitionLocation
 
 
 class CapabilityAnalysisError(ValueError):
@@ -48,7 +48,10 @@ class TeachingRole(StrEnum):
 
 
 class TeachingScene(StrEnum):
+    """教学场景条件；NON_PRIVATE 为排除私聊的谓词，并非互斥原子类型。"""
+
     PRIVATE = "private"
+    NON_PRIVATE = "non_private"
     GROUP = "group"
     GUILD = "guild"
     CHANNEL_TEXT = "channel_text"

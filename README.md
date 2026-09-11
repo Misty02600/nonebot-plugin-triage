@@ -96,7 +96,7 @@ cd nonebot-plugin-triage
 uv sync --all-extras --group dev
 ```
 
-基础安装已经包含 Pydantic AI 公共控制层、只读 Harness 与 Jedi，但不会安装或启用任何模型 Provider SDK。
+基础安装已经包含 Pydantic AI 公共控制层、只读 Harness 与 ty，但不会安装或启用任何模型 Provider SDK。
 使用当前 OpenCode Go transport（供教学注释和受控模型任务）时还需安装
 `nonebot-plugin-triage[openai]`；Anthropic 部署使用 `[anthropic]`。OpenCode Go 复用 Pydantic AI 的
 OpenAI Provider，不再声明内容重复的专用 extra。
@@ -227,7 +227,7 @@ Bug assessment 使用独立的数据与任务合同。它可以把与本案相�
 `Agent(output_type=BugAssessmentCandidate)`、`Tool`、`ModelProfile` 和 `UsageLimits`，模型候选不能绕过
 本地 reconciliation，也不能写 LocalStore、建 incident、发送额外消息或执行插件代码。
 Bug 的源码工具只在当前已加载 subject 的批准插件根内执行有界 Python 文本搜索和按文件读取；它不会启动
-外部语言服务器、读取整个仓库或越过路径、文件大小与结果数量门禁。共享的 Direct Jedi
+外部语言服务器、读取整个仓库或越过路径、文件大小与结果数量门禁。共享的 ty
 `go_to_definition` 与只读 FileSystem 目前服务教学注释，尚未接入 Bug。
 
 Answer Agent v2 使用 `Agent(output_type=PublicGuidanceAnswer)`，输出最多 1000 字回答及实际使用的公开事实
@@ -295,14 +295,14 @@ flowchart LR
 配置了可用的模型 transport 后，后台教学注释任务会把本轮所有符合准入条件但没有有效缓存的当前能力作为
 独立教学单元放入同一个有限并发池；同一插件的不同单元也可以并行。每个单元从当前 runtime
 snapshot 出发，先提供确定性的命令结构、ast-grep Matcher 结构、已加载 handler 片段和当前内存配置投影；
-随后用 Python AST 枚举调用位置，并复用 Jedi DefinitionNavigator 优先补入唯一可定位的未解析自定义
-Permission/Rule 定义，再按广度优先展开本地 helper。Jedi 唯一定位到当前解释器 purelib / platlib 或生效的
+随后用 Python AST 枚举调用位置，并复用 DefinitionNavigator 优先补入唯一可定位的未解析自定义
+Permission/Rule 定义，再按广度优先展开本地 helper。定义导航唯一定位到当前解释器 purelib / platlib 或生效的
 site-packages / dist-packages 中的直接外部函数时，首包会预载这一层完整函数，但不把外部函数继续加入 BFS；
 过长或无法切片的唯一定义只提供不可引用的精确读取目标。编译扩展仅有 `.pyi` 时只提供签名导航，不把签名
 当成业务行为 Evidence。
 注册 gate 若先指向目标插件模块级赋值，适配器会沿静态、唯一的绑定链保存相关语句，并按同一预算预载最终
 到达的一层外部函数；不会为权限库或插件编写专属解析器。初始与动态 Python Evidence 会给直接调用、装饰器
-和基类附带请求内位置句柄；Agent 只提交句柄，服务端用 Jedi 完成跳转、revision 复核和唯一目标的稳定读取，
+和基类附带请求内位置句柄；Agent 只提交句柄，服务端用定义导航完成跳转、revision 复核和唯一目标的稳定读取，
 不再让模型计算行列或复制源码哈希。
 Handler 与自定义 gate 为深度 0，最多展开三层；单函数最多 8,000 字符，单教学单元的初始源码切片合计最多
 32,000 字符。动态分派、多定义和解释器根外位置不会被猜测成正式 Evidence；普通单元仍可由 Agent 使用现有只读
@@ -312,7 +312,7 @@ Permission/Rule 都能形成同一个有证据的共同合同后才会合并：�
 family candidate 并附带唯一插件内定义；成员合同不一致、动态不透明或定义不唯一时整项 fail-closed。源码 revision
 漂移则拒绝混用两代 Evidence，并停止该插件本轮剩余教学分析。确定性切片只在进程内按源码 revision 与函数定义身份复用，
 每个教学单元仍生成自己的 Evidence ID 与 manifest。
-初始 Evidence 不足时，Agent 才能在批准的 Bot、插件与 LocalStore 根中使用只读 glob/search/read，或用 Jedi
+初始 Evidence 不足时，Agent 才能在批准的 Bot、插件与 LocalStore 根中使用只读 glob/search/read，或用定义导航
 从已读 Python 标识符转到当前解释器依赖的定义。当前解释器依赖根自动按 Python-only 安全策略接入，无需逐包
 批准；依赖根不允许自由 glob/search，只允许按已知位置读取；`.env*`、
 凭据、数据库、教学日志、人工维护的帮助 YAML、评测 Gold 和本任务生成的 help-display 始终不能进入教学模型。
@@ -320,6 +320,13 @@ Bot 项目根只用于非 Python 项目文本和配置，Python 源码必须从�
 借项目根遍历其他本地插件。
 配置当前值只从已构造且与源码引用匹配的 Pydantic 实例投影，并在读取前应用
 `NBTRIAGE_RESTRICTED_CONFIG`，不会读取整份 Config、消息、用户身份或枚举进程环境。
+
+教学刷新以稳定部署为前提：已加载的插件、依赖与磁盘源码应属于同一部署版本，分析期间不要修改它们。
+更新代码或依赖后应重启 Bot，由启动刷新重新判断缓存是否有效；符合复用条件的注释保留，失效项重新生成。
+运行中的 `triage 刷新帮助 [plugin_module]` 只刷新当前已加载能力的教学知识，不会热重载 Python 模块、
+重新注册 Matcher 或重新读取 `.env`。仅修改磁盘文件后直接刷新帮助，以及第三方热重载过程，不在当前保证范围内。
+现有 revision 检查用于拒绝检测到的源码漂移，不是持续文件监听，也不能证明内存中的旧代码已随文件更新。
+具体边界见[教学刷新与部署变更](docs/architecture/flows/capability-shadow-index.md#教学刷新与部署变更边界)。
 
 模型输出必须引用本轮初始 Evidence 或成功 `read_file` 返回的动态 Evidence。教学 cache 按插件写入 Triage
 LocalStore cache 的 `capability-annotations/<module_name>.json`，同一文件内按 teaching unit 保存
@@ -365,13 +372,13 @@ schema、Evidence 闭合、投影、安全、预算、工具和源码提取均�
 过窄 Oracle：自定义角色同义文案、`baseline_changes.replace.new_value` 已形成正确最终边界却仍被要求重复 claim，
 以及 `@值班员` 的正确详细改写未逐字等于期望；剩余一条是模型把按群名单限制错分为 `scene` 而非 `access`。
 v13 分数保持冻结，不用事后改 Oracle 冒充通过。
-当前教学合同保留全部 family 成员调用事实，并把无损列式成员清单与唯一 Parser shapes 分离去重；模型输入不再重复 Runtime 已拥有的 `platform_scope`。独立 scene requirement 携带完整原子 `allowed_scenes` 集合，同一注册表达式中的复合 Permission 只形成一个候选。真实限额允许在同一 requirement 中说明有 Evidence 支持的豁免对象，不再用公开短语黑名单误杀。现有 Evidence 不足以支持或否定拟公开事实时，Agent 可以从已知符号、路径或调用位置按需补证，不限定为配置或授权问题；定义导航和根内文本搜索分别负责理解符号与定位使用位置；初始和动态 Python Evidence 提供请求内位置句柄，唯一目标一次调用即完成 Jedi 跳转、revision 复核和可引用读取。role 按入口直接身份判断生成，access 按可配置权限、名单或开放资格查询生成；权限系统内部的角色预授权不反向展开为目标能力 role。Alconna 联合输入不会再退化为 `typing.Any`，Uniseg `At` 会作为直接 `@用户` 输入参与聚合 usage 完整性校验；七个及以上 family 成员只做简短类别概括，不在 summary 或行为边界重复完整成员名单；tool-mode 与 native-mode 都直接提交顶层教学分析对象，不接受 `output` 包装或 JSON 字符串；输出格式或投影错误最多纠正两次；
+当前教学合同保留全部 family 成员调用事实，并把无损列式成员清单与唯一 Parser shapes 分离去重；模型输入不再重复 Runtime 已拥有的 `platform_scope`。独立 scene requirement 携带 `allowed_scenes` 条件集合（包括 `non_private` 谓词），同一注册表达式中的复合 Permission 只形成一个候选。真实限额允许在同一 requirement 中说明有 Evidence 支持的豁免对象，不再用公开短语黑名单误杀。现有 Evidence 不足以支持或否定拟公开事实时，Agent 可以从已知符号、路径或调用位置按需补证，不限定为配置或授权问题；定义导航和根内文本搜索分别负责理解符号与定位使用位置；初始和动态 Python Evidence 提供请求内位置句柄，唯一目标一次调用即完成定义跳转、revision 复核和可引用读取。role 按入口直接身份判断生成，access 按可配置权限、名单或开放资格查询生成；权限系统内部的角色预授权不反向展开为目标能力 role。Alconna 联合输入不会再退化为 `typing.Any`，Uniseg `At` 会作为直接 `@用户` 输入参与聚合 usage 完整性校验；七个及以上 family 成员只做简短类别概括，不在 summary 或行为边界重复完整成员名单；tool-mode 与 native-mode 都直接提交顶层教学分析对象，不接受 `output` 包装或 JSON 字符串；输出格式或投影错误最多纠正两次；
 普通命令明确保持 anchor-only。合同继续移除 family 初始 Evidence 条目总数上限、过滤
 Alconna 内建辅助 Option，并把公开投影失败纳入一次定向纠错；展示继续采用 `≤3 / 4–6 / ≥7` 阈值。
 family 异构输入无法用一个词准确概括时使用由当前 Evidence 命名的概念槽位，Prompt 不提供固定成品词；四至六类在 summary 说明，七类及以上可以简单概括共同类别，但不逐类展开，
 “参数”与其他槽位名称使用相同的通用校验，不设置专门门禁、优先级或强制说明。目标插件文件工具统一使用 `target_plugin_*` 和相对插件根路径；
 外部插件请求不再暴露无关的 `bot_project_*`，本地宿主插件或已有宿主 Evidence 才保留；文件搜索只在
-单个根内做文本检索，已知 Python 调用位置使用 Jedi 跨安全根导航；唯一直接外部函数预载一层，过长定义只给
+单个根内做文本检索，已知 Python 调用位置使用定义导航跨安全根导航；唯一直接外部函数预载一层，过长定义只给
 精确读取目标，不递归展开依赖树，初始 Evidence 已完整提供的函数也不重复整文件读取。它改变了
 模型输入和生成合同；静态 family Callable、Permission OR alternatives 与 SDK 重试边界也已变化，不能继承
 v13 质量结论，仍标记为未验证。

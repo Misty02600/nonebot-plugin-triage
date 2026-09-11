@@ -10,6 +10,7 @@ from pydantic_ai.settings import ModelSettings, merge_model_settings
 
 from nbtriage._model_runtime.diagnostics import last_model_response
 from nbtriage._model_runtime.telemetry import current_agent_instrumentation
+from nbtriage._model_runtime.usage import response_model_matches
 from nbtriage.support.semantics import (
     SupportAssessmentRequest,
     SupportSemanticAssessment,
@@ -194,7 +195,11 @@ class PydanticAISupportSemanticClient:
             raise SupportSemanticModelAdapterError(
                 "support semantic model response provider identity mismatch"
             )
-        if self._expected_model is not None and response.model_name != self._expected_model:
+        if not response_model_matches(
+            response,
+            expected_provider=self._expected_provider,
+            expected_model=self._expected_model,
+        ):
             raise SupportSemanticModelAdapterError(
                 "support semantic model response model identity mismatch"
             )

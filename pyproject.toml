@@ -17,7 +17,6 @@ classifiers = [
 dependencies = [
     "aiosqlite==0.22.1",
     "ast-grep-py==0.45.1",
-    "jedi==0.20.0",
     "langgraph==1.2.11",
     "langgraph-checkpoint==4.2.0",
     "langgraph-checkpoint-sqlite==3.1.1",
@@ -31,6 +30,7 @@ dependencies = [
     "pydantic-ai-slim==2.28.0",
     "pycryptodome==3.23.0",
     "pyyaml>=6.0.3,<7",
+    "ty==0.0.80",
 ]
 
 [project.urls]

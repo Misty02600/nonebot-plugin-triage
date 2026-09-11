@@ -255,6 +255,13 @@ def uninfo_session_field_profile() -> FrameworkFieldSemanticProfile:
                 "当前群、频道或私聊等场景的 ID，不保证是当前调用者 ID。",
             ),
             FrameworkFieldSemantic(
+                "Session.scene.parent",
+                "当前会话所属的直接上级，可能为空；具体含义由适配器决定，不能固定称为服务器，也不等于最顶层。"
+                "业务代码取 parent.id、无父级时取 scene.id，表示按直接上级或当前会话确定作用范围；"
+                "其他键维度相同且选中同一场景 ID 时共享该范围，不是各子频道或话题独立。"
+                "仅存在 parent 不证明共享，实际范围仍由业务代码使用的完整执行键决定。",
+            ),
+            FrameworkFieldSemantic(
                 "Member",
                 "群聊或频道成员模型；user 是成员用户，role 返回已有角色中权限等级最高者，另含 nick、mute 与 joined_at。",
             ),
@@ -297,7 +304,11 @@ def nonebot_dependency_overload_profile() -> FrameworkFieldSemanticProfile:
                 "typed dependency overload",
                 "NoneBot 的 Handler 及其依赖函数的 Bot、Event 和 Matcher 参数类型注解都参与运行时检查；"
                 "实际对象不匹配时不会执行相应函数。Handler 声明 event: GroupMessageEvent 时，"
-                "私聊事件不会执行该 Handler；同一 Matcher 的其他 Handler 应分别判断。",
+                "私聊事件不会执行该 Handler；同一 Matcher 的其他 Handler 应分别判断。"
+                "Handler 执行先递归预检查依赖及自身参数类型，通过后才求解依赖并调用函数；"
+                "预检查依赖不等于执行依赖函数体。标准 .got() 的取参与提示作为该 Handler 的"
+                "无参数依赖在求解阶段执行，因此类型预检查失败时也不会发送这条确认提示；"
+                "不能把它当成独立于该 Handler 类型限制的前置步骤。",
             ),
         ),
     )

@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import re
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from importlib import import_module
 from io import BytesIO
 from pathlib import Path
-from threading import RLock
 from tokenize import detect_encoding
 from typing import Protocol
 
@@ -22,7 +21,6 @@ from .models import (
 )
 
 _PYTHON_SUFFIXES = frozenset({".py", ".pyi"})
-_JEDI_API_LOCK = RLock()
 
 
 class PythonNavigationError(ValueError):
@@ -123,16 +121,17 @@ class GoToDefinitionRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class RawJediDefinition:
+class RawDefinition:
     module_path: Path | None
     name: str | None
     full_name: str | None
     kind: str | None
     line: int | None
     column: int | None
+    utf16_column: bool = False
 
 
-class JediGoToDefinitionBackend(Protocol):
+class DefinitionBackend(Protocol):
     def go_to_definition(
         self,
         *,
@@ -143,7 +142,7 @@ class JediGoToDefinitionBackend(Protocol):
         project_root: Path,
         python_executable: Path,
         added_sys_path: tuple[Path, ...],
-    ) -> Sequence[RawJediDefinition]: ...
+    ) -> Sequence[RawDefinition]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,21 +177,25 @@ class GoToDefinitionResult:
         return bool(self.definitions)
 
 
-class _BackendUnavailableError(RuntimeError):
+class NavigationBackendUnavailable(RuntimeError):
+    pass
+
+
+class NavigationSourceChanged(RuntimeError):
     pass
 
 
 class DefinitionNavigator:
-    """使用 Jedi 的唯一只读操作定位定义，并重新验证所有输入与返回路径。"""
+    """定位 Python 定义，并在读取目标元数据前验证所有输入与返回路径。"""
 
     def __init__(
         self,
         profile: PythonNavigationProfile,
         *,
-        backend: JediGoToDefinitionBackend | None = None,
+        backend: DefinitionBackend | None = None,
     ) -> None:
         self._profile = profile
-        self._backend = backend or _JediBackend()
+        self._backend = backend
 
     def go_to_definition(self, request: GoToDefinitionRequest) -> GoToDefinitionResult:
         root = self._profile.source_root(request.root_name)
@@ -224,16 +227,24 @@ class DefinitionNavigator:
                 source_revision=observed_revision,
             )
         try:
-            raw_definitions = self._backend.go_to_definition(
-                code=source,
-                path=source_path,
-                line=request.line,
-                column=request.column,
-                project_root=self._profile.project_root.path,
-                python_executable=self._profile.python_executable,
-                added_sys_path=tuple(root.path for root in self._profile.source_roots),
+            from .ty_navigation import definition_backend
+
+            with definition_backend(self._profile, self._backend) as backend:
+                raw_definitions = backend.go_to_definition(
+                    code=source,
+                    path=source_path,
+                    line=request.line,
+                    column=request.column,
+                    project_root=self._profile.project_root.path,
+                    python_executable=self._profile.python_executable,
+                    added_sys_path=tuple(root.path for root in self._profile.source_roots),
+                )
+        except NavigationSourceChanged:
+            return _failure(
+                DefinitionFailureReason.SOURCE_CHANGED,
+                source_revision=observed_revision,
             )
-        except _BackendUnavailableError:
+        except NavigationBackendUnavailable:
             return _failure(
                 DefinitionFailureReason.BACKEND_UNAVAILABLE,
                 source_revision=observed_revision,
@@ -259,20 +270,13 @@ class DefinitionNavigator:
 
     def _validate_definitions(
         self,
-        raw_definitions: Sequence[RawJediDefinition],
+        raw_definitions: Sequence[RawDefinition],
         source_revision: str,
     ) -> GoToDefinitionResult:
         accepted: list[DefinitionLocation] = []
         ignored: set[DefinitionFailureReason] = set()
         for definition in raw_definitions:
             if definition.module_path is None:
-                stub_locations = _compiled_definition_stub_locations(
-                    self._profile,
-                    definition,
-                )
-                if stub_locations:
-                    accepted.extend(stub_locations)
-                    continue
                 ignored.add(DefinitionFailureReason.DEFINITION_SOURCE_UNAVAILABLE)
                 continue
             match = _match_approved_root(
@@ -308,160 +312,14 @@ class DefinitionNavigator:
                 source_revision=source_revision,
                 ignored_failures=ignored_tuple,
             )
-        if not raw_definitions:
-            failure = DefinitionFailureReason.DEFINITION_NOT_FOUND
-        elif ignored_tuple:
-            failure = ignored_tuple[0]
-        else:
-            failure = DefinitionFailureReason.DEFINITION_NOT_FOUND
+        failure = (
+            ignored_tuple[0] if ignored_tuple else DefinitionFailureReason.DEFINITION_NOT_FOUND
+        )
         return _failure(
             failure,
             source_revision=source_revision,
             ignored_failures=ignored_tuple,
         )
-
-
-def _compiled_definition_stub_locations(
-    profile: PythonNavigationProfile,
-    raw: RawJediDefinition,
-) -> tuple[DefinitionLocation, ...]:
-    if (
-        raw.kind != "function"
-        or not isinstance(raw.name, str)
-        or not raw.name
-        or not isinstance(raw.full_name, str)
-        or not raw.full_name.endswith(f".{raw.name}")
-    ):
-        return ()
-    module_parts = raw.full_name.split(".")[:-1]
-    if not module_parts or any(not part.isidentifier() for part in module_parts):
-        return ()
-
-    locations: list[DefinitionLocation] = []
-    seen_paths: set[Path] = set()
-    for root in profile.source_roots:
-        for length in range(len(module_parts), 0, -1):
-            relative_parts = module_parts[:length]
-            candidates = (
-                root.path.joinpath(*relative_parts).with_suffix(".pyi"),
-                root.path.joinpath(*relative_parts, "__init__.pyi"),
-            )
-            for candidate in candidates:
-                try:
-                    path = candidate.resolve(strict=True)
-                    locator = path.relative_to(root.path).as_posix()
-                except (OSError, RuntimeError, ValueError):
-                    continue
-                if path in seen_paths or not path_is_allowed(profile.access, root, locator):
-                    continue
-                seen_paths.add(path)
-                locations.extend(_top_level_stub_locations(root, path, locator, raw))
-    return tuple(locations)
-
-
-def _top_level_stub_locations(
-    root: ReadOnlyRoot,
-    path: Path,
-    locator: str,
-    raw: RawJediDefinition,
-) -> tuple[DefinitionLocation, ...]:
-    try:
-        source = _decode_python_source(path.read_bytes())
-        tree = ast.parse(source)
-    except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError):
-        return ()
-    candidates = tuple(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == raw.name
-    )
-    if not candidates:
-        return ()
-    return tuple(
-        location
-        for node in candidates
-        if (
-            location := _definition_location(
-                root,
-                path,
-                locator,
-                RawJediDefinition(
-                    module_path=path,
-                    name=raw.name,
-                    full_name=raw.full_name,
-                    kind=raw.kind,
-                    line=node.lineno,
-                    column=node.col_offset
-                    + len("async def " if isinstance(node, ast.AsyncFunctionDef) else "def "),
-                ),
-            )
-        )
-        is not None
-    )
-
-
-class _JediBackend:
-    def __init__(self) -> None:
-        self._projects: dict[tuple[str, str, tuple[str, ...]], object] = {}
-
-    def go_to_definition(
-        self,
-        *,
-        code: str,
-        path: Path,
-        line: int,
-        column: int,
-        project_root: Path,
-        python_executable: Path,
-        added_sys_path: tuple[Path, ...],
-    ) -> Sequence[RawJediDefinition]:
-        # Jedi 0.20 的默认 fast_parser 会跨 Script 复用可变的 parso module；
-        # 上游明确说明此模式不支持并发 Script/definition 访问。
-        with _JEDI_API_LOCK:
-            try:
-                jedi = import_module("jedi")
-                project_type = jedi.Project
-                script_type = jedi.Script
-            except (AttributeError, ImportError) as error:
-                raise _BackendUnavailableError from error
-            project_key = (
-                str(project_root),
-                str(python_executable),
-                tuple(str(item) for item in added_sys_path),
-            )
-            project = self._projects.get(project_key)
-            if project is None:
-                project = project_type(
-                    path=project_key[0],
-                    environment_path=project_key[1],
-                    load_unsafe_extensions=False,
-                    added_sys_path=list(project_key[2]),
-                    smart_sys_path=False,
-                )
-                self._projects[project_key] = project
-            script = script_type(code=code, path=str(path), project=project)
-            definitions: list[RawJediDefinition] = []
-            for item in script.goto(
-                line=line,
-                column=column,
-                follow_imports=True,
-                follow_builtin_imports=False,
-                only_stubs=False,
-                prefer_stubs=False,
-            ):
-                definitions.append(
-                    RawJediDefinition(
-                        module_path=_optional_path(getattr(item, "module_path", None)),
-                        name=_optional_text(getattr(item, "name", None), 256),
-                        full_name=_optional_text(getattr(item, "full_name", None), 1_024),
-                        kind=_optional_text(getattr(item, "type", None), 128),
-                        line=_optional_non_negative_int(getattr(item, "line", None), minimum=1),
-                        column=_optional_non_negative_int(
-                            getattr(item, "column", None), minimum=0
-                        ),
-                    )
-                )
-            return tuple(definitions)
 
 
 def source_revision(
@@ -525,7 +383,7 @@ def _definition_location(
     root: ReadOnlyRoot,
     path: Path,
     locator: str,
-    raw: RawJediDefinition,
+    raw: RawDefinition,
 ) -> DefinitionLocation | None:
     if (
         not isinstance(raw.line, int)
@@ -534,29 +392,81 @@ def _definition_location(
         or not isinstance(raw.column, int)
         or isinstance(raw.column, bool)
         or raw.column < 0
-        or not isinstance(raw.name, str)
-        or not raw.name
-        or len(raw.name) > 256
-        or not isinstance(raw.kind, str)
-        or not raw.kind
-        or len(raw.kind) > 128
-        or (raw.full_name is not None and len(raw.full_name) > 1_024)
     ):
         return None
     try:
-        revision = hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError:
+        if path.stat().st_size > 1_000_000:
+            return None
+        content = path.read_bytes()
+        source = _decode_python_source(content)
+        lines = source.splitlines()
+        text = lines[raw.line - 1]
+        column = (
+            len(text.encode("utf-16-le")[: raw.column * 2].decode("utf-16-le"))
+            if raw.utf16_column
+            else raw.column
+        )
+        if column > len(text) or (
+            raw.utf16_column and raw.column * 2 > len(text.encode("utf-16-le"))
+        ):
+            return None
+        if raw.name is not None:
+            name, kind, qualname = raw.name, raw.kind, raw.full_name
+        else:
+            name, kind, qualname = _definition_metadata(source, raw.line, column)
+        if raw.name is None and qualname:
+            parts = list(Path(locator).with_suffix("").parts)
+            if parts[-1] == "__init__":
+                parts.pop()
+            if (root.path / "__init__.py").is_file():
+                parts.insert(0, root.path.name)
+            qualname = ".".join((*parts, qualname))
+        if (
+            not name
+            or not kind
+            or len(name) > 256
+            or len(kind) > 128
+            or (qualname and len(qualname) > 1024)
+        ):
+            return None
+        if path.read_bytes() != content:
+            return None
+    except (OSError, SyntaxError, UnicodeError, ValueError, IndexError, RecursionError):
         return None
     return DefinitionLocation(
         root_name=root.name,
         relative_path=locator,
         line=raw.line,
-        column=raw.column,
-        name=raw.name,
-        full_name=raw.full_name,
-        kind=raw.kind,
-        source_revision=revision,
+        column=column,
+        name=name,
+        full_name=qualname,
+        kind=kind,
+        source_revision=hashlib.sha256(content).hexdigest(),
     )
+
+
+def _definition_metadata(
+    source: str, line: int, column: int
+) -> tuple[str | None, str | None, str | None]:
+    """从已准入文件的精确位置取得名称与类型；不另做符号解析。"""
+    text = source.splitlines()[line - 1]
+    match = re.match(r"[^\W\d]\w*", text[column:])
+    if match is None or not match.group().isidentifier():
+        return None, None, None
+    name = match.group()
+    tree = ast.parse(source)
+    scopes: list[ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef] = []
+    kind = "statement"
+    for node in ast.walk(tree):
+        if isinstance(
+            node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+        ) and node.lineno <= line <= (node.end_lineno or node.lineno):
+            scopes.append(node)
+            if node.lineno == line and node.name == name:
+                kind = "class" if isinstance(node, ast.ClassDef) else "function"
+    scopes.sort(key=lambda node: (node.lineno, -(node.end_lineno or node.lineno)))
+    names = [node.name for node in scopes if node.lineno != line or node.name != name]
+    return name, kind, ".".join((*names, name))
 
 
 def _decode_python_source(raw: bytes) -> str:
@@ -578,20 +488,6 @@ def _failure(
     )
 
 
-def _optional_path(value: object) -> Path | None:
-    return Path(value) if isinstance(value, (str, Path)) else None
-
-
-def _optional_text(value: object, maximum: int) -> str | None:
-    return value if isinstance(value, str) and 1 <= len(value) <= maximum else None
-
-
-def _optional_non_negative_int(value: object, *, minimum: int) -> int | None:
-    if isinstance(value, int) and not isinstance(value, bool) and value >= minimum:
-        return value
-    return None
-
-
 def _is_sha256(value: object) -> bool:
     return bool(
         isinstance(value, str)
@@ -601,14 +497,15 @@ def _is_sha256(value: object) -> bool:
 
 
 __all__ = (
+    "DefinitionBackend",
     "DefinitionFailureReason",
     "DefinitionLocation",
     "DefinitionNavigator",
     "GoToDefinitionRequest",
     "GoToDefinitionResult",
-    "JediGoToDefinitionBackend",
+    "NavigationBackendUnavailable",
     "PythonNavigationError",
     "PythonNavigationProfile",
-    "RawJediDefinition",
+    "RawDefinition",
     "source_revision",
 )

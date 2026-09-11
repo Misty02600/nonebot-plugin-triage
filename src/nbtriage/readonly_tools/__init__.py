@@ -1,15 +1,3 @@
-from .jedi_navigation import (
-    DefinitionFailureReason,
-    DefinitionLocation,
-    DefinitionNavigator,
-    GoToDefinitionRequest,
-    GoToDefinitionResult,
-    JediGoToDefinitionBackend,
-    PythonNavigationError,
-    PythonNavigationProfile,
-    RawJediDefinition,
-    source_revision,
-)
 from .models import (
     HARD_DENIED_PATTERNS,
     ReadOnlyPolicyProfile,
@@ -28,21 +16,33 @@ from .pydantic_filesystem import (
     ReadOnlyFileToolsets,
     build_read_only_file_toolsets,
 )
+from .python_navigation import (
+    DefinitionBackend,
+    DefinitionFailureReason,
+    DefinitionLocation,
+    DefinitionNavigator,
+    GoToDefinitionRequest,
+    GoToDefinitionResult,
+    PythonNavigationError,
+    PythonNavigationProfile,
+    RawDefinition,
+    source_revision,
+)
 
 __all__ = (
     "HARD_DENIED_PATTERNS",
     "READ_ONLY_FILE_TOOL_NAMES",
     "TEACHING_TASK_DENIED_PATTERNS",
+    "DefinitionBackend",
     "DefinitionFailureReason",
     "DefinitionLocation",
     "DefinitionNavigator",
     "FileSystemFactory",
     "GoToDefinitionRequest",
     "GoToDefinitionResult",
-    "JediGoToDefinitionBackend",
     "PythonNavigationError",
     "PythonNavigationProfile",
-    "RawJediDefinition",
+    "RawDefinition",
     "ReadOnlyFileSystemError",
     "ReadOnlyFileSystemUnavailableError",
     "ReadOnlyFileToolsets",

@@ -16,6 +16,7 @@ from pydantic_ai.settings import ModelSettings, merge_model_settings
 
 from nbtriage._model_runtime.diagnostics import last_model_response
 from nbtriage._model_runtime.telemetry import current_agent_instrumentation
+from nbtriage._model_runtime.usage import response_model_matches
 from nbtriage.behavior.exploration import (
     BEHAVIOR_PROMPT_ID,
     BehaviorAgentCandidate,
@@ -296,7 +297,11 @@ class PydanticAIBehaviorAgentClient:
             and response.provider_name != self._expected_provider
         ):
             raise BehaviorAgentError("behavior Agent provider identity mismatch")
-        if self._expected_model is not None and response.model_name != self._expected_model:
+        if not response_model_matches(
+            response,
+            expected_provider=self._expected_provider,
+            expected_model=self._expected_model,
+        ):
             raise BehaviorAgentError("behavior Agent model identity mismatch")
         if response.finish_reason not in (None, "stop", "tool_call"):
             raise BehaviorAgentError("behavior Agent did not finish normally")

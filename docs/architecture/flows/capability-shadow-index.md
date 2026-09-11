@@ -27,7 +27,7 @@ disclosure + PlatformScope + analysis_issues + RecordState
                 ↓
 runtime 命令事实 + ast-grep Matcher / 工厂结构 + 内存配置投影
                 ↓ 首包不足时
-批准根只读 glob/search/read + Jedi 转到定义 + 版本限定文档检索
+批准根只读 glob/search/read + 定义导航转到定义 + 版本限定文档检索
                 ↓
 按插件 JSON cache：capability-annotations/<module_name>.json
                 ├─→ plugin_source_revision
@@ -90,10 +90,12 @@ Provider SDK、密钥、网络、任务传输能力或输出校验不可用时�
 `platform_scope` 在上述模型外门禁中完成路由，不进入教学模型 Evidence，也不投影成公开 requirement。
 公开字段中，`role` 只描述调用者本人身份；`access` 只描述用户、群或场景已经取得的、由高权限主体控制的
 脱敏使用资格；没有 Evidence 证明授权者角色时只写“需授权”或“需已开放”。独立 `scene` requirement 必须携带
-完整 `allowed_scenes` 原子集合；原子值为 `private / group / guild / channel_text / channel_category /
-channel_voice`。同一注册表达式内的复合 Permission 合并为一个候选并按 OR 分支解释，每条场景 alternative
-只保存一个原子值。
-Schema 12 中，一个 `permission` 还可使用 `allowed_scenes` 保存 Evidence 已明确证明的共同场景：集合内为
+完整 `allowed_scenes` 条件集合；原子值为 `private / group / guild / channel_text / channel_category /
+channel_voice`。Schema 13 另支持 `non_private` 谓词：排除私聊，不将其展开为当前原子值的枚举，
+也不能按互斥标签与具体场景直接比较。只证明非私聊时不要求追查 Adapter 场景全集；另有群消息依赖等
+更窄条件时必须保留，不用同一 OR 集合中的 `non_private + group` 表达收窄。
+同一注册表达式内的复合 Permission 合并为一个候选并按 OR 分支解释，每条场景 alternative 保存一个场景条件。
+一个 `permission` 还可使用 `allowed_scenes` 保存 Evidence 已明确证明的共同场景：集合内为
 OR，与非空 `alternatives` 为 AND；空集合只表示不附加共同场景，不表示整个 entry 适用所有场景，也不代替
 未知门禁。场景自身构成替代允许路径时仍使用 scene alternative；不把外层可绕过的场景提升成共同条件。
 一个 gate 仍关联一个 permission，其他独立场景 gate 保持独立 requirement，requirements 之间为 AND。
@@ -101,13 +103,16 @@ OR，与非空 `alternatives` 为 AND；空集合只表示不附加共同场景�
 这只是共同场景的表达扩展，不新增通用布尔树或复杂权限的关闭政策。Migut Help 不投影带共同场景的原生
 权限标签、不追加权限文字到最小 description；Answer 保留完整条件。共同场景不会改变仅超级用户分支的
 披露限制，实际鉴权仍由原插件执行。旧 schema 缓存不迁移，新模型合同需重新验证。
+当前没有按教学场景过滤调用者的确定性消费者；不为这个新增值建立通用场景匹配器或权限计算器。
+若以后添加场景过滤，须按谓词含义判断 `non_private`，未知上下文不能仅因不等于 `private` 就当作已知非私聊。
+本次边界见 [ADR-0124](../../adr/0124-express-non-private-teaching-scenes-directly.md)。
 业务数据或其他准备状态进入 `behavior_boundary`。当前 Handler 提到另一条命令的提示文字
 不能单独证明该命令的当前详细用法，必须同时存在目标命令当前的 Runtime 或实现 Evidence。
 
 教学工具不能读取 `.env*`、凭据、数据库、日志、Migut Help 人工 YAML、评测 Gold 或本任务生成的
 help-display。Bot 项目、目标插件及其 LocalStore config/data/cache 是按任务批准的文件根；当前解释器的
 purelib / platlib 和生效的 site-packages / dist-packages 自动作为 Python-only 导航根，无需逐包批准，也不允许在整个依赖环境自由 glob/search。
-Jedi 从已知调用位置唯一定位的直接外部函数可以在 8,000 / 32,000 字符预算内预载一层，但不递归进入依赖
+定义导航从已知调用位置唯一定位的直接外部函数可以在 8,000 / 32,000 字符预算内预载一层，但不递归进入依赖
 BFS；过长或不可切片的唯一定义只生成不可引用的精确 read target，必须再经受控 `read_file` 取得可引用
 Evidence。只有编译扩展的 `.pyi` 签名同样只作为导航事实，不能支持业务行为结论。教学请求把目标插件根稳定命名为
 `target_plugin`，初始源码 locator 与 `target_plugin_*` 工具都使用相对插件包根的路径；`bot_project` 明确只指
@@ -115,17 +120,17 @@ Evidence。只有编译扩展的 `.pyi` 签名同样只作为导航事实，不�
 不应被当作外部目标插件源码的试探入口。
 注册 gate 若先唯一定位到目标插件模块级赋值，首包会在相同预算内保存静态绑定链，并从 RHS 唯一到达的一层
 外部函数取得实现；它不识别特定权限库，也不递归依赖。初始和动态 Python Evidence 为已展示的直接调用、
-装饰器和基类附带请求内位置句柄；模型只用 `python_open_definition(navigation_ref)`，服务端完成 Jedi 跳转、
+装饰器和基类附带请求内位置句柄；模型只用 `python_open_definition(navigation_ref)`，服务端完成定义跳转、
 revision 复核和唯一目标的稳定有界读取，并在同一次调用中返回可引用 Evidence。多个目标只返回候选句柄，
 文件变化或句柄失效时 fail-closed。
 Handler 或本地 helper 的参数若直接写成 `Annotated[..., Depends(provider)]`、默认值
-`parameter: Type = Depends(provider)`，或经 Jedi 唯一定位的插件内类型别名静态展开成前一种形式，provider
+`parameter: Type = Depends(provider)`，或经定义导航唯一定位的插件内类型别名静态展开成前一种形式，provider
 函数也沿同一深度、字符和 revision 边界加入初始 Evidence。`Depends(factory(...))` 只在原调用表达式直接可见、
 factory 是唯一可定位的纯名称或属性链、且参数为空或全部为静态字面量时，把工厂源码和原表达式作为同一
 依赖关系提供；类型别名中的工厂不在未提供别名绑定 Evidence 时单独展开。系统不会执行工厂，动态参数、lambda、
 运行时包装和多候选仍不猜测；
 该导航不根据 provider、参数或局部变量名模型外推断业务语义，也不会因此读取 LocalStore 动态文件。
-Handler 与本地 helper 的普通函数调用只在首包自动展开两层；到达第二层后不再先执行 Jedi 再丢弃结果，
+Handler 与本地 helper 的普通函数调用只在首包自动展开两层；到达第二层后不再先执行定义导航再丢弃结果，
 而是只为已展示调用保留请求内 `navigation_ref`。普通单元可以按需继续打开定义；gate、参数依赖与静态
 family Callable 仍按各自确定性规则闭合，不受普通调用深度缩短影响。
 
@@ -177,6 +182,35 @@ behavior boundary 而从聚合 usage 删除。
 活动真值，切换成功后才提交 Answer 内存视图；缓存、内存 staging、`last-refresh.json` 和未被指针选中的
 generation 都不是 active teaching contract。源码、Evidence、配置值、指纹和审核状态不会进入公开文件。
 当前版本没有草稿或人工审核流程，也没有把该目录接入 Migut Help，所以 YAML 目前只供部署者观察生成效果。
+
+## 教学刷新与部署变更边界
+
+Python 定义导航使用 `ty==0.0.80`。每次 `CapabilityAnnotationService.refresh` 懒启动一个共享进程，
+解析环境一次绑定本轮目标插件源码根与当前解释器导入路径，不由首个单元决定其他插件的解析范围。
+首包准备与模型补证均使用同一会话；完成工作区配置握手后才提交定义查询。正常、失败或取消退出时回收，
+下轮新建，不自动重启。没有查询时不启动；独立诊断调用自行回收。
+`ContentModified` 仅在源码未变时于原时限内最多重发两次，其他错误不重试。路径与 revision 校验仍在
+`readonly_tools/python_navigation.py`，进程协议在 `readonly_tools/ty_navigation.py`。见
+[ADR-0123](../../adr/0123-use-refresh-scoped-ty-definition-navigation.md)。
+
+Triage 是已加载能力的只读分析与教学服务，不是 Python 热重载器。支持的部署流程是：更新插件代码或依赖后
+重启 Bot，待当前插件完成加载，再由启动任务复核缓存或重建注释。未变化也不是无条件复用：Runtime、生成合同、
+配置投影和引用的 Evidence 同样必须满足现有校验。
+
+- 运行中允许通过 `triage 刷新帮助 [plugin_module]` 重新生成当前已加载能力的教学知识。该命令重新采集
+  Runtime snapshot，但不 reload 模块、重新注册 Matcher、安装依赖或重新读取 `.env`。
+- 一轮分析要求已加载对象与磁盘源码属于同一部署版本，并在分析期间保持稳定。只修改文件但不重启，可能使
+  内存继续执行旧 Handler，而源码读取到新实现；文件摘要不能证明二者一致，这种使用方式不在支持范围内。
+  第三方插件热重载、运行中替换依赖和编辑器未保存缓冲区同步也不属于当前兼容承诺。
+- 读取与发布前的 revision 检查是漂移保护，不是持续文件监听或热更新机制。检测到插件源码变化时，作废
+  该插件本轮 staging；引用的依赖 Evidence 失效时，相关候选不得发布。其他未受影响的插件仍按原流程处理。
+  不追着新文件继续同一轮分析，也不把不再有效的旧注释当作当前知识。
+- Triage 不承诺任意磁盘编辑后立即停止全部旧知识服务，也不证明内存代码与磁盘文件永远相同。部署者应在
+  更新并重启完成后重新建立可信教学视图；不以此为由取消现有路径、revision、稳定读取和发布复核。
+
+当前刷新入口见 `CapabilityShadowService.refresh_teaching`，Runtime 来源见 `build_capability_snapshot`；
+源码漂移复核由 `plugin_source_revision_matches` 与 `_final_source_changed_plugins` 执行。此处明确已有职责，
+不新增 watcher、自动重载或代码更新服务。
 
 ## 状态与失败语义
 
@@ -246,7 +280,7 @@ generation 都不是 active teaching contract。源码、Evidence、配置值、
   定义，以及后续稳定源码读取 / 定义导航都可附带相关语义。注册表达式可归属时的 fixed constraint 与这类
   API 文档不同；导入存在不证明该 API 被执行，也不决定自定义 gate 的 AND / OR、场景或业务边界。
   API 文档与源码分开引用，使用同一份现有角色 / 场景映射、去重 ID 和内容 revision；动态引用在复用与发布前
-  重新校验。不新增角色表、任意布尔推导或额外 Jedi 调用，未知 API 仍按源码或既有文档工具补证。
+  重新校验。不新增角色表、任意布尔推导或额外定义导航调用，未知 API 仍按源码或既有文档工具补证。
 - 请求内 Evidence 统一登记：初始与动态材料同 ID 且全部字段一致时复用，字段不同则拒绝身份冲突；
   工具可以再次返回初始事实供引用，但输出只携带真正新增的 Evidence，不重复登记或静默覆盖初始事实。
 - `gate_candidate_ids` 只关联静态层已经发现并解释为 constraint 的候选；Handler/helper Evidence 直接证明的

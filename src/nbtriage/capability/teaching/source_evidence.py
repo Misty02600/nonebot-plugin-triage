@@ -746,6 +746,26 @@ def _registration_call(
     return None, None, False
 
 
+def registration_source_at(source: str, locator: str, line: int) -> SourceSpan | None:
+    """按已知 Runtime 行号定位唯一注册调用，不收集其他注册或推断工厂执行。"""
+    tree = SgRoot(source, "python").root()
+    candidates = [
+        node
+        for node in tree.find_all(kind="call")
+        if node.range().start.line + 1 <= line <= node.range().end.line + 1
+        and _registration_factory(tree, node) is not None
+    ]
+    if len(candidates) != 1:
+        return None
+    call = candidates[0]
+    return SourceSpan(
+        locator=locator,
+        line=call.range().start.line + 1,
+        end_line=call.range().end.line + 1,
+        digest=hashlib.sha256(call.text().encode("utf-8")).hexdigest(),
+    )
+
+
 def _registration_factory(
     tree: SgNode,
     call: SgNode,
@@ -1746,4 +1766,5 @@ __all__ = (
     "build_capability_source_evidence",
     "fixed_permission_constraints",
     "permission_fact_alternatives",
+    "registration_source_at",
 )

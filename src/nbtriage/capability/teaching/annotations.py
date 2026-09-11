@@ -6,6 +6,7 @@ import re
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
+from functools import cache
 from typing import Any
 
 from nbtriage.capability.teaching.analysis import (
@@ -31,20 +32,21 @@ from nbtriage.capability.teaching.usage import (
     MAX_PUBLIC_USAGES,
     CapabilityUsageExpressionError,
     group_literal_expression_for_usage,
+    split_reply_usage,
     usage_command_body_pattern,
     validate_usage_selector,
 )
 
-CAPABILITY_ANNOTATION_SCHEMA_VERSION = 12
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v102-zh"
-CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v65"
+CAPABILITY_ANNOTATION_SCHEMA_VERSION = 13
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v114-zh"
+CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v81"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
 )
 CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT = 192_000
 CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
-    "background-unit-10req-7read-navigation-tools-160line-"
+    "background-unit-10req-10read-navigation-tools-160line-"
     "192k-reserve-finalize-32768out-0.05usd-schema12"
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -887,8 +889,11 @@ def validate_capability_usage_pattern(
 ) -> str:
     """验证完整、可直接展示的教学用法。"""
     normalized = _usage_pattern(value)
-    if "[回复" in normalized and not normalized.startswith("[回复"):
+    reply, body = split_reply_usage(normalized)
+    if re.search(r"[<\[]回复", body):
         raise CapabilityAnnotationError("reply context must precede the command")
+    if reply and body.startswith("..."):
+        raise CapabilityAnnotationError("reply context cannot be repeated")
     if any(
         marker in normalized
         for marker in (" 后发送", "然后发送", "再发送", "随后发送", " 后回复", "然后回复", "再回复")
@@ -923,43 +928,94 @@ _STRUCTURAL_USAGE_SLOT = re.compile(r"(?P<opening><|\[)slot:(?P<index>\d+)(?P<cl
 _PUBLIC_USAGE_SLOT = r"[^<>\[\](){}\r\n]*"
 
 
-def validate_capability_usage_template(value: str, template: str) -> str:
-    """验证公开槽位命名没有改变 Parser 拥有的调用结构。"""
+def validate_capability_usage_template(
+    value: str, template: str, *, allow_reply_context: bool = False
+) -> str:
+    """严格匹配标准用法，或为有证据支持的回复用法唯一对齐参数槽位。
+
+    Args:
+        value: 模型生成的公开用法。
+        template: Parser 提供的结构模板。
+        allow_reply_context: 允许前置回复上下文及普通参数省略。可选回复只能省略可选槽位；
+            必需回复还可替代必填槽位。嵌套在 Option/分支中的槽位不能省略。
+            不用于验证完整标准用法，也不证明回复语义本身有源码支持。
+    """
+    return _align_capability_usage_template(
+        value, template, allow_reply_context=allow_reply_context
+    )[0]
+
+
+def _align_capability_usage_template(
+    value: str, template: str, *, allow_reply_context: bool = False
+) -> tuple[str, dict[str, str]]:
+    _public_text(template, "canonical usage")
     normalized = validate_capability_usage_pattern(value)
+    reply, command_usage = (
+        split_reply_usage(normalized) if allow_reply_context else (None, normalized)
+    )
     normalized_template = validate_capability_usage_pattern(template)
     markers = tuple(_STRUCTURAL_USAGE_SLOT.finditer(normalized_template))
     if not markers:
-        if normalized != normalized_template:
+        if command_usage != normalized_template:
             raise CapabilityAnnotationError(
                 "usage must match the parser-provided structural template"
             )
-        return normalized
+        return normalized, {}
 
-    pattern_parts: list[str] = []
+    parts: list[tuple[str, re.Pattern[str], str | None]] = []
     cursor = 0
-    groups: set[str] = set()
+    depth = 0
     for marker in markers:
-        pattern_parts.append(re.escape(normalized_template[cursor : marker.start()]))
+        literal = normalized_template[cursor : marker.start()]
+        depth += literal.count("[") + literal.count("(") - literal.count("]") - literal.count(")")
         opening = marker.group("opening")
         closing = marker.group("closing")
         if (opening, closing) not in {("<", ">"), ("[", "]")}:
             raise CapabilityAnnotationError("canonical usage contains an invalid structural slot")
-        group = f"slot_{marker.group('index')}"
-        pattern_parts.append(re.escape(opening))
-        if group in groups:
-            pattern_parts.append(rf"(?P={group})")
-        else:
-            pattern_parts.append(rf"(?P<{group}>{_PUBLIC_USAGE_SLOT})")
-            groups.add(group)
-        pattern_parts.append(re.escape(closing))
+        slot_pattern = re.escape(opening) + f"({_PUBLIC_USAGE_SLOT})" + re.escape(closing)
         cursor = marker.end()
-    pattern_parts.append(re.escape(normalized_template[cursor:]))
-    match = re.fullmatch("".join(pattern_parts), normalized)
-    if match is None:
+        if normalized_template.startswith("...", cursor):
+            slot_pattern += re.escape("...")
+            cursor += 3
+        omit_literal = None
+        if reply and depth == 0 and (opening == "[" or reply.startswith("<")):
+            omit_literal = literal.removesuffix(" ")
+        parts.append((literal, re.compile(slot_pattern), omit_literal))
+    tail = normalized_template[cursor:]
+
+    # 缓存仅限本次模板对齐；保留两条路径就足以判定歧义，不枚举全部省略组合。
+    @cache
+    def align(index: int, offset: int) -> tuple[tuple[str | None, ...], ...]:
+        if index == len(parts):
+            return ((),) if command_usage[offset:] == tail else ()
+        literal, slot_pattern, omit_literal = parts[index]
+        found: list[tuple[str | None, ...]] = []
+        if command_usage.startswith(literal, offset):
+            match = slot_pattern.match(command_usage, offset + len(literal))
+            if match:
+                found.extend((match.group(1), *rest) for rest in align(index + 1, match.end()))
+        if (
+            len(found) < 2
+            and omit_literal is not None
+            and command_usage.startswith(omit_literal, offset)
+        ):
+            found.extend((None, *rest) for rest in align(index + 1, offset + len(omit_literal)))
+        return tuple(found[:2])
+
+    matches = align(0, 0)
+    if not matches:
         raise CapabilityAnnotationError(
             "usage must preserve the parser-provided structure while naming every slot"
         )
-    for name in match.groupdict().values():
+    if len(matches) != 1:
+        raise CapabilityAnnotationError(
+            "reply usage has ambiguous parser slot alignment; retain the standard usage "
+            "and omit the uncertain reply variant"
+        )
+    names: dict[str, str] = {}
+    for marker, name in zip(markers, matches[0], strict=True):
+        if name is None:
+            continue
         if not 1 <= len(name) <= 40 or name != name.strip():
             raise CapabilityAnnotationError(
                 "参数槽位名称须为 1 至 40 个字符且首尾无空白；"
@@ -967,7 +1023,11 @@ def validate_capability_usage_template(value: str, template: str) -> str:
             )
         if re.fullmatch(r"slot:\d+", name):
             raise CapabilityAnnotationError("usage must replace every internal slot identifier")
-    return normalized
+        index = marker.group("index")
+        if index in names and names[index] != name:
+            raise CapabilityAnnotationError("repeated parser slot must keep the same public name")
+        names[index] = name
+    return normalized, names
 
 
 _GENERIC_INPUT_SLOTS = frozenset(
@@ -990,9 +1050,10 @@ _GENERIC_INPUT_SLOTS = frozenset(
 def validate_complete_aggregate_usage(value: str) -> str:
     """验证参数化工厂用法包含独立于普通输入的成员选择位。"""
     normalized = validate_capability_usage_pattern(value)
-    if re.search(r"\([^()]*\|[^()]*\)", normalized):
+    _reply, body = split_reply_usage(normalized)
+    if re.search(r"\([^()]*\|[^()]*\)", body):
         return normalized
-    slots = {item.strip() for item in re.findall(r"<([^<>]+)>", normalized)}
+    slots = {item.strip() for item in re.findall(r"<([^<>]+)>", body)}
     if slots.difference(_GENERIC_INPUT_SLOTS):
         return normalized
     raise CapabilityAnnotationError("complete aggregate usage requires a member selector")
@@ -1019,7 +1080,7 @@ def _validated_usage(
     if target.canonical_usages:
         for template in target.canonical_usages:
             try:
-                validate_capability_usage_template(normalized, template)
+                validate_capability_usage_template(normalized, template, allow_reply_context=True)
             except CapabilityAnnotationError:
                 continue
             break
@@ -1116,7 +1177,7 @@ def _reject_alias_as_shortcut(
     usage: str,
     target: CapabilityInvocationTarget,
 ) -> None:
-    candidate = usage.removeprefix("@bot ")
+    candidate = split_reply_usage(usage)[1].removeprefix("@bot ")
     if any(re.match(usage_command_body_pattern(alias), candidate) for alias in target.aliases):
         raise CapabilityAnnotationError(
             "Runtime aliases inherit the canonical parser structure and cannot be published "

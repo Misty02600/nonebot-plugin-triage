@@ -54,6 +54,9 @@
 
 ## 替代关系
 
+- “仅允许原子场景、禁止 non_private”的边界被 [ADR-0124](../0124-express-non-private-teaching-scenes-directly.md)
+  部分替代；其余集合结构与职责边界保留。
+
 - 替代 [ADR-0113](../0113-separate-routing-authorization-and-business-readiness-in-teaching.md) 第 6 项中的单值
   scene 元数据；其 platform、access 与业务准备状态边界继续有效。
 - 细化 [ADR-0108](0108-preserve-permission-disjunctions-in-teaching-requirements.md) 的 scene alternative，明确

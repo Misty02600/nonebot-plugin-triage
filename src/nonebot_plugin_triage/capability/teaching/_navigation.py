@@ -6,19 +6,23 @@ import json
 import sys
 import textwrap
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from itertools import chain
 from pathlib import Path
 from types import ModuleType
 
+from nbtriage.capability.catalog.records import EvidenceRef
 from nbtriage.capability.teaching.analysis import CapabilityEvidenceUnit
 from nbtriage.capability.teaching.source_evidence import (
     CapabilitySourceEvidencePack,
     RegistrationAnchor,
     SourceSpan,
+    registration_source_at,
 )
 from nbtriage.readonly_tools import (
+    DefinitionFailureReason,
     DefinitionLocation,
     DefinitionNavigator,
     GoToDefinitionRequest,
@@ -381,7 +385,7 @@ def _external_definition_mode(
     relative_path = definition.relative_path.casefold()
     if definition.column not in {4, 10}:
         return None
-    # Jedi 的 column 指向函数名；模块顶层 def / async def 分别固定从第 4 / 10 列开始。
+    # 导航 column 指向函数名；模块顶层 def / async def 分别固定从第 4 / 10 列开始。
     # 类方法和嵌套函数保留给按需导航，避免首包展开通用框架方法。
     if relative_path.endswith(".py"):
         return _ExternalDefinitionMode.SOURCE
@@ -555,11 +559,57 @@ def _registration_gate_call_sites(
 ) -> tuple[_CallSite, ...]:
     if not registrations or not gate_names:
         return ()
+    calls: dict[tuple[str, int, int], _CallSite] = {}
+    for parsed, current_source, registration_call, revision in _registration_source_calls(
+        module_root, source_root, parsed_modules, registrations, source_file_revisions
+    ):
+        path = _resolved_python_file(parsed.module)
+        if path is None:
+            continue
+        try:
+            relative_path = path.relative_to(navigation.root.path).as_posix()
+        except ValueError:
+            continue
+        for keyword_argument in registration_call.keywords:
+            if keyword_argument.arg not in {"permission", "rule"}:
+                continue
+            for node in ast.walk(keyword_argument.value):
+                target: ast.Name | ast.Attribute | None = None
+                if isinstance(node, ast.Call):
+                    target = node.func if isinstance(node.func, ast.Name | ast.Attribute) else None
+                elif isinstance(node, ast.Name | ast.Attribute):
+                    target = node
+                if target is None:
+                    continue
+                terminal_name = _expression_terminal_name(target)
+                if terminal_name not in gate_names:
+                    continue
+                call = _navigation_call_site(
+                    relative_path,
+                    current_source,
+                    revision,
+                    target,
+                )
+                if call is not None:
+                    calls.setdefault((call.relative_path, call.line, call.column), call)
+    return tuple(calls[key] for key in sorted(calls))
+
+
+def _registration_source_calls(
+    module_root: str,
+    source_root: tuple[Path, bool],
+    parsed_modules: Mapping[str, _ParsedModule],
+    registrations: tuple[RegistrationAnchor, ...],
+    source_file_revisions: Mapping[str, str],
+) -> Iterator[tuple[_ParsedModule, str, ast.Call, str]]:
+    if not registrations:
+        return
     available_modules = list(parsed_modules.values())
     required_locators = {item.source.locator for item in registrations}
     known_module_names = {item.module.__name__ for item in available_modules}
+    known_locators = {item.locator for item in available_modules}
     for module_name in sorted(sys.modules):
-        if len(available_modules) >= _MAX_MODULES:
+        if required_locators <= known_locators or len(available_modules) >= _MAX_MODULES:
             break
         if module_name in known_module_names or not _module_belongs_to_plugin(
             module_name, module_root
@@ -570,22 +620,21 @@ def _registration_gate_call_sites(
             continue
         available_modules.append(parsed)
         known_module_names.add(module_name)
+        known_locators.add(parsed.locator)
 
     parsed_by_locator: dict[str, list[_ParsedModule]] = {}
     for parsed in available_modules:
         parsed_by_locator.setdefault(parsed.locator, []).append(parsed)
 
-    calls: dict[tuple[str, int, int], _CallSite] = {}
     for registration in registrations:
         candidates = parsed_by_locator.get(registration.source.locator, [])
         if len(candidates) != 1:
             continue
         parsed = candidates[0]
         path = _resolved_python_file(parsed.module)
-        if path is None:
+        if path is None or not _path_belongs_to_source_root(path, source_root):
             continue
         try:
-            relative_path = path.relative_to(navigation.root.path).as_posix()
             raw = path.read_bytes()
         except (OSError, ValueError):
             continue
@@ -613,29 +662,117 @@ def _registration_gate_call_sites(
         )
         if len(registration_calls) != 1:
             continue
-        for keyword_argument in registration_calls[0].keywords:
-            if keyword_argument.arg not in {"permission", "rule"}:
-                continue
-            for node in ast.walk(keyword_argument.value):
-                target: ast.Name | ast.Attribute | None = None
-                if isinstance(node, ast.Call):
-                    target = node.func if isinstance(node.func, ast.Name | ast.Attribute) else None
-                elif isinstance(node, ast.Name | ast.Attribute):
-                    target = node
-                if target is None:
-                    continue
-                terminal_name = _expression_terminal_name(target)
-                if terminal_name not in gate_names:
-                    continue
-                call = _navigation_call_site(
-                    relative_path,
-                    current_source,
-                    revision,
-                    target,
-                )
-                if call is not None:
-                    calls.setdefault((call.relative_path, call.line, call.column), call)
-    return tuple(calls[key] for key in sorted(calls))
+        yield parsed, current_source, registration_calls[0], revision
+
+
+def _append_registration_source_evidence(
+    evidence_units: list[CapabilityEvidenceUnit],
+    *,
+    analysis_unit_id: str,
+    module_root: str,
+    source_root: tuple[Path, bool],
+    parsed_modules: Mapping[str, _ParsedModule],
+    registrations: tuple[RegistrationAnchor, ...],
+    source_file_revisions: Mapping[str, str],
+    source_chars: int,
+    runtime_sources: tuple[EvidenceRef, ...] = (),
+) -> int:
+    """独立保留已定位的注册调用；沿用源码预算，不自动展开其引用定义。"""
+    seen = {item.evidence_id for item in evidence_units}
+    for parsed, source, call, revision in chain(
+        _registration_source_calls(
+            module_root, source_root, parsed_modules, registrations, source_file_revisions
+        ),
+        _runtime_registration_source_calls(
+            module_root, source_root, parsed_modules, runtime_sources, source_file_revisions
+        ),
+    ):
+        content = ast.get_source_segment(source, call)
+        if not content or len(content) > _MAX_FUNCTION_CHARS:
+            continue
+        if source_chars + len(content) > _MAX_INITIAL_SOURCE_CHARS:
+            continue
+        evidence_id = _evidence_id(
+            analysis_unit_id,
+            parsed.module.__name__,
+            f"registration@{call.lineno}:{call.col_offset}-{call.end_lineno}:{call.end_col_offset}",
+        )
+        if evidence_id in seen:
+            continue
+        evidence_units.append(
+            CapabilityEvidenceUnit(
+                evidence_id=evidence_id,
+                source_kind="python_registration",
+                content=content,
+                revision=f"sha256:{revision}",
+                locator=_target_plugin_locator(parsed.locator, "registration", call.lineno),
+            )
+        )
+        seen.add(evidence_id)
+        source_chars += len(content)
+    return source_chars
+
+
+def _runtime_registration_source_calls(
+    module_root: str,
+    source_root: tuple[Path, bool],
+    parsed_modules: Mapping[str, _ParsedModule],
+    runtime_sources: tuple[EvidenceRef, ...],
+    source_file_revisions: Mapping[str, str],
+) -> Iterator[tuple[_ParsedModule, str, ast.Call, str]]:
+    seen: set[tuple[str, int, str]] = set()
+    for reference in runtime_sources:
+        module_name = reference.payload.get("module_name")
+        line = reference.payload.get("line")
+        if (
+            reference.kind != "matcher_source"
+            or not isinstance(module_name, str)
+            or not _module_belongs_to_plugin(module_name, module_root)
+            or not isinstance(line, int)
+            or isinstance(line, bool)
+            or line < 1
+            or reference.content_hash is None
+        ):
+            continue
+        key = (module_name, line, reference.content_hash)
+        if key in seen:
+            continue
+        seen.add(key)
+        parsed = parsed_modules.get(module_name) or _load_parsed_module(
+            module_name, module_root, source_root
+        )
+        if parsed is None:
+            continue
+        path = _resolved_python_file(parsed.module)
+        if path is None or not _path_belongs_to_source_root(path, source_root):
+            continue
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        revision = hashlib.sha256(raw).hexdigest()
+        if (
+            reference.content_hash != revision
+            or source_file_revisions.get(parsed.locator) != revision
+            or _normalized_source_revision(raw) != parsed.revision
+        ):
+            raise CapabilityAnalysisAdapterError(
+                "plugin source changed during analysis preparation"
+            )
+        source = raw.decode("utf-8")
+        span = registration_source_at(source, parsed.locator, line)
+        if span is None:
+            continue
+        calls = [
+            node
+            for node in ast.walk(parsed.tree)
+            if isinstance(node, ast.Call)
+            and node.lineno == span.line
+            and node.end_lineno == span.end_line
+            and _ast_source_digest(source, node) == span.digest
+        ]
+        if len(calls) == 1:
+            yield parsed, source, calls[0], revision
 
 
 def _call_terminal_name(node: ast.Call) -> str | None:
@@ -750,6 +887,12 @@ def _cached_unique_definition(
         )
     except PythonNavigationError:
         store[key] = None
+        return None
+    if result.failure in {
+        DefinitionFailureReason.BACKEND_UNAVAILABLE,
+        DefinitionFailureReason.BACKEND_FAILED,
+    }:
+        # 暂时的进程失败不是“没有定义”；下轮新会话应能重新查询。
         return None
     unique_definitions = {
         (item.root_name, item.relative_path, item.line, item.column): item

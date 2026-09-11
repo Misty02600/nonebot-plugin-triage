@@ -75,8 +75,14 @@ def _annotation(summary: str) -> CapabilityTeachingAnnotation:
     )
 
 
+@pytest.mark.parametrize(
+    ("scene", "scene_text"),
+    [(TeachingScene.GROUP, "群聊"), (TeachingScene.NON_PRIVATE, "非私聊场景")],
+)
 def test_writer_activates_help_and_answer_files_with_one_generation_pointer(
     tmp_path: Path,
+    scene: TeachingScene,
+    scene_text: str,
 ) -> None:
     record = _record()
     annotation = _annotation("搜索图片出处。")
@@ -85,8 +91,8 @@ def test_writer_activates_help_and_answer_files_with_one_generation_pointer(
         requirements=(
             CapabilityTeachingRequirement(
                 kind=SemanticConstraintKind.PERMISSION,
-                text="仅群聊中具有使用资格的成员可用",
-                allowed_scenes=(TeachingScene.GROUP,),
+                text=f"仅{scene_text}中具有使用资格的成员可用",
+                allowed_scenes=(scene,),
                 alternatives=(
                     CapabilityTeachingPermissionAlternative(
                         kind=SemanticConstraintKind.ACCESS,
@@ -103,8 +109,8 @@ def test_writer_activates_help_and_answer_files_with_one_generation_pointer(
         requirements=(
             CapabilityTeachingRequirement(
                 kind=SemanticConstraintKind.PERMISSION,
-                text="仅群聊中的超级用户可用。",
-                allowed_scenes=(TeachingScene.GROUP,),
+                text=f"仅{scene_text}中的超级用户可用。",
+                allowed_scenes=(scene,),
                 alternatives=(
                     CapabilityTeachingPermissionAlternative(
                         kind=SemanticConstraintKind.ROLE,
@@ -130,8 +136,8 @@ def test_writer_activates_help_and_answer_files_with_one_generation_pointer(
     assert set(paths) == {help_path, answer_path}
     assert "搜图 [图片]" in help_path.read_text(encoding="utf-8")
     assert "搜索图片出处" in answer_path.read_text(encoding="utf-8")
-    assert "仅群聊中具有使用资格的成员可用" in answer_path.read_text(encoding="utf-8")
-    assert "仅群聊中具有使用资格的成员可用" not in help_path.read_text(encoding="utf-8")
+    assert f"仅{scene_text}中具有使用资格的成员可用" in answer_path.read_text(encoding="utf-8")
+    assert f"仅{scene_text}中具有使用资格的成员可用" not in help_path.read_text(encoding="utf-8")
     assert "受限维护说明" not in help_path.read_text(encoding="utf-8")
     assert "受限维护说明" not in answer_path.read_text(encoding="utf-8")
     assert private_entry in annotation.entries

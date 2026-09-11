@@ -48,6 +48,7 @@ from nbtriage._model_runtime.telemetry import (
     current_agent_instrumentation,
     record_agent_response_shape,
 )
+from nbtriage._model_runtime.usage import response_model_matches
 from nbtriage.capability.teaching._prompt import (
     ANCHORED_INSTRUCTION as ANCHORED_INSTRUCTION,
 )
@@ -102,6 +103,7 @@ from nbtriage.capability.teaching.usage import (
     CapabilityUsageExpressionError,
     deterministic_usage_selector,
     group_literal_expression_for_usage,
+    split_reply_usage,
     usage_command_body_pattern,
     validate_usage_selector,
 )
@@ -477,6 +479,7 @@ def _family_parser_input_categories(request: CapabilityAnalysisRequest) -> froze
 
 
 def _family_usage_input_slots(value: str) -> tuple[str, ...]:
+    _reply, value = split_reply_usage(value)
     slots = [
         (match.group(1), match.group(2))
         for match in re.finditer(r"<([^<>]+)>|\[([^\[\]]+)\]", value)
@@ -502,11 +505,12 @@ def _family_usage_input_slots(value: str) -> tuple[str, ...]:
 def _complete_family_usage_category_error(
     entry: _AnalysisEntryOutput,
     request: CapabilityAnalysisRequest,
+    *,
+    usage: str,
 ) -> str | None:
     parser_categories = _family_parser_input_categories(request)
     if not parser_categories:
         return None
-    usage = next(claim.statement for claim in entry.claims if claim.kind == "usage")
     slots = _family_usage_input_slots(usage)
     image_slots = tuple(slot for slot in slots if any(term in slot for term in _FAMILY_IMAGE_TERMS))
     mention_slots = tuple(slot for slot in slots if "@" in slot)
@@ -565,7 +569,7 @@ class _PermissionAlternativeOutput(_StrictModel):
         Field(
             description=(
                 "同一 NoneBot Permission 中的一条 OR 分支，与其余 alternatives 为 OR，"
-                "与父 permission 的非空 allowed_scenes 为 AND；scene=私聊、群聊或频道类场景；"
+                "与父 permission 的非空 allowed_scenes 为 AND；scene=会话场景条件；"
                 "role=能力入口直接检查的当前调用者角色；access=能力入口查询的可配置权限、"
                 "ACL、名单或开放资格。只按入口实际判断分类；权限系统内部把某个角色预先授予"
                 "一项资格，不得反向展开成该能力的 role 分支。"
@@ -577,6 +581,7 @@ class _PermissionAlternativeOutput(_StrictModel):
     scene: Annotated[
         Literal[
             "private",
+            "non_private",
             "group",
             "guild",
             "channel_text",
@@ -586,9 +591,10 @@ class _PermissionAlternativeOutput(_StrictModel):
         | None,
         Field(
             description=(
-                "这一条 Permission OR 分支允许的单一会话场景：private=私聊，group=群聊，"
+                "这一条 Permission OR 分支的会话场景条件：private=私聊，group=群聊，"
                 "guild=频道，channel_text=频道文字，channel_category=频道分类，"
-                "channel_voice=频道语音。"
+                "channel_voice=频道语音；non_private=非私聊，不要求枚举其他场景，"
+                "不替代其他独立限制。只有非私聊本身构成允许分支时才填入此处。"
             )
         ),
     ] = None
@@ -617,7 +623,7 @@ class _ConstraintOutput(_StrictModel):
                 "影响能力能否执行的公开前提：permission=一个 Permission 的 OR 分支组，"
                 "可用 allowed_scenes 附加全部允许路径共同要求的场景；"
                 "scene/role/access 仅用于非 Permission 的前提，其中 scene 用 allowed_scenes "
-                "完整列出全部允许的原子会话场景，role 是调用者身份，"
+                "完整表达允许的会话场景条件，role 是调用者身份，"
                 "access 是可配置权限、名单或开放资格。按能力入口实际执行的判断分类，"
                 "不得把权限系统内部对角色的预授权反向写成 role；只保留 Evidence 支持的资格事实，"
                 "不补充未证明的主体、原因或控制方式；业务准备状态属于 behavior_boundary，"
@@ -635,6 +641,7 @@ class _ConstraintOutput(_StrictModel):
         list[
             Literal[
                 "private",
+                "non_private",
                 "group",
                 "guild",
                 "channel_text",
@@ -643,14 +650,16 @@ class _ConstraintOutput(_StrictModel):
             ]
         ],
         Field(
-            max_length=6,
+            max_length=7,
             description=(
                 "scene constraint 的完整允许场景，或 permission 全部允许路径共同要求的场景集合；"
                 "集合内部为 OR，与 permission_alternatives 为 AND。permission 中为空表示不附加"
                 "共同场景条件，不表示 entry 适用所有场景，也不代替未知条件。"
                 "private=私聊，group=群聊，"
                 "guild=频道，channel_text=频道文字，channel_category=频道分类，"
-                "channel_voice=频道语音。必须与 statement 的允许范围一致。"
+                "channel_voice=频道语音；non_private=非私聊，不是互斥原子类型。"
+                "只证明排除私聊时直接使用 non_private，不必枚举其余场景；"
+                "另有仅群聊等更窄条件时不得用它扩大范围。必须与 statement 的允许范围一致。"
             ),
         ),
     ] = []
@@ -917,7 +926,7 @@ class PydanticAICapabilityAnalysisClient:
         expected_model: str | None = None,
         tool_runtime_factory: CapabilityAnalysisToolRuntimeFactory | None = None,
         max_requests: int = 10,
-        max_tool_calls: int = 7,
+        max_tool_calls: int = 10,
         total_tokens_limit: int = CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT,
         cost_limit_usd: Decimal = Decimal("0.05"),
         capture_diagnostics: bool = False,
@@ -1332,7 +1341,11 @@ class PydanticAICapabilityAnalysisClient:
                 "capability model response provider identity mismatch",
                 reason_code=CapabilityModelAdapterReason.PROVIDER_IDENTITY,
             )
-        if self._expected_model is not None and response.model_name != self._expected_model:
+        if not response_model_matches(
+            response,
+            expected_provider=self._expected_provider,
+            expected_model=self._expected_model,
+        ):
             raise CapabilityModelAdapterError(
                 "capability model response model identity mismatch",
                 reason_code=CapabilityModelAdapterReason.PROVIDER_IDENTITY,
@@ -1384,30 +1397,42 @@ def _validate_entry_usages(
 ) -> list[str]:
     usage_claims = [claim for claim in entry.claims if claim.kind == "usage"]
     usages = [claim.statement for claim in usage_claims]
-    if target.mode is CapabilityInvocationMode.COMPLETE and len(usages) != 1:
-        raise CapabilityAnnotationError("complete invocation requires exactly one aggregate usage")
-    if target.mode is not CapabilityInvocationMode.COMPLETE and len(usages) > MAX_PUBLIC_USAGES:
+    if len(usages) > MAX_PUBLIC_USAGES:
         raise CapabilityAnnotationError(
             "teaching entry allows at most three usages; larger fixed "
             "alternatives must be merged without changing their structure"
         )
+    standard_usage_indexes: set[int] = set()
+    reply_usage_indexes: set[int] = set()
     if target.mode is CapabilityInvocationMode.COMPLETE:
-        validate_complete_aggregate_usage(usages[0])
-        category_error = _complete_family_usage_category_error(entry, request)
+        contexts = [split_reply_usage(usage)[0] for usage in usages]
+        standard_usage_indexes = {
+            index for index, context in enumerate(contexts) if context is None
+        }
+        if not standard_usage_indexes:
+            standard_usage_indexes = {
+                index
+                for index, context in enumerate(contexts)
+                if context and context.startswith("[")
+            }
+        if len(standard_usage_indexes) != 1:
+            raise CapabilityAnnotationError(
+                "complete invocation requires exactly one standard aggregate usage; "
+                "additional usages must be reply variants"
+            )
+        reply_usage_indexes = set(range(len(usages))) - standard_usage_indexes
+        for usage in usages:
+            validate_complete_aggregate_usage(usage)
+            if _complete_usage_embeds_distinct_invocations(usage):
+                raise CapabilityAnnotationError(
+                    "参数化聚合的圆括号只能枚举简短成员值；"
+                    "请保留共同成员选择位，不得借回复变体逐成员列举命令"
+                )
+        standard_usage = usages[next(iter(standard_usage_indexes))]
+        category_error = _complete_family_usage_category_error(entry, request, usage=standard_usage)
         if category_error is not None:
             raise CapabilityAnnotationError(category_error)
-    if (
-        target.mode is CapabilityInvocationMode.COMPLETE
-        and _complete_usage_embeds_distinct_invocations(usages[0])
-    ):
-        raise CapabilityAnnotationError(
-            "参数化聚合的圆括号只能枚举简短成员值；"
-            "请先改为 Evidence 支持的一条真实共同用法；"
-            "只有无法形成共同用法时才关闭整个知识"
-        )
-    standard_usage_indexes: set[int] = set()
-    if target.mode in {
-        CapabilityInvocationMode.COMPLETE,
+    elif target.mode in {
         CapabilityInvocationMode.REGEX,
         CapabilityInvocationMode.KEYWORD,
     }:
@@ -1452,7 +1477,31 @@ def _validate_entry_usages(
                 f"entry_id={entry.entry_id}, field=usage, "
                 f"command_body={target.command_body!r}, submitted_usages={usages!r}"
             )
-    shortcut_usage_indexes = set(range(len(usages))) - standard_usage_indexes
+    for index, usage in enumerate(usages):
+        if (
+            index in standard_usage_indexes
+            or index in reply_usage_indexes
+            or not split_reply_usage(usage)[0]
+        ):
+            continue
+        reply_errors: list[str] = []
+        for template in target.canonical_usages:
+            try:
+                validate_capability_usage_template(usage, template, allow_reply_context=True)
+            except CapabilityAnnotationError as error:
+                reply_errors.append(str(error))
+                continue
+            reply_usage_indexes.add(index)
+            break
+        else:
+            if target.canonical_usages:
+                raise CapabilityAnnotationError(
+                    "reply usage must uniquely align with parser slots and preserve commands, "
+                    "options and retained slot structure; only a required reply context may "
+                    "supply required positional slots. Omit uncertain reply variants, not the "
+                    f"standard usage; details={'; '.join(reply_errors)}"
+                )
+    shortcut_usage_indexes = set(range(len(usages))) - standard_usage_indexes - reply_usage_indexes
     if shortcut_usage_indexes:
         if len(shortcut_usage_indexes) > target.shortcut_count:
             raise CapabilityAnnotationError("shortcut usages exceed the registered shortcut count")

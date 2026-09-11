@@ -39,7 +39,10 @@ from nbtriage.capability.teaching.annotations import (
     _validated_usage,
     capability_analysis_fingerprint,
 )
-from nbtriage.capability.teaching.source_evidence import build_capability_source_evidence
+from nbtriage.capability.teaching.source_evidence import (
+    build_capability_source_evidence,
+    registration_source_at,
+)
 from nbtriage.readonly_tools import (
     ReadOnlyRoot,
 )
@@ -1601,24 +1604,58 @@ second_handler = _
     assert [item["matcher_names"] for item in second_structure["handlers"]] == [["second"]]
 
 
+@pytest.mark.parametrize("nested_registration", [False, True])
 def test_parameterized_family_is_one_complete_usage_analysis_unit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    nested_registration: bool,
 ) -> None:
-    module = _loaded_module(
-        tmp_path,
-        monkeypatch,
+    source = """\
+class InputExtension:
+    pass
+
+def on_command(*args, **kwargs):
+    return object()
+
+"""
+    source += (
         """\
+def create_handler(command):
+    matcher = on_command(
+        command, extensions=[InputExtension()]
+    )
+    async def handler():
+        return command
+    return handler
+"""
+        if nested_registration
+        else """\
 def create_handler(command):
     async def handler():
         return command
     return handler
-
+"""
+    )
+    source += """\
 first = create_handler("摸摸")
 second = create_handler("亲亲")
-""",
+"""
+    if not nested_registration:
+        source += """\
+matcher = on_command(
+    "摸摸", aliases={"亲亲"}, handlers=[first, second], extensions=[InputExtension()]
+)
+"""
+    module = _loaded_module(tmp_path, monkeypatch, source)
+    registration_line = next(
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "on_command"
     )
-    reference = _handler_reference(module, "first", 2)
+    source_hash = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+    reference = _handler_reference(module, "first", module.first.__code__.co_firstlineno)
     reference["closure_freevars"] = ["command"]
     records = (
         _record(
@@ -1637,6 +1674,23 @@ second = create_handler("亲亲")
         ),
     )
 
+    records = tuple(
+        replace(
+            record,
+            evidence_refs=tuple(
+                replace(
+                    evidence,
+                    locator=Path(module.__file__).name,
+                    content_hash=source_hash,
+                    payload={"module_name": module.__name__, "line": registration_line + 1},
+                )
+                if evidence.kind == "matcher_source"
+                else evidence
+                for evidence in record.evidence_refs
+            ),
+        )
+        for record in records
+    )
     identity = parameterized_handler_code_identity(records[0])
     request = build_parameterized_family_analysis_request(
         records,
@@ -1649,6 +1703,16 @@ second = create_handler("亲亲")
     assert request.invocations[0].mode.value == "complete"
     handler = next(item for item in request.evidence_units if item.source_kind == "python_function")
     assert handler.content.startswith("async def handler():")
+    registrations = [
+        item for item in request.evidence_units if item.source_kind == "python_registration"
+    ]
+    assert len(registrations) == 1
+    assert registrations[0].content.startswith("on_command(")
+    assert "extensions=[InputExtension()]" in registrations[0].content
+    assert registrations[0].locator.endswith(f":registration:{registration_line}")
+    assert registrations[0].revision == f"sha256:{source_hash}"
+    assert request.gate_candidates == ()
+    assert not any("class InputExtension:" in item.content for item in request.evidence_units)
     assert len(request.family_members) == 2
     assert any(item.source_kind == "runtime_family_members" for item in request.evidence_units)
     assert not any(item.source_kind == "runtime_family_shapes" for item in request.evidence_units)
@@ -1664,6 +1728,29 @@ second = create_handler("亲亲")
         for document in member_documents
         for row in document["rows"]
     } == {"anchor_only"}
+
+    # Runtime 位置不能配合旧的文件摘要继续使用，即使注册不在顶层索引中。
+    stale = replace(
+        records[0],
+        evidence_refs=tuple(
+            replace(item, content_hash="0" * 64) if item.kind == "matcher_source" else item
+            for item in records[0].evidence_refs
+        ),
+    )
+    with pytest.raises(CapabilityAnalysisAdapterError, match="source changed"):
+        build_parameterized_family_analysis_request((stale,), ConfigValuePolicy())
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def factory():\n    first = on_command('a'); second = on_command('b')\n",
+        "def factory():\n    matcher = wrapper()\n",
+        "def factory():\n    value = 1\n",
+    ],
+)
+def test_runtime_registration_location_does_not_guess(source: str) -> None:
+    assert registration_source_at(source, "plugin.py", 2) is None
 
 
 def test_wrapped_handler_is_not_misclassified_as_parameterized_family(
@@ -2211,6 +2298,8 @@ async def handle(session: Uninfo):
     assert statements["Session.self_id"] == "当前机器人账号 ID，不是触发事件的用户或调用者 ID。"
     assert "群聊中通常按群场景共享" in statements["Session.scene_path"]
     assert "当前事件的用户 ID" in statements["Session.user.id"]
+    assert "直接上级" in statements["Session.scene.parent"]
+    assert "完整执行键" in statements["Session.scene.parent"]
 
 
 def test_includes_nonebot_overload_semantics_for_typed_event_handler(
@@ -2254,6 +2343,10 @@ async def handle(event: GroupMessageEvent):
                 "NoneBot 的 Handler 及其依赖函数的 Bot、Event 和 Matcher 参数类型注解都参与运行时检查；"
                 "实际对象不匹配时不会执行相应函数。Handler 声明 event: GroupMessageEvent 时，"
                 "私聊事件不会执行该 Handler；同一 Matcher 的其他 Handler 应分别判断。"
+                "Handler 执行先递归预检查依赖及自身参数类型，通过后才求解依赖并调用函数；"
+                "预检查依赖不等于执行依赖函数体。标准 .got() 的取参与提示作为该 Handler 的"
+                "无参数依赖在求解阶段执行，因此类型预检查失败时也不会发送这条确认提示；"
+                "不能把它当成独立于该 Handler 类型限制的前置步骤。"
             ),
         }
     ]

@@ -25,6 +25,7 @@ from pydantic_ai.usage import RunUsage
 
 from nbtriage._model_runtime.diagnostics import last_model_response
 from nbtriage._model_runtime.telemetry import current_agent_instrumentation
+from nbtriage._model_runtime.usage import response_model_matches
 from nbtriage.bug.assessment import (
     BUG_ASSESSMENT_MAX_TOOL_CALLS,
     BUG_CONVERSATION_MAX_TOOL_CALLS,
@@ -345,7 +346,11 @@ class PydanticAIBugAssessmentAgent:
                 failure_kind="identity_mismatch",
                 failure_stage="provider_identity",
             )
-        if self._expected_model is not None and response.model_name != self._expected_model:
+        if not response_model_matches(
+            response,
+            expected_provider=self._expected_provider,
+            expected_model=self._expected_model,
+        ):
             raise BugAssessmentAgentError(
                 "bug assessment model identity mismatch",
                 failure_kind="identity_mismatch",

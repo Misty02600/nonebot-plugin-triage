@@ -1,5 +1,8 @@
 # ADR-0057：选择 Direct Jedi 导航依赖定义
 
+> 后续关系：后端选择与进程生命周期已由 [ADR-0123](0123-use-refresh-scoped-ty-definition-navigation.md)
+> 部分替代。下文保留当时决定；当前使用 ty，源码分层、Runtime 权威性与 Evidence 门禁继续有效。
+
 | 状态 | 决策日期 |
 |---|---|
 | 已采纳；Griffe 已退出，Direct Jedi 已接入教学链，真实模型资格待完成 | 2026-08-14 |

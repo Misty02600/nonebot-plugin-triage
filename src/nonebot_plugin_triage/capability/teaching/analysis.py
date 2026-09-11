@@ -21,6 +21,7 @@ from nonebot_plugin_triage.capability.teaching._navigation import (
     CapabilitySourceSliceCache,
     HandlerCodeIdentity,
     _append_bounded_source_slices,
+    _append_registration_source_evidence,
     _evidence_id,
     _exact_runtime_function,
     _function_source,
@@ -457,6 +458,23 @@ def build_parameterized_family_analysis_request(
         accepted_targets.add((reference.module, reference.function))
         source_chars += len(target.content)
 
+    source_file_revisions = {item.source.locator: item.source.digest for item in source_pack.files}
+    source_chars = _append_registration_source_evidence(
+        evidence_units,
+        analysis_unit_id=identity.analysis_unit_id,
+        module_root=identity.module_root,
+        source_root=source_root,
+        parsed_modules=parsed_modules,
+        registrations=gate_projection.registrations,
+        source_file_revisions=source_file_revisions,
+        source_chars=source_chars,
+        runtime_sources=tuple(
+            evidence
+            for record in records
+            for evidence in record.evidence_refs
+            if evidence.kind == "matcher_source"
+        ),
+    )
     callable_units = _family_static_callable_evidence(
         parsed,
         handler,
@@ -470,7 +488,6 @@ def build_parameterized_family_analysis_request(
         source_chars += callable_chars
     _record_preparation_timing(preparation_timings, "initial_evidence", stage_started_ns)
 
-    source_file_revisions = {item.source.locator: item.source.digest for item in source_pack.files}
     gate_names = frozenset(item.symbol.rpartition(".")[2] for item in gate_projection.gate_symbols)
     active_source_slice_cache = source_slice_cache or CapabilitySourceSliceCache()
     stage_started_ns = monotonic_ns()

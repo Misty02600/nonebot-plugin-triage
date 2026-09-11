@@ -7,6 +7,15 @@ MAX_EXPLICIT_USAGE_ALTERNATIVES = 4
 MAX_SUMMARY_USAGE_ALTERNATIVES = 6
 MAX_PUBLIC_USAGES = 3
 
+_REPLY_USAGE = re.compile(r"(<回复[^<>\[\](){}\r\n]+>|\[回复[^<>\[\](){}\r\n]+\]) (.+)")
+
+
+def split_reply_usage(value: str) -> tuple[str | None, str]:
+    """分离前置回复上下文，不判断源码是否支持回复或参数替代。"""
+    if match := _REPLY_USAGE.fullmatch(value):
+        return match.group(1), match.group(2)
+    return None, value
+
 
 class CapabilityUsageExpressionError(ValueError):
     pass
@@ -207,6 +216,7 @@ __all__ = (
     "deterministic_usage_selector",
     "expand_literal_expression",
     "group_literal_expression_for_usage",
+    "split_reply_usage",
     "usage_command_body_pattern",
     "validate_literal_expression",
     "validate_usage_selector",

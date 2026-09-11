@@ -70,7 +70,9 @@ def task_model_settings(model: Model) -> tuple[ModelSettings | None, str]:
 def task_model_settings_revision(provider: str, model_name: str) -> str:
     if provider == "alibaba" and _is_qwen36(model_name):
         return ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
-    if provider == "deepseek" and model_name.startswith("deepseek-v4-"):
+    if provider == "deepseek" and (
+        model_name.startswith("deepseek-v4-") or model_name == "deepseek-flash"
+    ):
         return DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION
     return PROVIDER_DEFAULT_SETTINGS_REVISION
 

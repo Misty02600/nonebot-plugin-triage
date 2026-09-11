@@ -66,11 +66,16 @@ NoneBot `SUPERUSER` 只决定当前事件是否可以读取维护者可见的能
 这个调用锚点可以是命令头，也可以是 `on_startswith / on_endswith / on_fullmatch / on_keyword` 的可直接
 发送字面量；正则、事件类型与没有确定触发形式的被动监听不进入教学。教学 Agent 会接收 runtime 命令结构、ast-grep
 Matcher / 工厂结构、已加载 handler 和内存配置投影组成的确定性 Evidence Pack；仅当首包不足时，才可通过
-共享只读 FileSystem 在批准根内 glob/search/read、由 Jedi 从已读 Python 标识符转到当前环境依赖定义，或
+共享只读 FileSystem 在批准根内 glob/search/read、由定义导航从已读 Python 标识符转到当前环境依赖定义，或
 查询当前版本对应的 NoneBot 公开文档索引。源码只补充已注册记录：加载失败、未观察到或只在静态制品中
 存在的插件不会进入普通用户帮助。单个 teaching unit 失败只关闭没有当前可信结果的对应单元，其他成功或
 精确命中缓存的单元可以进入显式标记覆盖量的 partial generation；共享 snapshot 或发布可信度失败时才保留
 上一活动 generation，基础索引始终可用。
+
+已有 NoneBot 参数类型框架 Evidence 同时说明执行顺序：Handler 先递归预检查依赖及自身的参数类型，
+通过后才求解依赖、调用函数。标准 `.got()` 的取参与提示在依赖求解阶段执行，不能被理解成独立于
+该 Handler 类型限制的前置提示；其他独立 Handler 仍分别判断。该说明核对 NoneBot 2.5.0 的实际实现，
+按已有相关类型注解规则加入请求，不新增全局 Prompt 或场景推断校验器；request v80 隔离旧请求。
 
 插件源码中的 Matcher 注册、handler 装饰器、配置引用及 Rule / Permission / 限流候选由项目内固定、只读的
 ast-grep 规则提取；部署配置和模型都不能提交规则，也不开放 fix 或 rewrite。它只提供静态语法位置和候选
@@ -87,7 +92,7 @@ Uninfo 0.11.1 的 `ADMIN()` 精确展开为 `admin OR owner`；`CHANNEL_ADMINIST
 同一表达式仍有未知自定义分支时，已知分支不会被单独发布成 fixed AND。
 最终索引不保存 import 来源；同名本地符号不会套用该语义。模型被要求直接使用这些稳定事实，不再为每个
 插件重复打开 Uninfo 源码；实际安装版本既不作为启用门，也不单独触发教学注释失效。高级动态 Permission
-继续保持 opaque，必要时才走 Jedi / 文件补读。当前映射已用 Uninfo 0.11.1 的已安装源码复核。
+继续保持 opaque，必要时才走定义导航 / 文件补读。当前映射已用 Uninfo 0.11.1 的已安装源码复核。
 
 源码切片中的 Handler 或 helper 实际使用 `Uninfo` / `QryItrface` 类型注解时，首包还会加入一份可引用的
 框架语义 Evidence。它覆盖 README 中与源码理解相关的 Session、User、Scene、Member、查询接口与内建
@@ -128,7 +133,15 @@ anchored 命令、alias 与语法可信度，只有 Runtime adapter 能证明完
 当前 Alconna 使用 `parser_exact`，普通 `on_command` 保持 `anchor_only`，不能把缺少结构化参数误读为没有参数。
 `parser_exact` 只冻结参数顺序、必选性、重复性、Option 和别名；内部 `Arg.name` 会先匿名化为 `slot:N`，
 公开槽位名由模型依据 notice、声明 usage 与源码 Evidence 生成，模型外再按匿名模板校验结构。
+Parser 模板约束解析后的输入，不能单独证明用户必须将全部参数直接附在命令消息中。标准用法仍须完整保留；
+有当前注册及处理实现 Evidence 支持时，可增加独立的前置回复形式：`<回复消息>` 为必需回复，`[回复消息]`
+为可选回复。必需回复可替代能够唯一对齐的普通参数槽位，可选回复只能省略可选槽位；Option/分支内部参数、
+其他保留槽位的顺序、必选性和重复性仍受校验。程序只验证结构对应，回复实际提供哪些内容及数量由模型依据
+Evidence 判断，不按扩展名称或公开槽位名称猜测。不确定的回复变体应省略，保留标准用法；不新增 extension
+专属解析器或公开输入映射字段。
 模型只生成一条共同 family 注释，成员参数数量、图片、文字或 `@用户` 输入、必选性和精确 usage 不同不会因此关闭 family。
+family 保留一条标准聚合用法，可增加同一 entry 的必要回复变体，仍受现有 usage 总上限约束；不是逐成员列举。
+标准聚合负责完整直接输入类别覆盖，前置回复标记不计入参数槽位，额外回复变体不重复承担输入并集覆盖。
 Alconna 联合输入的限定类型完整进入 Parser shape；`At` 是直接输入形式，不能因为后续被转换成头像图片而从
 聚合 usage 省略。
 若 Handler 访问静态工厂成员的 Callable 字段，且字段值能唯一解析到目标插件本地函数，这些函数按定义去重并

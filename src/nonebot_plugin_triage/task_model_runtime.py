@@ -95,11 +95,19 @@ def create_task_model_binding(
             and configured_model.split(":", 1)[0] == "deepseek"
         ):
             from pydantic_ai.models.openai import OpenAIChatModel
+            from pydantic_ai.profiles import merge_profile
             from pydantic_ai.profiles.openai import OpenAIModelProfile
             from pydantic_ai.providers.deepseek import DeepSeekProvider
 
+            model_name = configured_model.split(":", 1)[1]
+            # Pydantic AI 2.28 尚未识别新名称；复用已验证的原生能力，不改请求模型身份。
+            alias_profile = (
+                DeepSeekProvider.model_profile("deepseek-v4-flash")
+                if model_name == "deepseek-flash"
+                else None
+            )
             model = OpenAIChatModel(
-                configured_model.split(":", 1)[1],
+                model_name,
                 provider=DeepSeekProvider(
                     api_key=environment.get("DEEPSEEK_API_KEY"),
                     http_client=provider_http_client(
@@ -107,8 +115,10 @@ def create_task_model_binding(
                         limits=http_limits,
                     ),
                 ),
-                # Partial profile 保留原生 thinking/工具能力，只修正官方输出额度字段。
-                profile=OpenAIModelProfile(openai_chat_supports_max_completion_tokens=False),
+                profile=merge_profile(
+                    alias_profile,
+                    OpenAIModelProfile(openai_chat_supports_max_completion_tokens=False),
+                ),
             )
         elif config.nbtriage_model_base_url is None and http_limits is None:
             model = infer_model(configured_model)

@@ -31,7 +31,7 @@ from nbtriage.capability.teaching.source_evidence import (
     build_capability_source_evidence,
     permission_fact_alternatives,
 )
-from nbtriage.readonly_tools.jedi_navigation import DefinitionLocation
+from nbtriage.readonly_tools.python_navigation import DefinitionLocation
 from nonebot_plugin_triage.capability.teaching._navigation import (
     _MAX_FUNCTION_CHARS,
     _MAX_MODULES,
@@ -424,7 +424,7 @@ def _append_framework_semantics_evidence(
     profiles = (
         (
             nonebot_dependency_overload_profile(),
-            "NoneBot official dependency injection and overload documentation",
+            "NoneBot dependency injection documentation and Dependent/Matcher.got implementation",
             "2.5.0",
             "framework:nonebot2/dependency-overload",
         ),
@@ -709,7 +709,7 @@ def _plugin_entry(
     unit_id: str,
     parsed_modules: dict[str, _ParsedModule | None],
 ) -> CapabilityPluginEntry:
-    """每个教学单元只建一行索引；共享模块解析，但不展开 helper 或调用 Jedi。"""
+    """每个教学单元只建一行索引；共享模块解析，但不展开 helper 或执行定义导航。"""
     record = records[0]
     module_root = _plugin_module_root(record)
     triggers = tuple(

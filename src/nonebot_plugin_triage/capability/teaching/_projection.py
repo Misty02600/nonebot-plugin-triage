@@ -450,13 +450,6 @@ def _family_gate_projection(
         )
     fixed_contract, symbol_contract, expression_contract, requires_mention = member_contracts[0]
     runtime_contract = runtime_contracts[0]
-    if not fixed_contract and not symbol_contract and not requires_mention:
-        if runtime_contract:
-            raise CapabilityAnalysisAdapterError(
-                "parameterized family registration gates lack source evidence"
-            )
-        return _FamilyGateProjection()
-
     registrations = tuple(
         {
             (
@@ -479,6 +472,14 @@ def _family_gate_projection(
             }
         )
     )
+    # 注册调用也是输入预处理等事实的来源，不因缺少 gate 而丢弃。
+    if not fixed_contract and not symbol_contract and not requires_mention:
+        if runtime_contract:
+            raise CapabilityAnalysisAdapterError(
+                "parameterized family registration gates lack source evidence"
+            )
+        return _FamilyGateProjection(registrations=registrations)
+
     representative_symbols = tuple(
         {(item.kind.value, item.symbol): item for item in member_symbols[0]}[key]
         for key in sorted({(item.kind.value, item.symbol) for item in member_symbols[0]})

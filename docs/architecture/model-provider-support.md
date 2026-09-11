@@ -1,6 +1,6 @@
 # 模型 Provider 支持矩阵
 
-最后更新：2026-09-05
+最后更新：2026-09-11
 
 这份矩阵记录 NoneBot Triage Agent 对精确模型组合已经取得的质量证据，不代表 Pydantic AI 或厂商 SDK 的
 全部能力，也不是运行白名单。Pydantic AI `ModelProfile` 负责模型传输能力和默认结构化输出方式；项目按
@@ -18,6 +18,16 @@ DeepSeek 官方 Chat 绑定通过原生 `OpenAIModelProfile(openai_chat_supports
 将设置映射为 `max_tokens`，其余 Provider profile 能力保持合并；v4 的 settings revision 为
 `deepseek-v4-thinking-high-max-tokens-v2`。该修正不改变 OpenCode Go 或未知兼容端点。
 官方 64-token 探针返回 `length` 且 output/reasoning 均为 64，确认该字段在本次请求中生效；不是教学质量 held-out。
+
+锁定的 Pydantic AI 2.28.0 尚未识别 `deepseek-flash` 的思考能力。官方 Chat 绑定对这一精确名称
+复用原生 `deepseek-v4-flash` profile，并沿用上述 `high`、`auto`、禁止并行工具的设置与 settings revision；
+不改写请求或响应的模型名，不匹配未知新名称，也不影响 OpenCode Go 或其他兼容端点。
+原生 Provider 继续负责协议、思考内容和工具传输；此兼容只补模型名称识别，升级后应核对上游是否已覆盖。
+离线 HTTP Mock 验证与真实教学质量评测分开记账，不因此登记新模型的任务资格。
+教学、语义分流、公开引导、Bug 与行为 Agent 共用返回模型名检查：名称精确相等，或预期与实际 Provider
+均为 `deepseek` 且请求 `deepseek-v4-flash`、返回 `deepseek-flash`，才视为名称匹配。
+该单向映射依据官方端点的已捕获响应，不匹配反向映射、其他型号或兼容网关；Provider 身份检查保持独立。
+原始响应名称不重写，诊断继续保留请求与返回身份，资格键也不做别名归并；不同返回模型的费用仍不冒用请求模型计价。
 
 - **已验证**：精确 transport、任务、Prompt、隐私和预算组合完成了所列 held-out；
 - **未验证**：Pydantic AI 与项目任务合同允许运行，但项目没有该精确组合的完整质量结论；
@@ -106,6 +116,10 @@ Tool / Native 支持及默认选择仍只由 Pydantic AI `ModelProfile` 表达�
 [教学合同常量](../../src/nbtriage/capability/teaching/annotations.py)为准；服务并发由部署配置和运行日志记录，
 不属于单元预算标识。下表历史评测只证明当时的精确合同，不继承为当前版本的质量资格。
 
+2026-09-11 整合导航后端、回复用法与场景 Evidence 修正时，独立提交使用 Schema 13 / Prompt v114 /
+request v81。此版本保留现有入口模式级 Prompt 装配；尚未并入细粒度条件片段及 Alconna 分隔符、
+参数数量说明工作。此前诊断的合同编号保留原意，不继承为本次整合的模型质量资格。
+
 | Provider | API 族 | model / profile | 安装依赖 | 离线合约 | 获授权线上门 | 当前状态 | 主要证据或缺口 |
 |---|---|---|---|---|---|---|---|
 | OpenAI | Responses | 部署者使用 `openai:<model>` 选择模型；profile 必须声明当前任务所需的 JSON Schema 与 function tools | 基础 wheel 安装 Pydantic AI 控制层；`openai` extra 只补 Provider SDK | B1 Direct Request JSON Schema 与 B4 `function_call` 假 HTTP 合约通过 | 未执行当前任务 held-out | 未验证 | 项目尚无精确模型质量结论；产品 runtime 不再提供 `openai-responses` backend 别名 |
@@ -122,19 +136,19 @@ Tool / Native 支持及默认选择仍只由 Pydantic AI `ModelProfile` 表达�
 | OpenCode Go | Chat Completions | `deepseek-v4-flash`；`opencode-go-thinking-high-auto-tools-v2`；thinking 模式下使用 auto 工具选择的单一 Pydantic AI Agent output tool；60 秒 / 240 token；中文 `support-semantic-v7-prompt-v5-zh` | 复用 `openai` extra：`pydantic-ai-slim[openai]==2.28.0`；不声明内容重复的 OpenCode Go extra | 假 HTTP 覆盖 thinking/high reasoning、最小 payload、Agent `output_type` 生成的唯一 tool、零 retry、身份/usage/费用与本地双层校验 | 当前 high 设置尚无独立 held-out | 未验证 | 历史 `QUALIFIED_SEMANTIC_TASKS` 记录不会与当前 settings revision 匹配；必须以新设置独立评测 |
 | OpenCode Go | Chat Completions | `deepseek-v4-flash`；`opencode-go-thinking-high-auto-tools-v2`；Pydantic AI Agent `BugAssessmentCandidate` output tool + 会话 / 运行 / 日志 / 源码 / 设计 / 部署只读 Tools；120 秒 / 800 output token；中文 Prompt `bug-assessment-agent-v1-prompt-v8-zh` | 复用 `openai` extra | 原生 Tool / `prepare` 收缩、最新 conversation 窗口、闭合参数与 output、零 Provider retry、一次 output correction、Evidence ID / revision reconciliation、请求 / token / 费用上限均通过离线合同 | 当前 high 设置尚无独立 held-out | 未验证 | 历史 `QUALIFIED_BUG_TASKS` 记录不会与当前 settings revision 匹配；详见 ADR-0050、0053、0060、0061、0064、0065 |
 | OpenCode Go | Chat Completions | `deepseek-v4-flash`；`opencode-go-thinking-high-auto-tools-v2`；thinking 模式下使用 auto 工具选择的单一 `PublicGuidanceAnswer` output tool；60 秒 / 240 token；中文 Prompt `public-guidance-answer-v2-prompt-v2-zh` | 复用 `openai` extra | 闭合 question / conversation_context / public facts 输入、唯一 output tool、事实引用校验、零 retry、Provider 身份和 Handler 确定性回退均通过；无工具 | 当前 high 设置尚无独立 held-out | 未验证 | 可以运行；不能继承 semantic 的历史质量结论；详见 ADR-0048、0060 |
-| OpenCode Go | Chat Completions | `deepseek-v4-flash`；`opencode-go-thinking-high-auto-tools-v2`；请求启用 thinking 且 `reasoning_effort=high`，Profile 不宣称支持 thinking 不兼容的 required 工具选择；Pydantic AI Agent 输出内部 claims / constraints / baseline changes / gate resolutions 和模型外固定 ID 的多个 teaching entry；公开 entry 收敛为 name / summary / usages / search terms / behavior boundaries / requirements；最多 10 请求 / 7 次证据工具 / 192k total token（超限后不再发起下一请求，已经收到的当前候选仍完成校验）/ 0.05 美元；单元总时限随配置（最大 400 秒）/ 32768 output token；使用当前教学合同 | Harness 0.22.0、Jedi 0.20.0 与 Pydantic AI 公共层属于基础依赖；`openai` extra 只补 OpenCode Go 所用的 OpenAI-compatible Provider SDK | Runtime / ast-grep / 内存配置首包、NoneBot / Uninfo 固定 Permission OR alternatives 与按实际类型使用的 Session 字段语义 Evidence、只读 FileSystem、Direct Jedi、动态 Evidence 引用闭包、Alconna 叶子、过滤内建辅助 Option 的匿名 canonical 结构模板、Evidence 驱动的公开槽位命名、Runtime aliases、精确 `@bot`、family 共同 gate、无条目总量上限且按 Parser shape 去重的完整列式成员 manifest、Alconna 联合输入成员、静态 family Callable、由 Evidence 命名且大聚合只做简短概括的 family 聚合槽位与 Parser 安全类型覆盖纠错、数字限流引用、门禁三值闭合、公开投影定向纠错、旧基线 Patch、revision 复核和原子发布均有本地合同测试。tool-mode 与 native-mode 的 `final_result` 都直接提交顶层 `_AnalysisOutput`，不接受 `output` 包装或 JSON 字符串；输出格式或投影错误最多纠正两次。`platform_scope` 只由模型外 Runtime 路由；直接 scene 使用完整原子 `allowed_scenes` 集合；role、access、behavior boundary 分别拥有入口直接身份判断、可配置权限或开放资格查询与业务准备状态。Uninfo Evidence 明确区分机器人 `self_id`、调用者 `user.id` 与会话 `scene_path`；源码切片直接使用相关框架类型，或参数注解、默认值或 Handler 装饰器 `parameterless` 唯一静态解析为 `Annotated[..., Depends(provider)]` / `Depends(provider)` 且 provider 源码使用相关类型时，才加入对应框架事实。匿名槽位可以在保持 Parser 外层结构时枚举最多三个公开输入类型；`str` 不被直接解释成“文字”，Uniseg `At` 必须作为直接 `@用户` 输入保留；聚合缺失纠错只报告 required / present / missing，不提供成品 usage。已发现 gate 的 constraint 必须关联 candidate；Handler/helper Evidence 直接证明的其他执行限制允许 `gate_candidate_ids=[]`。目标插件工具固定使用 `target_plugin_*` 与相对插件根路径；外部插件不暴露无关 `bot_project_*`，本地宿主插件或已有宿主 Evidence 才保留。定义导航负责理解已知符号；根内文本搜索负责定位出现、调用或状态访问位置，但不冒充 Python 读写语义。注册 gate 的唯一模块级绑定链会补入本地 statement 与一层外部函数；初始和动态 Python Evidence 提供请求内位置句柄，唯一目标一次调用即完成 Jedi 跳转、revision 复核和可引用读取。过长定义只给不可引用的精确读取目标且不递归依赖树；完整初始函数 Evidence 不重复整文件读取。SDK 对瞬时传输失败最多重试两次，项目不重跑整个 Agent；显式维护诊断记录 SDK 内部失败 attempt。OpenCode Go strict smoke 虽接受 `strict: true`，仍返回违反工具 Schema 的参数，因此 Profile 继续声明不支持 Provider strict tool definition，结构正确性由本地 Pydantic 校验和最多两次 correction 保证。Help / Answer 从结构合同确定性渲染；固定备选采用 `≤3 / 4–6 / ≥7` 展示边界 | v13 的 Prompt v39 / request v3 正式 Gate 为 16/20、语义 0.800；当前教学合同改变了 settings、framework Evidence、Permission 组合、字段所有权、family 输入、静态 Callable、Alconna canonical usage、聚合参数说明、gate 关联纠错、total-token 预算与止损时点、投影纠错、源码导航 / 网络重试、parameterless Depends 闭合和 tool-mode 输出传输合同，尚无独立 held-out | 未验证 | `QUALIFIED_CAPABILITY_ANNOTATION_TASKS` 为空。旧 v12、v13、v52 / v53 插件诊断和 max-thinking 诊断保留为历史证据，不能继承给当前合同。显式维护诊断可保存失败/correction 轮 assistant 文本、thinking、tool call/result，以及 SDK 各失败 attempt 的有界脱敏 HTTP 响应；不保存初始 Prompt、请求体、密钥或真实私有源码 |
+| OpenCode Go | Chat Completions | `deepseek-v4-flash`；`opencode-go-thinking-high-auto-tools-v2`；请求启用 thinking 且 `reasoning_effort=high`，Profile 不宣称支持 thinking 不兼容的 required 工具选择；Pydantic AI Agent 输出内部 claims / constraints / baseline changes / gate resolutions 和模型外固定 ID 的多个 teaching entry；公开 entry 收敛为 name / summary / usages / search terms / behavior boundaries / requirements；最多 10 请求 / 10 次证据工具 / 192k total token（超限后不再发起下一请求，已经收到的当前候选仍完成校验）/ 0.05 美元；单元总时限随配置（最大 400 秒）/ 32768 output token；使用当前教学合同 | Harness 0.22.0、ty 0.0.80 与 Pydantic AI 公共层属于基础依赖；`openai` extra 只补 OpenCode Go 所用的 OpenAI-compatible Provider SDK | Runtime / ast-grep / 内存配置首包、NoneBot / Uninfo 固定 Permission OR alternatives 与按实际类型使用的 Session 字段语义 Evidence、只读 FileSystem、ty LSP、动态 Evidence 引用闭包、Alconna 叶子、过滤内建辅助 Option 的匿名 canonical 结构模板、Evidence 驱动的公开槽位命名、Runtime aliases、精确 `@bot`、family 共同 gate、无条目总量上限且按 Parser shape 去重的完整列式成员 manifest、Alconna 联合输入成员、静态 family Callable、由 Evidence 命名且大聚合只做简短概括的 family 聚合槽位与 Parser 安全类型覆盖纠错、数字限流引用、门禁三值闭合、公开投影定向纠错、旧基线 Patch、revision 复核和原子发布均有本地合同测试。tool-mode 与 native-mode 的 `final_result` 都直接提交顶层 `_AnalysisOutput`，不接受 `output` 包装或 JSON 字符串；输出格式或投影错误最多纠正两次。`platform_scope` 只由模型外 Runtime 路由；直接 scene 使用 `allowed_scenes` 条件集合（包括 `non_private` 谓词）；role、access、behavior boundary 分别拥有入口直接身份判断、可配置权限或开放资格查询与业务准备状态。Uninfo Evidence 明确区分机器人 `self_id`、调用者 `user.id` 与会话 `scene_path`；源码切片直接使用相关框架类型，或参数注解、默认值或 Handler 装饰器 `parameterless` 唯一静态解析为 `Annotated[..., Depends(provider)]` / `Depends(provider)` 且 provider 源码使用相关类型时，才加入对应框架事实。匿名槽位可以在保持 Parser 外层结构时枚举最多三个公开输入类型；`str` 不被直接解释成“文字”，Uniseg `At` 必须作为直接 `@用户` 输入保留；聚合缺失纠错只报告 required / present / missing，不提供成品 usage。已发现 gate 的 constraint 必须关联 candidate；Handler/helper Evidence 直接证明的其他执行限制允许 `gate_candidate_ids=[]`。目标插件工具固定使用 `target_plugin_*` 与相对插件根路径；外部插件不暴露无关 `bot_project_*`，本地宿主插件或已有宿主 Evidence 才保留。定义导航负责理解已知符号；根内文本搜索负责定位出现、调用或状态访问位置，但不冒充 Python 读写语义。注册 gate 的唯一模块级绑定链会补入本地 statement 与一层外部函数；初始和动态 Python Evidence 提供请求内位置句柄，唯一目标一次调用即完成定义跳转、revision 复核和可引用读取。过长定义只给不可引用的精确读取目标且不递归依赖树；完整初始函数 Evidence 不重复整文件读取。SDK 对瞬时传输失败最多重试两次，项目不重跑整个 Agent；显式维护诊断记录 SDK 内部失败 attempt。OpenCode Go strict smoke 虽接受 `strict: true`，仍返回违反工具 Schema 的参数，因此 Profile 继续声明不支持 Provider strict tool definition，结构正确性由本地 Pydantic 校验和最多两次 correction 保证。Help / Answer 从结构合同确定性渲染；固定备选采用 `≤3 / 4–6 / ≥7` 展示边界 | v13 的 Prompt v39 / request v3 正式 Gate 为 16/20、语义 0.800；当前教学合同改变了 settings、framework Evidence、Permission 组合、字段所有权、family 输入、静态 Callable、Alconna canonical usage、聚合参数说明、gate 关联纠错、total-token 预算与止损时点、投影纠错、源码导航 / 网络重试、parameterless Depends 闭合和 tool-mode 输出传输合同，尚无独立 held-out | 未验证 | `QUALIFIED_CAPABILITY_ANNOTATION_TASKS` 为空。旧 v12、v13、v52 / v53 插件诊断和 max-thinking 诊断保留为历史证据，不能继承给当前合同。显式维护诊断可保存失败/correction 轮 assistant 文本、thinking、tool call/result，以及 SDK 各失败 attempt 的有界脱敏 HTTP 响应；不保存初始 Prompt、请求体、密钥或真实私有源码 |
 
 教学 Prompt 按请求组合四个稳定片段：core 始终发送，anchored 与 family 按 invocation mode 发送，baseline
 只在存在 previous annotation 时发送；不再把无关的 Parser、family 或旧基线规则塞入每个教学单元，也不按
 alias、mention、gate 或 config 等细粒度标志继续拆分组合。
 
-首包只沿 Handler / helper 的普通调用自动展开两层，并在深度边界执行 Jedi 前停止；已展示调用继续附带
+首包只沿 Handler / helper 的普通调用自动展开两层，并在深度边界执行定义导航前停止；已展示调用继续附带
 `navigation_ref`。Handler 形参中的 `Depends(provider)` 与注册装饰器显式
 `parameterless=[Depends(provider)]` 都作为确定性依赖边闭合。complete family 的完整成员 manifest 仍在首包闭合，但 family 只获得
 `python_open_definition`，用于在有限工具预算内选择性补读少量共同定义，不能浏览目录、全文搜索或逐成员读源码。
 
 教学 Agent 在每次执行证据工具前原子领取预算，同一单元内使用 Pydantic AI 顺序执行模式；即使模型在
-一个响应中提交多个工具调用，超出 7 次余额的调用也不执行，并返回 `tool_budget_exhausted`。不同单元仍可并发。
+一个响应中提交多个工具调用，超出 10 次余额的调用也不执行，并返回 `tool_budget_exhausted`。不同单元仍可并发。
 显式维护诊断则在 Pydantic AI 的 `WrapperModel` 调用边界保存每个 Provider 响应，因此即使随后因输入预算、
 输出截断或结构校验失败退出，也能保存原始 assistant 文本、thinking 和 tool call 参数；仍不保存初始 Prompt或密钥。
 

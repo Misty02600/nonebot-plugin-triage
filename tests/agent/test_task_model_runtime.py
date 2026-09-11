@@ -11,6 +11,7 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.tools import ToolDefinition
 from pytest import MonkeyPatch
 
 import nonebot_plugin_triage.capability.teaching.runtime as teaching_runtime
@@ -203,8 +204,10 @@ def test_qwen36_binding_disables_thinking_for_structured_output_tools(
     assert binding.model_settings.get("temperature") == 0
 
 
-def test_native_deepseek_v4_binding_matches_high_thinking_contract(
+@pytest.mark.parametrize("model_name", ["deepseek-v4-flash", "deepseek-flash"])
+def test_native_deepseek_binding_matches_high_thinking_contract(
     monkeypatch: MonkeyPatch,
+    model_name: str,
 ) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-only-key")
     observed_timeouts: list[float] = []
@@ -220,7 +223,7 @@ def test_native_deepseek_v4_binding_matches_high_thinking_contract(
                 "id": "cap-fixture",
                 "object": "chat.completion",
                 "created": 1,
-                "model": "deepseek-v4-flash",
+                "model": model_name,
                 "choices": [
                     {
                         "index": 0,
@@ -249,14 +252,16 @@ def test_native_deepseek_v4_binding_matches_high_thinking_contract(
         limits = httpx.Limits(max_connections=50, max_keepalive_connections=50)
         binding = create_task_model_binding(
             NBTriageConfig(
-                nbtriage_model_name="deepseek:deepseek-v4-flash",
+                nbtriage_model_name=f"deepseek:{model_name}",
                 nbtriage_model_timeout_seconds=400,
             ),
             http_limits=limits,
         )
 
         assert binding.provider == "deepseek"
-        assert binding.model_name == "deepseek-v4-flash"
+        assert binding.model_name == model_name
+        assert binding.model.profile.get("supports_thinking") is True
+        assert binding.model.profile.get("openai_supports_tool_choice_required") is False
         assert binding.settings_revision == DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION
         assert binding.model_settings is not None
         assert binding.model_settings.get("openai_reasoning_effort") == "high"
@@ -270,17 +275,43 @@ def test_native_deepseek_v4_binding_matches_high_thinking_contract(
                 binding.model.request(
                     [ModelRequest(parts=[UserPromptPart("Reply OK")])],
                     {**binding.model_settings, "max_tokens": 32768},
-                    ModelRequestParameters(),
+                    ModelRequestParameters(
+                        output_mode="tool",
+                        output_tools=[ToolDefinition(name="final_result", kind="output")],
+                        allow_text_output=False,
+                    ),
                 )
             )
         assert requests[0]["max_tokens"] == 32768
         assert "max_completion_tokens" not in requests[0]
         assert requests[0]["reasoning_effort"] == "high"
+        assert requests[0]["model"] == model_name
+        assert requests[0]["tool_choice"] == "auto"
+        assert requests[0]["parallel_tool_calls"] is False
         assert binding.model.profile.get("openai_chat_thinking_field") == "reasoning_content"
         assert binding.model.profile.get("openai_chat_send_back_thinking_parts") == "field"
     finally:
         for client in clients:
             asyncio.run(client.aclose())
+
+
+@pytest.mark.parametrize("model_name", ["deepseek-chat", "deepseek-future-model"])
+def test_native_deepseek_other_names_keep_provider_defaults(model_name: str) -> None:
+    from pydantic_ai.providers.deepseek import DeepSeekProvider
+
+    binding = create_task_model_binding(
+        NBTriageConfig(nbtriage_model_name=f"deepseek:{model_name}"),
+        environ={"DEEPSEEK_API_KEY": "test-only-key"},
+    )
+    try:
+        native_profile = DeepSeekProvider.model_profile(model_name)
+        assert native_profile is not None
+        assert all(binding.model.profile.get(key) == value for key, value in native_profile.items())
+        assert binding.model_settings is None
+        assert binding.settings_revision == "provider-default"
+    finally:
+        assert isinstance(binding.model, OpenAIChatModel)
+        asyncio.run(binding.model.client.close())
 
 
 def test_custom_endpoint_revision_changes_without_exposing_url() -> None:

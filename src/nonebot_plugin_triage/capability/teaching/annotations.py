@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable, Collection
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -41,12 +42,13 @@ from nbtriage.capability.teaching.model_adapter import (
     CapabilityModelAdapterError,
 )
 from nbtriage.capability.teaching.source_evidence import CapabilitySourceEvidencePack
+from nbtriage.readonly_tools.ty_navigation import navigation_session
 from nonebot_plugin_triage.capability.teaching._evidence_validation import (
     EvidenceMismatch,
     EvidenceMismatchReason,
     EvidenceValidationResult,
 )
-from nonebot_plugin_triage.capability.teaching._navigation import _ParsedModule
+from nonebot_plugin_triage.capability.teaching._navigation import _ParsedModule, _plugin_source_root
 from nonebot_plugin_triage.capability.teaching._source import _plugin_entry
 from nonebot_plugin_triage.capability.teaching.analysis import (
     CapabilityAnalysisAdapterError,
@@ -555,7 +557,7 @@ class CapabilityAnnotationService:
         """刷新当前 runtime snapshot 的自动注释；单项失败不影响其他能力或基础索引。"""
         if not isinstance(snapshot, CapabilitySnapshot):
             raise TypeError("snapshot must be CapabilitySnapshot")
-        async with self._refresh_lock:
+        async with self._refresh_lock, AsyncExitStack() as navigation_scope:
             refresh_started_ns = monotonic_ns()
             self._pending = None
             published_generation = self._resolve_published_generation()
@@ -590,6 +592,17 @@ class CapabilityAnnotationService:
             }
             if plugin_module is not None and plugin_module not in known_plugins:
                 raise CapabilityAnalysisAdapterError("requested plugin has no teaching unit")
+
+            source_paths: set[Path] = set()
+            for module_name in sorted(known_plugins):
+                try:
+                    path, is_package = _plugin_source_root(module_name)
+                except CapabilityAnalysisAdapterError:
+                    continue  # 仍由该单元的准备路径报告不可读取的源码。
+                source_paths.add(path if is_package else path.parent)
+            await navigation_scope.enter_async_context(
+                navigation_session(tuple(sorted(source_paths)))
+            )
 
             invalid_plugins: set[str] = set()
             filename_groups: dict[str, list[str]] = {}

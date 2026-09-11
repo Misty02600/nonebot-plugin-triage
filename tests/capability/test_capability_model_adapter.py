@@ -143,6 +143,37 @@ def _native_response(**entry_kwargs: str) -> ModelResponse:
     )
 
 
+@pytest.mark.parametrize(
+    ("provider", "requested", "returned", "accepted"),
+    [
+        ("deepseek", "deepseek-v4-flash", "deepseek-v4-flash", True),
+        ("deepseek", "deepseek-v4-flash", "deepseek-flash", True),
+        ("deepseek", "deepseek-flash", "deepseek-v4-flash", False),
+        ("deepseek", "deepseek-v4-flash", "deepseek-pro", False),
+        ("opencode-go", "deepseek-v4-flash", "deepseek-flash", False),
+    ],
+)
+def test_agent_accepts_only_confirmed_provider_model_rename(
+    provider: str, requested: str, returned: str, accepted: bool
+) -> None:
+    response = replace(_native_response(), provider_name=provider, model_name=returned)
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(
+            lambda _messages, _info: response, model_name=returned, profile=_NATIVE_PROFILE
+        ),
+        max_output_tokens=240,
+        expected_provider=provider,
+        expected_model=requested,
+    )
+    if accepted:
+        asyncio.run(client.analyze(_request()))
+        assert client._last_response is not None
+        assert client._last_response.model_name == returned
+    else:
+        with pytest.raises(CapabilityModelAdapterError, match="model identity mismatch"):
+            asyncio.run(client.analyze(_request()))
+
+
 def test_agent_uses_native_output_and_bounded_source_payload() -> None:
     observed: dict[str, Any] = {}
 
@@ -315,6 +346,66 @@ def test_agent_payload_marks_fixed_permission_as_model_external() -> None:
             "permission_alternatives": [],
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("template", "standard_usage", "reply_usage"),
+    [
+        ("@bot 搜图 [slot:0]", "@bot 搜图 [图片]", "[回复图片] @bot 搜图"),
+        ("@bot 搜图 <slot:0>", "@bot 搜图 <图片>", "<回复图片> @bot 搜图"),
+        ("@bot 搜图 <slot:0>...", "@bot 搜图 <图片>...", "<回复图片> @bot 搜图"),
+    ],
+)
+def test_parser_reply_usage_is_not_a_shortcut_and_cannot_replace_standard_usage(
+    template: str, standard_usage: str, reply_usage: str
+) -> None:
+    request = replace(
+        _request(),
+        invocations=(
+            CapabilityInvocationTarget(
+                "root",
+                CapabilityInvocationMode.ANCHORED,
+                "搜图",
+                canonical_usages=(template,),
+                requires_mention=True,
+            ),
+        ),
+    )
+    output = _output(usage=standard_usage)
+    entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
+    claims = cast(list[dict[str, object]], entry["claims"])
+    claims.append(
+        {
+            "kind": "usage",
+            "statement": reply_usage,
+            "evidence_ids": ["evidence-handler"],
+        }
+    )
+    calls = 0
+
+    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        return ModelResponse(
+            parts=[TextPart(json.dumps(output, ensure_ascii=False))], finish_reason="stop"
+        )
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+    annotation = project_capability_annotation(request, result, analysis_revision="reply-test")
+    assert calls == 1
+    assert set(annotation.entries[0].usages) == {standard_usage, reply_usage}
+
+    from nbtriage.capability.teaching.model_adapter import _AnalysisOutput
+
+    claims.pop(2)
+    with pytest.raises(ValueError, match="must be preserved"):
+        _validate_analysis_output_contract(
+            _AnalysisOutput.model_validate(output), request, (), allow_alias_fallback=False
+        )
 
 
 @pytest.mark.parametrize(
@@ -534,18 +625,27 @@ def test_output_correction_collects_independent_errors_across_entries(
     assert result.entries[0].display_trigger == "(搜图|找图)"
 
 
-def test_agent_accepts_typed_scene_and_evidenced_rate_limit_exemption() -> None:
+@pytest.mark.parametrize(
+    ("scenes", "statement"),
+    [
+        (("group", "guild", "channel_text"), "仅群聊、频道或频道文字场景可用"),
+        (("non_private",), "仅非私聊场景可用"),
+    ],
+)
+def test_agent_accepts_typed_scene_and_evidenced_rate_limit_exemption(
+    scenes: tuple[str, ...], statement: str
+) -> None:
     def respond(_messages, _info: AgentInfo) -> ModelResponse:
         output = _output()
         entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
         entry["constraints"] = [
             {
                 "kind": "scene",
-                "statement": "仅群聊、频道或频道文字场景可用",
+                "statement": statement,
                 "evidence_ids": ["evidence-handler"],
                 "config_reference_ids": [],
                 "role": None,
-                "allowed_scenes": ["group", "guild", "channel_text"],
+                "allowed_scenes": list(scenes),
                 "rate_limit_policy": None,
                 "rate_limit_scope": None,
                 "gate_candidate_ids": [],
@@ -576,12 +676,16 @@ def test_agent_accepts_typed_scene_and_evidenced_rate_limit_exemption() -> None:
 
     result = asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
 
-    assert result.entries[0].constraints[0].allowed_scenes == (
-        TeachingScene.GROUP,
-        TeachingScene.GUILD,
-        TeachingScene.CHANNEL_TEXT,
+    assert result.entries[0].constraints[0].allowed_scenes == tuple(
+        TeachingScene(scene) for scene in scenes
     )
     assert result.entries[0].constraints[1].statement.endswith("超级用户不受此限制")
+    annotation = project_capability_annotation(_request(), result, analysis_revision="fixture-v1")
+    assert CapabilityTeachingAnnotation.from_dict(annotation.to_dict()) == annotation
+    requirement = next(
+        item for item in annotation.entries[0].requirements if item.kind.value == "scene"
+    )
+    assert requirement.allowed_scenes == tuple(TeachingScene(scene) for scene in scenes)
 
 
 def test_opt_in_diagnostic_trace_includes_thinking_but_excludes_prompt() -> None:
@@ -1194,6 +1298,66 @@ def test_agent_receives_every_family_member_invocation() -> None:
     }
     assert observed["tools"] == ("inspect_family_source",)
     assert "文字图 [文字]..." not in cast(str, cast(UserPromptPart, messages[0].parts[0]).content)
+
+
+@pytest.mark.parametrize(
+    ("usages", "valid"),
+    [
+        (("#<滤镜名> <图片>...", "<回复图片> #<滤镜名>"), True),
+        (("<回复图片> #<滤镜名>", "#<滤镜名> <图片>..."), True),
+        (("[回复消息] #<滤镜名> <图片>...",), True),
+        (("<回复图片> #<滤镜名>",), False),
+        (("[回复图片] #<滤镜名>",), False),
+        (("#<滤镜名> [参数]", "<回复图片> #<滤镜名>"), False),
+        (("#<滤镜名> <图片>...", "<回复图片> 滤镜"), False),
+        (("#<滤镜名> <图片>...", "#<另一个名称> <图片>..."), False),
+        (("#<滤镜名> <图片>...", "<回复图片> (红 <图片>|蓝 <图片>)"), False),
+    ],
+)
+def test_family_reply_variants_preserve_standard_input_coverage(
+    usages: tuple[str, ...], valid: bool
+) -> None:
+    target = CapabilityInvocationTarget("family", CapabilityInvocationMode.COMPLETE)
+    request = replace(
+        _request(),
+        invocations=(target,),
+        evidence_units=(
+            *_request().evidence_units,
+            CapabilityEvidenceUnit(
+                "evidence-shapes",
+                "runtime_family_shapes",
+                '{"shapes":[{"arguments":[{"pattern_type":"uniseg.Image"}]}]}',
+                "sha256:shapes",
+            ),
+        ),
+    )
+    entry = _entry(usage=usages[0])
+    entry["entry_id"] = "family"
+    claims = cast(list[dict[str, object]], entry["claims"])
+    claims.extend(
+        {"kind": "usage", "statement": usage, "evidence_ids": ["evidence-handler"]}
+        for usage in usages[1:]
+    )
+    candidate = _AnalysisEntryOutput.model_validate(entry)
+    if not valid:
+        with pytest.raises(CapabilityAnnotationError):
+            _validate_entry_usages(candidate, target, request)
+        return
+    assert len(_validate_entry_usages(candidate, target, request)) == 1
+
+    def respond(_messages, _info: AgentInfo) -> ModelResponse:
+        return ModelResponse(
+            parts=[TextPart(json.dumps({"knowledge_enabled": True, "entries": [entry]}))],
+            finish_reason="stop",
+        )
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+    annotation = project_capability_annotation(request, result, analysis_revision="family-reply")
+    assert annotation.entries[0].usages == usages
 
 
 def test_agent_uses_factored_expression_for_more_than_four_fixed_aliases() -> None:
@@ -1862,9 +2026,11 @@ def test_agent_retries_enabled_output_with_unresolved_gate_then_closes() -> None
         ((), ("admin", "owner"), False),
         (("group",), ("superuser", "admin", "owner"), False),
         (("group",), ("superuser", "superuser"), True),
+        (("non_private",), ("superuser",), True),
         ((), ("superuser", "private"), False),
         ((), ("superuser", "access"), False),
         ((), ("private",), False),
+        ((), ("non_private",), False),
     ],
 )
 def test_agent_requires_real_constraint_to_link_gate_candidate(
@@ -1900,14 +2066,16 @@ def test_agent_requires_real_constraint_to_link_gate_candidate(
                     {
                         "kind": (
                             "scene"
-                            if branch == "private"
+                            if branch in {"private", "non_private"}
                             else "access"
                             if branch == "access"
                             else "role"
                         ),
                         "statement": "使用资格",
-                        "role": branch if branch not in {"private", "access"} else None,
-                        "scene": "private" if branch == "private" else None,
+                        "role": branch
+                        if branch not in {"private", "non_private", "access"}
+                        else None,
+                        "scene": branch if branch in {"private", "non_private"} else None,
                     }
                     for branch in branches
                 ],
@@ -1966,6 +2134,9 @@ def test_agent_requires_real_constraint_to_link_gate_candidate(
     requirement = annotation.entries[0].requirements[0]
     assert requirement.allowed_scenes == constraint.allowed_scenes
     assert len(requirement.alternatives) == len(branches)
+    assert tuple(
+        item.scene.value for item in requirement.alternatives if item.scene is not None
+    ) == tuple(branch for branch in branches if branch in {"private", "non_private"})
     assert annotation.entries[0].superuser_only is restricted
     old_payload = annotation.to_dict()
     old_payload["schema_version"] = annotation.schema_version - 1

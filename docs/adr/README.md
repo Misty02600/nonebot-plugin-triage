@@ -3,7 +3,7 @@
 这里列出仍作为当前一等架构约束的 ADR。精确状态、局部替代关系和完整理由以各 ADR 正文为准；
 已经替代、未采纳、评测性、实现级或仅作支持性解释的记录见[历史 ADR](history/README.md)。
 
-当前根目录保留 58 份，历史区保存 62 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
+当前根目录保留 60 份，历史区保存 62 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
 为了简短而合并决定。阅读系统现状时先从[架构入口](../architecture/README.md)进入，再按问题查本索引。
 
 没有进入 ADR 的理由也不会丢失：跨实现的当前事实进入 architecture / flow，局部不变量进入代码注释和
@@ -46,7 +46,7 @@
 | [ADR-0016](0016-keep-maintainer-evaluation-tooling-out-of-install-surface.md) | 保留双命名空间领域核心，但把维护者 CLI、MLflow 和历史机器报告排除在插件安装发行面之外 |
 | [ADR-0042](0042-use-pydantic-ai-model-profile-for-structured-output.md) | 由 Pydantic AI ModelProfile 唯一决定结构化输出方式，项目只维护任务资格 |
 | [ADR-0063](0063-keep-plugin-startup-independent-from-model-enhancements.md) | 未配置或技术不可用的模型增强不得阻断插件导入；未评测组合本身不再触发降级 |
-| [ADR-0084](0084-install-pydantic-ai-control-plane-by-default-and-keep-providers-and-adapters-optional.md) | 默认安装 Pydantic AI 控制层、Harness 与 Jedi，Provider SDK 和 NoneBot Adapter 仍由部署按需安装 |
+| [ADR-0084](0084-install-pydantic-ai-control-plane-by-default-and-keep-providers-and-adapters-optional.md) | 默认安装 Pydantic AI 控制层、Harness 与导航依赖；具体导航后端由 ADR-0123 替代为 ty；Provider SDK 和 Adapter 按需安装 |
 | [ADR-0086](0086-treat-model-evaluation-as-a-quality-label.md) | held-out 只提供公开质量标签；未评测模型和自定义连接可在相同安全合同下运行 |
 | [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) | 保留标准 `provider:model` 与 ModelProfile，并允许部署者为支持该参数的 Pydantic AI Provider 配置受限 Base URL |
 | [ADR-0091](0091-use-pydantic-ai-model-ids-as-the-public-transport-selector.md) | 直接以 Pydantic AI `provider:model` 选择 transport；Base URL 连接兼容服务 |
@@ -73,13 +73,15 @@
 | [ADR-0032](0032-separate-capability-audience-analysis-and-platform-status.md) | 分离能力受众、平台范围、分析问题与约束，由派生 ServingView 取代 review 审批层 |
 | [ADR-0036](0036-keep-capability-shadow-deterministic-and-record-oriented.md) | 保持能力影子确定且以记录为单位，删除无消费者的 Matcher 角色和逐记录源码对齐推断 |
 | [ADR-0048](0048-use-public-facts-for-guidance-answer-agent.md) | Guidance 仍由公开事实约束；ADR-0060 允许在路由后加入有界 Thread 与直接 Reply 上下文 |
-| [ADR-0057](0057-select-source-analysis-tools-by-evidence-stage.md) | 依赖定义采用 Direct Jedi，glob/文本永久兜底；不为该职责并行维护 Griffe、MultiLSPy 或 Serena |
+| [ADR-0057](0057-select-source-analysis-tools-by-evidence-stage.md) | 保留源码分层与 glob/文本兜底；Direct Jedi 后端选择由 ADR-0123 部分替代 |
+| [ADR-0123](0123-use-refresh-scoped-ty-definition-navigation.md) | 教学刷新懒启动并共享 ty 进程，握手后并发查询，结束回收；不支持热重载或跨刷新常驻解析器 |
 | [ADR-0058](0058-use-deterministic-evidence-and-bounded-navigation-for-teaching-annotations.md) | 教学注释使用 Triage 有界源码导航；确定性层只拥有准入、范围、当前性和验证，不承担工厂业务语义摘要 |
 | [ADR-0066](0066-use-active-teaching-contract-as-bug-precheck.md) | 只让当前公开主动能力进入 teaching contract，并在正式 Bug 调查前用模型外公开合同做零工具筛查 |
 | [ADR-0080](0080-model-capability-teaching-as-multiple-public-entries.md) | 一次能力分析仍可产生多个固定 entry，Alconna 叶子仍投影为独立帮助条目 |
 | [ADR-0083](0083-resolve-unknown-teaching-gates-before-closing-public-knowledge.md) | AST 只登记疑似门禁；Agent 以实际定义、框架或运行配置解释为约束、无约束或仍未知，只有仍未知才关闭公开知识 |
 | [ADR-0093](0093-shard-capability-annotation-cache-by-plugin.md) | 教学缓存按插件分片、按单元部分生成，并与不可变 generation 和唯一活动指针明确分离 |
 | [ADR-0094](0094-simplify-the-public-capability-teaching-contract.md) | 公开 teaching entry 使用六类稳定字段，模型内部表示与 Help / Answer 的确定性公开投影分层 |
+| [ADR-0124](0124-express-non-private-teaching-scenes-directly.md) | 允许直接保存非私聊谓词，不强制枚举场景全集；保留更窄独立限制，不扩展通用权限计算器 |
 | [ADR-0113](0113-separate-routing-authorization-and-business-readiness-in-teaching.md) | `platform_scope` 留在确定性 Runtime，业务准备状态进入 behavior boundary；role/access 按当前替代关系解释 |
 | [ADR-0121](0121-checkpoint-completed-teaching-units-before-atomic-publication.md) | 单元完成后持久化未发布候选和维护诊断；插件仍经单一 generation 原子发布，中断后只补缺失单元 |
 

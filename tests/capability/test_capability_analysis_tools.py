@@ -400,7 +400,12 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
     assert "localstore_data_file_info" not in observed_tools
     assert "只在 target_plugin 根内做纯文本搜索" in tool_descriptions["target_plugin_search_files"]
     assert "python_open_definition" in tool_descriptions["target_plugin_search_files"]
+    assert (
+        "可在当前根内搜索相关赋值、注册或实现位置"
+        in tool_descriptions["target_plugin_search_files"]
+    )
     assert "Evidence 标注" in tool_descriptions["python_open_definition"]
+    assert "不保证找到运行时实际调用的实现或完整行为" in tool_descriptions["python_open_definition"]
     assert (
         'python_open_definition(navigation_ref="nav:abc")'
         in tool_descriptions["python_open_definition"]
@@ -543,21 +548,30 @@ def test_teaching_file_tools_return_recovery_for_repeated_directory_attempts(
     assert results[1]["suggested_tools"] == ["python_open_definition"]
 
 
-@pytest.mark.parametrize("from_plugin_index", [False, True])
+@pytest.mark.parametrize(
+    ("from_plugin_index", "source_kind"),
+    [(False, "python_function"), (True, "python_function"), (False, "python_registration")],
+)
 def test_initial_python_evidence_exposes_request_bound_navigation_handles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     from_plugin_index: bool,
+    source_kind: str,
 ) -> None:
     profiles = _with_target_plugin_alias(_profiles(tmp_path))
-    source = "def helper():\n    return 1\n\ndef handle():\n    return helper()\n"
+    content = (
+        "matcher = helper()"
+        if source_kind == "python_registration"
+        else "def handle():\n    return helper()"
+    )
+    source = "def helper():\n    return 1\n\n" + content + "\n"
     handler = profiles.plugin_source_root.path / "handler.py"
     handler.write_text(source, encoding="utf-8")
     revision = hashlib.sha256(handler.read_bytes()).hexdigest()
     evidence = CapabilityEvidenceUnit(
         "evidence:function:handle",
-        "python_function",
-        "def handle():\n    return helper()",
+        source_kind,
+        content,
         f"sha256:{revision}",
         "target_plugin/handler.py:handle:4",
     )

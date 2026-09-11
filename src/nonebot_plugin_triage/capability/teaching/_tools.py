@@ -76,6 +76,7 @@ _NAVIGABLE_PYTHON_SOURCE_KINDS = frozenset(
         "python_dependency_function",
         "python_family_callable",
         "python_function",
+        "python_registration",
         "python_gate_binding",
     }
 )
@@ -966,6 +967,9 @@ def _navigation_toolset(
         `nav:abc` 时调用 `python_open_definition(navigation_ref="nav:abc")`，不要把依赖
         包名交给 `file_info`。
 
+        resolved=true 只表示已定位定义，不保证找到运行时实际调用的实现或完整行为。
+        若结果仅为变量绑定、容器或声明，仍不足以解释当前行为，可用文本搜索查找相关赋值、注册或实现位置。
+
         Args:
             navigation_ref: Evidence 或同插件入口索引提供的位置句柄。
         """
@@ -998,7 +1002,7 @@ def _navigation_toolset(
             "文件 search_files 只在单个根内做文本搜索，不能替代跨依赖的符号导航。"
             "navigation_ref 必须原样使用初始 sidecar、同插件入口索引或 read_file/open_definition 返回的值；"
             "不要计算行列、复制源码哈希或把依赖包目录交给 file_info。"
-            "已定位的 Handler 直接读取，其他符号先经 Jedi 定位；唯一目标会在一次调用内完成 "
+            "已定位的 Handler 直接读取，其他符号先经定义导航定位；唯一目标会在一次调用内完成 "
             "revision 复核和稳定读取，并返回可直接引用的 "
             "evidence_id；多个目标时只从返回的 candidates 中选择一个 navigation_ref 再打开。"
             f"{family_boundary}"
@@ -1042,7 +1046,9 @@ def _file_tool_definition_preparer(
                 description = (
                     f"{description.rstrip()} 只在 {root.name} 根内做纯文本搜索；"
                     "不会搜索导入的第三方依赖，也不是 Python 定义导航。"
-                    "已读源码返回 navigation_targets 时，使用 python_open_definition。"
+                    "定位已知符号定义优先使用 python_open_definition；"
+                    "若仅定位到变量绑定、容器或声明，仍不足以解释当前行为，"
+                    "可在当前根内搜索相关赋值、注册或实现位置。"
                 )
             elif suffix in {"read_file", "file_info"}:
                 description = (
