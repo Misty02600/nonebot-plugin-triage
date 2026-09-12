@@ -947,8 +947,11 @@ class CapabilityTeachingToolProvider:
                 tools=[search_docs],
                 instructions=(
                     "framework_search_docs 只检索与当前运行环境版本匹配的 NoneBot 公开文档。"
-                    "涉及 on_command、Matcher、Rule、Permission、依赖注入或 Alconna 集成语义时，"
-                    "优先查询文档，不要反复阅读依赖包源码。返回的 evidence_id 可以直接用于最终输出。"
+                    "已有 Evidence 足够时直接使用，不因出现框架 API 就检索，也不要求文档和源码各查一遍。"
+                    "缺少框架 API 的一般含义时优先查询文档，查询带上具体 API 名（如 Matcher.reject）和待确认的问题，避免只搜泛词。"
+                    "判断当前插件实际行为时，以插件源码和 Runtime 事实中的参数、分支及调用位置为准。"
+                    "文档未命中、未覆盖影响教学的细节，或与源码存在疑问时，核对适用版本，并按需通过源码导航补读当前安装框架的对应定义。"
+                    "取得足够证据或确认无法唯一判断后停止；证据不足的事实保持 unresolved。返回的 evidence_id 可以直接用于最终输出。"
                 ),
             ).prefixed("framework"),
         )

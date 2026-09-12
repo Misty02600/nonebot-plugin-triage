@@ -170,6 +170,34 @@ def _record(
                 (matcher_evidence_id,),
             )
         )
+    if kind == "alconna":
+        claims.append(
+            Claim("command.separators", [" "], ClaimBasis.OBSERVED, (matcher_evidence_id,))
+        )
+
+        def with_separators(items):
+            return [
+                {
+                    **item,
+                    "separators": " ",
+                    **({"keyword": False} if "required" in item else {}),
+                    **({"variadic_length": -1} if item.get("variadic") else {}),
+                    **(
+                        {"arguments": with_separators(item["arguments"])}
+                        if "arguments" in item
+                        else {}
+                    ),
+                    **(
+                        {"components": with_separators(item["components"])}
+                        if "components" in item
+                        else {}
+                    ),
+                }
+                for item in items
+            ]
+
+        command_arguments = with_separators(command_arguments or [])
+        command_components = with_separators(command_components or [])
     if command_arguments:
         claims.append(
             Claim(

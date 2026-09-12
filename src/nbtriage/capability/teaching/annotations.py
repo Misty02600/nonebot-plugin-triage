@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from functools import cache
 from typing import Any
@@ -30,6 +30,7 @@ from nbtriage.capability.teaching.analysis import (
 from nbtriage.capability.teaching.usage import (
     MAX_EXPLICIT_USAGE_ALTERNATIVES,
     MAX_PUBLIC_USAGES,
+    PUBLIC_USAGE_SEPARATORS,
     CapabilityUsageExpressionError,
     group_literal_expression_for_usage,
     split_reply_usage,
@@ -38,8 +39,8 @@ from nbtriage.capability.teaching.usage import (
 )
 
 CAPABILITY_ANNOTATION_SCHEMA_VERSION = 13
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v114-zh"
-CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v81"
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v115-zh"
+CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v82"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
@@ -480,6 +481,7 @@ def capability_analysis_fingerprint(
                 "regex_flags": list(item.regex_flags),
                 "keywords": list(item.keywords),
                 "canonical_usages": list(item.canonical_usages),
+                "argument_limits": list(item.argument_limits),
                 "aliases": list(item.aliases),
                 "requires_mention": item.requires_mention,
                 "shortcut_count": item.shortcut_count,
@@ -886,6 +888,7 @@ def validate_capability_usage_pattern(
     value: str,
     *,
     allow_verified_aliases: bool = False,
+    allow_separated_slots: bool = False,
 ) -> str:
     """验证完整、可直接展示的教学用法。"""
     normalized = _usage_pattern(value)
@@ -899,14 +902,17 @@ def validate_capability_usage_pattern(
         for marker in (" 后发送", "然后发送", "再发送", "随后发送", " 后回复", "然后回复", "再回复")
     ):
         raise CapabilityAnnotationError("multi-turn instructions do not belong in usage")
-    if re.search(r"(?:<[^<>]*\.\.\.>|\[[^\[\]]*\.\.\.\])", normalized):
+    if re.search(r"(?:<[^<>]*\.\.\.>|\[[^<>\[\]]*\.\.\.\])", normalized):
         raise CapabilityAnnotationError(
             "重复参数的省略号必须写在完整槽位之后，例如 <参数>... 或 [参数]..."
         )
     if re.search(r"(?<!\S)@(?=[<\[])", normalized):
         raise CapabilityAnnotationError("mention 必须完整写入参数槽位，例如 <@用户> 或 [@用户]")
+    following = (
+        rf"[){re.escape(PUBLIC_USAGE_SEPARATORS)}\]\[]" if allow_separated_slots else r"[)|]"
+    )
     if re.search(r"(?<![>\]])\.\.\.", normalized) or re.search(
-        r"\.\.\.(?!\s|[)|]|$)",
+        rf"\.\.\.(?!\s|{following}|$)",
         normalized,
     ):
         raise CapabilityAnnotationError("省略号只能紧跟一个完整参数槽位")
@@ -949,11 +955,11 @@ def _align_capability_usage_template(
     value: str, template: str, *, allow_reply_context: bool = False
 ) -> tuple[str, dict[str, str]]:
     _public_text(template, "canonical usage")
-    normalized = validate_capability_usage_pattern(value)
+    normalized = validate_capability_usage_pattern(value, allow_separated_slots=True)
     reply, command_usage = (
         split_reply_usage(normalized) if allow_reply_context else (None, normalized)
     )
-    normalized_template = validate_capability_usage_pattern(template)
+    normalized_template = validate_capability_usage_pattern(template, allow_separated_slots=True)
     markers = tuple(_STRUCTURAL_USAGE_SLOT.finditer(normalized_template))
     if not markers:
         if command_usage != normalized_template:
@@ -978,8 +984,19 @@ def _align_capability_usage_template(
             slot_pattern += re.escape("...")
             cursor += 3
         omit_literal = None
-        if reply and depth == 0 and (opening == "[" or reply.startswith("<")):
-            omit_literal = literal.removesuffix(" ")
+        wrapped = re.search(rf"\[([{re.escape(PUBLIC_USAGE_SEPARATORS)}])$", literal)
+        if depth == 1 and wrapped and normalized_template[cursor : cursor + 1] == "]":
+            # 非空格分隔的可选位置参数形如 [,<slot:0>]，整体参与回复对齐。
+            slot_pattern = re.escape(wrapped.group()) + slot_pattern + r"\]"
+            literal = literal[: wrapped.start()]
+            cursor += 1
+            depth -= 1
+            if reply:
+                omit_literal = literal
+        elif reply and depth == 0 and (opening == "[" or reply.startswith("<")):
+            omit_literal = (
+                literal[:-1] if literal and literal[-1] in PUBLIC_USAGE_SEPARATORS else literal
+            )
         parts.append((literal, re.compile(slot_pattern), omit_literal))
     tail = normalized_template[cursor:]
 
@@ -1030,6 +1047,64 @@ def _align_capability_usage_template(
     return normalized, names
 
 
+def with_argument_limit_boundaries(
+    request: CapabilityAnalysisRequest,
+    annotation: CapabilityTeachingAnnotation,
+) -> CapabilityTeachingAnnotation:
+    """用当前槽位事实派生公开视图，不把代码说明写回模型注释或编辑基线。"""
+    if not annotation.knowledge_enabled or not any(t.argument_limits for t in request.invocations):
+        return annotation
+    targets = {target.entry_id: target for target in request.invocations}
+    entries = []
+    for entry in annotation.entries:
+        target = targets.get(entry.entry_id)
+        if target is None:
+            raise CapabilityAnnotationError("argument limits require a current invocation target")
+        if not target.argument_limits:
+            entries.append(entry)
+            continue
+        matches: list[tuple[str, dict[str, str]]] = []
+        template = target.canonical_usages[0]
+        for usage in entry.usages:
+            templates = {template}
+            if target.aliases:
+                body = usage.removeprefix("@bot ") if target.requires_mention else usage
+                # 已发布 usage 的触发词可能合并别名；只接受可无损展开的固定入口。
+                for end in range(1, len(body) + 1):
+                    try:
+                        templates.add(
+                            _render_display_trigger(
+                                template, target=target, display_trigger=body[:end]
+                            )
+                        )
+                    except CapabilityAnnotationError:
+                        continue
+            for candidate in templates:
+                try:
+                    _normalized, names = _align_capability_usage_template(usage, candidate)
+                except CapabilityAnnotationError:
+                    continue
+                matches.append((usage, names))
+        if not matches or any(names != matches[0][1] for _usage, names in matches):
+            raise CapabilityAnnotationError("argument limits require an unambiguous standard usage")
+        usage, names = matches[0]
+        boundaries = []
+        for index, maximum in target.argument_limits:
+            name = names[str(index)]
+            label = f"“{name}”"
+            if list(names.values()).count(name) > 1:
+                occurrence = sum(value == name for key, value in names.items() if int(key) <= index)
+                label = f"第 {occurrence} 个{label}参数"
+            boundaries.append(f"用法「{usage}」中，每次显式填写{label}时最多提供 {maximum} 项。")
+        entries.append(
+            replace(
+                entry,
+                behavior_boundaries=_canonical_texts((*entry.behavior_boundaries, *boundaries)),
+            )
+        )
+    return replace(annotation, entries=tuple(entries))
+
+
 _GENERIC_INPUT_SLOTS = frozenset(
     {
         "内容",
@@ -1075,7 +1150,9 @@ def _validated_usage(
     display_trigger: str | None = None,
     evidence_ids: tuple[str, ...] = (),
 ) -> str:
-    normalized = validate_capability_usage_pattern(value)
+    normalized = validate_capability_usage_pattern(
+        value, allow_separated_slots=bool(target.canonical_usages)
+    )
     shortcut_allowed = bool(set(target.shortcut_evidence_ids).intersection(evidence_ids))
     if target.canonical_usages:
         for template in target.canonical_usages:
@@ -1104,6 +1181,7 @@ def _validated_usage(
                     usage_command_body_pattern(
                         target.command_body,
                         requires_mention=True,
+                        canonical_usages=target.canonical_usages,
                     ),
                     normalized,
                 )
@@ -1136,7 +1214,17 @@ def _validated_usage(
         )
     if target.mode is CapabilityInvocationMode.ANCHORED:
         assert target.command_body is not None
-        if len(re.findall(usage_command_body_pattern(target.command_body), normalized)) != 1:
+        if (
+            len(
+                re.findall(
+                    usage_command_body_pattern(
+                        target.command_body, canonical_usages=target.canonical_usages
+                    ),
+                    normalized,
+                )
+            )
+            != 1
+        ):
             if shortcut_allowed:
                 _reject_alias_as_shortcut(normalized, target)
                 if (
@@ -1157,6 +1245,7 @@ def _validated_usage(
                     usage_command_body_pattern(
                         target.command_body,
                         requires_mention=True,
+                        canonical_usages=target.canonical_usages,
                     ),
                     normalized,
                 )
@@ -1178,7 +1267,19 @@ def _reject_alias_as_shortcut(
     target: CapabilityInvocationTarget,
 ) -> None:
     candidate = split_reply_usage(usage)[1].removeprefix("@bot ")
-    if any(re.match(usage_command_body_pattern(alias), candidate) for alias in target.aliases):
+    if any(
+        re.match(
+            usage_command_body_pattern(
+                alias,
+                canonical_usages=tuple(
+                    template.replace(target.command_body or "", alias, 1)
+                    for template in target.canonical_usages
+                ),
+            ),
+            candidate,
+        )
+        for alias in target.aliases
+    ):
         raise CapabilityAnnotationError(
             "Runtime aliases inherit the canonical parser structure and cannot be published "
             "as standalone shortcut usages"
@@ -1208,14 +1309,18 @@ def _render_display_trigger(
         )
     except CapabilityUsageExpressionError as error:
         raise CapabilityAnnotationError(str(error)) from error
-    pattern = usage_command_body_pattern(target.command_body)
+    pattern = usage_command_body_pattern(
+        target.command_body, canonical_usages=target.canonical_usages
+    )
     grouped_trigger = group_literal_expression_for_usage(display_trigger)
     rendered, substitutions = re.subn(pattern, lambda _match: grouped_trigger, usage, count=1)
     if substitutions != 1:
         raise CapabilityAnnotationError(
             "usage must contain the deterministic command body exactly once"
         )
-    return validate_capability_usage_pattern(rendered, allow_verified_aliases=True)
+    return validate_capability_usage_pattern(
+        rendered, allow_verified_aliases=True, allow_separated_slots=bool(target.canonical_usages)
+    )
 
 
 def _canonical_texts(values: Any) -> tuple[str, ...]:
@@ -1283,7 +1388,7 @@ def _usage_tuple(value: object) -> None:
     for item in value:
         if not isinstance(item, str):
             raise CapabilityAnnotationError("usages must contain strings")
-        validate_capability_usage_pattern(item)
+        validate_capability_usage_pattern(item, allow_separated_slots=True)
 
 
 def _ordered_unique(values: Any) -> tuple[str, ...]:

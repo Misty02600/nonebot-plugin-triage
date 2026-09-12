@@ -16,8 +16,10 @@ from types import FunctionType, ModuleType
 from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
-from arclet.alconna import Alconna, command_manager
+from arclet.alconna import Alconna, KeyWordVar, MultiVar, Option, command_manager
+from arclet.alconna.action import append, count
 from arclet.alconna.base import Completion, Help, Shortcut
+from nepattern import AntiPattern
 
 from nbtriage.capability.catalog.records import (
     AnalysisIssue,
@@ -120,6 +122,9 @@ class AlconnaArgument:
     variadic_flag: str | None
     pattern_type: str | None
     has_default: bool
+    separators: str | None = None
+    keyword: bool | None = None
+    variadic_length: int | None = None
 
 
 @dataclass(frozen=True)
@@ -128,10 +133,12 @@ class AlconnaComponent:
     name: str
     aliases: tuple[str, ...]
     help_text: str | None
-    requires: tuple[str, ...]
+    requires: tuple[str, ...] | None
     compact: bool | None
     arguments: tuple[AlconnaArgument, ...]
     components: tuple[AlconnaComponent, ...]
+    separators: str | None = None
+    repeatable: bool = False
 
 
 @dataclass(frozen=True)
@@ -811,7 +818,7 @@ def _alconna_candidate(
         literal_commands=(name,) if name else (),
         aliases=aliases,
         prefixes=prefixes,
-        separators=(),
+        separators=tuple(getattr(command, "separators", "")),
         description=description,
         usage=usage,
         example=example,
@@ -1332,7 +1339,7 @@ def _alconna_arguments(args: object) -> tuple[AlconnaArgument, ...]:
         has_default = default is not _MISSING and not _is_tarina_empty(default)
         pattern = getattr(argument, "value", None)
         pattern_type = _alconna_pattern_type(pattern) if pattern is not None else None
-        variadic = _safe_type_name(pattern) in {"MultiVar", "MultiKeyWordVar"}
+        variadic = isinstance(pattern, MultiVar)
         raw_variadic_flag = getattr(pattern, "flag", None) if variadic else None
         variadic_flag = raw_variadic_flag if raw_variadic_flag in {"+", "*"} else None
         result.append(
@@ -1349,6 +1356,18 @@ def _alconna_arguments(args: object) -> tuple[AlconnaArgument, ...]:
                 variadic_flag=variadic_flag,
                 pattern_type=pattern_type,
                 has_default=has_default,
+                separators=getattr(argument, "separators", None),
+                keyword=(
+                    isinstance(pattern, KeyWordVar)
+                    or (isinstance(pattern, MultiVar) and isinstance(pattern.base, KeyWordVar))
+                    if pattern is not None
+                    else None
+                ),
+                variadic_length=(
+                    pattern.length
+                    if isinstance(pattern, MultiVar) and type(pattern.length) is int
+                    else None
+                ),
             )
         )
     return tuple(result)
@@ -1360,17 +1379,13 @@ def _alconna_pattern_type(pattern: object) -> str:
         if _safe_type_name(pattern) in {"MultiVar", "MultiKeyWordVar"}
         else pattern
     )
+    # AntiPattern 沿用 base.origin；它不是允许输入的正向类型。
+    if isinstance(union, AntiPattern):
+        return _qualified_type_name(AntiPattern)
     if _safe_type_name(union) == "UnionPattern":
         members = getattr(union, "base", None)
         if isinstance(members, Sequence) and not isinstance(members, str | bytes):
-            member_types = tuple(
-                sorted(
-                    {
-                        _qualified_type_name(getattr(member, "origin", None) or member)
-                        for member in members
-                    }
-                )
-            )
+            member_types = tuple(sorted({_alconna_pattern_type(member) for member in members}))
             if member_types:
                 return f"typing.Union[{','.join(member_types)}]"
     pattern_origin = getattr(pattern, "origin", None)
@@ -1400,15 +1415,42 @@ def _alconna_component(
     kind = "subcommand" if isinstance(raw_nested, Sequence) else "option"
     compact_value = getattr(component, "compact", None)
     compact = compact_value if isinstance(compact_value, bool) else None
+    raw_requires = getattr(component, "requires", None)
+    # requires 是有序词序列；不能复用会排序和去重的别名投影。
+    requires = (
+        tuple(raw_requires)
+        if isinstance(raw_requires, (list, tuple))
+        and all(isinstance(word, str) for word in raw_requires)
+        else None
+    )
+    arguments = _alconna_arguments(getattr(component, "args", None))
     return AlconnaComponent(
         kind=kind,
         name=name,
         aliases=_safe_string_sequence(getattr(component, "aliases", ())),
         help_text=_safe_text(getattr(component, "help_text", None)),
-        requires=_safe_string_sequence(getattr(component, "requires", ())),
+        requires=requires,
         compact=compact,
-        arguments=_alconna_arguments(getattr(component, "args", None)),
+        arguments=arguments,
         components=_alconna_components(raw_nested) if nested is None else nested,
+        separators=getattr(component, "separators", None),
+        repeatable=(
+            isinstance(component, Option)
+            and (
+                (
+                    not component.nargs
+                    and component.action == count
+                    and type(component.action.value) is int
+                )
+                or (
+                    component.action == append
+                    and bool(arguments)
+                    and all(
+                        not arg.hidden and not arg.variadic and not arg.keyword for arg in arguments
+                    )
+                )
+            )
+        ),
     )
 
 

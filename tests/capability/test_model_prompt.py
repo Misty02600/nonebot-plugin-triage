@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
+
+import pytest
 
 import nbtriage.capability.teaching._prompt as prompt
 from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisBaseline,
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
+    CapabilityGateCandidate,
+    CapabilityGateKind,
     CapabilityIdentity,
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
+    ConfigProjection,
 )
 
 
@@ -111,6 +117,74 @@ def test_prompt_fragments_follow_request_structure() -> None:
         assert prompt._instructions_for_request(request) == "\n\n".join(expected_parts)
 
 
+@pytest.mark.parametrize(
+    "features",
+    [
+        (),
+        ("aliases",),
+        ("shortcuts",),
+        ("canonical",),
+        ("config",),
+        ("gates",),
+        ("aliases", "shortcuts", "canonical", "config", "gates"),
+    ],
+)
+def test_optional_prompt_rules_follow_facts_across_mixed_entries(features):
+    request = _request(
+        (
+            CapabilityInvocationMode.KEYWORD,
+            CapabilityInvocationMode.ANCHORED,
+            CapabilityInvocationMode.ANCHORED,
+        ),
+        with_baseline=True,
+    )
+    invocations = tuple(
+        replace(
+            item,
+            aliases=("查图",) if "aliases" in features else (),
+            canonical_usages=("搜图 <slot:0>",) if "canonical" in features else (),
+            shortcut_count=1 if "shortcuts" in features else 0,
+            shortcut_evidence_ids=("evidence-handler",) if "shortcuts" in features else (),
+        )
+        if item.mode is CapabilityInvocationMode.ANCHORED
+        else item
+        for item in request.invocations
+    )
+    request = replace(
+        request,
+        invocations=invocations,
+        config_projections=(ConfigProjection("config-enabled", "config.enabled", True),)
+        if "config" in features
+        else (),
+        gate_candidates=(
+            CapabilityGateCandidate(
+                "gate-permission",
+                CapabilityGateKind.PERMISSION,
+                ("entry-1",),
+                ("evidence-handler",),
+            ),
+        )
+        if "gates" in features
+        else (),
+    )
+    instruction = prompt._instructions_for_request(request)
+    for feature, fragment in (
+        ("aliases", prompt.ALIAS_INSTRUCTION),
+        ("shortcuts", prompt.SHORTCUT_INSTRUCTION),
+        ("canonical", prompt.CANONICAL_INSTRUCTION),
+        ("config", prompt.CONFIG_INSTRUCTION),
+        ("gates", prompt.GATE_INSTRUCTION),
+    ):
+        assert instruction.count(fragment) == (1 if feature in features else 0)
+    assert prompt.KEYWORD_INSTRUCTION in instruction
+    assert prompt.BASELINE_INSTRUCTION in instruction
+    assert "没有 gate candidate 不等于没有执行限制" in instruction
+    assert "不得把“不限流”“没有权限限制”等整体无约束结论写进公开字段" in instruction
+    assert "配置投影已经关闭的处理分支必须省略" in instruction
+    assert "证据或对齐不明确时省略该回复变体" in instruction
+    assert "按下一条处理" not in instruction
+
+
 def test_prompt_preserves_unique_model_only_contracts() -> None:
     contracts = {
         "core": (
@@ -124,7 +198,7 @@ def test_prompt_preserves_unique_model_only_contracts() -> None:
                 "密钥、令牌、凭据、认证头、请求参数及其传输方式属于实现机制",
                 "以已确认的实际条件、数据流、赋值、运算、状态更新和调度逻辑为准",
                 "提示文字可以证明用户会看到什么",
-                "任一 gate candidate 仍为 unresolved 时",
+                "没有 gate candidate 不等于没有执行限制",
                 "仅限制某个 Option、子命令、输入类别、业务对象或结果分支",
                 "用户可通过公开业务操作理解、改变或满足",
                 "platform_scope 是模型外拥有的 Runtime 路由事实",
@@ -148,11 +222,30 @@ def test_prompt_preserves_unique_model_only_contracts() -> None:
         "anchored": (
             prompt.ANCHORED_INSTRUCTION,
             (
-                "展开后必须恰好等于全部入口",
+                "同一 entry 默认只输出一条 usage",
+                "aliases 为空时，display_trigger 使用 null",
+            ),
+        ),
+        "aliases": (prompt.ALIAS_INSTRUCTION, ("展开后必须恰好等于全部入口",)),
+        "shortcuts": (
+            prompt.SHORTCUT_INSTRUCTION,
+            (
                 "shortcut usage 可以是完全不同的可调用文字，不要求包含 command_body",
+                "shortcut Evidence 的 `compact`",
+            ),
+        ),
+        "canonical": (
+            prompt.CANONICAL_INSTRUCTION,
+            (
                 "Uniseg `At` 是用户直接提供的 `@用户` 输入形式",
                 "Alconna `compact` 是 Runtime 已确认的语法",
-                "同一 entry 默认只输出一条 usage",
+            ),
+        ),
+        "gates": (
+            prompt.GATE_INSTRUCTION,
+            (
+                "任一 gate candidate 仍为 unresolved 时",
+                "每个 gate resolution 都必须引用 candidate 自己的结构 Evidence",
             ),
         ),
         "regex": (

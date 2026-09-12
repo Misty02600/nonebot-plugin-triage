@@ -14,6 +14,7 @@ from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.usage import RequestUsage
 
+from nbtriage.capability.teaching._prompt import CONFIG_INSTRUCTION
 from nbtriage.capability.teaching.analysis import (
     BaselineChangeOperation,
     BaselineMemberField,
@@ -191,7 +192,10 @@ def test_agent_uses_native_output_and_bounded_source_payload() -> None:
 
     assert result.entries[0].claims[0].kind is SemanticClaimKind.NAME
     messages = cast(list[ModelRequest], observed["messages"])
-    assert messages[0].instructions == "\n\n".join((CORE_INSTRUCTION, ANCHORED_INSTRUCTION)).strip()
+    assert (
+        messages[0].instructions
+        == "\n\n".join((CORE_INSTRUCTION, CONFIG_INSTRUCTION, ANCHORED_INSTRUCTION)).strip()
+    )
     prompt = cast(UserPromptPart, messages[0].parts[0])
     payload = json.loads(cast(str, prompt.content))
     assert payload["invocations"] == [
@@ -354,6 +358,8 @@ def test_agent_payload_marks_fixed_permission_as_model_external() -> None:
         ("@bot 搜图 [slot:0]", "@bot 搜图 [图片]", "[回复图片] @bot 搜图"),
         ("@bot 搜图 <slot:0>", "@bot 搜图 <图片>", "<回复图片> @bot 搜图"),
         ("@bot 搜图 <slot:0>...", "@bot 搜图 <图片>...", "<回复图片> @bot 搜图"),
+        ("@bot 搜图,<slot:0>", "@bot 搜图,<图片>", "<回复图片> @bot 搜图"),
+        ("@bot 搜图[,<slot:0>]", "@bot 搜图[,<图片>]", "[回复图片] @bot 搜图"),
     ],
 )
 def test_parser_reply_usage_is_not_a_shortcut_and_cannot_replace_standard_usage(

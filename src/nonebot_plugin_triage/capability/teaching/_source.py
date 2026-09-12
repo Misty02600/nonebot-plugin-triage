@@ -4,6 +4,7 @@ import ast
 import hashlib
 import json
 import keyword
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -22,6 +23,7 @@ from nbtriage.capability.teaching.framework_semantics import (
     PermissionSemanticProfile,
     alconna_dispatch_profile,
     builtin_permission_semantic_profiles,
+    nepattern_anti_pattern_profile,
     nonebot_dependency_overload_profile,
     uninfo_session_field_profile,
 )
@@ -435,6 +437,14 @@ def _append_framework_semantics_evidence(
             "framework:nonebot-plugin-uninfo/Session",
         ),
     )
+    if _runtime_evidence_has_anti_pattern(evidence_units):
+        _append_framework_semantic_profile(
+            evidence_units,
+            nepattern_anti_pattern_profile(),
+            documentation="nepattern AntiPattern implementation",
+            source_reviewed_version="0.7.8",
+            locator="framework:nepattern/AntiPattern",
+        )
     for profile, documentation, source_reviewed_version, locator in profiles:
         if not _python_evidence_uses_framework_annotation(evidence_units, profile):
             continue
@@ -445,6 +455,29 @@ def _append_framework_semantics_evidence(
             source_reviewed_version=source_reviewed_version,
             locator=locator,
         )
+
+
+def _runtime_evidence_has_anti_pattern(evidence_units: list[CapabilityEvidenceUnit]) -> bool:
+    def contains_pattern(value: object) -> bool:
+        if isinstance(value, dict):
+            pattern_type = value.get("pattern_type")
+            if isinstance(pattern_type, str) and "nepattern.base.AntiPattern" in re.split(
+                r"[\[\],]", pattern_type
+            ):
+                return True
+            return any(contains_pattern(item) for item in value.values())
+        return isinstance(value, list) and any(contains_pattern(item) for item in value)
+
+    for evidence in evidence_units:
+        if evidence.source_kind not in {"runtime_capability_facts", "runtime_family_shapes"}:
+            continue
+        try:
+            document = json.loads(evidence.content)
+        except (TypeError, ValueError):
+            continue
+        if contains_pattern(document):
+            return True
+    return False
 
 
 def _permission_framework_evidence(qualified_name: str) -> CapabilityEvidenceUnit | None:

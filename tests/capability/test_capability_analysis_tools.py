@@ -913,6 +913,13 @@ def test_teaching_tools_offer_version_bound_framework_rag_and_capture_evidence(
         calls += 1
         observed_tools.update(tool.name for tool in info.function_tools)
         if calls == 1:
+            instructions = info.instructions or ""
+            assert "缺少框架 API 的一般含义时优先查询文档" in instructions
+            assert "Matcher.reject" in instructions
+            assert "判断当前插件实际行为时，以插件源码和 Runtime 事实" in instructions
+            assert "按需通过源码导航补读当前安装框架的对应定义" in instructions
+            assert "不要求文档和源码各查一遍" in instructions
+            assert "取得足够证据或确认无法唯一判断后停止" in instructions
             return ModelResponse(
                 parts=[
                     ToolCallPart(

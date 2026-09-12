@@ -143,6 +143,19 @@ def test_writer_activates_help_and_answer_files_with_one_generation_pointer(
     assert private_entry in annotation.entries
 
 
+def test_writer_preserves_parser_punctuation_in_help_and_answer(tmp_path: Path) -> None:
+    annotation = _annotation("查询信息。")
+    usage = "@bot (搜图|查图),<城市>[,<日期>]"
+    annotation = replace(annotation, entries=(replace(annotation.entries[0], usages=(usage,)),))
+    paths = CapabilityTeachingOutputWriter(tmp_path / "output").refresh(
+        CapabilitySnapshot.create((_record(),)),
+        lambda _id: annotation,
+    )
+    assert len(paths) == 2
+    for path in paths:
+        assert usage in path.read_text(encoding="utf-8")
+
+
 def test_writer_failure_keeps_previous_generation_pointer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

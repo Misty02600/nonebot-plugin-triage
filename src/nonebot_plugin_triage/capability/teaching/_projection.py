@@ -20,6 +20,10 @@ from nbtriage.capability.teaching.analysis import (
     CapabilityInvocationTarget,
     SemanticConstraint,
 )
+from nbtriage.capability.teaching.annotations import (
+    CapabilityAnnotationError,
+    validate_capability_usage_pattern,
+)
 from nbtriage.capability.teaching.framework_semantics import (
     PermissionSemantic,
     builtin_permission_semantic_profiles,
@@ -32,6 +36,10 @@ from nbtriage.capability.teaching.source_evidence import (
     StructuralSymbolFact,
     StructuralSymbolKind,
     fixed_permission_constraints,
+)
+from nbtriage.capability.teaching.usage import (
+    CapabilityUsageExpressionError,
+    select_usage_separator,
 )
 from nonebot_plugin_triage.capability.teaching._navigation import (
     CapabilityAnalysisAdapterError,
@@ -74,6 +82,10 @@ def _family_member_invocations(
             registrations,
             runtime_evidence_id=None,
         )
+        if any(target.argument_limits for target in invocations):
+            raise CapabilityAnalysisAdapterError(
+                "unsupported Alconna syntax: finite argument limits in aggregate family"
+            )
         shape = _family_parser_shape(record, invocations)
         shape_id: str | None = None
         if shape is not None:
@@ -271,6 +283,7 @@ def _family_parser_shape(
     compact = _single_family_fact(record, "command.compact", default=False)
     return {
         "parser": "alconna",
+        "separators": _record_separators(record),
         "compact": compact,
         "arguments": arguments,
         "components": components,
@@ -789,6 +802,11 @@ def _invocation_targets(
     command_arguments = arguments[0] if arguments else []
     command_components = components[0] if components else []
     command_compact = _command_compact(record)
+    root_separators = _record_separators(record)
+    if root_separators is not None:
+        _validate_separator_tree(
+            command_arguments, command_components, root_separators, compact=command_compact
+        )
     shortcut_counts = tuple(
         value
         for value in _claim_values(
@@ -815,11 +833,15 @@ def _invocation_targets(
         shortcut_evidence_ids = ()
     subcommands = _subcommand_leaves(command_components)
     if not subcommands:
+        argument_limits: list[tuple[int, int]] = []
         canonical = _structured_usage(
             header,
             command_arguments,
             _option_components(command_components),
             compact=command_compact,
+            separators=root_separators or " ",
+            root_separators=root_separators,
+            argument_limits=argument_limits,
         )
         if canonical is not None and requires_mention:
             canonical = f"@bot {canonical}"
@@ -833,30 +855,57 @@ def _invocation_targets(
                 requires_mention=requires_mention,
                 shortcut_count=shortcut_count,
                 shortcut_evidence_ids=shortcut_evidence_ids,
+                argument_limits=tuple(argument_limits),
             ),
         )
     return tuple(
         CapabilityInvocationTarget(
             entry_id=f"subcommand:{hashlib.sha256(' '.join(path).encode('utf-8')).hexdigest()[:16]}",
             mode=CapabilityInvocationMode.ANCHORED,
-            command_body=_command_path_body(header, path, compact=command_compact),
+            command_body=_command_path_body(
+                header,
+                path,
+                compact=command_compact,
+                separators=_path_connectors(
+                    path, command_components, root_separators, command_compact
+                ),
+            ),
             canonical_usages=((f"@bot {canonical}",) if requires_mention else (canonical,))
             if canonical is not None
             else (),
             aliases=_subcommand_aliases(
-                header, aliases, path, command_components, compact=command_compact
+                header,
+                aliases,
+                path,
+                command_components,
+                compact=command_compact,
+                separators=_path_connectors(
+                    path, command_components, root_separators, command_compact
+                ),
             ),
             requires_mention=requires_mention,
             shortcut_count=shortcut_count,
             shortcut_evidence_ids=shortcut_evidence_ids,
+            argument_limits=tuple(limits),
         )
         for path, component in subcommands
+        for limits in ([],)
         for canonical in (
             _structured_usage(
-                _command_path_body(header, path, compact=command_compact),
+                _command_path_body(
+                    header,
+                    path,
+                    compact=command_compact,
+                    separators=_path_connectors(
+                        path, command_components, root_separators, command_compact
+                    ),
+                ),
                 component.get("arguments", []),
                 _option_components(component.get("components", [])),
                 compact=component.get("compact") is True,
+                separators=component.get("separators", " ") if root_separators is not None else " ",
+                root_separators=root_separators,
+                argument_limits=limits,
             ),
         )
     )
@@ -874,9 +923,12 @@ def _command_path_body(
     path: tuple[str, ...],
     *,
     compact: bool,
+    separators: tuple[str, ...] | None = None,
 ) -> str:
     if not path:
         return header
+    if separators is not None:
+        return header + "".join(sep + name for sep, name in zip(separators, path, strict=True))
     head = f"{header}{path[0]}" if compact else f"{header} {path[0]}"
     return " ".join((head, *path[1:]))
 
@@ -888,6 +940,7 @@ def _subcommand_aliases(
     components: list[object],
     *,
     compact: bool,
+    separators: tuple[str, ...] | None = None,
 ) -> tuple[str, ...]:
     """沿同一子命令路径组合各层别名，不将兄弟节点混成等价入口。"""
     choices: list[tuple[str, ...]] = [(header, *aliases)]
@@ -915,10 +968,10 @@ def _subcommand_aliases(
         )
         choices.append(tuple(dict.fromkeys((name, *valid_aliases))))
         nested = component.get("components", ())
-    canonical = _command_path_body(header, path, compact=compact)
+    canonical = _command_path_body(header, path, compact=compact, separators=separators)
     result: set[str] = set()
     for root, *segments in product(*choices):
-        body = _command_path_body(root, tuple(segments), compact=compact)
+        body = _command_path_body(root, tuple(segments), compact=compact, separators=separators)
         if body != canonical:
             result.add(body)
         # 与现有 invocation 合同一致，超限报错而不是静默漏掉部分入口。
@@ -975,6 +1028,17 @@ def deterministic_record_usages(
     requires_mention: bool = False,
 ) -> tuple[str, ...]:
     """从当前 Runtime record 中投影可直接展示的精确调用形式。"""
+    try:
+        return _deterministic_record_usages(record, requires_mention=requires_mention)
+    except CapabilityAnalysisAdapterError:
+        return ()
+
+
+def _deterministic_record_usages(
+    record: CapabilityRecord,
+    *,
+    requires_mention: bool,
+) -> tuple[str, ...]:
     if not isinstance(record, CapabilityRecord):
         raise CapabilityAnalysisAdapterError("record must be a CapabilityRecord")
     if not isinstance(requires_mention, bool):
@@ -1010,6 +1074,11 @@ def deterministic_record_usages(
     command_arguments = arguments[0] if arguments else []
     command_components = components[0] if components else []
     command_compact = _command_compact(record)
+    root_separators = _record_separators(record)
+    if root_separators is not None:
+        _validate_separator_tree(
+            command_arguments, command_components, root_separators, compact=command_compact
+        )
     leaves = _subcommand_leaves(command_components)
     if not leaves:
         usage = _structured_usage(
@@ -1018,6 +1087,8 @@ def deterministic_record_usages(
             _option_components(command_components),
             compact=command_compact,
             generic_slot_names=True,
+            separators=root_separators or " ",
+            root_separators=root_separators,
         )
         if usage is None:
             if command_arguments or _option_components(command_components):
@@ -1027,7 +1098,12 @@ def deterministic_record_usages(
 
     result: list[str] = []
     for path, component in leaves:
-        command_body = _command_path_body(header, path, compact=command_compact)
+        command_body = _command_path_body(
+            header,
+            path,
+            compact=command_compact,
+            separators=_path_connectors(path, command_components, root_separators, command_compact),
+        )
         component_arguments = component.get("arguments", [])
         options = _option_components(component.get("components", []))
         usage = _structured_usage(
@@ -1035,6 +1111,8 @@ def deterministic_record_usages(
             component_arguments,
             options,
             compact=component.get("compact") is True,
+            separators=component.get("separators", " ") if root_separators is not None else " ",
+            root_separators=root_separators,
             generic_slot_names=True,
         )
         if usage is None:
@@ -1332,31 +1410,313 @@ def _structured_usage(
     *,
     compact: bool = False,
     generic_slot_names: bool = False,
+    separators: object = " ",
+    root_separators: str | None = None,
+    argument_limits: list[tuple[int, int]] | None = None,
 ) -> str | None:
     """把 Runtime parser 结构渲染为匿名模板或保守的直接帮助用法。"""
     if not isinstance(arguments, (list, tuple)):
         return None
+    if not isinstance(separators, str):
+        raise CapabilityAnalysisAdapterError("unsupported Alconna separators: missing node fact")
+    strict = root_separators is not None
+    root_separators = root_separators if strict else separators
+    _separator(separators)
     slot_indexes = iter(range(1_000))
     rendered_arguments = _render_arguments(
         arguments,
         slot_indexes=slot_indexes,
         generic_slot_names=generic_slot_names,
+        argument_limits=argument_limits,
     )
     if rendered_arguments is None:
+        if strict:
+            raise CapabilityAnalysisAdapterError(
+                "unsupported Alconna separators: invalid arguments"
+            )
         return None
     rendered_options = _render_options(
         options,
         slot_indexes=slot_indexes,
         generic_slot_names=generic_slot_names,
+        root_separators=root_separators if strict else None,
+        argument_limits=argument_limits,
     )
     if rendered_options is None:
+        if strict:
+            raise CapabilityAnalysisAdapterError("unsupported Alconna separators: invalid options")
         return None
-    parts = (*rendered_arguments, *rendered_options)
-    if not parts:
+    if not rendered_arguments and not rendered_options and not strict:
         return None
-    if compact:
-        return " ".join((f"{command_body}{parts[0]}", *parts[1:]))
-    return " ".join((command_body, *parts))
+    result, outgoing = _join_arguments(
+        command_body,
+        arguments,
+        rendered_arguments,
+        incoming="" if compact else _separator(separators),
+        root_separators=root_separators if strict else None,
+    )
+    for index, rendered in enumerate(rendered_options):
+        sep = (
+            outgoing if index or rendered_arguments else ("" if compact else _separator(separators))
+        )
+        # 重复标记属于整个 Option 组，移入分隔符时保留组后的后缀。
+        result += f"[{sep}{rendered[1:]}" if sep not in {"", " "} else sep + rendered
+        # 后续 Option 可独立省略，必须可从根 / 当前节点继续读取。
+        outgoing = _separator(separators)
+        if rendered_arguments and outgoing != _argument_separator(
+            arguments, -1, root_separators if strict else None
+        ):
+            raise CapabilityAnalysisAdapterError(
+                "unsupported Alconna separators: optional option boundary"
+            )
+    if strict:
+        try:
+            validate_capability_usage_pattern(result, allow_separated_slots=True)
+        except CapabilityAnnotationError as error:
+            raise CapabilityAnalysisAdapterError(
+                "unsupported Alconna separators: unrepresentable public template"
+            ) from error
+    return result
+
+
+def _separator(value: object) -> str:
+    if not isinstance(value, str):
+        raise CapabilityAnalysisAdapterError("unsupported Alconna separators: missing runtime fact")
+    try:
+        return select_usage_separator(value)
+    except CapabilityUsageExpressionError as error:
+        raise CapabilityAnalysisAdapterError(str(error)) from error
+
+
+def _record_separators(record: CapabilityRecord) -> str | None:
+    if record.kind != "alconna":
+        return None
+    values = _claim_values(record, "command.separators", evidence_kind="matcher_source")
+    if (
+        len(values) != 1
+        or not isinstance(values[0], list)
+        or not all(isinstance(char, str) and len(char) == 1 for char in values[0])
+    ):
+        raise CapabilityAnalysisAdapterError("unsupported Alconna separators: missing root fact")
+    result = "".join(values[0])
+    _separator(result)
+    return result
+
+
+def _argument_separator(arguments: object, index: int, root_separators: str | None) -> str:
+    if root_separators is None:
+        return " "
+    assert isinstance(arguments, (list, tuple))
+    argument = arguments[index]
+    if not isinstance(argument, Mapping) or "separators" not in argument:
+        raise CapabilityAnalysisAdapterError(
+            "unsupported Alconna separators: missing argument fact"
+        )
+    value = argument["separators"]
+    return _separator(root_separators if value == "" else value)
+
+
+def _node_requires(component: Mapping[str, object]) -> tuple[str, ...]:
+    """只接受可直接写进公开模板的、有序且互不重复的前置词。"""
+    raw = component.get("requires", ())
+    if not isinstance(raw, (list, tuple)) or any(
+        not isinstance(word, str)
+        or not word
+        or word.startswith("-")
+        or any(not (char.isalnum() or char in "-_") for char in word)
+        for word in raw
+    ):
+        raise CapabilityAnalysisAdapterError(
+            "unsupported Alconna separators: invalid requires words"
+        )
+    if len(set(raw)) != len(raw):
+        raise CapabilityAnalysisAdapterError(
+            "unsupported Alconna separators: repeated requires word"
+        )
+    return tuple(raw)
+
+
+def _validate_separator_tree(
+    arguments: object,
+    components: object,
+    root: str,
+    *,
+    node_separators: str | None = None,
+    compact: bool = False,
+    depth: int = 0,
+) -> None:
+    current_separator = _separator(node_separators if node_separators is not None else root)
+    if not isinstance(arguments, (list, tuple)) or not isinstance(components, (list, tuple)):
+        raise CapabilityAnalysisAdapterError("unsupported Alconna separators: invalid tree")
+    if any(not isinstance(arg, Mapping) or arg.get("keyword") is not False for arg in arguments):
+        raise CapabilityAnalysisAdapterError(
+            "unsupported Alconna syntax: keyword arguments or missing argument syntax fact"
+        )
+    for index in range(len(arguments)):
+        _argument_separator(arguments, index, root)
+        argument = arguments[index]
+        assert isinstance(argument, Mapping)
+        if argument.get("variadic") is True:
+            length = argument.get("variadic_length")
+            if type(length) is not int or (length != -1 and length < 1):
+                raise CapabilityAnalysisAdapterError(
+                    "unsupported Alconna syntax: missing or invalid variadic length"
+                )
+            if length > 0 and argument.get("hidden") is True:
+                raise CapabilityAnalysisAdapterError(
+                    "unsupported Alconna syntax: finite hidden variadic argument"
+                )
+    options = _option_components(components)
+    if len(options) > 3 and any(
+        isinstance(option, Mapping)
+        and isinstance(option.get("arguments", ()), (list, tuple))
+        and any(
+            isinstance(arg, Mapping)
+            and type(arg.get("variadic_length")) is int
+            and arg["variadic_length"] > 0
+            for arg in option.get("arguments", ())
+        )
+        for option in options
+    ):
+        raise CapabilityAnalysisAdapterError(
+            "unsupported Alconna syntax: finite argument in collapsed options"
+        )
+    if arguments and any(
+        isinstance(c, Mapping) and c.get("kind") == "subcommand" for c in components
+    ):
+        raise CapabilityAnalysisAdapterError("unsupported Alconna separators: ancestor arguments")
+    node_names: list[set[str]] = []
+    for component in components:
+        if not isinstance(component, Mapping):
+            raise CapabilityAnalysisAdapterError("unsupported Alconna separators: invalid node")
+        aliases = component.get("aliases", ())
+        if (
+            not isinstance(component.get("name"), str)
+            or not isinstance(aliases, (list, tuple))
+            or any(not isinstance(alias, str) for alias in aliases)
+        ):
+            raise CapabilityAnalysisAdapterError(
+                "unsupported Alconna separators: invalid node names"
+            )
+        node_names.append({component["name"], *aliases})
+    for component in components:
+        if not isinstance(component, Mapping):
+            raise CapabilityAnalysisAdapterError("unsupported Alconna separators: invalid node")
+        _separator(component.get("separators"))
+        if requires := _node_requires(component):
+            if (
+                depth
+                or compact
+                or component.get("compact") is True
+                or current_separator != _separator(root)
+                or current_separator != _separator(component["separators"])
+                or any(
+                    char in root or char in str(component["separators"])
+                    for word in requires
+                    for char in word
+                )
+            ):
+                raise CapabilityAnalysisAdapterError(
+                    "unsupported Alconna separators: requires outside simple root node"
+                )
+            if any(set(requires) & names for names in node_names) or any(
+                names & other
+                for index, names in enumerate(node_names)
+                for other in node_names[index + 1 :]
+            ):
+                raise CapabilityAnalysisAdapterError(
+                    "unsupported Alconna separators: conflicting requires words"
+                )
+            if (
+                component.get("kind") == "option"
+                and len({component.get("name"), *component.get("aliases", ())}) > 3
+            ):
+                raise CapabilityAnalysisAdapterError(
+                    "unsupported Alconna separators: requires alias summary"
+                )
+        _validate_separator_tree(
+            component.get("arguments", ()),
+            component.get("components", ()),
+            root,
+            node_separators=str(component["separators"]),
+            compact=component.get("compact") is True,
+            depth=depth + 1,
+        )
+    options = _option_components(components)
+    if len(options) > 3 and any(
+        _node_requires(option) for option in options if isinstance(option, Mapping)
+    ):
+        raise CapabilityAnalysisAdapterError(
+            "unsupported Alconna separators: requires option summary"
+        )
+    if len(options) > 1:
+        for option in options:
+            assert isinstance(option, Mapping)
+            args = option.get("arguments", ())
+            outgoing = (
+                _argument_separator(args, -1, root) if args else _separator(option["separators"])
+            )
+            if outgoing != current_separator:
+                raise CapabilityAnalysisAdapterError(
+                    "unsupported Alconna separators: alternative option boundary"
+                )
+
+
+def _path_connectors(
+    path: tuple[str, ...],
+    components: list[object],
+    root: str | None,
+    compact: bool,
+) -> tuple[str, ...] | None:
+    """保留每段子命令前的分隔符与固定前置词，供正文和别名共同使用。"""
+    if root is None:
+        return None
+    result: list[str] = []
+    nested = components
+    current = root
+    for name in path:
+        boundary = "" if compact else _separator(current)
+        component = next(
+            c
+            for c in nested
+            if isinstance(c, Mapping) and c.get("kind") == "subcommand" and c.get("name") == name
+        )
+        requires = _node_requires(component)
+        result.append(
+            boundary + (_separator(root).join(requires) + _separator(root) if requires else "")
+        )
+        current = component["separators"]
+        compact = component.get("compact") is True
+        nested = component.get("components", [])
+    return tuple(result)
+
+
+def _join_arguments(
+    head: str,
+    arguments: list[object] | tuple[object, ...],
+    rendered: tuple[str, ...],
+    *,
+    incoming: str,
+    root_separators: str | None,
+) -> tuple[str, str]:
+    """按前一个词元消费的分隔符连接槽位，并保持可选部分整体可省略。"""
+    visible = [arg for arg in arguments if isinstance(arg, Mapping) and not arg.get("hidden")]
+    result = head
+    boundary = incoming
+    for index, (argument, slot) in enumerate(zip(visible, rendered, strict=True)):
+        outgoing = _argument_separator(visible, index, root_separators)
+        if argument.get("required") is False and boundary not in {"", " "}:
+            suffix = "..." if slot.endswith("...") else ""
+            body = slot.removesuffix("...")[1:-1]
+            result += f"[{boundary}<{body}>{suffix}]"
+        else:
+            result += boundary + slot
+        if argument.get("required") is False and index < len(visible) - 1 and outgoing != boundary:
+            raise CapabilityAnalysisAdapterError(
+                "unsupported Alconna separators: optional argument boundary"
+            )
+        boundary = outgoing
+    return result, boundary
 
 
 def _render_arguments(
@@ -1364,6 +1724,7 @@ def _render_arguments(
     *,
     slot_indexes: Iterator[int],
     generic_slot_names: bool,
+    argument_limits: list[tuple[int, int]] | None = None,
 ) -> tuple[str, ...] | None:
     result: list[str] = []
     for argument in arguments:
@@ -1382,11 +1743,11 @@ def _render_arguments(
             return None
         if variadic_flag == "*" and required:
             return None
-        name = (
-            _generic_public_slot_name(argument)
-            if generic_slot_names
-            else f"slot:{next(slot_indexes)}"
-        )
+        slot_index = next(slot_indexes)
+        length = argument.get("variadic_length")
+        if argument_limits is not None and variadic and type(length) is int and length > 0:
+            argument_limits.append((slot_index, length))
+        name = _generic_public_slot_name(argument) if generic_slot_names else f"slot:{slot_index}"
         slot = f"<{name}>" if required else f"[{name}]"
         result.append(f"{slot}..." if variadic else slot)
     return tuple(result)
@@ -1397,6 +1758,8 @@ def _render_options(
     *,
     slot_indexes: Iterator[int],
     generic_slot_names: bool,
+    root_separators: str | None = None,
+    argument_limits: list[tuple[int, int]] | None = None,
 ) -> tuple[str, ...] | None:
     if len(options) > 3:
         return ("[可选参数]",)
@@ -1423,6 +1786,7 @@ def _render_options(
             option_arguments,
             slot_indexes=slot_indexes,
             generic_slot_names=generic_slot_names,
+            argument_limits=argument_limits,
         )
         if rendered_arguments is None:
             return None
@@ -1434,13 +1798,21 @@ def _render_options(
             option_head = f"({'|'.join(names)})"
         else:
             option_head = "|".join(names)
-        separator = "" if compact is True else " "
-        rendered = (
-            f"{option_head}{separator}{' '.join(rendered_arguments)}"
-            if rendered_arguments
-            else option_head
+        separator = _separator(option.get("separators")) if root_separators is not None else " "
+        if root_separators is not None and (requires := _node_requires(option)):
+            # 前置词属于整个可选节点，备选只作用于节点名称。
+            if len(names) > 1 and not rendered_arguments:
+                option_head = f"({option_head})"
+            option_head = _separator(root_separators).join((*requires, option_head))
+        rendered, _outgoing = _join_arguments(
+            option_head,
+            option_arguments,
+            rendered_arguments,
+            incoming="" if compact is True else separator,
+            root_separators=root_separators,
         )
-        result.append(f"[{rendered}]")
+        repeat = option.get("repeatable") is True and len(names) <= 3
+        result.append(f"[{rendered}]" + ("..." if repeat else ""))
     return tuple(result)
 
 

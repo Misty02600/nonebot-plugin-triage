@@ -6,6 +6,7 @@ from collections.abc import Sequence
 MAX_EXPLICIT_USAGE_ALTERNATIVES = 4
 MAX_SUMMARY_USAGE_ALTERNATIVES = 6
 MAX_PUBLIC_USAGES = 3
+PUBLIC_USAGE_SEPARATORS = " ,;:=/.-_+!?#%&，；：、"
 
 _REPLY_USAGE = re.compile(r"(<回复[^<>\[\](){}\r\n]+>|\[回复[^<>\[\](){}\r\n]+\]) (.+)")
 
@@ -21,14 +22,30 @@ class CapabilityUsageExpressionError(ValueError):
     pass
 
 
+def select_usage_separator(value: str) -> str:
+    """从已生效的分隔字符中选取公开用法能无损表达的一种写法。"""
+    if " " in value:
+        return " "
+    candidates = sorted(char for char in value if char in PUBLIC_USAGE_SEPARATORS)
+    if not candidates:
+        raise CapabilityUsageExpressionError("unsupported Alconna separators")
+    return candidates[0]
+
+
 def usage_command_body_pattern(
     command_body: str,
     *,
     requires_mention: bool = False,
+    canonical_usages: Sequence[str] = (),
 ) -> str:
     """生成可同时识别空格分隔与 Parser 紧凑槽位的命令正文模式。"""
     prefix = r"(?<!\S)@bot " if requires_mention else r"(?<!\S)"
-    return rf"{prefix}{re.escape(command_body)}(?=$|\s|[<\[])"
+    boundaries = {"$", r"\s", r"[<\[]"}
+    for template in canonical_usages:
+        body = template.removeprefix("@bot ")
+        if body.startswith(command_body) and len(body) > len(command_body):
+            boundaries.add(re.escape(body[len(command_body)]))
+    return rf"{prefix}{re.escape(command_body)}(?={'|'.join(sorted(boundaries))})"
 
 
 class _LiteralExpressionParser:
@@ -216,6 +233,7 @@ __all__ = (
     "deterministic_usage_selector",
     "expand_literal_expression",
     "group_literal_expression_for_usage",
+    "select_usage_separator",
     "split_reply_usage",
     "usage_command_body_pattern",
     "validate_literal_expression",

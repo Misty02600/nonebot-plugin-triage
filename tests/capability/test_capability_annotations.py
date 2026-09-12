@@ -174,6 +174,103 @@ async def _commit_refresh(
     await service.commit_pending(status.refresh_id, _PUBLISHED_GENERATION)
 
 
+@pytest.mark.asyncio
+async def test_argument_limits_rebuilt_for_cache_baseline_and_publication(tmp_path, monkeypatch):
+    from nonebot_plugin_triage.capability.teaching.outputs import _render_answer_markdown
+
+    maximum = 3
+    fail = False
+    calls = []
+
+    def build_request(record, _policy, **_kwargs):
+        request = _request(record.capability_id)
+        return replace(
+            request,
+            invocations=(
+                replace(
+                    request.invocations[0],
+                    canonical_usages=("搜图 [slot:0]...",),
+                    argument_limits=((0, maximum),) if maximum else (),
+                ),
+            ),
+        )
+
+    class Client:
+        async def analyze(self, request):
+            calls.append(request)
+            if fail:
+                raise RuntimeError("simulated model failure")
+            if request.previous_annotation:
+                assert not request.previous_annotation.entries[0].behavior_boundaries
+            entry = _entry()
+            return CapabilityAnalysisOutput(
+                entries=(
+                    replace(
+                        entry,
+                        claims=tuple(
+                            replace(claim, statement="搜图 [图片]...")
+                            if claim.kind is SemanticClaimKind.USAGE
+                            else claim
+                            for claim in entry.claims
+                        ),
+                    ),
+                )
+            )
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
+        build_request,
+    )
+
+    def service():
+        return CapabilityAnnotationService(
+            tmp_path / "annotations",
+            client_factory=Client,
+            config_policy=ConfigValuePolicy.from_keys(()),
+            analysis_revision="analysis-v1",
+            evidence_validator=lambda *_args: True,
+            published_generation_resolver=lambda: _PUBLISHED_GENERATION,
+        )
+
+    snapshot = CapabilitySnapshot.create((_record("command:image", Disclosure.PUBLIC),))
+    runtime = service()
+    first = await runtime.refresh(snapshot)
+    pending = runtime.get_pending("command:image")
+    assert pending is not None
+    assert "最多提供 3 项" in _render_answer_markdown(pending.entries[0])
+    await _commit_refresh(runtime, first)
+    assert runtime.get("command:image") == pending
+    cache_text = (tmp_path / "annotations" / "plugin.image.json").read_text(encoding="utf-8")
+    assert "最多提供" not in cache_text
+    old_fingerprint = pending.request_fingerprint
+
+    # 进程重启和命中缓存都需要重新生成代码说明。
+    runtime = service()
+    cached = await runtime.refresh(snapshot)
+    assert cached.cached_count == 1 and len(calls) == 1
+    await _commit_refresh(runtime, cached)
+    assert runtime.get("command:image") == pending
+
+    maximum = 5
+    changed = await runtime.refresh(snapshot)
+    await _commit_refresh(runtime, changed)
+    public = runtime.get("command:image")
+    assert public is not None and public.request_fingerprint != old_fingerprint
+    assert "最多提供 5 项" in public.entries[0].behavior_boundaries[0]
+    assert "最多提供 3 项" not in str(public.entries)
+
+    # 同一事实的失败可以使用当前已验证版本；变化后的失败不能恢复旧限制。
+    fail = True
+    await _commit_refresh(runtime, await runtime.refresh(snapshot, force=True))
+    assert runtime.get("command:image") == public
+    maximum = 7
+    await _commit_refresh(runtime, await runtime.refresh(snapshot))
+    assert runtime.get("command:image") is None
+    maximum, fail = 0, False
+    await _commit_refresh(runtime, await runtime.refresh(snapshot))
+    assert not runtime.get("command:image").entries[0].behavior_boundaries
+
+
 def _entry(
     *extra_claims: SemanticClaim,
     baseline_changes: tuple[BaselineMemberChange, ...] = (),
@@ -862,6 +959,73 @@ async def test_prepare_error_skips_only_the_invalid_teaching_unit(
     assert service.get("command:valid") is not None
     pipeline_log = next(item for item in logger.infos if "教学注释流水线完成" in item[0])
     assert pipeline_log[1][-2] == '{"request_validation": 1}'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unsupported_reason",
+    [
+        "unsupported Alconna separators: missing root fact",
+        "unsupported Alconna syntax: keyword arguments or missing argument syntax fact",
+    ],
+)
+async def test_separator_change_and_unsupported_syntax_never_restore_old_usage(
+    tmp_path, monkeypatch, unsupported_reason
+):
+    import nonebot_plugin_triage.capability.teaching.annotations as runtime
+
+    phase = "initial"
+    calls = []
+
+    def build_request(record, _policy, **_kwargs):
+        request = _request(record.capability_id)
+        if record.capability_id == "command:changed":
+            if phase == "unsupported":
+                raise CapabilityAnalysisAdapterError(unsupported_reason)
+            template = "搜图 [slot:0]" if phase == "initial" else "搜图[,<slot:0>]"
+            request = replace(
+                request,
+                invocations=(replace(request.invocations[0], canonical_usages=(template,)),),
+            )
+        return request
+
+    class Client:
+        async def analyze(self, request):
+            calls.append(request.capability.capability_id)
+            if phase != "initial":
+                raise CapabilityModelAdapterError(
+                    "failed", reason_code=CapabilityModelAdapterReason.OUTPUT_VALIDATION
+                )
+            return _output()
+
+    monkeypatch.setattr(runtime, "build_capability_analysis_request", build_request)
+    snapshot = CapabilitySnapshot.create(
+        tuple(_record(key, Disclosure.PUBLIC) for key in ("command:changed", "command:stable"))
+    )
+    service = CapabilityAnnotationService(
+        tmp_path / "annotations.json",
+        client_factory=Client,
+        config_policy=ConfigValuePolicy.from_keys(()),
+        analysis_revision="analysis-v1",
+    )
+    await _commit_refresh(service, await service.refresh(snapshot))
+    assert service.get("command:changed") is not None
+    calls.clear()
+    phase = "changed"
+    await _commit_refresh(service, await service.refresh(snapshot))
+    assert calls == ["command:changed"]
+    assert service.get("command:changed") is None
+    assert service.get("command:stable") is not None
+    calls.clear()
+    phase = "unsupported"
+    status = await service.refresh(snapshot)
+    await _commit_refresh(service, status)
+    assert calls == []
+    assert service.get("command:changed") is None
+    assert service.get("command:stable") is not None
+    assert any(
+        unit.reason is CapabilityTeachingUnitReason.UNSUPPORTED_SYNTAX for unit in status.units
+    )
 
 
 @pytest.mark.parametrize(

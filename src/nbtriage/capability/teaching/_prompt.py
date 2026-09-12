@@ -22,20 +22,18 @@ CORE_INSTRUCTION = """\
 - 文件发现、搜索结果和转到定义只是导航。`source_kind=external_dependency_navigation` 也只是模型外预先定位的精确依赖读取目标，不得引用其 evidence_id 支持语义结论；必须使用它给出的依赖根 read_file 获取可引用 Evidence。
 - 其中 `resolution=external_dependency_stub` 表示当前安装只暴露签名 stub，没有可读取的 Python 实现。可以按 read_target 补读签名，但不得继续在目标插件或 LocalStore 搜索该实现，也不得仅凭函数名或签名猜测依赖的业务行为。
 - 每条 claim 与 constraint 都必须引用本轮允许的 Evidence；未知配置不能被引用或推断。
-- claim 或 constraint 直接使用 config_projections 中的当前标量值时，同一字段必须列出对应的 reference_id；不得只写配置值而漏掉引用。
-- 当前教学只描述本次部署实际启用的行为。配置投影已经关闭的处理分支必须省略，不得改写成“若开启”后继续保留；启用路径使用了当前配置值时必须引用对应 reference_id。
+- 当前教学只描述本次部署实际启用的行为。配置投影已经关闭的处理分支必须省略，不得改写成“若开启”后继续保留。
 - 若当前配置已关闭该教学单元的全部业务执行路径，则返回 knowledge_enabled=false 且 entries 为空；仅返回未启用提示不视为仍有可教学的业务功能。仅部分路径关闭时，保留仍启用的部分。
 - 判断公开业务语义时，以已确认的实际条件、数据流、赋值、运算、状态更新和调度逻辑为准。注释、docstring、变量名、日志、用户提示及作者声明的 description/usage 只辅助理解，不能覆盖可执行行为。功能定位、示例或某条执行路径的限制，不能单独证明整个功能的排他限制；使用“仅、只能、必须”等表述时，应有覆盖其适用范围的执行条件支持。提示文字可以证明用户会看到什么，不能在与可执行行为冲突或含糊时单独证明其描述的数值、状态或因果关系。
 - 不得暴露源码路径、Python 符号、Matcher、Rule、Permission、handler、配置键、环境变量、Evidence ID 或实现细节；所有公开字段都直接说明功能，不写“根据证据”“源码表明”“从代码可见”等分析过程措辞。
 - 权限或访问控制只描述用户可见的资格、适用分支与拒绝效果。密钥、令牌、凭据、认证头、请求参数及其传输方式属于实现机制；即使 Evidence 能证明，或它们只影响特定 Option 或业务分支，也必须省略，不能为了满足 behavior_boundary 的分支说明要求而公开。
 - 只描述用户看得见、用得上的行为。静态证据不能证明某次请求一定通过，也不能证明外部服务健康。
 - 内部持久化只有在其用户可观察效果有教学价值时才说明。应描述“重启后仍保留”“下次调用仍生效”等公开效果，不得描述保存到本地文件、数据库、LocalStore、缓存或配置字段；无法证明跨重启效果时直接省略。
-- gate_candidates 只是静态层发现的疑似执行控制点，不等于已经存在约束。owner 与 symbol 只定位候选所属对象和字段或符号，不证明其公开语义；缺失时依据所引 Evidence 定位。必须逐项依据当前 Evidence 给出 constraint、no_constraint 或 unresolved；现有材料足够时直接完成，不要求额外工具调查，只有缺少明确事实时才补证。同一注册表达式中的多个未解析 Permission 符号会合并为一个候选；若它是复合 OR，必须在这一条 permission constraint 的 alternatives 中完整解释，不能把同一表达式拆成互不相干的候选。`gate_resolutions[].candidate_id` 负责给每个候选下结论；公开角色、场景、资格或限流前提使用 `constraints[].gate_candidate_ids` 关联，能力自身的业务准备状态使用 `behavior_boundary` claim 的 `gate_candidate_ids` 关联。两种关联都只是内部覆盖关系，不是 Evidence ID、entry ID 或 Permission alternative，也不表达 AND / OR。
-- 解释请求 JSON 中已有 gate_candidates 的真实执行条件必须关联该 candidate_id，并且同一 entry 只能选择一个公开语义所有者。Handler、helper 或其他当前 Evidence 直接证明的真实执行前提即使没有对应候选也必须公开，此时 gate_candidate_ids 留空。没有 gate candidate 不等于没有执行限制。no_constraint 只允许在函数定义、框架事实或当前运行配置明确证明它不会限制使用时选择，且不得把“不限流”“没有权限限制”等整体无约束结论写进公开字段；真实的正向限制可以说明有 Evidence 支持的适用对象或豁免对象。unresolved 表示补证后仍不能确认。
-- 如果完整门禁定义表明布尔结果直接由当前运行配置决定，而当前投影值已经使门禁放行，例如 `return enabled` 且 `enabled=true`，该门禁必须解释为 no_constraint。不要把已经满足的内部开关写成 access、summary、behavior_boundary 或其他公开使用前提。
+- Handler、helper 或其他当前 Evidence 直接证明的真实执行前提即使没有对应候选也必须公开，此时 gate_candidate_ids 留空。没有 gate candidate 不等于没有执行限制。同一执行条件在同一 entry 中只能选择一个公开语义所有者。
+- 不得把“不限流”“没有权限限制”等整体无约束结论写进公开字段；真实的正向限制可以说明有 Evidence 支持的适用对象或豁免对象。
+- 不要把已经满足的内部开关写成 access、summary、behavior_boundary 或其他公开使用前提。
 - platform_scope 是模型外拥有的 Runtime 路由事实，不属于公开教学语义。不得根据 Adapter、平台声明或源码导入把它生成或重复为 access、scene、summary、behavior_boundary 或其他公开字段；消费者需要平台过滤时直接使用当前 CapabilityRecord。
-- 每个 gate resolution 都必须引用 candidate 自己的结构 Evidence。constraint 与 no_constraint 还必须额外引用实际定义、框架事实或运行配置；只重复引用结构候选不算完成解释。
-- 只有在调用入口、必要参数、公开性、权限和全部限流都足够确定时才能启用知识。任一 gate candidate 仍为 unresolved 时，设置 knowledge_enabled=false 且 entries 为空；不得把未知解释成不存在。
+- 只有在调用入口、必要参数、公开性、权限和全部限流都足够确定时才能启用知识。不得把未知解释成不存在。
 - 如果证据不足、工厂成员没有可靠共同业务语义，或成员与调用事实无法可靠绑定，设置 knowledge_enabled=false 且 entries 为空。成员参数数量、类型、必选性或精确 usage 不同本身不是关闭理由。
 
 输出指导：
@@ -55,29 +53,60 @@ CORE_INSTRUCTION = """\
   2. 区分业务准备状态与调用者身份、场景、资格或限流。业务准备状态表示用户可通过公开业务操作理解、改变或满足的流程状态，即使限制整个 entry 或通过 Permission 注册，也只写 behavior_boundary，不写 permission/access。普通用户无法操作的运行配置、基础设施或外部服务就绪条件不属于业务准备状态，不进入教学合同。
   3. 对身份、场景、资格和限流判断适用范围：constraints 只表达整个 entry 的共同执行前提。仅限制某个 Option、子命令、输入类别、业务对象或结果分支的角色/资格，应在 behavior_boundary 说明对应分支，不得提升为全局 requirement；全局条件不得重复写进边界。
   4. 对需要新增的全局条件选择结构：实际判断身份、场景或可配置资格的 NoneBot Permission，每个表达式仍使用一条 kind=permission 并关联原 gate，不拆成多条独立 requirement。当前 Evidence 已明确证明全部允许路径共同要求的场景放进该 permission 的 allowed_scenes；其余允许分支放进非空 permission_alternatives（OR），共同场景与分支组为 AND。其他独立 gate 的身份、场景或资格条件仍使用独立 role、scene、access constraint；requirements 之间为 AND。rate_limit 使用独立 constraint。普通参数、回复上下文和 @bot 只由 usage 表达。
-- behavior_boundary 若解释当前 gate candidate，必须在本轮重新输出并填写 gate_candidate_ids，不得只依赖 previous baseline。
 - role、scene、access 表示条件的业务含义，不决定它必须位于顶层：按上一步选择独立 constraint 或 permission alternative 后，会话类别使用 scene，入口直接比较调用者身份或角色使用 role，入口查询可配置权限、ACL、名单或开放状态使用 access。不得根据身份通常如何获得资格反推 role；权限系统内部的默认授予、预分配或动态映射只说明如何取得 access，只有入口布尔表达式直接包含角色分支时才保留 role。
 - 独立 scene constraint 的 allowed_scenes 完整表达允许场景条件；permission 的 allowed_scenes 只附加全部允许路径的共同场景，集合内部为 OR，空集合表示不附加该条件，不表示整个 entry 适用所有场景，也不代替未知门禁。若存在绕过该场景的允许路径，不得将其提为共同场景；不为填写此字段额外进行复杂逻辑化简或无界导航。Permission 的 scene alternative 表示一个场景条件自身构成的 OR 允许分支；纯场景 Permission 可沿用 scene alternatives，不制造虚构资格来填满结构。原子场景为 private、group、guild、channel_text、channel_category、channel_voice；另支持 non_private 表达非私聊，它不是互斥原子类型。Evidence 只证明排除私聊时，直接使用 non_private 并表述为“仅非私聊场景可用”，不为枚举其他场景继续导航；另有依赖注入等更窄条件时，保留该限制，不得扩大成全部非私聊。不要把 non_private 与其包含的 group 等场景放在同一 OR 集合来表达收窄，也不创建其他组合值。Handler 对明确场景进入终止分支时须考虑外层绕过路径，不能把局部排除提升为全局条件。statement 必须与实际结构一致。
 - role 的具体值按当前 Evidence 和 Schema 选择；alternative 不必与函数调用一一对应，Evidence 已明确证明的嵌套角色 OR 可以展开成各个已知角色分支，不因函数包装就合成 custom。无法无损归约为已知角色时仍使用 custom，不依据角色名称或数字等级擅自展开，也不将权限系统内部的默认授予关系展开成入口角色。access 只表示当前用户、群或场景还需取得授权、名单或开放资格，调用者本人不必是授权者。动态授权名单未知不等于 unresolved，也不是关闭教学知识的理由。
 - access 的公开文字只保留 Evidence 证明的资格效果，不得泄露名单、ID、配置键或断言当前主体命中名单，也不得猜测授权主体、原因或控制方式；默认开放时只说明资格可能受设置影响，默认关闭时只说明使用前需取得对应权限。业务准备状态属于 behavior_boundary。rate_limit 按 Schema 填写 policy 和 scope；引用数值配置时公开说明必须包含数值。
 - 一项能力的 Handler、提示或帮助文字不能证明另一项能力的详细合同；跨条目生成详细用法、输入格式或交互方式时，必须同时具有目标条目的当前 Runtime 调用事实或实现 Evidence。
 - 没有 previous_annotation 时 baseline_changes 必须为空。
+- 没有 gate_candidates 时 gate_resolutions 必须为空。
 - 只通过已配置的结构化输出直接填写 knowledge_enabled、entries 和 gate_resolutions 三个顶层字段；不得添加 payload、output 或 result 包装，也不得把对象序列化成 JSON 字符串。
 """
 
 ANCHORED_INSTRUCTION = """\
 标准 Matcher 与 anchored usage：
-- mode=anchored 时 command_body 是已经确定的完整命令正文。每条标准 Parser usage 都必须原样包含它一次；不要添加 NoneBot 全局 COMMAND_START，也不要使用 `{command}`。插件自己的业务前缀如果已在 command_body 中，应原样保留。本条只约束标准 Parser usage；引用有效 shortcut Evidence 的额外 usage 按下一条处理。
+- mode=anchored 时 command_body 是已经确定的完整命令正文。每条标准 Parser usage 都必须原样包含它一次；不要添加 NoneBot 全局 COMMAND_START，也不要使用 `{command}`。插件自己的业务前缀如果已在 command_body 中，应原样保留。本条只约束标准用法。
+- display_trigger 只负责同一功能入口的固定触发词展示，不得包含参数槽位、`@bot`、NoneBot 全局 COMMAND_START 或额外说明。不要修改 usage claim 中的 command_body；模型外只会在 display_trigger 通过无损展开校验后替换展示触发词。 aliases 为空时，display_trigger 使用 null。
+- 同一 entry 默认只输出一条 usage；先用相邻备选位置和 `[...]` 可选参数无损合并其参数格式、Option、shortcut 或回复输入变体。只有单条表达会增加不存在的组合、遗漏合法组合、改变参数顺序或必选性，或者无法保留分支专属参数时，才拆成多条 usage。
+- 多条 usage 最多三条只是最终公开展示的容量上限，不表示可以为了示例更清楚而保留能够无损合并的重复形式。一条带 `[...]` 的 usage 已经同时表达“省略该参数”和“提供该参数”，不得再额外输出省略后的短写法。如果命令正文单独可用，而同一 entry 还能追加参数，应合并成一条包含对应可选槽位的 usage。例如 `检索 [范围] [@用户]` 已经覆盖不带参数、只带范围、只 `@用户` 和同时提供两者，不得再为这些组合分别输出 usage。
+"""
+
+CONFIG_INSTRUCTION = """\
+当前配置值引用：
+- claim 或 constraint 直接使用 config_projections 中的当前标量值时，同一字段必须列出对应的 reference_id；不得只写配置值而漏掉引用。
+- 启用路径使用了 config_projections 中的当前配置值时，也必须引用对应 reference_id。
+"""
+
+GATE_INSTRUCTION = """\
+本轮 gate candidates 的解释与关联：
+- gate_candidates 只是静态层发现的疑似执行控制点，不等于已经存在约束。owner 与 symbol 只定位候选所属对象和字段或符号，不证明其公开语义；缺失时依据所引 Evidence 定位。必须逐项依据当前 Evidence 给出 constraint、no_constraint 或 unresolved；现有材料足够时直接完成，不要求额外工具调查，只有缺少明确事实时才补证。同一注册表达式中的多个未解析 Permission 符号会合并为一个候选；若它是复合 OR，必须在这一条 permission constraint 的 alternatives 中完整解释，不能把同一表达式拆成互不相干的候选。`gate_resolutions[].candidate_id` 负责给每个候选下结论；公开角色、场景、资格或限流前提使用 `constraints[].gate_candidate_ids` 关联，能力自身的业务准备状态使用 `behavior_boundary` claim 的 `gate_candidate_ids` 关联。两种关联都只是内部覆盖关系，不是 Evidence ID、entry ID 或 Permission alternative，也不表达 AND / OR。
+- 解释请求 JSON 中已有 gate_candidates 的真实执行条件必须关联该 candidate_id。
+- no_constraint 只允许在函数定义、框架事实或当前运行配置明确证明它不会限制使用时选择。unresolved 表示补证后仍不能确认。
+- 如果完整门禁定义表明布尔结果直接由当前运行配置决定，而当前投影值已经使门禁放行，例如 `return enabled` 且 `enabled=true`，该门禁必须解释为 no_constraint。
+- 每个 gate resolution 都必须引用 candidate 自己的结构 Evidence。constraint 与 no_constraint 还必须额外引用实际定义、框架事实或运行配置；只重复引用结构候选不算完成解释。
+- 任一 gate candidate 仍为 unresolved 时，设置 knowledge_enabled=false 且 entries 为空；不得把未知解释成不存在。
+- behavior_boundary 若解释当前 gate candidate，必须在本轮重新输出并填写 gate_candidate_ids，不得只依赖 previous baseline。
+"""
+
+SHORTCUT_INSTRUCTION = """\
+仅对 shortcut_count 非零的入口应用以下快捷指令规则：
+- shortcut_count 非零时，对应 shortcut_evidence_ids 指向当前 Runtime 已注册的 shortcut 事实。shortcut 不是 alias：它可以改写整条输入、预填参数或通过 wrapper 转换。若该入口提供 canonical_usages，标准用法仍必须完整保留；只有 shortcut Evidence 足以支持一条可读调用形式时，才可以额外输出 shortcut usage，并引用 shortcut_evidence_ids。shortcut usage 可以是完全不同的可调用文字，不要求包含 command_body，也不得为了满足标准 usage 规则把它改写回 canonical 形式。显式 humanized 可以作为可读形式 Evidence；复杂正则、固定改写参数和 wrapper 符号可以交由你结合源码理解，但不得执行 wrapper、公开原始正则或内部符号。证据不足时省略 shortcut，不得因此删除标准 usage 或关闭知识。
+- shortcut Evidence 的 `compact` 表示该快捷入口能否直接连接后续输入，不得自行增加或删除分隔空格。
+"""
+
+ALIAS_INSTRUCTION = """\
+仅对 aliases 非空的入口应用以下别名规则：
 - aliases 是 Runtime 已确认的同义命令入口。usage claim 仍必须使用 command_body，不要把别名写进 usage，也不要为了列出 alias 复制用法。
-- shortcut_count 非零时，对应 shortcut_evidence_ids 指向当前 Runtime 已注册的 shortcut 事实。shortcut 不是 alias：它可以改写整条输入、预填参数或通过 wrapper 转换。标准 canonical usage 仍必须完整保留；只有 shortcut Evidence 足以支持一条可读调用形式时，才可以额外输出 shortcut usage，并引用 shortcut_evidence_ids。shortcut usage 可以是完全不同的可调用文字，不要求包含 command_body，也不得为了满足标准 usage 规则把它改写回 canonical 形式。显式 humanized 可以作为可读形式 Evidence；复杂正则、固定改写参数和 wrapper 符号可以交由你结合源码理解，但不得执行 wrapper、公开原始正则或内部符号。证据不足时省略 shortcut，不得因此删除标准 usage 或关闭知识。
 - aliases 非空时，先把 command_body 与全部 aliases 做无损因式分解，再决定 entry.display_trigger。表达式只能由固定文字、`|` 和可嵌套圆括号组成，展开后必须恰好等于全部入口，不能遗漏、增加或重复命令；每个局部固定备选位置最多四项，但最终展开的完整入口可以超过四条。在保持展开集合不变时，必须继续提取各入口重复的共同前缀、后缀或相邻备选位置，直到不能再无损提取；每个备选必须非空，进一步提取会产生空备选时停止。不能因为原始入口总数超过四条就直接改成概念槽位。
 - 如果全部入口无法在上述局部四项边界内形成可靠紧凑表达，entry.display_trigger 使用 null，模型外保留标准 Parser usage 中的一条可执行 command_body；不得用 `<指令>`、`<操作>` 等概念槽位覆盖普通 Matcher 的真实命令头。压缩后仍有五至六个并列固定选项时，可以在 summary 中自然说明；七项及以上只简单概括共同类别，不逐项倾倒。
-- display_trigger 只负责同一功能入口的固定触发词展示，不得包含参数槽位、`@bot`、NoneBot 全局 COMMAND_START 或额外说明。不要修改 usage claim 中的 command_body；模型外只会在 display_trigger 通过无损展开校验后替换展示触发词。
+"""
+
+CANONICAL_INSTRUCTION = """\
+仅对 canonical_usages 非空的入口应用以下模板规则：
 - canonical_usages 非空时，它是 Runtime parser 生成的结构模板。`slot:N` 是内部匿名槽位，不得公开；你必须依据 Arg notice、结构一致的显式 usage、Handler 与说明 Evidence，为每个槽位填写简短公开名称。notice 与显式 usage 只是命名 Evidence，不是无条件真值；源码给出更准确语义时应使用源码语义。证据不足时使用类型本身能保证的保守名称，例如“图片”“整数”或“数值”；字符串或自定义类型无法确定公开含义时可以使用“参数”。Uniseg `At` 是用户直接提供的 `@用户` 输入形式；即使 Handler 随后把它转换成头像图片，也不能只在 summary 或 behavior_boundary 说明而从 usage 省略。不得依据 `img`、`num`、`meme_name` 等内部变量名直接猜业务含义。
 - 标准用法命名槽位时只能替换 `<slot:N>` / `[slot:N]` 中的文字；命令、括号种类、参数顺序、Option、Option 别名和 `...` 必须逐字保留。一个模板内重复出现同一 `slot:N` 时必须使用相同公开名称。额外回复形式按前述回复规则单独校验，不替代标准用法。
-- Alconna `compact` 是 Runtime 已确认的语法；canonical usage 中命令、子命令或 Option 与后随槽位之间可能有意不含空格，必须原样保留。shortcut Evidence 的 `compact` 表示该快捷入口能否直接连接后续输入，不得自行增加或删除分隔空格。
-- Alconna 子命令已经由模型外拆成不同 entry。同一 entry 默认只输出一条 usage；先用相邻备选位置和 `[...]` 可选参数无损合并其参数格式、Option、shortcut 或回复输入变体。只有单条表达会增加不存在的组合、遗漏合法组合、改变参数顺序或必选性，或者无法保留分支专属参数时，才拆成多条 usage。
-- 多条 usage 最多三条只是最终公开展示的容量上限，不表示可以为了示例更清楚而保留能够无损合并的重复形式。一条带 `[...]` 的 usage 已经同时表达“省略该参数”和“提供该参数”，不得再额外输出省略后的短写法。如果命令正文单独可用，而同一 entry 还能追加参数，应合并成一条包含对应可选槽位的 usage。例如 `检索 [范围] [@用户]` 已经覆盖不带参数、只带范围、只 `@用户` 和同时提供两者，不得再为这些组合分别输出 usage。
+- Alconna `compact` 是 Runtime 已确认的语法；canonical usage 中命令、子命令或 Option 与后随槽位之间可能有意不含空格，必须原样保留。固定分隔标点和可选组也由程序确定，不能替换为空格或移出可选组；只依据 Evidence 命名槽位，不推导环境变量或配置覆盖关系。
+- Alconna 子命令已经由模型外拆成不同 entry，不得自行合并 entry。
 """
 
 KEYWORD_INSTRUCTION = """\
@@ -122,7 +151,12 @@ BASELINE_INSTRUCTION = """\
 SYSTEM_INSTRUCTION = "\n\n".join(
     (
         CORE_INSTRUCTION,
+        CONFIG_INSTRUCTION,
+        GATE_INSTRUCTION,
         ANCHORED_INSTRUCTION,
+        ALIAS_INSTRUCTION,
+        SHORTCUT_INSTRUCTION,
+        CANONICAL_INSTRUCTION,
         KEYWORD_INSTRUCTION,
         REGEX_INSTRUCTION,
         FAMILY_INSTRUCTION,
@@ -133,9 +167,19 @@ SYSTEM_INSTRUCTION = "\n\n".join(
 
 def _instructions_for_request(request: CapabilityAnalysisRequest) -> str:
     parts = [CORE_INSTRUCTION]
+    if request.config_projections:
+        parts.append(CONFIG_INSTRUCTION)
+    if request.gate_candidates:
+        parts.append(GATE_INSTRUCTION)
     invocation_modes = {item.mode for item in request.invocations}
     if CapabilityInvocationMode.ANCHORED in invocation_modes:
         parts.append(ANCHORED_INSTRUCTION)
+    if any(item.aliases for item in request.invocations):
+        parts.append(ALIAS_INSTRUCTION)
+    if any(item.shortcut_count for item in request.invocations):
+        parts.append(SHORTCUT_INSTRUCTION)
+    if any(item.canonical_usages for item in request.invocations):
+        parts.append(CANONICAL_INSTRUCTION)
     if CapabilityInvocationMode.KEYWORD in invocation_modes:
         parts.append(KEYWORD_INSTRUCTION)
     if CapabilityInvocationMode.REGEX in invocation_modes:
@@ -148,11 +192,16 @@ def _instructions_for_request(request: CapabilityAnalysisRequest) -> str:
 
 
 __all__ = (
+    "ALIAS_INSTRUCTION",
     "ANCHORED_INSTRUCTION",
     "BASELINE_INSTRUCTION",
+    "CANONICAL_INSTRUCTION",
+    "CONFIG_INSTRUCTION",
     "CORE_INSTRUCTION",
     "FAMILY_INSTRUCTION",
+    "GATE_INSTRUCTION",
     "KEYWORD_INSTRUCTION",
     "REGEX_INSTRUCTION",
+    "SHORTCUT_INSTRUCTION",
     "SYSTEM_INSTRUCTION",
 )

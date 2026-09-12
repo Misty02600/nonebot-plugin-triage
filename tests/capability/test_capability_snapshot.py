@@ -220,6 +220,37 @@ def test_collects_literal_and_regex_trigger_forms_but_keeps_type_conservative(
     )
 
 
+@pytest.mark.parametrize("local_override", [None, False])
+def test_alconna_snapshot_reads_effective_separator_overrides(
+    tmp_path,
+    monkeypatch,
+    matcher_cleanup,
+    local_override,
+) -> None:
+    import importlib
+
+    from nonebot_plugin_alconna.config import Config
+
+    rule_module = importlib.import_module("nonebot_plugin_alconna.rule")
+    config = Config(alconna_use_command_sep=True)
+    monkeypatch.setattr(rule_module, "get_plugin_config", lambda _type: config)
+    monkeypatch.setattr(get_driver().config, "command_sep", {","})
+    command = Alconna(
+        "probe",
+        Args["city", str],
+        Option("--n", Args["n", int], separators="="),
+        namespace=uuid4().hex,
+    )
+    matcher = on_alconna(command, use_cmd_sep=local_override)
+    matcher_cleanup.append(matcher)
+    plugin = _plugin(tmp_path, monkeypatch, {matcher})
+    snapshot = build_capability_snapshot(plugins=[plugin])
+    claims = {claim.field: claim.value for claim in snapshot.records[0].claims}
+    assert claims["command.separators"] == ([","] if local_override is None else [" "])
+    assert claims["command.arguments"][0]["separators"] == " "
+    assert claims["command.components"][0]["separators"] == "="
+
+
 def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

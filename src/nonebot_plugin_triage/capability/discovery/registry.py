@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from inspect import isawaitable
 
-from arclet.alconna import Alconna, Empty, command_manager
+from arclet.alconna import Alconna, command_manager
 from nonebot.adapters import Bot, Event
 
 
@@ -154,17 +155,39 @@ def _command_usage(command: Alconna) -> str:
     if declared:
         return declared
     header = _public_text(command.header_display, limit=64)
-    arguments: list[str] = []
-    for argument in command.args.argument:
-        if argument.hidden:
-            continue
-        name = _public_text(argument.name, limit=40)
-        required = not argument.optional and argument.field.default is Empty
-        arguments.append(f"<{name}>" if required else f"[{name}]")
-    if not arguments:
-        return header
-    first = f"{header}{arguments[0]}" if command.meta.compact else f"{header} {arguments[0]}"
-    return " ".join((first, *arguments[1:]))
+    from nonebot_plugin_triage.capability.discovery.snapshot import (
+        _alconna_arguments,
+        _alconna_components,
+    )
+    from nonebot_plugin_triage.capability.teaching._projection import (
+        _structured_usage,
+        _validate_separator_tree,
+    )
+
+    arguments = [asdict(arg) for arg in _alconna_arguments(command.args)]
+    components = [asdict(node) for node in _alconna_components(command.options)]
+    if any(node["kind"] == "subcommand" for node in components):
+        raise ValueError("subcommand provider requires an explicit usage")
+    _validate_separator_tree(
+        arguments, components, command.separators, compact=command.meta.compact
+    )
+    usage = _structured_usage(
+        header,
+        arguments,
+        list(components),
+        compact=command.meta.compact,
+        separators=command.separators,
+        root_separators=command.separators,
+    )
+    names = [
+        _public_text(arg["name"], limit=40)
+        for group in (arguments, *(node["arguments"] for node in components))
+        for arg in group
+        if not arg["hidden"]
+    ]
+    if usage is None:
+        raise ValueError("provider usage cannot be rendered")
+    return re.sub(r"slot:(\d+)", lambda match: names[int(match[1])], usage)
 
 
 def _optional_public_text(value: str | None, *, limit: int) -> str | None:

@@ -185,9 +185,38 @@ class CapabilityInvocationTarget:
     regex_pattern: str | None = None
     regex_flags: tuple[str, ...] = ()
     keywords: tuple[str, ...] = ()
+    # 当前标准模板的 (slot index, 每次显式填写的最大项数)，由代码生成说明。
+    argument_limits: tuple[tuple[int, int], ...] = ()
 
     def __post_init__(self) -> None:
         _bounded_text(self.entry_id, "invocation entry_id", max_length=128)
+        if (
+            not isinstance(self.argument_limits, tuple)
+            or len(self.argument_limits) > 16
+            or any(
+                not isinstance(item, tuple)
+                or len(item) != 2
+                or type(item[0]) is not int
+                or not 0 <= item[0] < 1_000
+                or type(item[1]) is not int
+                or item[1] < 1
+                for item in self.argument_limits
+            )
+            or len({item[0] for item in self.argument_limits}) != len(self.argument_limits)
+        ):
+            raise CapabilityAnalysisError(
+                "argument limits must uniquely bind valid slots and counts"
+            )
+        if self.argument_limits and (
+            len(self.canonical_usages) != 1
+            or any(
+                re.search(rf"[<\[]slot:{index}[>\]]\.\.\.", self.canonical_usages[0]) is None
+                for index, _maximum in self.argument_limits
+            )
+        ):
+            raise CapabilityAnalysisError(
+                "argument limits require explicit standard variadic slots"
+            )
         if not isinstance(self.mode, CapabilityInvocationMode):
             raise CapabilityAnalysisError("invocation mode is invalid")
         if self.mode is CapabilityInvocationMode.ANCHORED:

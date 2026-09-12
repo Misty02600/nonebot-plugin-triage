@@ -801,7 +801,9 @@ def _display_trigger_usage_error(
     display_trigger: str,
 ) -> str | None:
     assert target.command_body is not None
-    pattern = usage_command_body_pattern(target.command_body)
+    pattern = usage_command_body_pattern(
+        target.command_body, canonical_usages=target.canonical_usages
+    )
     grouped_trigger = group_literal_expression_for_usage(display_trigger)
     for usage in standard_usages:
         rendered, substitutions = re.subn(
@@ -813,7 +815,11 @@ def _display_trigger_usage_error(
         if substitutions != 1:
             return "usage 未包含唯一的 command_body"
         try:
-            validate_capability_usage_pattern(rendered, allow_verified_aliases=True)
+            validate_capability_usage_pattern(
+                rendered,
+                allow_verified_aliases=True,
+                allow_separated_slots=bool(target.canonical_usages),
+            )
         except CapabilityAnnotationError as error:
             return f"替换后的 usage 不可展示：{error}"
     return None
@@ -1465,7 +1471,9 @@ def _validate_entry_usages(
             for index, usage in enumerate(usages)
             if len(
                 re.findall(
-                    usage_command_body_pattern(target.command_body),
+                    usage_command_body_pattern(
+                        target.command_body, canonical_usages=target.canonical_usages
+                    ),
                     usage,
                 )
             )
@@ -1526,7 +1534,11 @@ def _validate_entry_usages(
             "同一 entry 中可省略的参数必须用一条方括号用法表示，不得同时输出省略版和带参数版"
         )
     for index, usage in enumerate(usages):
-        validate_capability_usage_pattern(usage)
+        validate_capability_usage_pattern(
+            usage,
+            allow_separated_slots=bool(target.canonical_usages)
+            and index not in shortcut_usage_indexes,
+        )
         if target.mode is CapabilityInvocationMode.KEYWORD:
             validate_keyword_usage(usage, target)
         is_shortcut = index in shortcut_usage_indexes
@@ -1537,7 +1549,9 @@ def _validate_entry_usages(
             and target.command_body is not None
             and len(
                 re.findall(
-                    usage_command_body_pattern(target.command_body),
+                    usage_command_body_pattern(
+                        target.command_body, canonical_usages=target.canonical_usages
+                    ),
                     usage,
                 )
             )
@@ -1555,6 +1569,7 @@ def _validate_entry_usages(
                         usage_command_body_pattern(
                             target.command_body,
                             requires_mention=True,
+                            canonical_usages=target.canonical_usages,
                         ),
                         usage,
                     )

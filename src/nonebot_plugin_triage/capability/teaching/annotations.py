@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import Callable, Collection
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from time import monotonic_ns, perf_counter
@@ -37,6 +37,7 @@ from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     capability_analysis_fingerprint,
     project_capability_annotation,
+    with_argument_limit_boundaries,
 )
 from nbtriage.capability.teaching.model_adapter import (
     CapabilityModelAdapterError,
@@ -114,6 +115,7 @@ class CapabilityTeachingUnitReason(StrEnum):
     INVALID_HANDLER_IDENTITY = "invalid_handler_identity"
     INCOMPLETE_PARAMETERIZED_FAMILY = "incomplete_parameterized_family"
     SOURCE_ADAPTER = "source_adapter"
+    UNSUPPORTED_SYNTAX = "unsupported_syntax"
     REQUEST_VALIDATION = "request_validation"
     ANNOTATION_CONTRACT = "annotation_contract"
     KNOWLEDGE_DISABLED = "knowledge_disabled"
@@ -312,6 +314,7 @@ class _ActiveAnnotationView:
     fingerprints: dict[str, str]
     annotations: dict[str, CapabilityTeachingAnnotation]
     capability_to_unit: dict[str, str]
+    public_annotations: dict[str, CapabilityTeachingAnnotation] = field(default_factory=dict)
 
     def get(self, capability_id: str) -> CapabilityTeachingAnnotation | None:
         unit_id = self.capability_to_unit.get(capability_id, capability_id)
@@ -322,7 +325,7 @@ class _ActiveAnnotationView:
             or annotation.request_fingerprint != self.fingerprints.get(unit_id)
         ):
             return None
-        return annotation
+        return self.public_annotations.get(unit_id, annotation)
 
 
 @dataclass(frozen=True)
@@ -956,6 +959,9 @@ class CapabilityAnnotationService:
             current_fingerprints = {
                 item.request.capability.capability_id: item.fingerprint for item in prepared
             }
+            current_requests = {
+                item.request.capability.capability_id: item.request for item in prepared
+            }
             capability_to_unit = {
                 capability_id: item.request.capability.capability_id
                 for item in prepared
@@ -968,6 +974,7 @@ class CapabilityAnnotationService:
                     current_fingerprints,
                     active_fallbacks,
                     capability_to_unit,
+                    requests=current_requests,
                 )
             logger.info(
                 "NoneBot Triage 教学注释流水线完成：refresh_id={}, eligible={}, cached={}, "
@@ -1086,6 +1093,7 @@ class CapabilityAnnotationService:
                 current_fingerprints,
                 active_fallbacks,
                 capability_to_unit,
+                requests=current_requests,
             )
             if plugin_module is None:
                 self._active_view = active_view
@@ -1104,6 +1112,7 @@ class CapabilityAnnotationService:
                 current_fingerprints,
                 published_candidates,
                 capability_to_unit,
+                requests=current_requests,
             )
             unit_statuses = [*skipped]
             status_fallbacks = active_fallbacks if global_failure is not None else base_annotations
@@ -1438,6 +1447,8 @@ class CapabilityAnnotationService:
                 output,
                 analysis_revision=self._analysis_revision,
             )
+            # 在尝试成功及写 checkpoint 前验证派生视图，缓存继续保存原始模型注释。
+            with_argument_limit_boundaries(item.request, annotation)
         except Exception as error:
             reason = _annotation_failure_reason(error)
             detail_code = _annotation_failure_detail(error, stage)
@@ -1836,6 +1847,10 @@ class CapabilityAnnotationService:
         request: CapabilityAnalysisRequest,
         annotation: CapabilityTeachingAnnotation,
     ) -> bool:
+        try:
+            with_argument_limit_boundaries(request, annotation)
+        except CapabilityAnnotationError:
+            return False
         return self._validate_evidence(request, annotation.evidence_manifest).current
 
     def _validate_evidence(
@@ -1890,11 +1905,20 @@ def _annotation_view(
     fingerprints: dict[str, str],
     annotations: dict[str, CapabilityTeachingAnnotation],
     capability_to_unit: dict[str, str],
+    *,
+    requests: dict[str, CapabilityAnalysisRequest] | None = None,
 ) -> _ActiveAnnotationView:
     return _ActiveAnnotationView(
         dict(fingerprints),
         dict(annotations),
         dict(capability_to_unit),
+        {
+            unit_id: with_argument_limit_boundaries(requests[unit_id], annotation)
+            for unit_id, annotation in annotations.items()
+            if requests is not None
+            and unit_id in requests
+            and annotation.request_fingerprint == fingerprints.get(unit_id)
+        },
     )
 
 
@@ -1922,7 +1946,13 @@ def _merge_scoped_annotation_view(
     fingerprints.update(current.fingerprints)
     annotations.update(current.annotations)
     capability_to_unit.update(current.capability_to_unit)
-    return _annotation_view(fingerprints, annotations, capability_to_unit)
+    public_annotations = {
+        unit_id: annotation
+        for unit_id, annotation in previous.public_annotations.items()
+        if unit_id not in replaced
+    }
+    public_annotations.update(current.public_annotations)
+    return _ActiveAnnotationView(fingerprints, annotations, capability_to_unit, public_annotations)
 
 
 def _valid_sha256_digest(value: object) -> bool:
@@ -2046,6 +2076,8 @@ def _global_stop_failure(
 
 def _preparation_skip_reason(error: Exception) -> CapabilityTeachingUnitReason:
     if isinstance(error, CapabilityAnalysisAdapterError):
+        if str(error).startswith(("unsupported Alconna separators", "unsupported Alconna syntax")):
+            return CapabilityTeachingUnitReason.UNSUPPORTED_SYNTAX
         return CapabilityTeachingUnitReason.SOURCE_ADAPTER
     if isinstance(error, CapabilityAnalysisError):
         return CapabilityTeachingUnitReason.REQUEST_VALIDATION

@@ -314,6 +314,23 @@ def nonebot_dependency_overload_profile() -> FrameworkFieldSemanticProfile:
     )
 
 
+def nepattern_anti_pattern_profile() -> FrameworkFieldSemanticProfile:
+    return FrameworkFieldSemanticProfile(
+        component="nepattern",
+        annotations=(),
+        fields=(
+            FrameworkFieldSemantic(
+                "nepattern.base.AntiPattern",
+                "AntiPattern 对基础匹配规则进行反向验证。基础类型不代表允许输入的类型，"
+                "也不足以描述完整的匹配规则；具体输入条件及验证失败后的行为，"
+                "应结合基础规则、默认值、可选性和实际处理代码判断。"
+                "运行时 pattern_type 保留 AntiPattern 的身份，不提供完整基础规则；"
+                "不能仅凭这个标记推断具体排除哪些输入。",
+            ),
+        ),
+    )
+
+
 def alconna_dispatch_profile() -> FrameworkFieldSemanticProfile:
     return FrameworkFieldSemanticProfile(
         component="nonebot-plugin-alconna",
@@ -357,6 +374,7 @@ __all__ = (
     "PublicConstraintKind",
     "alconna_dispatch_profile",
     "builtin_permission_semantic_profiles",
+    "nepattern_anti_pattern_profile",
     "nonebot_dependency_overload_profile",
     "nonebot_permission_profile",
     "onebot_v11_permission_profile",
