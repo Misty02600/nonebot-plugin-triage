@@ -213,7 +213,7 @@ class CapabilityInvocationTarget:
         if self.argument_limits and (
             len(self.canonical_usages) != 1
             or any(
-                re.search(rf"[<\[]slot:{index}[>\]]\.\.\.", self.canonical_usages[0]) is None
+                re.search(rf"<slot:{index}>\]?\.\.\.", self.canonical_usages[0]) is None
                 for index, _maximum in self.argument_limits
             )
         ):

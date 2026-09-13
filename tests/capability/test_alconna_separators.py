@@ -715,7 +715,7 @@ def test_ancestor_arguments_survive_path_templates(required, case, source_pack):
         record = _record(command)
         targets = _invocation_targets(record, source_pack, (), runtime_evidence_id=None)
         root = "probe" + ("" if case == "compact" else separator)
-        root += "<slot:0>" if required else "[slot:0]"
+        root += "<slot:0>" if required else "[<slot:0>]"
         if not required and separator != " ":
             root = "probe[,<slot:0>]"
         if case == "option":
@@ -737,7 +737,7 @@ def test_ancestor_arguments_survive_path_templates(required, case, source_pack):
         _validated_usage(public, target=targets[-1], display_trigger="probe|alias")
         with pytest.raises(CapabilityAnnotationError):
             _validated_usage(
-                public.replace(f"<参数{leaf_index}>", f"[参数{leaf_index}]"),
+                public.replace(f"<参数{leaf_index}>", f"[<参数{leaf_index}>]"),
                 target=targets[-1],
             )
         for spelling in ("child", "c"):
@@ -835,7 +835,7 @@ async def test_dispatch_presence_templates_match_native_parser(path, separator, 
         assert len(targets) == 1
         template = targets[0].canonical_usages[0]
         # 槽位填入共同可接受的数字，包含所有可选父参数；不执行插件业务回调。
-        text = re.sub(r"[<\[]slot:\d+[>\]]", "3", template).replace("[", "").replace("]", "")
+        text = re.sub(r"<slot:\d+>", "3", template).replace("[", "").replace("]", "")
         parsed = command.parse(text)
         assert parsed.matched and await _Dispatch(path).fn(None, None, {}, parsed)
         public = re.sub(r"slot:(\d+)", r"参数\1", template)
@@ -1050,11 +1050,11 @@ def test_reply_and_repeated_slots_preserve_separator_boundaries():
         "<回复消息> probe,<日期>", template, allow_reply_context=True
     )
     assert validate_capability_usage_template(
-        "[回复消息] probe,<城市>", "probe,<slot:0>[,<slot:1>]", allow_reply_context=True
+        "[<回复消息>] probe,<城市>", "probe,<slot:0>[,<slot:1>]", allow_reply_context=True
     )
     with pytest.raises(CapabilityAnnotationError):
         validate_capability_usage_template(
-            "[回复消息] probe", "probe,<slot:0>", allow_reply_context=True
+            "[<回复消息>] probe", "probe,<slot:0>", allow_reply_context=True
         )
     assert validate_capability_usage_template(
         "probe,<城市>...,<日期>", "probe,<slot:0>...,<slot:1>"

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from nbtriage.bug.conversation import BugConversationMessage
 from nbtriage.bug.intake import BugIntakeStatus, evaluate_bug_intake
 from nbtriage.capability.teaching.annotations import (
@@ -27,7 +29,7 @@ def test_bug_intake_detects_only_exact_reply_requirement_violation() -> None:
     result = evaluate_bug_intake(
         capability_id="plugin.image:search",
         invocation="搜图",
-        annotation=_annotation("[回复图片] 搜图"),
+        annotation=_annotation("<回复图片> 搜图"),
         reported_observation=True,
         reply_message=BugConversationMessage(
             sender_id="actor",
@@ -40,11 +42,21 @@ def test_bug_intake_detects_only_exact_reply_requirement_violation() -> None:
     assert result.status is BugIntakeStatus.TEACH_CORRECTION
 
 
-def test_bug_intake_does_not_blame_user_when_any_public_usage_is_compatible() -> None:
+@pytest.mark.parametrize(
+    "usages",
+    (
+        ("搜图 [<图片>]", "<回复图片> 搜图"),
+        ("[<回复图片>] 搜图",),
+        ("[回复图片] 搜图",),
+    ),
+)
+def test_bug_intake_does_not_blame_user_when_any_public_usage_is_compatible(
+    usages: tuple[str, ...],
+) -> None:
     result = evaluate_bug_intake(
         capability_id="plugin.image:search",
         invocation="搜图",
-        annotation=_annotation("搜图 [图片]", "[回复图片] 搜图"),
+        annotation=_annotation(*usages),
         reported_observation=True,
         reply_message=BugConversationMessage(
             sender_id="actor",

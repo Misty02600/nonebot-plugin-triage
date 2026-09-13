@@ -73,7 +73,7 @@ def _annotation(summary: str) -> CapabilityTeachingAnnotation:
                 entry_id="root",
                 name="搜图",
                 summary=summary,
-                usages=("搜图 [图片]", "[回复图片] 搜图"),
+                usages=("搜图 [<图片>]", "[<回复图片>] 搜图"),
                 behavior_boundaries=("也可以回复一张图片后使用。",),
             ),
         ),
@@ -151,7 +151,7 @@ def test_writer_activates_help_and_answer_files_with_one_generation_pointer(
     help_path = root / "objects" / generation / "help-display" / "plugin_image.yml"
     answer_path = root / "objects" / generation / "answer-knowledge" / "plugin_image.md"
     assert set(paths) == {help_path, answer_path}
-    assert "搜图 [图片]" in help_path.read_text(encoding="utf-8")
+    assert "搜图 [<图片>]" in help_path.read_text(encoding="utf-8")
     assert "搜索图片出处" in answer_path.read_text(encoding="utf-8")
     assert f"仅{scene_text}中具有使用资格的成员可用" in answer_path.read_text(encoding="utf-8")
     assert f"仅{scene_text}中具有使用资格的成员可用" not in help_path.read_text(encoding="utf-8")

@@ -503,13 +503,14 @@ def _family_parser_input_categories(request: CapabilityAnalysisRequest) -> froze
 
 def _family_usage_input_slots(value: str) -> tuple[str, ...]:
     _reply, value = split_reply_usage(value)
-    slots = [
-        (match.group(1), match.group(2))
-        for match in re.finditer(r"<([^<>]+)>|\[([^\[\]]+)\]", value)
-    ]
     normalized_slots = [
-        ("required" if required is not None else "optional", required or optional)
-        for required, optional in slots
+        (
+            "optional"
+            if value[: match.start()].count("[") > value[: match.start()].count("]")
+            else "required",
+            match.group(1),
+        )
+        for match in re.finditer(r"<([^<>\[\]]+)>", value)
     ]
     if (
         normalized_slots

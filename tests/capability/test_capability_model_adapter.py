@@ -145,7 +145,7 @@ async def test_maintenance_preflight_preserves_real_request_budget_and_model(
 
 def _entry(
     *,
-    usage: str = "搜图 [图片]",
+    usage: str = "搜图 [<图片>]",
     evidence_id: str = "evidence-handler",
     summary: str = "根据图片查找相似内容。",
 ) -> dict[str, object]:
@@ -277,7 +277,7 @@ async def test_required_docs_mode_allows_final_output_after_tool_budget_exhausti
     ("structure", "usage"),
     [
         ("@bot {command}<slot:0>", "@bot lookup<范围><对象>"),
-        ("@bot {command} [slot:0]", "[回复图片] @bot <风格>制作 [图片]"),
+        ("@bot {command} [<slot:0>]", "[<回复图片>] @bot <风格>制作 [<图片>]"),
     ],
 )
 def test_pattern_usage_survives_agent_projection_and_reload(structure: str, usage: str) -> None:
@@ -417,7 +417,7 @@ def test_agent_uses_native_output_and_bounded_source_payload() -> None:
                 CapabilityInvocationMode.REGEX,
                 regex_pattern=r"^(日群友|日群主|日管理|透群友|透群主|透管理)$",
             ),
-            "(日|透)(群友 [@用户]|群主|管理)",
+            "(日|透)(群友 [<@用户>]|群主|管理)",
         ),
         (
             CapabilityInvocationTarget(
@@ -536,11 +536,11 @@ def test_agent_payload_marks_fixed_permission_as_model_external() -> None:
 @pytest.mark.parametrize(
     ("template", "standard_usage", "reply_usage"),
     [
-        ("@bot 搜图 [slot:0]", "@bot 搜图 [图片]", "[回复图片] @bot 搜图"),
+        ("@bot 搜图 [<slot:0>]", "@bot 搜图 [<图片>]", "[<回复图片>] @bot 搜图"),
         ("@bot 搜图 <slot:0>", "@bot 搜图 <图片>", "<回复图片> @bot 搜图"),
         ("@bot 搜图 <slot:0>...", "@bot 搜图 <图片>...", "<回复图片> @bot 搜图"),
         ("@bot 搜图,<slot:0>", "@bot 搜图,<图片>", "<回复图片> @bot 搜图"),
-        ("@bot 搜图[,<slot:0>]", "@bot 搜图[,<图片>]", "[回复图片] @bot 搜图"),
+        ("@bot 搜图[,<slot:0>]", "@bot 搜图[,<图片>]", "[<回复图片>] @bot 搜图"),
     ],
 )
 def test_parser_reply_usage_is_not_a_shortcut_and_cannot_replace_standard_usage(
@@ -603,8 +603,8 @@ def test_agent_preserves_standard_usage_and_accepts_cited_shortcuts_with_aliases
     parser_template: bool, invalid_slot: str | None
 ) -> None:
     shortcut_evidence_id = "evidence-shortcuts"
-    standard_usage = "搜图 [图片] [(--type|-t) <周期 或日期>]"
-    template = "搜图 [slot:0] [(--type|-t) <slot:1>]"
+    standard_usage = "搜图 [<图片>] [(--type|-t) <周期 或日期>]"
+    template = "搜图 [<slot:0>] [(--type|-t) <slot:1>]"
     base_request = _request()
     request = replace(
         base_request,
@@ -691,7 +691,7 @@ def test_agent_preserves_standard_usage_and_accepts_cited_shortcuts_with_aliases
         analysis_revision="shortcut-test",
     )
     assert annotation.entries[0].usages == (
-        "(搜图|找图) [图片] [(--type|-t) <周期 或日期>]",
+        "(搜图|找图) [<图片>] [(--type|-t) <周期 或日期>]",
         "今日搜图",
         "今日找图",
     )
@@ -713,7 +713,7 @@ def test_agent_preserves_standard_usage_and_accepts_cited_shortcuts_with_aliases
 
 def test_agent_preserves_compact_parser_separators_when_naming_slots() -> None:
     def respond(_messages, _info: AgentInfo) -> ModelResponse:
-        output = _output(usage="@bot 提醒[时间]")
+        output = _output(usage="@bot 提醒[<时间>]")
         entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
         entry["display_trigger"] = "(提醒|叫我)"
         return ModelResponse(
@@ -728,7 +728,7 @@ def test_agent_preserves_compact_parser_separators_when_naming_slots() -> None:
                 "root",
                 CapabilityInvocationMode.ANCHORED,
                 "提醒",
-                canonical_usages=("@bot 提醒[slot:0]",),
+                canonical_usages=("@bot 提醒[<slot:0>]",),
                 aliases=("叫我",),
                 requires_mention=True,
             ),
@@ -746,7 +746,7 @@ def test_agent_preserves_compact_parser_separators_when_naming_slots() -> None:
         analysis_revision="compact-test",
     )
 
-    assert annotation.entries[0].usages == ("@bot (提醒|叫我)[时间]",)
+    assert annotation.entries[0].usages == ("@bot (提醒|叫我)[<时间>]",)
 
 
 @pytest.mark.parametrize("profile", [_NATIVE_PROFILE, _TOOL_PROFILE], ids=["native", "tool"])
@@ -1540,7 +1540,7 @@ def test_agent_retries_when_model_changes_parser_owned_usage_structure() -> None
     def respond(_messages, _info: AgentInfo) -> ModelResponse:
         nonlocal calls
         calls += 1
-        return _native_response(usage="搜图 <图片>" if calls == 1 else "搜图 [搜索词]")
+        return _native_response(usage="搜图 <图片>" if calls == 1 else "搜图 [<搜索词>]")
 
     request = replace(
         _request(),
@@ -1549,7 +1549,7 @@ def test_agent_retries_when_model_changes_parser_owned_usage_structure() -> None
                 "root",
                 CapabilityInvocationMode.ANCHORED,
                 "搜图",
-                ("搜图 [slot:0]",),
+                ("搜图 [<slot:0>]",),
             ),
         ),
     )
@@ -1567,7 +1567,7 @@ def test_agent_retries_when_model_changes_parser_owned_usage_structure() -> None
             for claim in result.entries[0].claims
             if claim.kind is SemanticClaimKind.USAGE
         )
-        == "搜图 [搜索词]"
+        == "搜图 [<搜索词>]"
     )
 
 
@@ -1629,7 +1629,7 @@ def test_agent_receives_every_family_member_invocation() -> None:
             "knowledge_enabled": True,
             "entries": [
                 {
-                    **_entry(usage="<表情操作> [图片|文字]..."),
+                    **_entry(usage="<表情操作> [<图片|文字>]..."),
                     "entry_id": "family",
                 }
             ],
@@ -1673,7 +1673,7 @@ def test_agent_receives_every_family_member_invocation() -> None:
                         "root",
                         CapabilityInvocationMode.ANCHORED,
                         "文字图",
-                        ("文字图 [文字]...",),
+                        ("文字图 [<文字>]...",),
                     ),
                 ),
                 ("evidence-family-members",),
@@ -1713,7 +1713,7 @@ def test_agent_receives_every_family_member_invocation() -> None:
         "evidence_ids": ["evidence-family-members"],
     }
     assert observed["tools"] == ("inspect_family_source",)
-    assert "文字图 [文字]..." not in cast(str, cast(UserPromptPart, messages[0].parts[0]).content)
+    assert "文字图 [<文字>]..." not in cast(str, cast(UserPromptPart, messages[0].parts[0]).content)
 
 
 @pytest.mark.parametrize(
@@ -1721,10 +1721,13 @@ def test_agent_receives_every_family_member_invocation() -> None:
     [
         (("#<滤镜名> <图片>...", "<回复图片> #<滤镜名>"), True),
         (("<回复图片> #<滤镜名>", "#<滤镜名> <图片>..."), True),
-        (("[回复消息] #<滤镜名> <图片>...",), True),
+        (("[<回复消息>] #<滤镜名> <图片>...",), True),
         (("<回复图片> #<滤镜名>",), False),
-        (("[回复图片] #<滤镜名>",), False),
-        (("#<滤镜名> [参数]", "<回复图片> #<滤镜名>"), False),
+        (("[<回复图片>] #<滤镜名>",), False),
+        (("#<滤镜名> [<参数>]", "<回复图片> #<滤镜名>"), False),
+        (("#<滤镜名> [图片]",), False),
+        (("#<滤镜名> [(原图|图片)]",), False),
+        (("#<滤镜名> [<图片>]",), True),
         (("#<滤镜名> <图片>...", "<回复图片> 滤镜"), False),
         (("#<滤镜名> <图片>...", "#<另一个名称> <图片>..."), False),
         (("#<滤镜名> <图片>...", "<回复图片> (红 <图片>|蓝 <图片>)"), False),
@@ -1911,7 +1914,7 @@ def test_agent_retries_when_complete_usage_enumerates_more_than_four_members() -
     def respond(_messages, _info: AgentInfo) -> ModelResponse:
         nonlocal calls
         calls += 1
-        usage = "#(摸摸|亲亲|贴贴|白底|旋转) [图片]" if calls == 1 else "#<表情名> [图片]"
+        usage = "#(摸摸|亲亲|贴贴|白底|旋转) [<图片>]" if calls == 1 else "#<表情名> [<图片>]"
         output = {
             "knowledge_enabled": True,
             "entries": [{**_entry(usage=usage), "entry_id": "family"}],
@@ -1939,7 +1942,7 @@ def test_agent_retries_when_complete_usage_enumerates_more_than_four_members() -
             for claim in result.entries[0].claims
             if claim.kind is SemanticClaimKind.USAGE
         )
-        == "#<表情名> [图片]"
+        == "#<表情名> [<图片>]"
     )
 
 
@@ -2093,9 +2096,9 @@ def test_agent_retries_complete_usage_without_a_family_member_selector() -> None
 @pytest.mark.parametrize(
     "invalid_usage",
     [
-        "{command} [图片]",
-        "[图片]",
-        "搜图 搜图 [图片]",
+        "{command} [<图片>]",
+        "[<图片>]",
+        "搜图 搜图 [<图片>]",
         "搜图 <图片> 后发送下一页",
         "(查天气 <城市>|翻译 <文本>|随机语录)",
     ],
@@ -2106,7 +2109,7 @@ def test_usage_contract_retries_invalid_complete_usages(invalid_usage: str) -> N
     def respond(_messages, _info: AgentInfo) -> ModelResponse:
         nonlocal provider_calls
         provider_calls += 1
-        return _native_response(usage=invalid_usage if provider_calls == 1 else "搜图 [图片]")
+        return _native_response(usage=invalid_usage if provider_calls == 1 else "搜图 [<图片>]")
 
     client = PydanticAICapabilityAnalysisClient(
         FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
@@ -2118,7 +2121,7 @@ def test_usage_contract_retries_invalid_complete_usages(invalid_usage: str) -> N
     usage = next(
         item.statement for item in result.entries[0].claims if item.kind is SemanticClaimKind.USAGE
     )
-    assert usage == "搜图 [图片]"
+    assert usage == "搜图 [<图片>]"
     assert provider_calls == 2
 
 

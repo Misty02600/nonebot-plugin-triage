@@ -90,6 +90,6 @@ def test_public_selector_rejects_non_executable_concept_for_aliases() -> None:
 
 def test_family_usage_accepts_repeating_image_or_text_inputs() -> None:
     assert (
-        validate_capability_usage_pattern("<表情操作> [图片|文字]...")
-        == "<表情操作> [图片|文字]..."
+        validate_capability_usage_pattern("<表情操作> [<图片|文字>]...")
+        == "<表情操作> [<图片|文字>]..."
     )

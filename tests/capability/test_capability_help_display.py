@@ -64,7 +64,7 @@ def _record(
 def _annotation(
     capability_id: str,
     *,
-    usages: tuple[str, ...] = ("搜图 [图片]", "[回复图片] 搜图"),
+    usages: tuple[str, ...] = ("搜图 [<图片>]", "[<回复图片>] 搜图"),
 ) -> CapabilityTeachingAnnotation:
     return CapabilityTeachingAnnotation(
         capability_id=capability_id,
@@ -120,8 +120,8 @@ def test_writer_generates_current_runtime_plugins_in_separate_yaml_files(
         "commands": [
             {
                 "name": "搜图",
-                "display": "搜图 [图片]",
-                "usages": ["搜图 [图片]", "[回复图片] 搜图"],
+                "display": "搜图 [<图片>]",
+                "usages": ["搜图 [<图片>]", "[<回复图片>] 搜图"],
                 "description": "搜索图片出处",
             }
         ],
@@ -250,7 +250,7 @@ def test_writer_projects_any_rate_limit_to_migut_help_cooldown_marker(
                 entry_id="root",
                 name="搜图",
                 summary="搜索图片出处。",
-                usages=("搜图 [图片]",),
+                usages=("搜图 [<图片>]",),
                 requirements=(
                     CapabilityTeachingRequirement(
                         kind=SemanticConstraintKind.ROLE,

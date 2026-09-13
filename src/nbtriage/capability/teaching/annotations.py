@@ -38,9 +38,9 @@ from nbtriage.capability.teaching.usage import (
     validate_usage_selector,
 )
 
-CAPABILITY_ANNOTATION_SCHEMA_VERSION = 14
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v127-zh"
-CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v104"
+CAPABILITY_ANNOTATION_SCHEMA_VERSION = 15
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v128-zh"
+CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v105"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
@@ -49,7 +49,7 @@ CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT = 192_000
 CAPABILITY_ANNOTATION_PRELOAD_TOKEN_TARGET = 64_000
 CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
     "background-unit-10req-10read-navigation-tools-300line-default-32kchar-read-"
-    "64k-soft-preload-target-192k-reserve-finalize-32768out-0.05usd-schema14"
+    "64k-soft-preload-target-192k-reserve-finalize-32768out-0.05usd-schema15"
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SEARCH_TERM_LIST_SEPARATOR = re.compile(r"[,，、;；|]")
@@ -903,7 +903,7 @@ def validate_capability_usage_pattern(
     """验证完整、可直接展示的教学用法。"""
     normalized = _usage_pattern(value)
     reply, body = split_reply_usage(normalized)
-    if re.search(r"[<\[]回复", body):
+    if re.search(r"<回复", body):
         raise CapabilityAnnotationError("reply context must precede the command")
     if reply and body.startswith("..."):
         raise CapabilityAnnotationError("reply context cannot be repeated")
@@ -914,10 +914,10 @@ def validate_capability_usage_pattern(
         raise CapabilityAnnotationError("multi-turn instructions do not belong in usage")
     if re.search(r"(?:<[^<>]*\.\.\.>|\[[^<>\[\]]*\.\.\.\])", normalized):
         raise CapabilityAnnotationError(
-            "重复参数的省略号必须写在完整槽位之后，例如 <参数>... 或 [参数]..."
+            "重复参数的省略号必须写在完整槽位之后，例如 <参数>... 或 [<参数>]..."
         )
     if re.search(r"(?<!\S)@(?=[<\[])", normalized):
-        raise CapabilityAnnotationError("mention 必须完整写入参数槽位，例如 <@用户> 或 [@用户]")
+        raise CapabilityAnnotationError("mention 必须完整写入参数槽位，例如 <@用户> 或 [<@用户>]")
     following = (
         rf"[){re.escape(PUBLIC_USAGE_SEPARATORS)}\]\[]" if allow_separated_slots else r"[)|]"
     )
@@ -940,7 +940,7 @@ def validate_capability_usage_pattern(
     return normalized
 
 
-_STRUCTURAL_USAGE_SLOT = re.compile(r"(?P<opening><|\[)slot:(?P<index>\d+)(?P<closing>>|\])")
+_STRUCTURAL_USAGE_SLOT = re.compile(r"<slot:(?P<index>\d+)>")
 _PUBLIC_USAGE_SLOT = r"[^<>\[\](){}\r\n]*"
 
 
@@ -984,26 +984,25 @@ def _align_capability_usage_template(
     for marker in markers:
         literal = normalized_template[cursor : marker.start()]
         depth += literal.count("[") + literal.count("(") - literal.count("]") - literal.count(")")
-        opening = marker.group("opening")
-        closing = marker.group("closing")
-        if (opening, closing) not in {("<", ">"), ("[", "]")}:
-            raise CapabilityAnnotationError("canonical usage contains an invalid structural slot")
-        slot_pattern = re.escape(opening) + f"({_PUBLIC_USAGE_SLOT})" + re.escape(closing)
+        slot_pattern = f"<({_PUBLIC_USAGE_SLOT})>"
         cursor = marker.end()
         if normalized_template.startswith("...", cursor):
             slot_pattern += re.escape("...")
             cursor += 3
         omit_literal = None
-        wrapped = re.search(rf"\[([{re.escape(PUBLIC_USAGE_SEPARATORS)}])$", literal)
+        wrapped = re.search(rf"\[[{re.escape(PUBLIC_USAGE_SEPARATORS)}]?$", literal)
         if depth == 1 and wrapped and normalized_template[cursor : cursor + 1] == "]":
-            # 非空格分隔的可选位置参数形如 [,<slot:0>]，整体参与回复对齐。
+            # 单个可选位置参数（含分隔符与重复号）整体参与回复对齐。
             slot_pattern = re.escape(wrapped.group()) + slot_pattern + r"\]"
             literal = literal[: wrapped.start()]
             cursor += 1
+            if normalized_template.startswith("...", cursor):
+                slot_pattern += re.escape("...")
+                cursor += 3
             depth -= 1
             if reply:
-                omit_literal = literal
-        elif reply and depth == 0 and (opening == "[" or reply.startswith("<")):
+                omit_literal = literal.removesuffix(" ") if wrapped.group() == "[" else literal
+        elif reply and depth == 0 and reply.startswith("<"):
             omit_literal = (
                 literal[:-1] if literal and literal[-1] in PUBLIC_USAGE_SEPARATORS else literal
             )
@@ -1136,6 +1135,16 @@ def validate_complete_aggregate_usage(value: str) -> str:
     """验证参数化工厂用法包含独立于普通输入的成员选择位。"""
     normalized = validate_capability_usage_pattern(value)
     _reply, body = split_reply_usage(normalized)
+    required: list[str] = []
+    optional_depth = 0
+    for character in body:
+        if character == "[":
+            optional_depth += 1
+        elif character == "]":
+            optional_depth -= 1
+        elif optional_depth == 0:
+            required.append(character)
+    body = "".join(required)
     if re.search(r"\([^()]*\|[^()]*\)", body):
         return normalized
     slots = {item.strip() for item in re.findall(r"<([^<>]+)>", body)}
@@ -1349,9 +1358,16 @@ def _usage_pattern(value: str) -> str:
         raise CapabilityAnnotationError("usage must contain the complete command, not {command}")
     if "{" in normalized or "}" in normalized:
         raise CapabilityAnnotationError("usage contains an unsupported placeholder")
-    for opening, closing in (("[", "]"), ("(", ")"), ("<", ">")):
-        if normalized.count(opening) != normalized.count(closing):
+    delimiters: list[str] = []
+    for character in normalized:
+        if character in "[(<":
+            delimiters.append(character)
+        elif character in "])>" and (
+            not delimiters or delimiters.pop() != {"]": "[", ")": "(", ">": "<"}[character]
+        ):
             raise CapabilityAnnotationError("usage contains unbalanced delimiters")
+    if delimiters:
+        raise CapabilityAnnotationError("usage contains unbalanced delimiters")
     return normalized
 
 

@@ -8,7 +8,7 @@ MAX_SUMMARY_USAGE_ALTERNATIVES = 6
 MAX_PUBLIC_USAGES = 3
 PUBLIC_USAGE_SEPARATORS = " ,;:=/.-_+!?#%&，；：、"
 
-_REPLY_USAGE = re.compile(r"(<回复[^<>\[\](){}\r\n]+>|\[回复[^<>\[\](){}\r\n]+\]) (.+)")
+_REPLY_USAGE = re.compile(r"(<回复[^<>\[\](){}\r\n]+>|\[<回复[^<>\[\](){}\r\n]+>\]) (.+)")
 
 
 def split_reply_usage(value: str) -> tuple[str | None, str]:

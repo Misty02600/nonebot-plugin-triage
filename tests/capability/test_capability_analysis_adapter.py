@@ -1213,12 +1213,12 @@ reminder = on_alconna("提醒", handlers=[handle])
         ConfigValuePolicy(),
     )
 
-    assert compact_root.invocations[0].canonical_usages == ("提醒[slot:0]",)
+    assert compact_root.invocations[0].canonical_usages == ("提醒[<slot:0>]",)
     (subcommand_target,) = compact_subcommand.invocations
     assert subcommand_target.mode is CapabilityInvocationMode.ANCHORED
     assert subcommand_target.command_body == "词云帮助"
     assert subcommand_target.aliases == ("云帮助", "云说明", "词云说明")
-    assert subcommand_target.canonical_usages == ("词云帮助 [slot:0] [(-n|--num)<slot:1>]",)
+    assert subcommand_target.canonical_usages == ("词云帮助 [<slot:0>] [(-n|--num)<slot:1>]",)
 
 
 def test_invocation_target_keeps_runtime_aliases_and_precise_to_me_rule(
@@ -1533,7 +1533,7 @@ matcher = on_alconna("标签", handlers=[handle_tags])
         ConfigValuePolicy(),
     )
 
-    assert request.invocations[0].canonical_usages == ("标签 <slot:0>... [slot:1]...",)
+    assert request.invocations[0].canonical_usages == ("标签 <slot:0>... [<slot:1>]...",)
 
 
 def test_same_named_handlers_are_bound_to_their_exact_matcher_source(
@@ -2124,7 +2124,7 @@ third = create_handler("贴贴")
     }
     assert usages == {
         "command:pat": ("贴贴 <slot:0>",),
-        "command:text-image": ("文字图 [slot:0]...",),
+        "command:text-image": ("文字图 [<slot:0>]...",),
         "command:touch": ("摸摸 <slot:0>",),
     }
     member_documents = [
@@ -2181,7 +2181,7 @@ third = create_handler("贴贴")
     assert touch_shape["arguments"][0]["name"] == "图片"
     assert text_shape["arguments"][0]["variadic_flag"] == "*"
     assert touch_shape["usage_templates"] == ["{command} <slot:0>"]
-    assert text_shape["usage_templates"] == ["{command} [slot:0]..."]
+    assert text_shape["usage_templates"] == ["{command} [<slot:0>]..."]
     assert all(
         document["columns"] == ["invocations", "shape", "syntax", "hints"]
         for document in member_documents

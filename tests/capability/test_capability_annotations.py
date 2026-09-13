@@ -189,7 +189,7 @@ async def test_argument_limits_rebuilt_for_cache_baseline_and_publication(tmp_pa
             invocations=(
                 replace(
                     request.invocations[0],
-                    canonical_usages=("搜图 [slot:0]...",),
+                    canonical_usages=("搜图 [<slot:0>]...",),
                     argument_limits=((0, maximum),) if maximum else (),
                 ),
             ),
@@ -208,7 +208,7 @@ async def test_argument_limits_rebuilt_for_cache_baseline_and_publication(tmp_pa
                     replace(
                         entry,
                         claims=tuple(
-                            replace(claim, statement="搜图 [图片]...")
+                            replace(claim, statement="搜图 [<图片>]...")
                             if claim.kind is SemanticClaimKind.USAGE
                             else claim
                             for claim in entry.claims
@@ -286,7 +286,7 @@ def _entry(
                 "搜索图片的出处和相似内容。",
                 ("evidence-handler",),
             ),
-            SemanticClaim(SemanticClaimKind.USAGE, "搜图 [图片]", ("evidence-handler",)),
+            SemanticClaim(SemanticClaimKind.USAGE, "搜图 [<图片>]", ("evidence-handler",)),
             *extra_claims,
         ),
         baseline_changes=baseline_changes,
@@ -344,7 +344,7 @@ async def test_manual_boundary_edit_publication_recovery_and_regeneration(tmp_pa
             invocations=(
                 replace(
                     request.invocations[0],
-                    canonical_usages=("搜图 [slot:0]...",),
+                    canonical_usages=("搜图 [<slot:0>]...",),
                     argument_limits=((0, 3),),
                 ),
             ),
@@ -379,7 +379,7 @@ async def test_manual_boundary_edit_publication_recovery_and_regeneration(tmp_pa
                     replace(
                         entry,
                         claims=tuple(
-                            replace(claim, statement="搜图 [图片]...")
+                            replace(claim, statement="搜图 [<图片>]...")
                             if claim.kind is SemanticClaimKind.USAGE
                             else claim
                             for claim in entry.claims
@@ -556,7 +556,7 @@ def test_public_annotation_contains_entries_without_source_or_locator() -> None:
     document = json.dumps(annotation.to_dict(), ensure_ascii=False)
 
     assert CapabilityTeachingAnnotation.from_dict(json.loads(document)) == annotation
-    assert annotation.entries[0].usages == ("搜图 [图片]",)
+    assert annotation.entries[0].usages == ("搜图 [<图片>]",)
     assert "SENTINEL_SOURCE" not in document
     assert "plugin.image:search" not in document
 
@@ -668,7 +668,7 @@ def test_annotation_applies_explicit_baseline_remove_and_replace() -> None:
 
 
 def test_anchored_usage_must_contain_command_body_exactly_once() -> None:
-    for invalid in ("[图片]", "搜图查看 [图片]", "搜图 搜图 [图片]", "{command} [图片]"):
+    for invalid in ("[<图片>]", "搜图查看 [<图片>]", "搜图 搜图 [<图片>]", "{command} [<图片>]"):
         output = CapabilityAnalysisOutput(
             entries=(
                 CapabilityAnalysisEntryOutput(
@@ -748,7 +748,7 @@ def test_parser_owned_usage_allows_slot_naming_but_rejects_structure_changes() -
 
     template = "订阅 添加 <slot:0> [-q|--quiet]"
     for invalid in (
-        "订阅 添加 [主题 ID] [-q|--quiet]",
+        "订阅 添加 [<主题 ID>] [-q|--quiet]",
         "订阅 添加 <主题 ID>... [-q|--quiet]",
         "订阅 添加 [-q|--quiet] <主题 ID>",
         "订阅 添加 <主题(ID)> [-q|--quiet]",
@@ -765,10 +765,10 @@ def test_parser_owned_usage_allows_slot_naming_but_rejects_structure_changes() -
     with pytest.raises(CapabilityAnnotationError):
         validate_capability_usage_template("对比 <主题 ID> <名称>", "对比 <slot:0> <slot:0>")
 
-    template = "@bot 标注 <slot:0> [slot:1]... [--quiet|-q]"
+    template = "@bot 标注 <slot:0> [<slot:1>]... [--quiet|-q]"
     for usage in (
-        "[回复图片] @bot 标注 <主题> [说明]... [--quiet|-q]",
-        "[回复图片] @bot 标注 <主题> [--quiet|-q]",
+        "[<回复图片>] @bot 标注 <主题> [<说明>]... [--quiet|-q]",
+        "[<回复图片>] @bot 标注 <主题> [--quiet|-q]",
     ):
         assert (
             validate_capability_usage_template(usage, template, allow_reply_context=True) == usage
@@ -776,20 +776,20 @@ def test_parser_owned_usage_allows_slot_naming_but_rejects_structure_changes() -
         with pytest.raises(CapabilityAnnotationError):
             validate_capability_usage_template(usage, template)
     for invalid in (
-        "[回复图片] @bot 标注 [--quiet|-q]",
-        "[回复图片] @bot 标注 [主题] [--quiet|-q]",
-        "[回复图片] @bot 标注 <主题> [说明] [--quiet|-q]",
-        "[回复图片] @bot 标注 <主题> [--quiet]",
-        "[回复图片] 标注 <主题> [--quiet|-q]",
-        "[回复图片] @bot 标注 <主题> <说明> [--quiet|-q]",
-        "[回复图片] @bot 删除 <主题> [--quiet|-q]",
+        "[<回复图片>] @bot 标注 [--quiet|-q]",
+        "[<回复图片>] @bot 标注 [<主题>] [--quiet|-q]",
+        "[<回复图片>] @bot 标注 <主题> [<说明>] [--quiet|-q]",
+        "[<回复图片>] @bot 标注 <主题> [--quiet]",
+        "[<回复图片>] 标注 <主题> [--quiet|-q]",
+        "[<回复图片>] @bot 标注 <主题> <说明> [--quiet|-q]",
+        "[<回复图片>] @bot 删除 <主题> [--quiet|-q]",
     ):
         with pytest.raises(CapabilityAnnotationError):
             validate_capability_usage_template(invalid, template, allow_reply_context=True)
 
-    template = "@bot 标注 [slot:0] <slot:1>... [(--style|-s) <slot:2>]"
+    template = "@bot 标注 [<slot:0>] <slot:1>... [(--style|-s) <slot:2>]"
     for usage in (
-        "<回复图片> @bot 标注 [说明] [(--style|-s) <风格>]",
+        "<回复图片> @bot 标注 [<说明>] [(--style|-s) <风格>]",
         "<回复图片> @bot 标注 [(--style|-s) <风格>]",
     ):
         assert (
@@ -798,14 +798,14 @@ def test_parser_owned_usage_allows_slot_naming_but_rejects_structure_changes() -
         with pytest.raises(CapabilityAnnotationError):
             validate_capability_usage_template(usage, template)
     for usage in (
-        "[回复图片] @bot 标注 [说明] [(--style|-s) <风格>]",
-        "<回复图片> @bot 标注 [说明] [(--style|-s)]",
-        "<回复图片> @bot 标注 [说明] [(--style|-s) [风格]]",
-        "<回复图片> @bot 标注 [说明]",
-        "<回复图片> @bot 标注 <图片> [说明] [(--style|-s) <风格>]",
-        "<回复图片> @bot 标注 [说明] <图片> [(--style|-s) <风格>]",
-        "@bot 标注 <回复图片> [说明] [(--style|-s) <风格>]",
-        "<回复图片> <回复消息> @bot 标注 [说明] [(--style|-s) <风格>]",
+        "[<回复图片>] @bot 标注 [<说明>] [(--style|-s) <风格>]",
+        "<回复图片> @bot 标注 [<说明>] [(--style|-s)]",
+        "<回复图片> @bot 标注 [<说明>] [(--style|-s) [<风格>]]",
+        "<回复图片> @bot 标注 [<说明>]",
+        "<回复图片> @bot 标注 <图片> [<说明>] [(--style|-s) <风格>]",
+        "<回复图片> @bot 标注 [<说明>] <图片> [(--style|-s) <风格>]",
+        "@bot 标注 <回复图片> [<说明>] [(--style|-s) <风格>]",
+        "<回复图片> <回复消息> @bot 标注 [<说明>] [(--style|-s) <风格>]",
     ):
         with pytest.raises(CapabilityAnnotationError):
             validate_capability_usage_template(usage, template, allow_reply_context=True)
@@ -821,7 +821,7 @@ def test_parser_owned_usage_allows_slot_naming_but_rejects_structure_changes() -
                 "root",
                 CapabilityInvocationMode.ANCHORED,
                 "随机表情",
-                ("随机表情 [slot:0]...",),
+                ("随机表情 [<slot:0>]...",),
             ),
         ),
     )
@@ -830,7 +830,7 @@ def test_parser_owned_usage_allows_slot_naming_but_rejects_structure_changes() -
             replace(
                 base_entry,
                 claims=tuple(
-                    replace(claim, statement="随机表情 [图片|文字|@用户]...")
+                    replace(claim, statement="随机表情 [<图片|文字|@用户>]...")
                     if claim.kind is SemanticClaimKind.USAGE
                     else claim
                     for claim in base_entry.claims
@@ -843,7 +843,7 @@ def test_parser_owned_usage_allows_slot_naming_but_rejects_structure_changes() -
         alternative_output,
         analysis_revision="analysis-v1",
     )
-    assert alternative_annotation.entries[0].usages == ("随机表情 [图片|文字|@用户]...",)
+    assert alternative_annotation.entries[0].usages == ("随机表情 [<图片|文字|@用户>]...",)
 
 
 def test_parser_alias_cannot_use_unrelated_shortcut_evidence_to_drop_required_arguments() -> None:
@@ -887,8 +887,10 @@ def test_complete_usage_requires_bounded_member_selector() -> None:
     )
 
     for usage in (
-        "#(摸摸|亲亲|贴贴|白底|波纹) [图片]",
-        "#表情 [图片]",
+        "#(摸摸|亲亲|贴贴|白底|波纹) [<图片>]",
+        "#表情 [<图片>]",
+        "#[<表情名>] <图片>",
+        "#[(摸摸|亲亲)] <图片>",
     ):
         output = CapabilityAnalysisOutput(
             entries=(
@@ -935,7 +937,7 @@ def test_complete_usage_requires_bounded_member_selector() -> None:
                     ),
                     SemanticClaim(
                         SemanticClaimKind.USAGE,
-                        "(复古|锐化|黑白) [图片]",
+                        "(复古|锐化|黑白) [<图片>]",
                         ("evidence-handler",),
                     ),
                 ),
@@ -946,7 +948,7 @@ def test_complete_usage_requires_bounded_member_selector() -> None:
         request,
         valid,
         analysis_revision="analysis-v1",
-    ).entries[0].usages == ("(复古|锐化|黑白) [图片]",)
+    ).entries[0].usages == ("(复古|锐化|黑白) [<图片>]",)
 
 
 @pytest.mark.parametrize(
@@ -965,16 +967,74 @@ def test_usage_repetition_requires_ellipsis_after_complete_slot(usage: str) -> N
         validate_capability_usage_pattern(usage)
 
 
+@pytest.mark.parametrize(
+    "usage",
+    ("查询 [<用户名]>", "查询 ]<用户名>[", "查询 [(原图|缩略图])"),
+)
+def test_usage_delimiters_must_be_properly_nested(usage: str) -> None:
+    with pytest.raises(CapabilityAnnotationError, match="unbalanced delimiters"):
+        validate_capability_usage_pattern(usage)
+
+
+def test_optional_slots_and_literals_preserve_distinct_template_roles() -> None:
+    template = "查询 [<slot:0>] [原图]"
+    usage = "查询 [<用户名>] [原图]"
+    assert validate_capability_usage_template(usage, template) == usage
+    for invalid in (
+        "查询 [用户名] [原图]",
+        "查询 <用户名> [原图]",
+        "查询 [<用户名>] [<原图>]",
+        "查询 [<用户名>] [缩略图]",
+    ):
+        with pytest.raises(CapabilityAnnotationError):
+            validate_capability_usage_template(invalid, template)
+    reply_usage = "[<回复图片>] 查询 [原图]"
+    assert (
+        validate_capability_usage_template(reply_usage, template, allow_reply_context=True)
+        == reply_usage
+    )
+    with pytest.raises(CapabilityAnnotationError):
+        validate_capability_usage_template("[<回复图片>] 查询", template, allow_reply_context=True)
+
+
+@pytest.mark.parametrize(
+    ("template", "usage", "reply_usage"),
+    (
+        ("查询[<slot:0>]", "查询[<用户名>]", "[<回复消息>] 查询"),
+        ("查询![<slot:0>]...", "查询![<用户名>]...", "[<回复消息>] 查询!"),
+        ("查询[,<slot:0>...]", "查询[,<用户名>...]", "[<回复消息>] 查询"),
+    ),
+)
+def test_optional_reply_alignment_keeps_command_and_repetition(
+    template: str, usage: str, reply_usage: str
+) -> None:
+    assert validate_capability_usage_template(usage, template) == usage
+    assert (
+        validate_capability_usage_template(reply_usage, template, allow_reply_context=True)
+        == reply_usage
+    )
+
+
+def test_nested_optional_slots_cannot_be_independently_omitted_for_reply() -> None:
+    template = "查询 [<slot:0> [<slot:1>]]"
+    usage = "查询 [<用户名> [<页码>]]"
+    assert validate_capability_usage_template(usage, template) == usage
+    with pytest.raises(CapabilityAnnotationError):
+        validate_capability_usage_template(
+            "[<回复消息>] 查询 [<页码>]", template, allow_reply_context=True
+        )
+
+
 def test_usage_repetition_accepts_required_and_optional_slots() -> None:
     assert validate_capability_usage_pattern("批量 <图片>...") == "批量 <图片>..."
-    assert validate_capability_usage_pattern("批量 [图片]...") == "批量 [图片]..."
+    assert validate_capability_usage_pattern("批量 [<图片>]...") == "批量 [<图片>]..."
     assert validate_capability_usage_pattern("添加名单 <名字>... <@用户>...") == (
         "添加名单 <名字>... <@用户>..."
     )
     for usage in (
         "批量 (all|<编号>...)",
         "批量 (<编号>...|all)",
-        "批量 (all|(<编号>...|[图片]...))",
+        "批量 (all|(<编号>...|[<图片>]...))",
         "批量 (all|<编号>... [-r])",
     ):
         assert validate_capability_usage_pattern(usage) == usage
@@ -1197,7 +1257,7 @@ async def test_separator_change_and_unsupported_syntax_never_restore_old_usage(
         if record.capability_id == "command:changed":
             if phase == "unsupported":
                 raise CapabilityAnalysisAdapterError(unsupported_reason)
-            template = "搜图 [slot:0]" if phase == "initial" else "搜图[,<slot:0>]"
+            template = "搜图 [<slot:0>]" if phase == "initial" else "搜图[,<slot:0>]"
             request = replace(
                 request,
                 invocations=(replace(request.invocations[0], canonical_usages=(template,)),),
@@ -1843,7 +1903,7 @@ async def test_restart_does_not_reuse_shard_from_older_published_generation(
                                 ),
                                 SemanticClaim(
                                     SemanticClaimKind.USAGE,
-                                    "搜图 [图片]",
+                                    "搜图 [<图片>]",
                                     ("evidence-handler",),
                                 ),
                                 SemanticClaim(

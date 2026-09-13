@@ -2130,7 +2130,7 @@ def _join_arguments(
         if argument.get("required") is False and boundary not in {"", " "}:
             suffix = "..." if slot.endswith("...") else ""
             body = slot.removesuffix("...")[1:-1]
-            result += f"[{boundary}<{body}>{suffix}]"
+            result += f"[{boundary}{body}{suffix}]"
         else:
             result += boundary + slot
         if argument.get("required") is False and index < len(visible) - 1 and outgoing != boundary:
@@ -2170,7 +2170,7 @@ def _render_arguments(
         if argument_limits is not None and variadic and type(length) is int and length > 0:
             argument_limits.append((slot_index, length))
         name = _generic_public_slot_name(argument) if generic_slot_names else f"slot:{slot_index}"
-        slot = f"<{name}>" if required else f"[{name}]"
+        slot = f"<{name}>" if required else f"[<{name}>]"
         result.append(f"{slot}..." if variadic else slot)
     return tuple(result)
 

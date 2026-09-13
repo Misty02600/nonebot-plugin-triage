@@ -840,7 +840,7 @@ def test_public_guidance_combines_exact_matcher_with_shared_family_knowledge() -
                 entry_id="family",
                 name="图片互动",
                 summary="使用图片互动模板生成图片。",
-                usages=("(摸摸|亲亲) [图片]",),
+                usages=("(摸摸|亲亲) [<图片>]",),
             ),
         ),
     )
@@ -891,7 +891,7 @@ def test_runtime_family_enumeration_stops_after_three_members(
                 entry_id="family",
                 name="图片操作",
                 summary="使用已注册的图片操作生成结果。",
-                usages=("<操作> [图片]",),
+                usages=("<操作> [<图片>]",),
             ),
         ),
     )
@@ -931,7 +931,10 @@ def test_family_search_candidates_are_deduplicated_without_merging_plugins() -> 
         request_fingerprint="a" * 64,
         entries=(
             CapabilityTeachingEntry(
-                "family", name="表情操作", summary="图片互动", usages=("<表情操作> [图片|文字]...",)
+                "family",
+                name="表情操作",
+                summary="图片互动",
+                usages=("<表情操作> [<图片|文字>]...",),
             ),
         ),
     )

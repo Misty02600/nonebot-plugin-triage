@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from enum import StrEnum
 
 from nbtriage.bug.conversation import BugConversationMessage
 from nbtriage.capability.teaching.annotations import CapabilityTeachingAnnotation
-
-_REPLY_USAGE = re.compile(r"^\[回复[^\]\r\n]{1,20}\]\s+")
+from nbtriage.capability.teaching.usage import split_reply_usage
 
 
 class BugIntakeStatus(StrEnum):
@@ -89,7 +87,10 @@ def _exact_operation_misses_required_reply(
         for item in entry.usages
         if item.strip() and invocation in item
     )
-    return bool(usages) and all(_REPLY_USAGE.match(item) is not None for item in usages)
+    return bool(usages) and all(
+        reply is not None and reply.startswith("<")
+        for reply, _body in (split_reply_usage(item) for item in usages)
+    )
 
 
 def _message_invokes(content: str, invocation: str) -> bool:

@@ -80,7 +80,7 @@ def _teaching_annotation() -> CapabilityTeachingAnnotation:
                 entry_id="search",
                 name="搜图",
                 summary="搜索图片出处。",
-                usages=("[回复图片] 搜图",),
+                usages=("<回复图片> 搜图",),
                 behavior_boundaries=("回复一张图片后发送搜图。",),
             ),
         ),
@@ -434,7 +434,7 @@ def test_public_contract_evidence_contains_active_teaching_contract() -> None:
 
     teaching_contract = payload["active_teaching_contract"]
     assert teaching_contract["revision"] == "b" * 64
-    assert teaching_contract["entries"][0]["usages"] == ["[回复图片] 搜图"]
+    assert teaching_contract["entries"][0]["usages"] == ["<回复图片> 搜图"]
 
 
 def test_large_conversation_page_remains_valid_bounded_json() -> None:
