@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from ast_grep_py import SgNode, SgRoot
 
 from nbtriage.capability.teaching.analysis import (
-    PermissionAlternative,
+    ConditionAlternative,
     SemanticConstraint,
     SemanticConstraintKind,
     TeachingRole,
@@ -245,28 +245,39 @@ def fixed_permission_constraints(
             ),
         )
     )
+    if len(ordered) == 1:
+        alternative = ordered[0]
+        return (
+            SemanticConstraint(
+                kind=alternative.kind,
+                statement=alternative.statement,
+                evidence_ids=(evidence_id,),
+                role=alternative.role,
+                allowed_scenes=(alternative.scene,) if alternative.scene is not None else (),
+            ),
+        )
     statement = "；或".join(item.statement.removeprefix("仅") for item in ordered)
     return (
         SemanticConstraint(
-            kind=SemanticConstraintKind.PERMISSION,
+            kind=SemanticConstraintKind.CONDITION_GROUP,
             statement=f"满足以下任一条件：{statement}",
             evidence_ids=(evidence_id,),
-            permission_alternatives=ordered,
+            alternatives=ordered,
         ),
     )
 
 
 def permission_fact_alternatives(
     fact: PermissionConstraintFact | PermissionSemantic,
-) -> tuple[PermissionAlternative, ...]:
+) -> tuple[ConditionAlternative, ...]:
     if fact.kind is PublicConstraintKind.ROLE and fact.operation == "administrator_or_owner":
         return (
-            PermissionAlternative(
+            ConditionAlternative(
                 kind=SemanticConstraintKind.ROLE,
                 statement="群管理员可用",
                 role=TeachingRole.ADMIN,
             ),
-            PermissionAlternative(
+            ConditionAlternative(
                 kind=SemanticConstraintKind.ROLE,
                 statement="群主可用",
                 role=TeachingRole.OWNER,
@@ -274,7 +285,7 @@ def permission_fact_alternatives(
         )
     if fact.kind is PublicConstraintKind.SCENE and fact.operation == "guild_or_channel":
         return tuple(
-            PermissionAlternative(
+            ConditionAlternative(
                 kind=SemanticConstraintKind.SCENE,
                 statement=statement,
                 scene=scene,
@@ -287,7 +298,7 @@ def permission_fact_alternatives(
             )
         )
     return (
-        PermissionAlternative(
+        ConditionAlternative(
             kind=(
                 SemanticConstraintKind.ROLE
                 if fact.kind is PublicConstraintKind.ROLE

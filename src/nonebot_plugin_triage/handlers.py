@@ -1,3 +1,4 @@
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -154,6 +155,7 @@ def _has_explicit_support_command(event: Event) -> bool:
     command = TRIAGE_COMMAND
     if (
         _is_refresh_help_command(content)
+        or _is_boundary_edit_command(content)
         or _is_problem_query_command(content)
         or _is_behavior_reset_command(content)
     ):
@@ -180,6 +182,20 @@ def _is_refresh_help_command(content: str) -> bool:
         and len(content) > len(command)
         and content[len(command)].isspace()
     )
+
+
+def _is_boundary_edit_command(content: str) -> bool:
+    return any(
+        content == command or content.startswith(command + " ")
+        for command in (f"{TRIAGE_COMMAND} 查看帮助边界", f"{TRIAGE_COMMAND} 修改帮助边界")
+    )
+
+
+def _has_explicit_boundary_edit_command(event: Event) -> bool:
+    try:
+        return _is_boundary_edit_command(event.get_plaintext().lstrip())
+    except (NotImplementedError, ValueError):
+        return False
 
 
 def _has_explicit_problem_query_command(event: Event) -> bool:
@@ -271,6 +287,32 @@ with namespace(
 refresh_help_matcher = on_alconna(
     refresh_help_command,
     rule=_has_explicit_refresh_help_command,
+    permission=SUPERUSER,
+    use_cmd_start=False,
+    priority=TEACHING_REFRESH_MATCHER_PRIORITY,
+    block=True,
+)
+
+with namespace(
+    Namespace(
+        "nonebot-plugin-triage-boundary-edit",
+        disable_builtin_options={"help", "shortcut", "completion"},
+    )
+):
+    boundary_edit_command = Alconna(
+        TRIAGE_COMMAND,
+        Subcommand("查看帮助边界", Args["plugin_module", str]),
+        Subcommand(
+            "修改帮助边界",
+            Args["generation", str]["unit_id", str]["entry_id", str]["old_text", str][
+                "new_text", str
+            ],
+        ),
+    )
+
+boundary_edit_matcher = on_alconna(
+    boundary_edit_command,
+    rule=_has_explicit_boundary_edit_command,
     permission=SUPERUSER,
     use_cmd_start=False,
     priority=TEACHING_REFRESH_MATCHER_PRIORITY,
@@ -1284,6 +1326,44 @@ async def handle_refresh_help(plugin_module: Match[str]) -> None:
             f"其中关闭 {result.family_disabled_count}，失败 {result.family_failed_count}。"
         )
     )
+
+
+@boundary_edit_matcher.handle()
+async def handle_boundary_edit(
+    bot: Bot,
+    event: Event,
+    plugin_module: Match[str],
+    generation: Match[str],
+    unit_id: Match[str],
+    entry_id: Match[str],
+    old_text: Match[str],
+    new_text: Match[str],
+) -> None:
+    shadow = plugin_runtime.capability_shadow
+    if shadow is None:
+        await boundary_edit_matcher.finish(UniMessage.text("教学注释不可用。"))
+    try:
+        if plugin_module.available:
+            payload = await shadow.teaching_boundaries(plugin_module.result)
+            message = "以下仅列出可编辑的原始边界；自动派生说明不可编辑。\n" + json.dumps(
+                payload, ensure_ascii=False, indent=2
+            )
+        else:
+            updated = await shadow.replace_teaching_boundary(
+                generation=generation.result,
+                unit_id=unit_id.result,
+                entry_id=entry_id.result,
+                old_text=old_text.result,
+                new_text=new_text.result,
+                actor=f"{adapter_name(bot)}:{event.get_user_id()}",
+            )
+            message = f"边界已人工修订并发布，版本：{updated}\n仅完成结构校验；不表示源码语义已由模型验证。"
+    except ValueError as error:
+        message = f"边界操作未完成：{error}"
+    except Exception as error:
+        logger.warning("NoneBot Triage boundary edit failed: error_type={}", type(error).__name__)
+        message = "边界操作失败，请重新查看当前版本后重试。"
+    await boundary_edit_matcher.finish(UniMessage.text(message))
 
 
 __all__ = (

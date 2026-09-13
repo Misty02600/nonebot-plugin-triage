@@ -70,12 +70,11 @@ from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisOutput,
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
-    CapabilityGateKind,
     CapabilityGateResolution,
     CapabilityGateResolutionKind,
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
-    PermissionAlternative,
+    ConditionAlternative,
     RateLimitPolicy,
     RateLimitScope,
     SemanticClaim,
@@ -347,9 +346,14 @@ class _ClaimOutput(_StrictModel):
                 "公开能力事实类型：name=简短能力名称；summary=一句话用途；"
                 "usage=完整调用形式；search_term=一条独立的同义检索词或支持对象，"
                 "不得在一个 statement 中拼接多个检索词；"
-                "behavior_boundary=usage 无法表达的输入格式、后续交互、处理或结果边界，"
-                "以及能力所需的业务准备状态；不得重复参数结构、调用者身份、会话场景、"
-                "可配置权限、名单、开放资格或限流。"
+                "behavior_boundary=usage 无法表达且有助使用的输入格式、后续交互、"
+                "业务准备状态、处理或结果边界；可描述全局行为或特定分支，"
+                "局部条件和结果须在同一条说明中保留适用条件，不得泛化为全局。"
+                "设置当前状态未知但条件与效果已由源码证明时，可作条件性说明，"
+                "不推断当前值或启用状态，不包含已确认关闭的分支。"
+                "局部身份、场景、资格或限流也按此说明；不要求穷举所有业务分支，"
+                "但已发现 gate 的覆盖要求不变。不得重复 usage 已表达的参数结构"
+                "或 constraints 已表达的全局条件。"
             )
         ),
     ]
@@ -582,13 +586,13 @@ def _complete_family_usage_category_error(
     return None
 
 
-class _PermissionAlternativeOutput(_StrictModel):
+class _ConditionAlternativeOutput(_StrictModel):
     kind: Annotated[
         Literal["scene", "role", "access"],
         Field(
             description=(
-                "同一 NoneBot Permission 中的一条 OR 分支，与其余 alternatives 为 OR，"
-                "与父 permission 的非空 allowed_scenes 为 AND；scene=会话场景条件；"
+                "条件组中的一条 OR 分支，与其余 alternatives 为 OR，"
+                "与父 condition_group 的非空 allowed_scenes 为 AND；scene=会话场景条件；"
                 "role=能力入口直接检查的当前调用者角色；access=能力入口查询的可配置权限、"
                 "ACL、名单或开放资格。只按入口实际判断分类；权限系统内部把某个角色预先授予"
                 "一项资格，不得反向展开成该能力的 role 分支。"
@@ -610,7 +614,7 @@ class _PermissionAlternativeOutput(_StrictModel):
         | None,
         Field(
             description=(
-                "这一条 Permission OR 分支的会话场景条件：private=私聊，group=群聊，"
+                "这一条 OR 分支的会话场景条件：private=私聊，group=群聊，"
                 "guild=频道，channel_text=频道文字，channel_category=频道分类，"
                 "channel_voice=频道语音；non_private=非私聊，不要求枚举其他场景，"
                 "不替代其他独立限制。只有非私聊本身构成允许分支时才填入此处。"
@@ -619,7 +623,7 @@ class _PermissionAlternativeOutput(_StrictModel):
     ] = None
 
     @model_validator(mode="after")
-    def validate_alternative(self) -> _PermissionAlternativeOutput:
+    def validate_alternative(self) -> _ConditionAlternativeOutput:
         validate_capability_public_statement(self.statement)
         if self.kind == "role":
             if self.role is None:
@@ -636,18 +640,21 @@ class _PermissionAlternativeOutput(_StrictModel):
 
 class _ConstraintOutput(_StrictModel):
     kind: Annotated[
-        Literal["permission", "scene", "role", "access", "rate_limit"],
+        Literal["condition_group", "scene", "role", "access", "rate_limit"],
         Field(
             description=(
-                "影响能力能否执行的公开前提：permission=一个 Permission 的 OR 分支组，"
-                "可用 allowed_scenes 附加全部允许路径共同要求的场景；"
-                "scene/role/access 仅用于非 Permission 的前提，其中 scene 用 allowed_scenes "
+                "影响能力能否执行的公开前提，按实际语义而非 Permission/Rule/Handler 来源分类。"
+                "简单条件优先用独立 scene/role/access/rate_limit；condition_group 表达非空 OR "
+                "分支组，可用 allowed_scenes 附加全部分支共同要求的场景。单分支组也合法，"
+                "不要求额外逻辑化简。顶层 constraints 之间为 AND。scene 用 allowed_scenes "
                 "完整表达允许的会话场景条件，role 是调用者身份，"
                 "access 是可配置权限、名单或开放资格。按能力入口实际执行的判断分类，"
                 "不得把权限系统内部对角色的预授权反向写成 role；只保留 Evidence 支持的资格事实，"
                 "不补充未证明的主体、原因或控制方式；业务准备状态属于 behavior_boundary，"
                 "platform_scope 属于模型外 Runtime 路由事实；"
                 "rate_limit=冷却、配额或并发。"
+                "仅在设置开启后成立且状态未知的业务限制属于条件性 behavior_boundary，"
+                "不声明为当前生效的全局要求；入口始终检查的资格仍归 access。"
                 "普通参数、回复上下文和 @bot 不属于 constraint。"
             )
         ),
@@ -671,8 +678,8 @@ class _ConstraintOutput(_StrictModel):
         Field(
             max_length=7,
             description=(
-                "scene constraint 的完整允许场景，或 permission 全部允许路径共同要求的场景集合；"
-                "集合内部为 OR，与 permission_alternatives 为 AND。permission 中为空表示不附加"
+                "scene constraint 的完整允许场景，或 condition_group 全部允许路径共同要求的场景集合；"
+                "集合内部为 OR，与 alternatives 为 AND。condition_group 中为空表示不附加"
                 "共同场景条件，不表示 entry 适用所有场景，也不代替未知条件。"
                 "private=私聊，group=群聊，"
                 "guild=频道，channel_text=频道文字，channel_category=频道分类，"
@@ -691,16 +698,16 @@ class _ConstraintOutput(_StrictModel):
             description=(
                 "内部覆盖关联：列出本条公开 constraint 实际解释的 gate candidate 精确 ID；"
                 "只能引用本轮 resolution=constraint 的候选。它不是 Evidence、entry 或 "
-                "Permission alternative，也不表达布尔关系；由其他 Evidence 直接证明的限制留空。"
+                "condition alternative，也不表达布尔关系；由其他 Evidence 直接证明的限制留空。"
             ),
         ),
     ] = []
-    permission_alternatives: Annotated[
-        list[_PermissionAlternativeOutput],
+    alternatives: Annotated[
+        list[_ConditionAlternativeOutput],
         Field(
             max_length=16,
             description=(
-                "Permission 的非空 OR 允许分支；共同场景由同条 constraint 的 allowed_scenes "
+                "condition_group 的非空 OR 允许分支；共同场景由同条 constraint 的 allowed_scenes "
                 "附加。不要求与函数调用一一对应，Evidence 明确证明的嵌套角色 OR 可以展开。"
             ),
         ),
@@ -714,23 +721,23 @@ class _ConstraintOutput(_StrictModel):
                 raise ValueError("role constraint requires role metadata")
         elif self.role is not None:
             raise ValueError("only role constraints may define role metadata")
-        if self.kind in {"scene", "permission"}:
+        if self.kind in {"scene", "condition_group"}:
             if self.kind == "scene" and not self.allowed_scenes:
                 raise ValueError("scene constraint requires allowed scenes")
             if len(self.allowed_scenes) != len(set(self.allowed_scenes)):
                 raise ValueError("constraint allowed scenes must be unique")
         elif self.allowed_scenes:
-            raise ValueError("only scene or permission constraints may define allowed scenes")
+            raise ValueError("only scene or condition-group constraints may define allowed scenes")
         if self.kind == "rate_limit":
             if self.rate_limit_policy is None or self.rate_limit_scope is None:
                 raise ValueError("rate-limit constraint requires policy and scope")
         elif self.rate_limit_policy is not None or self.rate_limit_scope is not None:
             raise ValueError("only rate-limit constraints may define rate metadata")
-        if self.kind == "permission":
-            if not self.permission_alternatives:
-                raise ValueError("permission constraint requires OR alternatives")
-        elif self.permission_alternatives:
-            raise ValueError("only permission constraints may define alternatives")
+        if self.kind == "condition_group":
+            if not self.alternatives:
+                raise ValueError("condition-group constraint requires OR alternatives")
+        elif self.alternatives:
+            raise ValueError("only condition-group constraints may define alternatives")
         return self
 
 
@@ -1787,7 +1794,7 @@ def _build_payload(request: CapabilityAnalysisRequest) -> str:
                 "rate_limit_scope": (
                     item.rate_limit_scope.value if item.rate_limit_scope is not None else None
                 ),
-                "permission_alternatives": [
+                "alternatives": [
                     {
                         "kind": alternative.kind.value,
                         "statement": alternative.statement,
@@ -1796,7 +1803,7 @@ def _build_payload(request: CapabilityAnalysisRequest) -> str:
                             alternative.scene.value if alternative.scene is not None else None
                         ),
                     }
-                    for alternative in item.permission_alternatives
+                    for alternative in item.alternatives
                 ],
             }
             for item in request.fixed_constraints
@@ -1954,13 +1961,6 @@ def _validate_gate_resolution_output(
         for constraint in entry.constraints:
             for candidate_id in constraint.gate_candidate_ids:
                 register_public_owner(candidate_id, entry.entry_id, "constraint")
-                if (
-                    candidates[candidate_id].kind is CapabilityGateKind.PERMISSION
-                    and constraint.kind != "permission"
-                ):
-                    raise CapabilityAnnotationError(
-                        "permission gate 必须输出一条包含 OR alternatives 的 permission constraint"
-                    )
     for candidate_id, candidate in candidates.items():
         resolution = resolutions[candidate_id]
         if not set(candidate.evidence_ids).issubset(resolution.evidence_ids):
@@ -2041,8 +2041,8 @@ def _to_domain_entry(output: _AnalysisEntryOutput) -> CapabilityAnalysisEntryOut
                     else None
                 ),
                 gate_candidate_ids=tuple(item.gate_candidate_ids),
-                permission_alternatives=tuple(
-                    PermissionAlternative(
+                alternatives=tuple(
+                    ConditionAlternative(
                         kind=SemanticConstraintKind(alternative.kind),
                         statement=alternative.statement,
                         role=(
@@ -2054,7 +2054,7 @@ def _to_domain_entry(output: _AnalysisEntryOutput) -> CapabilityAnalysisEntryOut
                             else None
                         ),
                     )
-                    for alternative in item.permission_alternatives
+                    for alternative in item.alternatives
                 ),
             )
             for item in output.constraints

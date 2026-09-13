@@ -222,6 +222,9 @@ def test_family_teaching_runtime_exposes_only_selective_definition_navigation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     profiles = _profiles(tmp_path)
+    related = profiles.plugin_source_root.path / "other.py"
+    related.write_text("def other():\n    return ['alpha', 'beta']\n", encoding="utf-8")
+    related_revision = hashlib.sha256(related.read_bytes()).hexdigest()
     monkeypatch.setattr(
         "nonebot_plugin_triage.capability.teaching._tools.build_evidence_access_profiles",
         lambda *_args, **_kwargs: profiles,
@@ -255,7 +258,14 @@ def test_family_teaching_runtime_exposes_only_selective_definition_navigation(
                 ("相关入口",),
                 (
                     DefinitionLocation(
-                        "target_plugin", "other.py", 1, 0, "other", None, "function", "1" * 64
+                        "target_plugin",
+                        "other.py",
+                        1,
+                        0,
+                        "other",
+                        None,
+                        "function",
+                        related_revision,
                     ),
                 ),
             ),
@@ -267,11 +277,27 @@ def test_family_teaching_runtime_exposes_only_selective_definition_navigation(
     assert runtime is not None
     observed_tools: set[str] = set()
     observed_instruction = ""
+    calls = 0
 
     def respond(_messages, info: AgentInfo) -> ModelResponse:
-        nonlocal observed_instruction
+        nonlocal observed_instruction, calls
+        calls += 1
         observed_tools.update(tool.name for tool in info.function_tools)
         observed_instruction = info.instructions or ""
+        if calls == 1:
+            assert runtime.evidence_units() == ()
+            index, _ = json.JSONDecoder().raw_decode(
+                observed_instruction[observed_instruction.index('[{"unit_id":') :]
+            )
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "python_open_definition",
+                        {"navigation_ref": index[0]["handlers"][0]["navigation_ref"]},
+                        "open-related",
+                    )
+                ]
+            )
         return ModelResponse(parts=[TextPart("done")], finish_reason="stop")
 
     agent = Agent(
@@ -282,10 +308,15 @@ def test_family_teaching_runtime_exposes_only_selective_definition_navigation(
 
     assert observed_tools == {"python_open_definition"}
     assert "工具预算有限" in observed_instruction
+    assert "输入获取方式或相关使用条件" in observed_instruction
     assert "不得逐成员打开定义" in observed_instruction
     assert "相关入口" in observed_instruction
     assert '"navigation_ref":"nav:' in observed_instruction
     assert "仅发现线索，不可引用" in observed_instruction
+    assert calls == 2
+    evidence = runtime.evidence_units()
+    assert len(evidence) == 1
+    assert "return ['alpha', 'beta']" in evidence[0].content
 
 
 @pytest.mark.parametrize("explicit_limit", [False, True])

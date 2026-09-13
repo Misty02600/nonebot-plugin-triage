@@ -5,6 +5,7 @@ import sqlite3
 import unicodedata
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic_ns
 from typing import Protocol
@@ -37,6 +38,7 @@ from nbtriage.capability.teaching.analysis import CapabilityAnalysisClient
 from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
+    validate_capability_public_statement,
 )
 from nbtriage.public_guidance import (
     PUBLIC_GUIDANCE_SCHEMA_VERSION,
@@ -513,6 +515,11 @@ class CapabilityShadowService:
                     self._annotation_service.get_pending,
                     status,
                     plugin_module=plugin_module,
+                    annotation_caches=(
+                        self._annotation_service.pending_annotation_caches()
+                        if status.publishable
+                        else None
+                    ),
                 )
             except CapabilityTeachingOutputError:
                 await self._annotation_service.discard_pending(status.refresh_id)
@@ -582,6 +589,11 @@ class CapabilityShadowService:
                     snapshot,
                     self._annotation_service.get_pending,
                     status,
+                    annotation_caches=(
+                        self._annotation_service.pending_annotation_caches()
+                        if status.publishable
+                        else None
+                    ),
                 )
             except CapabilityTeachingOutputError:
                 await self._annotation_service.discard_pending(status.refresh_id)
@@ -619,6 +631,86 @@ class CapabilityShadowService:
                     status.skipped_count,
                     status.stale_count,
                 )
+
+    async def teaching_boundaries(self, plugin_module: str) -> dict[str, object]:
+        """供已鉴权维护入口读取当前可编辑原文与版本。"""
+        async with self._teaching_refresh_lock:
+            if self._annotation_service is None:
+                raise ValueError("教学注释不可用")
+            return self._annotation_service.editable_boundaries(plugin_module)
+
+    async def replace_teaching_boundary(
+        self,
+        *,
+        generation: str,
+        unit_id: str,
+        entry_id: str,
+        old_text: str,
+        new_text: str,
+        actor: str,
+    ) -> str:
+        """发布维护者修订；不请求模型，不修改 Runtime 权限和原始模型响应。
+
+        Note:
+            调用方须先验证维护者资格。人工文字只经过结构校验，不代表源码语义已自动验证。
+        """
+        async with self._teaching_refresh_lock:
+            service, writer, snapshot = (
+                self._annotation_service,
+                self._teaching_output_writer,
+                self._latest_snapshot,
+            )
+            if service is None or writer is None or snapshot is None:
+                raise ValueError("教学注释不可用")
+            if not actor or len(actor) > 256 or not actor.isprintable():
+                raise ValueError("维护者身份无效")
+            new_text = validate_capability_public_statement(new_text)
+            refresh_id, module = await service.stage_boundary_edit(
+                snapshot,
+                generation=generation,
+                unit_id=unit_id,
+                entry_id=entry_id,
+                old_text=old_text,
+                new_text=new_text,
+            )
+
+            async def publish_edit() -> str:
+                try:
+                    publication = await asyncio.to_thread(
+                        writer.publish,
+                        snapshot,
+                        service.get_pending,
+                        plugin_module=module,
+                        annotation_caches=service.pending_annotation_caches(),
+                        manual_edit={
+                            "source": "maintainer",
+                            "actor": actor,
+                            "at": datetime.now(UTC).isoformat(),
+                            "base_generation": generation,
+                            "unit_id": unit_id,
+                            "entry_id": entry_id,
+                            "field": "behavior_boundaries",
+                            "old_text": old_text,
+                            "new_text": new_text,
+                        },
+                    )
+                except Exception:
+                    await service.discard_pending(refresh_id)
+                    raise
+                await service.commit_pending(
+                    refresh_id,
+                    publication.generation,
+                    preserved_plugin_modules=publication.preserved_plugin_modules,
+                )
+                return publication.generation
+
+            # to_thread 的写入不能被取消；在释放发布锁前完成指针和内存切换。
+            task = asyncio.create_task(publish_edit())
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
 
     def _resolve_path_safely(self) -> bool:
         try:
@@ -678,6 +770,7 @@ def register_capability_shadow(
             evidence_validator=annotation_evidence_validator,
             source_revision_validator=plugin_source_revision_matches,
             published_generation_resolver=teaching_output_writer.current_generation,
+            published_annotations_resolver=teaching_output_writer.current_annotation_caches,
             max_analysis_concurrency=annotation_max_concurrency,
         )
     service = CapabilityShadowService(

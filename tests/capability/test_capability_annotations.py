@@ -325,6 +325,221 @@ def _record(capability_id: str, disclosure: Disclosure) -> CapabilityRecord:
     )
 
 
+@pytest.mark.asyncio
+async def test_manual_boundary_edit_publication_recovery_and_regeneration(tmp_path, monkeypatch):
+    from nonebot_plugin_triage.capability.shadow import CapabilityShadowService
+    from nonebot_plugin_triage.capability.teaching import outputs as output_module
+
+    original, corrected = "双方都需已绑定。", "仅被查询对象需已绑定。"
+    requests = []
+    revision = "0" * 64
+    change_on_regeneration = False
+    source_current = True
+
+    def build_request(record, _policy, **_kwargs):
+        request = _request(record.capability_id)
+        return replace(
+            request,
+            source_context=CapabilitySourceContext("plugin.image", revision),
+            invocations=(
+                replace(
+                    request.invocations[0],
+                    canonical_usages=("搜图 [slot:0]...",),
+                    argument_limits=((0, 3),),
+                ),
+            ),
+        )
+
+    class Client:
+        async def analyze(self, request):
+            requests.append(request)
+            if request.previous_annotation is None:
+                entry = _entry(
+                    SemanticClaim(
+                        SemanticClaimKind.BEHAVIOR_BOUNDARY, original, ("evidence-handler",)
+                    )
+                )
+            else:
+                assert request.previous_annotation.entries[0].behavior_boundaries == (corrected,)
+                entry = _entry(
+                    baseline_changes=(
+                        BaselineMemberChange(
+                            field=BaselineMemberField.BEHAVIOR_BOUNDARIES,
+                            operation=BaselineChangeOperation.REPLACE,
+                            old_value=corrected,
+                            new_value="当前查询对象需先绑定。",
+                            evidence_ids=("evidence-handler",),
+                        ),
+                    )
+                    if change_on_regeneration
+                    else ()
+                )
+            return CapabilityAnalysisOutput(
+                entries=(
+                    replace(
+                        entry,
+                        claims=tuple(
+                            replace(claim, statement="搜图 [图片]...")
+                            if claim.kind is SemanticClaimKind.USAGE
+                            else claim
+                            for claim in entry.claims
+                        ),
+                    ),
+                )
+            )
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
+        build_request,
+    )
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability.teaching.annotations._plugin_source_root",
+        lambda _: (tmp_path, True),
+    )
+    record = _record("command:image", Disclosure.PUBLIC)
+    record = replace(
+        record,
+        claims=(*record.claims, Claim("plugin.module_name", "plugin.image", ClaimBasis.OBSERVED)),
+    )
+    snapshot = CapabilitySnapshot.create((record,))
+    writer = CapabilityTeachingOutputWriter(tmp_path / "teaching")
+
+    def make_service():
+        return CapabilityAnnotationService(
+            tmp_path / "cache",
+            client_factory=Client,
+            config_policy=ConfigValuePolicy.from_keys(()),
+            analysis_revision="test",
+            evidence_validator=lambda *_: True,
+            source_revision_validator=lambda *_: source_current,
+            published_generation_resolver=writer.current_generation,
+            published_annotations_resolver=writer.current_annotation_caches,
+        )
+
+    service = make_service()
+
+    async def refresh(force=False):
+        status = await service.refresh(snapshot, force=force)
+        publication = writer.publish(
+            snapshot,
+            service.get_pending,
+            status,
+            annotation_caches=service.pending_annotation_caches(),
+        )
+        await service.commit_pending(status.refresh_id, publication.generation)
+        return publication.generation
+
+    generation = await refresh()
+    shadow = CapabilityShadowService(
+        tmp_path / "index.sqlite3", annotation_service=service, teaching_output_writer=writer
+    )
+    shadow._latest_snapshot = snapshot
+    view = await shadow.teaching_boundaries("plugin.image")
+    assert view["generation"] == generation
+    assert view["units"][0]["entries"][0]["behavior_boundaries"] == [original]
+    public = service.get("command:image")
+    derived = next(text for text in public.entries[0].behavior_boundaries if "最多提供" in text)
+    edit = {
+        "generation": generation,
+        "unit_id": "command:image",
+        "entry_id": "root",
+        "old_text": original,
+        "new_text": corrected,
+        "actor": "test-maintainer",
+    }
+    for invalid in (
+        {"old_text": derived},
+        {"generation": "1" * 64},
+        {"entry_id": "missing"},
+        {"new_text": ""},
+    ):
+        with pytest.raises(ValueError):
+            await shadow.replace_teaching_boundary(**(edit | invalid))
+    source_current = False
+    with pytest.raises(ValueError, match="源码"):
+        await shadow.replace_teaching_boundary(**edit)
+    source_current = True
+
+    # 指针切换前失败不改变当前内存、输出或原文。
+    write_atomic = output_module._write_atomic
+    with monkeypatch.context() as patch:
+
+        def fail_pointer(path, document):
+            if path.name == "current.json":
+                raise OSError("simulated pointer failure")
+            write_atomic(path, document)
+
+        patch.setattr(output_module, "_write_atomic", fail_pointer)
+        with pytest.raises(OSError):
+            await shadow.replace_teaching_boundary(**edit)
+    assert writer.current_generation() == generation
+    assert service.get("command:image") == public
+
+    # 发布开始后的取消不让后台写入脱离发布锁；缓存失败也不丢掉持久修订。
+    with monkeypatch.context() as patch:
+
+        def fail_cache(*_args):
+            raise OSError("simulated cache failure")
+
+        patch.setattr(
+            "nonebot_plugin_triage.capability.teaching.annotations.write_capability_annotation_plugin_cache",
+            fail_cache,
+        )
+        started, release = asyncio.Event(), threading.Event()
+        loop, publish = asyncio.get_running_loop(), writer.publish
+
+        def delayed_publish(*args, **kwargs):
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(5)
+            return publish(*args, **kwargs)
+
+        patch.setattr(writer, "publish", delayed_publish)
+        task = asyncio.create_task(shadow.replace_teaching_boundary(**edit))
+        await asyncio.wait_for(started.wait(), 5)
+        task.cancel()
+        assert shadow._teaching_refresh_lock.locked()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        edited_generation = writer.current_generation()
+    assert len(requests) == 1
+    assert edited_generation != generation
+    edited = service.get("command:image")
+    assert (
+        corrected in edited.entries[0].behavior_boundaries
+        and derived in edited.entries[0].behavior_boundaries
+    )
+    assert edited.entries[0].requirements == public.entries[0].requirements
+    assert edited.entries[0].usages == public.entries[0].usages
+    root = tmp_path / "teaching" / "objects" / edited_generation
+    persisted = json.loads((root / "annotations.json").read_text(encoding="utf-8"))
+    assert persisted["manual_edit"]["old_text"] == original
+    assert persisted["manual_edit"]["actor"] == "test-maintainer"
+    assert corrected in (root / "answer-knowledge" / "plugin.image.md").read_text(encoding="utf-8")
+    assert "最多提供" not in json.dumps(persisted, ensure_ascii=False)
+    with pytest.raises(ValueError, match="版本"):
+        await shadow.replace_teaching_boundary(**edit)
+
+    (tmp_path / "cache" / "plugin.image.json").unlink()
+    service = make_service()
+    await refresh()
+    assert len(requests) == 1 and service.get("command:image") == edited
+    await refresh(force=True)
+    assert corrected in service.get("command:image").entries[0].behavior_boundaries
+    revision, change_on_regeneration = "2" * 64, True
+    await refresh()
+    assert "当前查询对象需先绑定。" in service.get("command:image").entries[0].behavior_boundaries
+    assert corrected not in service.get("command:image").entries[0].behavior_boundaries
+
+    # 已发布结构化材料损坏时明确拒绝恢复，不静默退回过期缓存。
+    state_path = (
+        tmp_path / "teaching" / "objects" / writer.current_generation() / "annotations.json"
+    )
+    state_path.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="annotations"):
+        writer.current_annotation_caches()
+
+
 def test_public_annotation_contains_entries_without_source_or_locator() -> None:
     annotation = project_capability_annotation(
         _request(),

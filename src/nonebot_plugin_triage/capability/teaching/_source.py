@@ -424,7 +424,8 @@ def _append_framework_semantics_evidence(
     profiles = (
         (
             nonebot_dependency_overload_profile(),
-            "NoneBot dependency injection documentation and Dependent/Matcher.got implementation",
+            "NoneBot dependency injection documentation and Dependent/Matcher.got implementation; "
+            "OneBot adapter 2.4.6 v11 event model example",
             "2.5.0",
             "framework:nonebot2/dependency-overload",
         ),

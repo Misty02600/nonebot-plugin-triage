@@ -181,6 +181,11 @@ def test_optional_prompt_rules_follow_facts_across_mixed_entries(features):
     assert "没有 gate candidate 不等于没有执行限制" in instruction
     assert "不得把“不限流”“没有权限限制”等整体无约束结论写进公开字段" in instruction
     assert "配置投影已经关闭的处理分支必须省略" in instruction
+    assert "不得改写成“若开启”后继续保留" in instruction
+    assert "当前状态未知不等于已关闭" in instruction
+    assert "可以引用源码作条件性说明，不需要虚构当前配置引用" in instruction
+    assert "不以普通用户能否修改配置作为展示依据" in instruction
+    assert "入口始终检查的授权资格仍归 access" in instruction
     assert "证据或对齐不明确时省略该回复变体" in instruction
     assert "按下一条处理" not in instruction
 
@@ -214,9 +219,19 @@ def test_prompt_preserves_unique_model_only_contracts() -> None:
                 "可选回复不能用于省略必填槽位",
                 "证据或对齐不明确时省略该回复变体",
                 "优先在槽位内部用 `|` 简洁列举；这仍是一个参数",
+                "可选不等于可独立省略",
+                "`[<参数甲> [参数乙]]`",
                 "共同场景与分支组为 AND",
+                "解释 helper 的格式或范围限制时，以调用点实际传入的内容为准",
+                "须在同一条说明中保留适用条件",
+                "不要求穷举所有业务分支，但已发现 gate 的覆盖要求不变",
+                "不同条件对应不同处理结果时，可以分条说明；简洁不得以抹平这些差异为代价",
                 "若存在绕过该场景的允许路径，不得将其提为共同场景",
                 "Evidence 已明确证明的嵌套角色 OR 可以展开",
+                "不假设它与其他入口相互独立",
+                "共享限制、操作影响及必要输入的获取方式",
+                "不能只凭索引或名称推断",
+                "缺少辅助获取指引不关闭已能可靠说明的当前入口",
             ),
         ),
         "anchored": (
@@ -224,6 +239,7 @@ def test_prompt_preserves_unique_model_only_contracts() -> None:
             (
                 "同一 entry 默认只输出一条 usage",
                 "aliases 为空时，display_trigger 使用 null",
+                "已确认范围与 @用户可以独立提供时",
             ),
         ),
         "aliases": (prompt.ALIAS_INSTRUCTION, ("展开后必须恰好等于全部入口",)),

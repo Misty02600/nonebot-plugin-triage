@@ -1019,7 +1019,8 @@ def _navigation_toolset(
         else "当前初始 Evidence 没有可直接导航的位置。"
     )
     family_boundary = (
-        "当前是 complete family：工具预算有限，只选择性打开证明共同业务语义或缺失参数含义所需的少量定义；"
+        "当前是 complete family：工具预算有限，只选择性打开理解本 family 的共同语义、参数含义、"
+        "输入获取方式或相关使用条件所需的少量定义；"
         "不得逐成员打开定义，也不得把源码工具当成遍历完整成员清单的方式。"
         if selective_family
         else ""

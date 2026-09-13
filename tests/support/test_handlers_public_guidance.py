@@ -31,6 +31,28 @@ pytestmark = pytest.mark.usefixtures("isolate_live_semantic_transport")
 
 
 @pytest.mark.asyncio
+async def test_boundary_edit_entry_is_superuser_only_and_preserves_quoted_text():
+    checkers = list(handlers.boundary_edit_matcher.permission.checkers)
+    assert len(checkers) == 1
+    assert type(checkers[0].call).__module__ == "nonebot.permission"
+    bot = SimpleNamespace(
+        config=SimpleNamespace(superusers={"admin"}),
+        adapter=SimpleNamespace(get_name=lambda: "Test"),
+    )
+    assert await checkers[0].call(bot, SimpleNamespace(get_user_id=lambda: "admin"))
+    assert not await checkers[0].call(bot, SimpleNamespace(get_user_id=lambda: "member"))
+    text = "triage 修改帮助边界 " + "a" * 64 + ' unit-1 root "原有 @用户 说明" "只要求查询对象绑定"'
+    parsed = handlers.boundary_edit_command.parse(text)
+    assert parsed.matched
+    assert parsed.all_matched_args["old_text"] == "原有 @用户 说明"
+    assert parsed.all_matched_args["new_text"] == "只要求查询对象绑定"
+    event = SimpleNamespace(get_plaintext=lambda: text)
+    assert handlers._has_explicit_boundary_edit_command(event)
+    assert not handlers._has_explicit_support_command(event)
+    assert handlers.boundary_edit_command.parse("triage 查看帮助边界 plugin.image").matched
+
+
+@pytest.mark.asyncio
 async def test_shadow_guidance_uses_answer_agent_output(monkeypatch: pytest.MonkeyPatch) -> None:
     record = CapabilityRecord(
         capability_id="command:image",

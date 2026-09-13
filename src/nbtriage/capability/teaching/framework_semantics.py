@@ -303,8 +303,11 @@ def nonebot_dependency_overload_profile() -> FrameworkFieldSemanticProfile:
             FrameworkFieldSemantic(
                 "typed dependency overload",
                 "NoneBot 的 Handler 及其依赖函数的 Bot、Event 和 Matcher 参数类型注解都参与运行时检查；"
-                "实际对象不匹配时不会执行相应函数。Handler 声明 event: GroupMessageEvent 时，"
-                "私聊事件不会执行该 Handler；同一 Matcher 的其他 Handler 应分别判断。"
+                "实际对象不匹配时不会执行相应函数；同一 Matcher 的其他 Handler 应分别判断。"
+                "例如，nonebot-adapter-onebot 2.4.6 的 nonebot.adapters.onebot.v11.GroupMessageEvent "
+                "表示群消息；当前 Evidence 确认参数限定为该类型时，对应 group（群聊）限制，"
+                "不只是排除私聊。此例不能仅凭同名套用于其他 Adapter 或自定义类型；"
+                "类型来源或含义不明时，不得据此放宽为所有非私聊场景。"
                 "Handler 执行先递归预检查依赖及自身参数类型，通过后才求解依赖并调用函数；"
                 "预检查依赖不等于执行依赖函数体。标准 .got() 的取参与提示作为该 Handler 的"
                 "无参数依赖在求解阶段执行，因此类型预检查失败时也不会发送这条确认提示；"

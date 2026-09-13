@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-22 |
+| 已采纳；Permission 来源强制条件组的规定被 [ADR-0127](0127-separate-teaching-condition-shape-from-gate-origin.md) 局部替代 | 2026-08-22 |
 
 ## 当时遇到了什么
 

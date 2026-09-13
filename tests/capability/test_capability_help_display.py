@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -24,8 +25,8 @@ from nbtriage.capability.teaching.analysis import (
 )
 from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
+    CapabilityTeachingConditionAlternative,
     CapabilityTeachingEntry,
-    CapabilityTeachingPermissionAlternative,
     CapabilityTeachingRequirement,
 )
 from nonebot_plugin_triage.capability.teaching.help import (
@@ -292,8 +293,9 @@ def test_writer_projects_any_rate_limit_to_migut_help_cooldown_marker(
 @pytest.mark.parametrize(
     "common_scenes", [(), (TeachingScene.GROUP,), (TeachingScene.NON_PRIVATE,)]
 )
+@pytest.mark.parametrize("independent_role", [None, TeachingRole.ADMIN])
 def test_writer_only_projects_lossless_native_permission_shapes(
-    tmp_path: Path, common_scenes: tuple[TeachingScene, ...]
+    tmp_path: Path, common_scenes: tuple[TeachingScene, ...], independent_role: TeachingRole | None
 ) -> None:
     record = _record(
         "plugin.manage:matcher",
@@ -311,16 +313,16 @@ def test_writer_only_projects_lossless_native_permission_shapes(
                 usages=("管理 设置",),
                 requirements=(
                     CapabilityTeachingRequirement(
-                        kind=SemanticConstraintKind.PERMISSION,
+                        kind=SemanticConstraintKind.CONDITION_GROUP,
                         text="群管理员或群主可用。",
                         allowed_scenes=common_scenes,
                         alternatives=(
-                            CapabilityTeachingPermissionAlternative(
+                            CapabilityTeachingConditionAlternative(
                                 kind=SemanticConstraintKind.ROLE,
                                 role=TeachingRole.ADMIN,
                                 text="群管理员可用。",
                             ),
-                            CapabilityTeachingPermissionAlternative(
+                            CapabilityTeachingConditionAlternative(
                                 kind=SemanticConstraintKind.ROLE,
                                 role=TeachingRole.OWNER,
                                 text="群主可用。",
@@ -336,20 +338,20 @@ def test_writer_only_projects_lossless_native_permission_shapes(
                 usages=("管理 切换",),
                 requirements=(
                     CapabilityTeachingRequirement(
-                        kind=SemanticConstraintKind.PERMISSION,
+                        kind=SemanticConstraintKind.CONDITION_GROUP,
                         text="超级用户、私聊或群管理员满足任一条件即可。",
                         alternatives=(
-                            CapabilityTeachingPermissionAlternative(
+                            CapabilityTeachingConditionAlternative(
                                 kind=SemanticConstraintKind.ROLE,
                                 role=TeachingRole.SUPERUSER,
                                 text="超级用户可用。",
                             ),
-                            CapabilityTeachingPermissionAlternative(
+                            CapabilityTeachingConditionAlternative(
                                 kind=SemanticConstraintKind.SCENE,
                                 scene=TeachingScene.PRIVATE,
                                 text="私聊可用。",
                             ),
-                            CapabilityTeachingPermissionAlternative(
+                            CapabilityTeachingConditionAlternative(
                                 kind=SemanticConstraintKind.ROLE,
                                 role=TeachingRole.ADMIN,
                                 text="群管理员可用。",
@@ -365,10 +367,10 @@ def test_writer_only_projects_lossless_native_permission_shapes(
                 usages=("管理 频道",),
                 requirements=(
                     CapabilityTeachingRequirement(
-                        kind=SemanticConstraintKind.PERMISSION,
+                        kind=SemanticConstraintKind.CONDITION_GROUP,
                         text="频道管理员可用。",
                         alternatives=(
-                            CapabilityTeachingPermissionAlternative(
+                            CapabilityTeachingConditionAlternative(
                                 kind=SemanticConstraintKind.ROLE,
                                 role=TeachingRole.CHANNEL_ADMIN,
                                 text="频道管理员可用。",
@@ -380,6 +382,25 @@ def test_writer_only_projects_lossless_native_permission_shapes(
         ),
     )
 
+    if independent_role is not None:
+        entry = annotation.entries[0]
+        annotation = replace(
+            annotation,
+            entries=(
+                replace(
+                    entry,
+                    requirements=(
+                        *entry.requirements,
+                        CapabilityTeachingRequirement(
+                            kind=SemanticConstraintKind.ROLE,
+                            role=independent_role,
+                            text="还需满足独立角色条件。",
+                        ),
+                    ),
+                ),
+                *annotation.entries[1:],
+            ),
+        )
     path = CapabilityHelpDisplayWriter(tmp_path).refresh(
         CapabilitySnapshot.create((record,)),
         lambda _capability_id: annotation,
@@ -389,7 +410,9 @@ def test_writer_only_projects_lossless_native_permission_shapes(
         for item in yaml.safe_load(path.read_text(encoding="utf-8"))["commands"]
     }
 
-    assert commands["管理 设置"].get("permission") == (None if common_scenes else "admin")
+    assert commands["管理 设置"].get("permission") == (
+        None if common_scenes or independent_role else "admin"
+    )
     assert "permission" not in commands["管理 切换"]
     assert "permission" not in commands["管理 频道"]
 

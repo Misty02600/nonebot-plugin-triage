@@ -528,7 +528,7 @@ def test_agent_payload_marks_fixed_permission_as_model_external() -> None:
             "allowed_scenes": [],
             "rate_limit_policy": None,
             "rate_limit_scope": None,
-            "permission_alternatives": [],
+            "alternatives": [],
         }
     ]
 
@@ -836,7 +836,7 @@ def test_agent_accepts_typed_scene_and_evidenced_rate_limit_exemption(
                 "rate_limit_policy": None,
                 "rate_limit_scope": None,
                 "gate_candidate_ids": [],
-                "permission_alternatives": [],
+                "alternatives": [],
             },
             {
                 "kind": "rate_limit",
@@ -848,7 +848,7 @@ def test_agent_accepts_typed_scene_and_evidenced_rate_limit_exemption(
                 "rate_limit_policy": "quota",
                 "rate_limit_scope": "user",
                 "gate_candidate_ids": [],
-                "permission_alternatives": [],
+                "alternatives": [],
             },
         ]
         return ModelResponse(
@@ -1511,6 +1511,12 @@ def test_agent_uses_profile_selected_output_tool() -> None:
         "knowledge_enabled",
     }
     assert output_tool.parameters_json_schema["required"] == ["knowledge_enabled"]
+    claim_description = output_tool.parameters_json_schema["$defs"]["_ClaimOutput"]["properties"][
+        "kind"
+    ]["description"]
+    assert "局部条件和结果须在同一条说明中保留适用条件" in claim_description
+    assert "局部身份、场景、资格或限流也按此说明" in claim_description
+    assert "constraints 已表达的全局条件" in claim_description
 
 
 def test_client_allows_only_one_provider_run() -> None:
@@ -2431,20 +2437,24 @@ def test_agent_retries_enabled_output_with_unresolved_gate_then_closes() -> None
 
 
 @pytest.mark.parametrize(
-    ("scenes", "branches", "restricted"),
+    ("scenes", "branches", "restricted", "atomic_kind"),
     [
-        ((), ("admin", "owner"), False),
-        (("group",), ("superuser", "admin", "owner"), False),
-        (("group",), ("superuser", "superuser"), True),
-        (("non_private",), ("superuser",), True),
-        ((), ("superuser", "private"), False),
-        ((), ("superuser", "access"), False),
-        ((), ("private",), False),
-        ((), ("non_private",), False),
+        ((), ("admin", "owner"), False, None),
+        (("group",), ("superuser", "admin", "owner"), False, None),
+        (("group",), ("superuser", "superuser"), True, None),
+        (("non_private",), ("superuser",), True, None),
+        ((), ("superuser", "private"), False, None),
+        ((), ("superuser", "access"), False, None),
+        ((), ("private",), False, None),
+        ((), ("non_private",), False, None),
+        ((), (), True, "role"),
+        (("group",), (), False, "scene"),
+        ((), (), False, "access"),
+        ((), (), False, "rate_limit"),
     ],
 )
 def test_agent_requires_real_constraint_to_link_gate_candidate(
-    scenes: tuple[str, ...], branches: tuple[str, ...], restricted: bool
+    scenes: tuple[str, ...], branches: tuple[str, ...], restricted: bool, atomic_kind: str | None
 ) -> None:
     calls = 0
     retry_prompts: list[str] = []
@@ -2463,7 +2473,7 @@ def test_agent_requires_real_constraint_to_link_gate_candidate(
         entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
         entry["constraints"] = [
             {
-                "kind": "permission",
+                "kind": "condition_group",
                 "statement": "满足当前场景与使用资格要求",
                 "evidence_ids": ["evidence-handler", "evidence-definition"],
                 "config_reference_ids": [],
@@ -2472,7 +2482,7 @@ def test_agent_requires_real_constraint_to_link_gate_candidate(
                 "rate_limit_policy": None,
                 "rate_limit_scope": None,
                 "gate_candidate_ids": [] if calls == 1 else ["gate:admin"],
-                "permission_alternatives": [
+                "alternatives": [
                     {
                         "kind": (
                             "scene"
@@ -2499,6 +2509,14 @@ def test_agent_requires_real_constraint_to_link_gate_candidate(
                 "config_reference_ids": [],
             }
         ]
+        if atomic_kind:
+            constraint = cast(list[dict[str, object]], entry["constraints"])[0]
+            constraint["kind"] = atomic_kind
+            if atomic_kind == "role":
+                constraint["role"] = "superuser"
+            elif atomic_kind == "rate_limit":
+                constraint["rate_limit_policy"] = "cooldown"
+                constraint["rate_limit_scope"] = "user"
         return ModelResponse(
             parts=[TextPart(json.dumps(output, ensure_ascii=False))],
             finish_reason="stop",
@@ -2537,6 +2555,7 @@ def test_agent_requires_real_constraint_to_link_gate_candidate(
     assert any("missing_entry_ids=root" in item for item in retry_prompts)
     assert any("gate_candidate_ids" in item for item in retry_prompts)
     constraint = result.entries[0].constraints[0]
+    assert constraint.kind.value == (atomic_kind or "condition_group")
     assert constraint.allowed_scenes == tuple(TeachingScene(scene) for scene in scenes)
     assert constraint.gate_candidate_ids == ("gate:admin",)
     annotation = project_capability_annotation(request, result, analysis_revision="fixture-v1")
@@ -2554,8 +2573,25 @@ def test_agent_requires_real_constraint_to_link_gate_candidate(
         CapabilityTeachingAnnotation.from_dict(old_payload)
 
 
-@pytest.mark.parametrize("usage_owner", [False, True])
-def test_agent_accepts_gate_as_boundary_or_usage_group(usage_owner: bool) -> None:
+@pytest.mark.parametrize(
+    ("usage_owner", "boundary", "definition"),
+    [
+        (
+            False,
+            "使用前需先开始当前业务流程",
+            "def game_started(group_id): return group_id in active_games",
+        ),
+        (
+            False,
+            "开启时段限制后，需在设定时段内使用",
+            "def allowed(settings, now): return not settings.enabled or settings.start <= now <= settings.end",
+        ),
+        (True, "", "def valid_input(image, reply): return image is not None or reply is not None"),
+    ],
+)
+def test_agent_accepts_gate_as_boundary_or_usage_group(
+    usage_owner: bool, boundary: str, definition: str
+) -> None:
     def respond(_messages, _info: AgentInfo) -> ModelResponse:
         output = _output()
         entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
@@ -2570,11 +2606,7 @@ def test_agent_accepts_gate_as_boundary_or_usage_group(usage_owner: bool) -> Non
                 "config_reference_ids": [],
                 "gate_candidate_ids": ["gate:game-started"],
             }
-            for statement in (
-                ("搜图 <图片>", "<回复图片> 搜图")
-                if usage_owner
-                else ("使用前需先开始当前业务流程",)
-            )
+            for statement in (("搜图 <图片>", "<回复图片> 搜图") if usage_owner else (boundary,))
         )
         output["gate_resolutions"] = [
             {
@@ -2597,9 +2629,7 @@ def test_agent_accepts_gate_as_boundary_or_usage_group(usage_owner: bool) -> Non
             CapabilityEvidenceUnit(
                 "evidence-definition",
                 "approved_python_definition",
-                "def valid_input(image, reply): return image is not None or reply is not None"
-                if usage_owner
-                else "def game_started(group_id): return group_id in active_games",
+                definition,
                 "sha256:definition",
             ),
         ),
@@ -2626,3 +2656,7 @@ def test_agent_accepts_gate_as_boundary_or_usage_group(usage_owner: bool) -> Non
     if usage_owner:
         assert len(annotation.entries[0].usages) == 2
         assert annotation.entries[0].behavior_boundaries == ()
+    else:
+        assert linked.statement == boundary
+        assert linked.config_reference_ids == ()
+        assert annotation.entries[0].behavior_boundaries == (boundary,)

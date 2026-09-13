@@ -3,7 +3,7 @@
 这里列出仍作为当前一等架构约束的 ADR。精确状态、局部替代关系和完整理由以各 ADR 正文为准；
 已经替代、未采纳、评测性、实现级或仅作支持性解释的记录见[历史 ADR](history/README.md)。
 
-当前根目录保留 61 份，历史区保存 62 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
+当前根目录保留 63 份，历史区保存 62 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
 为了简短而合并决定。阅读系统现状时先从[架构入口](../architecture/README.md)进入，再按问题查本索引。
 
 没有进入 ADR 的理由也不会丢失：跨实现的当前事实进入 architecture / flow，局部不变量进入代码注释和
@@ -81,6 +81,8 @@
 | [ADR-0080](0080-model-capability-teaching-as-multiple-public-entries.md) | 一次能力分析仍可产生多个固定 entry，Alconna 叶子仍投影为独立帮助条目 |
 | [ADR-0083](0083-resolve-unknown-teaching-gates-before-closing-public-knowledge.md) | AST 只登记疑似门禁；Agent 以实际定义、框架或运行配置解释为约束、无约束或仍未知，只有仍未知才关闭公开知识 |
 | [ADR-0093](0093-shard-capability-annotation-cache-by-plugin.md) | 教学缓存按插件分片、按单元部分生成，并与不可变 generation 和唯一活动指针明确分离 |
+| [ADR-0126](0126-publish-maintainer-boundary-edits-with-teaching-generations.md) | SUPERUSER 精确微调已有行为边界，与结构化注释一起原子发布；人工文字可恢复但不是永久覆盖或新 Evidence |
+| [ADR-0127](0127-separate-teaching-condition-shape-from-gate-origin.md) | 教学使用 condition_group 表达有限 OR 组合，按业务含义选择原子条件，不按 Permission / Rule 来源分类 |
 | [ADR-0094](0094-simplify-the-public-capability-teaching-contract.md) | 公开 teaching entry 使用六类稳定字段，模型内部表示与 Help / Answer 的确定性公开投影分层 |
 | [ADR-0124](0124-express-non-private-teaching-scenes-directly.md) | 允许直接保存非私聊谓词，不强制枚举场景全集；保留更窄独立限制，不扩展通用权限计算器 |
 | [ADR-0113](0113-separate-routing-authorization-and-business-readiness-in-teaching.md) | `platform_scope` 留在确定性 Runtime，业务准备状态进入 behavior boundary；role/access 按当前替代关系解释 |

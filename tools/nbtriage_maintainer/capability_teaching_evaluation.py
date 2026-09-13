@@ -54,8 +54,8 @@ from nbtriage.capability.teaching.analysis import (
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
     CapabilitySourceContext,
+    ConditionAlternative,
     ConfigProjection,
-    PermissionAlternative,
     RateLimitPolicy,
     RateLimitScope,
     SemanticClaimKind,
@@ -1217,11 +1217,11 @@ def _constraint_matches(
     expected_kind = expected.get("kind")
     if (
         isinstance(expected_kind, str)
-        and actual.kind is SemanticConstraintKind.PERMISSION
+        and actual.kind is SemanticConstraintKind.CONDITION_GROUP
         and expected_kind in {"role", "scene", "access"}
     ):
         alternatives = tuple(
-            item for item in actual.permission_alternatives if item.kind.value == expected_kind
+            item for item in actual.alternatives if item.kind.value == expected_kind
         )
         if not alternatives:
             return False
@@ -1381,7 +1381,7 @@ def _candidate_payload(output: CapabilityAnalysisOutput | None) -> dict[str, obj
                             else None
                         ),
                         "gate_candidate_ids": list(item.gate_candidate_ids),
-                        "permission_alternatives": [
+                        "alternatives": [
                             {
                                 "kind": alternative.kind.value,
                                 "statement": alternative.statement,
@@ -1394,7 +1394,7 @@ def _candidate_payload(output: CapabilityAnalysisOutput | None) -> dict[str, obj
                                     else None
                                 ),
                             }
-                            for alternative in item.permission_alternatives
+                            for alternative in item.alternatives
                         ],
                     }
                     for item in entry.constraints
@@ -1536,20 +1536,20 @@ def _parse_fixed_constraint(raw: dict[str, object]) -> SemanticConstraint:
         rate_limit_scope=(
             RateLimitScope(rate_limit_scope) if isinstance(rate_limit_scope, str) else None
         ),
-        permission_alternatives=tuple(
-            _parse_permission_alternative(item)
+        alternatives=tuple(
+            _parse_condition_alternative(item)
             for item in _dict_list(
-                raw.get("permission_alternatives", []),
-                "permission_alternatives",
+                raw.get("alternatives", []),
+                "alternatives",
             )
         ),
     )
 
 
-def _parse_permission_alternative(raw: dict[str, object]) -> PermissionAlternative:
+def _parse_condition_alternative(raw: dict[str, object]) -> ConditionAlternative:
     role = raw.get("role")
     scene = raw.get("scene")
-    return PermissionAlternative(
+    return ConditionAlternative(
         kind=SemanticConstraintKind(_required_text(raw, "kind")),
         statement=_required_text(raw, "statement"),
         role=TeachingRole(role) if isinstance(role, str) else None,
@@ -2306,15 +2306,13 @@ def _fixed_constraint_satisfies_audit(
         return (
             role is None or (constraint.role is not None and constraint.role.value == role)
         ) and (statement is None or constraint.statement == statement)
-    if constraint.kind is not SemanticConstraintKind.PERMISSION or kind not in {
+    if constraint.kind is not SemanticConstraintKind.CONDITION_GROUP or kind not in {
         "role",
         "scene",
         "access",
     }:
         return False
-    alternatives = tuple(
-        item for item in constraint.permission_alternatives if item.kind.value == kind
-    )
+    alternatives = tuple(item for item in constraint.alternatives if item.kind.value == kind)
     if role is not None:
         return any(item.role is not None and item.role.value == role for item in alternatives)
     if statement is None:

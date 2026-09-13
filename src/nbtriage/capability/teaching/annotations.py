@@ -19,7 +19,7 @@ from nbtriage.capability.teaching.analysis import (
     CapabilityEvidenceUnit,
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
-    PermissionAlternative,
+    ConditionAlternative,
     RateLimitPolicy,
     RateLimitScope,
     SemanticClaimKind,
@@ -38,9 +38,9 @@ from nbtriage.capability.teaching.usage import (
     validate_usage_selector,
 )
 
-CAPABILITY_ANNOTATION_SCHEMA_VERSION = 13
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v119-zh"
-CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v96"
+CAPABILITY_ANNOTATION_SCHEMA_VERSION = 14
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v127-zh"
+CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v104"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
@@ -49,12 +49,12 @@ CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT = 192_000
 CAPABILITY_ANNOTATION_PRELOAD_TOKEN_TARGET = 64_000
 CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
     "background-unit-10req-10read-navigation-tools-300line-default-32kchar-read-"
-    "64k-soft-preload-target-192k-reserve-finalize-32768out-0.05usd-schema13"
+    "64k-soft-preload-target-192k-reserve-finalize-32768out-0.05usd-schema14"
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SEARCH_TERM_LIST_SEPARATOR = re.compile(r"[,，、;；|]")
 _REQUIREMENT_KIND_ORDER = {
-    SemanticConstraintKind.PERMISSION: 0,
+    SemanticConstraintKind.CONDITION_GROUP: 0,
     SemanticConstraintKind.SCENE: 1,
     SemanticConstraintKind.ROLE: 2,
     SemanticConstraintKind.ACCESS: 3,
@@ -129,20 +129,20 @@ class CapabilityAnnotationEvidenceRef:
 
 
 @dataclass(frozen=True)
-class CapabilityTeachingPermissionAlternative:
+class CapabilityTeachingConditionAlternative:
     kind: SemanticConstraintKind
     text: str
     role: TeachingRole | None = None
     scene: TeachingScene | None = None
 
     def __post_init__(self) -> None:
-        PermissionAlternative(
+        ConditionAlternative(
             kind=self.kind,
             statement=self.text,
             role=self.role,
             scene=self.scene,
         )
-        _public_text(self.text, "permission alternative text")
+        _public_text(self.text, "condition alternative text")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -153,9 +153,9 @@ class CapabilityTeachingPermissionAlternative:
         }
 
     @classmethod
-    def from_dict(cls, payload: object) -> CapabilityTeachingPermissionAlternative:
+    def from_dict(cls, payload: object) -> CapabilityTeachingConditionAlternative:
         if not isinstance(payload, dict) or set(payload) != {"kind", "text", "role", "scene"}:
-            raise CapabilityAnnotationError("permission alternative fields do not match schema")
+            raise CapabilityAnnotationError("condition alternative fields do not match schema")
         try:
             return cls(
                 kind=SemanticConstraintKind(payload["kind"]),
@@ -164,7 +164,7 @@ class CapabilityTeachingPermissionAlternative:
                 scene=(TeachingScene(payload["scene"]) if payload["scene"] is not None else None),
             )
         except (TypeError, ValueError) as error:
-            raise CapabilityAnnotationError("permission alternative fields are invalid") from error
+            raise CapabilityAnnotationError("condition alternative fields are invalid") from error
 
 
 @dataclass(frozen=True)
@@ -175,7 +175,7 @@ class CapabilityTeachingRequirement:
     allowed_scenes: tuple[TeachingScene, ...] = ()
     rate_limit_policy: RateLimitPolicy | None = None
     rate_limit_scope: RateLimitScope | None = None
-    alternatives: tuple[CapabilityTeachingPermissionAlternative, ...] = ()
+    alternatives: tuple[CapabilityTeachingConditionAlternative, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SemanticConstraintKind):
@@ -186,7 +186,7 @@ class CapabilityTeachingRequirement:
                 raise CapabilityAnnotationError("role requirement requires role metadata")
         elif self.role is not None:
             raise CapabilityAnnotationError("only role requirements may define role metadata")
-        if self.kind in {SemanticConstraintKind.SCENE, SemanticConstraintKind.PERMISSION}:
+        if self.kind in {SemanticConstraintKind.SCENE, SemanticConstraintKind.CONDITION_GROUP}:
             if (
                 not isinstance(self.allowed_scenes, tuple)
                 or (self.kind is SemanticConstraintKind.SCENE and not self.allowed_scenes)
@@ -196,7 +196,7 @@ class CapabilityTeachingRequirement:
                 raise CapabilityAnnotationError("requirement allowed scenes are invalid")
         elif self.allowed_scenes:
             raise CapabilityAnnotationError(
-                "only scene or permission requirements may define allowed scenes"
+                "only scene or condition-group requirements may define allowed scenes"
             )
         if self.kind is SemanticConstraintKind.RATE_LIMIT:
             if not isinstance(self.rate_limit_policy, RateLimitPolicy) or not isinstance(
@@ -205,21 +205,23 @@ class CapabilityTeachingRequirement:
                 raise CapabilityAnnotationError("rate-limit requirement requires policy and scope")
         elif self.rate_limit_policy is not None or self.rate_limit_scope is not None:
             raise CapabilityAnnotationError("only rate-limit requirements may define rate metadata")
-        if self.kind is SemanticConstraintKind.PERMISSION:
+        if self.kind is SemanticConstraintKind.CONDITION_GROUP:
             if (
                 not isinstance(self.alternatives, tuple)
                 or not self.alternatives
                 or len(self.alternatives) > 16
                 or any(
-                    not isinstance(item, CapabilityTeachingPermissionAlternative)
+                    not isinstance(item, CapabilityTeachingConditionAlternative)
                     for item in self.alternatives
                 )
             ):
                 raise CapabilityAnnotationError(
-                    "permission requirement requires permission alternatives"
+                    "condition-group requirement requires condition alternatives"
                 )
         elif self.alternatives:
-            raise CapabilityAnnotationError("only permission requirements may define alternatives")
+            raise CapabilityAnnotationError(
+                "only condition-group requirements may define alternatives"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -264,7 +266,7 @@ class CapabilityTeachingRequirement:
                     if payload["rate_limit_scope"] is not None
                     else None
                 ),
-                alternatives=_permission_alternatives(payload["alternatives"]),
+                alternatives=_condition_alternatives(payload["alternatives"]),
             )
         except (TypeError, ValueError) as error:
             raise CapabilityAnnotationError("requirement fields are invalid") from error
@@ -282,11 +284,17 @@ class CapabilityTeachingEntry:
 
     @property
     def superuser_only(self) -> bool:
-        """只识别全局 Permission 的全部 OR 分支均为超级用户的情况。"""
+        """识别独立全局超级用户角色，或全部 OR 分支均为超级用户的条件组。"""
         return any(
-            requirement.kind is SemanticConstraintKind.PERMISSION
-            and {(item.kind, item.role) for item in requirement.alternatives}
-            == {(SemanticConstraintKind.ROLE, TeachingRole.SUPERUSER)}
+            (
+                requirement.kind is SemanticConstraintKind.ROLE
+                and requirement.role is TeachingRole.SUPERUSER
+            )
+            or (
+                requirement.kind is SemanticConstraintKind.CONDITION_GROUP
+                and {(item.kind, item.role) for item in requirement.alternatives}
+                == {(SemanticConstraintKind.ROLE, TeachingRole.SUPERUSER)}
+            )
             for requirement in self.requirements
         )
 
@@ -369,7 +377,7 @@ class CapabilityTeachingEntry:
 
 @dataclass(frozen=True)
 class CapabilityTeachingAnnotation:
-    """从一次已校验证据分析投影出的公开教学注释。"""
+    """公开教学结构；可来自已校验证据分析或具有独立发布记录的维护者修订。"""
 
     capability_id: str
     request_fingerprint: str
@@ -530,7 +538,7 @@ def capability_analysis_fingerprint(
                 "rate_limit_scope": (
                     item.rate_limit_scope.value if item.rate_limit_scope is not None else None
                 ),
-                "permission_alternatives": [
+                "alternatives": [
                     {
                         "kind": alternative.kind.value,
                         "statement": alternative.statement,
@@ -539,7 +547,7 @@ def capability_analysis_fingerprint(
                             alternative.scene.value if alternative.scene is not None else None
                         ),
                     }
-                    for alternative in item.permission_alternatives
+                    for alternative in item.alternatives
                 ],
             }
             for item in request.fixed_constraints
@@ -734,7 +742,7 @@ def _project_teaching_entry(
                             rate_limit_policy=item.rate_limit_policy,
                             rate_limit_scope=item.rate_limit_scope,
                             alternatives=tuple(
-                                CapabilityTeachingPermissionAlternative(
+                                CapabilityTeachingConditionAlternative(
                                     kind=alternative.kind,
                                     text=validate_capability_public_statement(
                                         alternative.statement,
@@ -742,7 +750,7 @@ def _project_teaching_entry(
                                     role=alternative.role,
                                     scene=alternative.scene,
                                 )
-                                for alternative in item.permission_alternatives
+                                for alternative in item.alternatives
                             ),
                         )
                         for item in (*request.fixed_constraints, *output.constraints)
@@ -1412,12 +1420,12 @@ def _requirements(value: object) -> tuple[CapabilityTeachingRequirement, ...]:
     return tuple(CapabilityTeachingRequirement.from_dict(item) for item in value)
 
 
-def _permission_alternatives(
+def _condition_alternatives(
     value: object,
-) -> tuple[CapabilityTeachingPermissionAlternative, ...]:
+) -> tuple[CapabilityTeachingConditionAlternative, ...]:
     if not isinstance(value, list):
-        raise CapabilityAnnotationError("permission alternatives must be a list")
-    return tuple(CapabilityTeachingPermissionAlternative.from_dict(item) for item in value)
+        raise CapabilityAnnotationError("condition alternatives must be a list")
+    return tuple(CapabilityTeachingConditionAlternative.from_dict(item) for item in value)
 
 
 def _evidence_manifest(value: object) -> tuple[CapabilityAnnotationEvidenceRef, ...]:
@@ -1445,8 +1453,8 @@ __all__ = (
     "CapabilityAnnotationProjectionCode",
     "CapabilityAnnotationProjectionError",
     "CapabilityTeachingAnnotation",
+    "CapabilityTeachingConditionAlternative",
     "CapabilityTeachingEntry",
-    "CapabilityTeachingPermissionAlternative",
     "CapabilityTeachingRequirement",
     "capability_analysis_fingerprint",
     "project_capability_annotation",

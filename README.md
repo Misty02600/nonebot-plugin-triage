@@ -486,6 +486,8 @@ semantic v7 中文 Prompt 的 OpenCode Go 与国内 Alibaba Qwen3.6 Flash 精确
 | 同一会话继续发送 `triage <补充>`                  | 所有人    | Guidance / Bug 首轮未解决时消费唯一一次补充机会；Reply 可选 |
 | `triage <公开能力问题>`                            | 所有人    | 检索当前平台可安全说明的能力   |
 | `triage 刷新帮助 [plugin_module]`                 | SUPERUSER | 强制刷新全部或指定插件模块的教学数据 |
+| `triage 查看帮助边界 <plugin_module>`              | SUPERUSER | 查看已发布原始边界、版本和单元 / 条目 ID |
+| `triage 修改帮助边界 <generation> <unit_id> <entry_id> "原文" "新文"` | SUPERUSER | 精确替换一条已有边界，不调用模型 |
 | `triage 这是不是 Bug`                             | 所有人    | 判断 Bug / 非 Bug / 未知；确认 Bug 时自动记录 |
 | `triage <内部行为探索问题>`                        | SUPERUSER | 在长期 Behavior Thread 中读取当前安全能力结构并给出证据式解释；多源取证仍在扩展 |
 | `triage 行为重置`                                  | SUPERUSER | 删除当前维护者在当前会话的整个长期 Behavior Thread |
@@ -497,6 +499,14 @@ semantic v7 中文 Prompt 的 OpenCode Go 与国内 Alibaba Qwen3.6 Flash 精确
 索引校验 `adapter + Bot + conversation + actor`、有效期和单活动 lease。等待补充只要求当前回答发送成功，
 不再要求 Receipt 返回 message ID。OneBot 的全局出站 Provider 继续只负责运行证据 correlation；Reply 正文
 可进入路由后的 Guidance / Bug 上下文，但不能改变 Thread 归属或权限。
+
+人工微调先用“查看帮助边界”取得版本、ID 和完整原文，再用“修改帮助边界”替换；文字中有空格时须用引号包裹。
+只允许修改现有 `behavior_boundary`，不能通过该入口更改 usage、权限、场景或自动派生的参数数量说明。
+旧版本、原文不匹配、源码或 Evidence 已失效时会拒绝。旧格式发布没有结构化恢复材料时，须先完成一次正常刷新。
+编辑会重新准备选中单元以核对当前性，但不请求模型；成功仅表示结构合法，不代表语义已验证。
+人工文字随新教学版本发布并成为后续生成基线，模型未提出变更时保留，明确替换或删除时可以更新；它不是永久覆盖。
+结构化注释与编辑记录保存在 LocalStore data 的教学 generation 中，应随数据备份，不能当作可丢弃缓存清理。
+记录包含操作者标识及修改前后文字，不属于公开 Help / Answer 文件，分享诊断材料前须脱敏。
 
 ### 本地能力影子索引
 

@@ -333,10 +333,8 @@ matcher = on_command("manage", permission=SUPERUSER | PRIVATE | GUILD | ADMIN())
     )
 
     assert len(constraints) == 1
-    assert constraints[0].kind is SemanticConstraintKind.PERMISSION
-    assert {
-        (item.kind, item.role, item.scene) for item in constraints[0].permission_alternatives
-    } == {
+    assert constraints[0].kind is SemanticConstraintKind.CONDITION_GROUP
+    assert {(item.kind, item.role, item.scene) for item in constraints[0].alternatives} == {
         (SemanticConstraintKind.ROLE, TeachingRole.SUPERUSER, None),
         (SemanticConstraintKind.ROLE, TeachingRole.ADMIN, None),
         (SemanticConstraintKind.ROLE, TeachingRole.OWNER, None),

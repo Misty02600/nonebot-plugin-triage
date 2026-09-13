@@ -331,15 +331,20 @@ def _annotation_description(annotation: CapabilityTeachingEntry) -> str:
 
 
 def _required_role(annotation: CapabilityTeachingEntry) -> TeachingRole | None:
-    permissions = tuple(
-        item for item in annotation.requirements if item.kind is SemanticConstraintKind.PERMISSION
+    conditions = tuple(
+        item
+        for item in annotation.requirements
+        if item.kind in {SemanticConstraintKind.ROLE, SemanticConstraintKind.CONDITION_GROUP}
     )
-    if len(permissions) != 1:
+    if len(conditions) != 1:
         return None
+    condition = conditions[0]
+    if condition.kind is SemanticConstraintKind.ROLE:
+        return TeachingRole.SUPERUSER if condition.role is TeachingRole.SUPERUSER else None
     # 原生 permission 无法携带共同场景，不将这个完整条件降成无场景的角色标签。
-    if permissions[0].allowed_scenes:
+    if condition.allowed_scenes:
         return None
-    alternatives = permissions[0].alternatives
+    alternatives = condition.alternatives
     if any(alternative.kind is not SemanticConstraintKind.ROLE for alternative in alternatives):
         return None
     roles = {alternative.role for alternative in alternatives}

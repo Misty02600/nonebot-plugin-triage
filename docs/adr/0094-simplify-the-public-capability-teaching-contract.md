@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；family 边界被 [ADR-0095](history/0095-preserve-family-member-invocations-and-compress-only-display.md) 替代；真实插件诊断范围被 [ADR-0097](0097-capture-complete-capability-model-output-in-explicit-maintenance-runs.md) 部分替代；Migut Help description 边界被 [ADR-0100](history/0100-keep-migut-help-descriptions-minimal.md) 替代；路由、授权与业务准备状态的字段所有权被 [ADR-0113](0113-separate-routing-authorization-and-business-readiness-in-teaching.md) 部分替代 | 2026-08-19 |
+| 已采纳；family 边界被 [ADR-0095](history/0095-preserve-family-member-invocations-and-compress-only-display.md) 替代；真实插件诊断范围被 [ADR-0097](0097-capture-complete-capability-model-output-in-explicit-maintenance-runs.md) 部分替代；Migut Help description 边界被 [ADR-0100](history/0100-keep-migut-help-descriptions-minimal.md) 替代；路由、授权与业务准备状态的字段所有权被 [ADR-0113](0113-separate-routing-authorization-and-business-readiness-in-teaching.md) 部分替代；教学条件名称被 [ADR-0127](0127-separate-teaching-condition-shape-from-gate-origin.md) 局部替代 | 2026-08-19 |
 
 ## 当时遇到了什么
 

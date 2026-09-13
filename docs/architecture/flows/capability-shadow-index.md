@@ -59,6 +59,9 @@ Fullmatch、Keywords、Regex 与 IsType Rule 保存确定的 runtime 入口事�
 自动推断共享权限或业务关系。模型按需使用现有 `python_open_definition` 稳定读取后才能引用源码，继续
 使用本单元预算，无需等待其他单元生成。索引进入请求 fingerprint，定义位置绑定源码 revision；不能唯一
 确认的位置不生成导航句柄。现有流水线并发及发布边界不变。
+当前 Evidence 已证明且直接影响使用的跨入口关系应在对应字段保留，包括共享限制、操作影响和必要输入的
+获取方式；不展开其他入口的完整教学或继承其权限。family 可选择性打开相关入口，但不遍历成员或索引；
+缺少辅助输入获取指引不关闭已能可靠说明的当前能力。调用方式与用途仍需相应 Runtime 或实现 Evidence。
 
 ## 普通查询门禁
 
@@ -74,8 +77,9 @@ Fullmatch、Keywords、Regex 与 IsType Rule 保存确定的 runtime 入口事�
 能力 ID 白名单在 FTS 排名和 `limit` 前应用，结果反序列化后再次执行 ServingView 检查。`restricted`、平台不
 匹配和带 issue 的记录不会先进入模型再被隐藏。维护者域必须先在模型外完成 SUPERUSER 鉴权。
 
-当前有效教学注释只能进一步收紧披露：某个 entry 的全局 `permission.alternatives` 按结构去重后仅有
-`role=superuser` 时，普通检索、Answer、确定性帮助及帮助导出均排除该 entry；其余 OR 组合不据此隐藏。
+当前有效教学注释只能进一步收紧披露：某个 entry 存在独立全局 `role=superuser`，或全局
+`condition_group.alternatives` 按结构去重后仅有 `role=superuser` 时，普通检索、Answer、确定性帮助及帮助导出
+均排除该 entry；含其他允许分支的 OR 不单独触发隐藏，但不能抵消另一条独立的超级用户角色要求。
 同单元的其他公开 entry 保留，全部排除时该记录不进入公开候选，教学补召回也遵守前述能力白名单。
 行为边界中的局部权限文字不参与此判断。原始 Runtime disclosure、保存的注释与执行鉴权不变，维护者仍可
 查看原始记录；这不是对所有自定义权限的完整静态证明。
@@ -91,22 +95,33 @@ Provider SDK、密钥、网络、任务传输能力或输出校验不可用时�
 公开字段中，`role` 只描述调用者本人身份；`access` 只描述用户、群或场景已经取得的、由高权限主体控制的
 脱敏使用资格；没有 Evidence 证明授权者角色时只写“需授权”或“需已开放”。独立 `scene` requirement 必须携带
 完整 `allowed_scenes` 条件集合；原子值为 `private / group / guild / channel_text / channel_category /
-channel_voice`。Schema 13 另支持 `non_private` 谓词：排除私聊，不将其展开为当前原子值的枚举，
+channel_voice`；另支持 `non_private` 谓词：排除私聊，不将其展开为当前原子值的枚举，
 也不能按互斥标签与具体场景直接比较。只证明非私聊时不要求追查 Adapter 场景全集；另有群消息依赖等
 更窄条件时必须保留，不用同一 OR 集合中的 `non_private + group` 表达收窄。
-同一注册表达式内的复合 Permission 合并为一个候选并按 OR 分支解释，每条场景 alternative 保存一个场景条件。
-一个 `permission` 还可使用 `allowed_scenes` 保存 Evidence 已明确证明的共同场景：集合内为
+教学条件按实际语义分类，不按 Permission、Rule 或 Handler 来源分类；简单条件优先使用独立的
+`role / scene / access / rate_limit`。`condition_group` 表达有限 OR 分支，每条场景 alternative 保存一个场景条件。
+条件组还可使用 `allowed_scenes` 保存 Evidence 已明确证明的共同场景：集合内为
 OR，与非空 `alternatives` 为 AND；空集合只表示不附加共同场景，不表示整个 entry 适用所有场景，也不代替
 未知门禁。场景自身构成替代允许路径时仍使用 scene alternative；不把外层可绕过的场景提升成共同条件。
-一个 gate 仍关联一个 permission，其他独立场景 gate 保持独立 requirement，requirements 之间为 AND。
+同一注册表达式内的复合 Permission 仍合并为一个候选；一个 gate 在每个受影响 entry 中保持唯一公开归属，
+可以是独立条件、条件组、行为边界或已有规则允许的一组 usage。requirements 之间为 AND，不能拆 OR 为 AND。
+单分支组也合法，不强求最大化简；固定事实只有单一角色或场景时直接输出原子条件。
 已证明的嵌套角色 OR 可展开，但不展开权限系统内部的默认授予关系，也不依据平台等级推测角色集合。
-这只是共同场景的表达扩展，不新增通用布尔树或复杂权限的关闭政策。Migut Help 不投影带共同场景的原生
-权限标签、不追加权限文字到最小 description；Answer 保留完整条件。共同场景不会改变仅超级用户分支的
-披露限制，实际鉴权仍由原插件执行。旧 schema 缓存不迁移，新模型合同需重新验证。
+不新增通用布尔树或复杂权限的关闭政策。Migut Help 不投影混合组、带共同场景或额外独立角色的原生
+权限标签，也不把独立 admin 扩成 admin OR owner；不追加权限文字到最小 description，Answer 保留完整条件。
+共同场景不会改变仅超级用户分支的披露限制，实际鉴权仍由原插件执行。
+当前 Schema 14 / Prompt v127 / request v104 不自动迁移旧格式。旧 generation 与人工文案保留，但不能直接
+恢复为有效新注释或继续编辑；升级后先完成正常全范围刷新，再使用新格式恢复与编辑。
 当前没有按教学场景过滤调用者的确定性消费者；不为这个新增值建立通用场景匹配器或权限计算器。
 若以后添加场景过滤，须按谓词含义判断 `non_private`，未知上下文不能仅因不等于 `private` 就当作已知非私聊。
 本次边界见 [ADR-0124](../../adr/0124-express-non-private-teaching-scenes-directly.md)。
-业务数据或其他准备状态进入 `behavior_boundary`。当前 Handler 提到另一条命令的提示文字
+条件来源与结构的分离见 [ADR-0127](../../adr/0127-separate-teaching-condition-shape-from-gate-origin.md)。
+当前配置未知不等于规则未知：源码已证明设置条件与公开效果时，可引用源码作条件性边界，不推断当前值或
+启用状态；已确认关闭的分支仍省略。入口始终检查的授权资格仍归 `access`，已确认生效的全局限流仍归
+`rate_limit`，不以用户能否修改配置决定是否说明其公开影响，也不为此读取任意运行数据。
+业务数据或其他准备状态进入 `behavior_boundary`。边界可说明全局行为或特定分支；局部条件或结果须在
+同一条说明中保留适用条件，不泛化为全局，也不要求穷举所有业务分支。已发现 gate 的覆盖要求不变，
+不重复 usage 已表达的参数结构或 constraints 已表达的全局条件。当前 Handler 提到另一条命令的提示文字
 不能单独证明该命令的当前详细用法，必须同时存在目标命令当前的 Runtime 或实现 Evidence。
 
 教学工具不能读取 `.env*`、凭据、数据库、日志、Migut Help 人工 YAML、评测 Gold 或本任务生成的
@@ -166,7 +181,7 @@ behavior boundary 而从聚合 usage 删除。
 
 教学缓存位于 Triage LocalStore cache 的 `capability-annotations/`：每个安全插件模块名直接对应一个
 `<module_name>.json`，文件内用稳定 teaching unit ID 保存 `last_good`、`pending` 与 `last_attempt`。
-`last_good` 是已由当前 generation 发布且通过完整校验的公开结果；`pending` 是已通过相同校验但尚未发布的
+`last_good` 是已由当前 generation 发布的结果（模型候选经完整校验，维护者修订另循下述编辑边界）；`pending` 是经完整校验但尚未发布的
 候选，只在 revision、fingerprint 与 Evidence manifest 仍匹配时免调用复用；`last_attempt` 只记录最近真实尝试的状态、阶段、请求 fingerprint 和脱敏失败
 原因；失败尝试不会抹掉仍精确匹配当前输入的 `last_good`。分片还绑定实际发布它的
 `published_generation`。generation 不匹配的 `last_good` 只能作为编辑基线；匹配当前输入的 `pending` 可以进入
@@ -182,6 +197,23 @@ behavior boundary 而从聚合 usage 删除。
 活动真值，切换成功后才提交 Answer 内存视图；缓存、内存 staging、`last-refresh.json` 和未被指针选中的
 generation 都不是 active teaching contract。源码、Evidence、配置值、指纹和审核状态不会进入公开文件。
 当前版本没有草稿或人工审核流程，也没有把该目录接入 Migut Help，所以 YAML 目前只供部署者观察生成效果。
+
+### 维护者微调行为边界
+
+SUPERUSER 可查看并精确替换一个教学 entry 已有的原始 `behavior_boundary`。编辑绑定活动 generation、
+unit ID、entry ID 和完整旧文字；任何不匹配、入口或 Evidence 失效都拒绝。只重新准备选中单元核对当前性，
+不调用模型、不改 usage、requirements、Runtime 或 Evidence；Parser 派生的参数数量边界只读。
+人工编辑通过结构校验即发布，语义由维护者负责；它会进入 Answer 和教学预检使用的文字，不标为模型验证通过。
+
+新版 generation 同时保存 `annotations.json`，复用原生注释缓存结构，保存原始注释和本次人工修改的操作者、
+时间、旧版本及前后文字。它与 Help / Answer 共用一次原子指针切换，不是独立覆盖文件；指针失败保留旧视图，
+发布期间取消需等当前文件写入与内存切换收尾。恢复时以活动 generation 的结构化内容为已发布基线，缓存中的
+新 pending 仍按原合同独立验证，不能被旧发布快照覆盖。缓存丢失不丢人工修改，但源码 / 请求 / Evidence
+失效规则不变。旧 v2 generation 没有该材料，沿用原缓存，完成正常刷新后才能使用人工编辑。
+
+`annotations.json` 包含内部身份、Evidence 清单和人工记录，不是公开投影；备份教学 data 时保留，公开分享前
+脱敏。人工修改是非证据基线，不是永久锁定：重生成可以依据当前 Evidence 明确 replace/remove，未修改时保留。
+设计取舍见 [ADR-0126](../../adr/0126-publish-maintainer-boundary-edits-with-teaching-generations.md)。
 
 ## 教学刷新与部署变更边界
 

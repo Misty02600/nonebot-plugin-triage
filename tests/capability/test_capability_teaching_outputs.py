@@ -15,6 +15,7 @@ from nbtriage.capability.catalog.records import (
     PlatformScope,
     RecordState,
 )
+from nbtriage.capability.teaching import annotations as annotation_contract
 from nbtriage.capability.teaching.analysis import (
     SemanticConstraintKind,
     TeachingRole,
@@ -22,8 +23,8 @@ from nbtriage.capability.teaching.analysis import (
 )
 from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
+    CapabilityTeachingConditionAlternative,
     CapabilityTeachingEntry,
-    CapabilityTeachingPermissionAlternative,
     CapabilityTeachingRequirement,
 )
 from nonebot_plugin_triage.capability.teaching.annotations import (
@@ -32,6 +33,10 @@ from nonebot_plugin_triage.capability.teaching.annotations import (
     CapabilityTeachingUnitStage,
     CapabilityTeachingUnitState,
     CapabilityTeachingUnitStatus,
+)
+from nonebot_plugin_triage.capability.teaching.cache import (
+    CapabilityAnnotationCacheUnit,
+    CapabilityAnnotationPluginCache,
 )
 from nonebot_plugin_triage.capability.teaching.outputs import (
     CapabilityTeachingOutputError,
@@ -90,11 +95,11 @@ def test_writer_activates_help_and_answer_files_with_one_generation_pointer(
         annotation.entries[0],
         requirements=(
             CapabilityTeachingRequirement(
-                kind=SemanticConstraintKind.PERMISSION,
+                kind=SemanticConstraintKind.CONDITION_GROUP,
                 text=f"仅{scene_text}中具有使用资格的成员可用",
                 allowed_scenes=(scene,),
                 alternatives=(
-                    CapabilityTeachingPermissionAlternative(
+                    CapabilityTeachingConditionAlternative(
                         kind=SemanticConstraintKind.ACCESS,
                         text="已取得使用资格",
                     ),
@@ -108,11 +113,11 @@ def test_writer_activates_help_and_answer_files_with_one_generation_pointer(
         name="受限维护说明",
         requirements=(
             CapabilityTeachingRequirement(
-                kind=SemanticConstraintKind.PERMISSION,
+                kind=SemanticConstraintKind.CONDITION_GROUP,
                 text=f"仅{scene_text}中的超级用户可用。",
                 allowed_scenes=(scene,),
                 alternatives=(
-                    CapabilityTeachingPermissionAlternative(
+                    CapabilityTeachingConditionAlternative(
                         kind=SemanticConstraintKind.ROLE,
                         role=TeachingRole.SUPERUSER,
                         text="超级用户",
@@ -121,7 +126,19 @@ def test_writer_activates_help_and_answer_files_with_one_generation_pointer(
             ),
         ),
     )
-    annotation = replace(annotation, entries=(public_entry, private_entry))
+    private_role_entry = replace(
+        private_entry,
+        entry_id="maintenance-role",
+        name="受限角色说明",
+        requirements=(
+            CapabilityTeachingRequirement(
+                kind=SemanticConstraintKind.ROLE,
+                role=TeachingRole.SUPERUSER,
+                text="仅超级用户可用。",
+            ),
+        ),
+    )
+    annotation = replace(annotation, entries=(public_entry, private_entry, private_role_entry))
     root = tmp_path / "capability-teaching"
 
     paths = CapabilityTeachingOutputWriter(root).refresh(
@@ -140,7 +157,10 @@ def test_writer_activates_help_and_answer_files_with_one_generation_pointer(
     assert f"仅{scene_text}中具有使用资格的成员可用" not in help_path.read_text(encoding="utf-8")
     assert "受限维护说明" not in help_path.read_text(encoding="utf-8")
     assert "受限维护说明" not in answer_path.read_text(encoding="utf-8")
+    assert "受限角色说明" not in help_path.read_text(encoding="utf-8")
+    assert "受限角色说明" not in answer_path.read_text(encoding="utf-8")
     assert private_entry in annotation.entries
+    assert private_role_entry in annotation.entries
 
 
 def test_writer_preserves_parser_punctuation_in_help_and_answer(tmp_path: Path) -> None:
@@ -350,7 +370,24 @@ def test_scoped_publish_replaces_only_target_plugin(tmp_path: Path) -> None:
             capability_id=other.capability_id,
         ),
     }
-    writer.publish(snapshot, initial_annotations.get, initial_status)
+
+    def cache(module, annotation):
+        return CapabilityAnnotationPluginCache(
+            module,
+            "0" * 64,
+            "1" * 64,
+            (CapabilityAnnotationCacheUnit(annotation.capability_id, annotation),),
+        )
+
+    writer.publish(
+        snapshot,
+        initial_annotations.get,
+        initial_status,
+        annotation_caches=(
+            cache("plugin_image", initial_annotations[target.capability_id]),
+            cache("plugin_other", initial_annotations[other.capability_id]),
+        ),
+    )
     target_status = CapabilityAnnotationRefreshStatus(
         refresh_id="refresh-target",
         eligible_count=1,
@@ -365,11 +402,15 @@ def test_scoped_publish_replaces_only_target_plugin(tmp_path: Path) -> None:
         ),
         target_status,
         plugin_module="plugin_image",
+        annotation_caches=(cache("plugin_image", _annotation("新目标说明。")),),
     )
 
     generation_root = root / "objects" / publication.generation
     manifest = json.loads((generation_root / "manifest.json").read_text(encoding="utf-8"))
     assert publication.preserved_plugin_modules == ("plugin_other",)
+    recovered = {item.module_name: item for item in writer.current_annotation_caches()}
+    assert recovered["plugin_other"].units[0].last_good == initial_annotations[other.capability_id]
+    assert recovered["plugin_image"].units[0].last_good == _annotation("新目标说明。")
     assert set(manifest["plugins"]) == {"plugin_image", "plugin_other"}
     assert {item["plugin_module"] for item in manifest["units"]} == {
         "plugin_image",
@@ -425,6 +466,45 @@ def test_all_failed_units_publish_state_only_generation_without_stale_annotation
     assert "目前可说明以下功能（0/1）" in (
         generation_root / "answer-knowledge" / "plugin_image.md"
     ).read_text(encoding="utf-8")
+
+
+def test_old_annotation_schema_is_not_restored_and_full_refresh_preserves_old_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    writer = CapabilityTeachingOutputWriter(tmp_path / "teaching")
+    snapshot = CapabilitySnapshot.create((_record(),))
+    annotation = _annotation("人工保留说明。")
+
+    def publish(value: CapabilityTeachingAnnotation):
+        return writer.publish(
+            snapshot,
+            lambda _: value,
+            annotation_caches=(
+                CapabilityAnnotationPluginCache(
+                    "plugin_image",
+                    "0" * 64,
+                    "1" * 64,
+                    (CapabilityAnnotationCacheUnit(value.capability_id, value),),
+                ),
+            ),
+        )
+
+    with monkeypatch.context() as previous_version:
+        previous_version.setattr(
+            annotation_contract,
+            "CAPABILITY_ANNOTATION_SCHEMA_VERSION",
+            annotation.schema_version - 1,
+        )
+        old = publish(replace(annotation, schema_version=annotation.schema_version - 1))
+    old_file = tmp_path / "teaching" / "objects" / old.generation / "annotations.json"
+    original_bytes = old_file.read_bytes()
+    assert writer.current_annotation_caches() == ()
+    assert writer.current_generation() == old.generation
+
+    new = publish(annotation)
+    assert new.generation != old.generation
+    assert writer.current_annotation_caches()[0].units[0].last_good == annotation
+    assert old_file.read_bytes() == original_bytes
 
 
 def test_global_failure_records_last_attempt_without_switching_generation(

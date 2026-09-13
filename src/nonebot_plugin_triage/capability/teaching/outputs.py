@@ -15,11 +15,15 @@ import yaml
 from nonebot import require
 
 from nbtriage.capability.catalog.records import CapabilityRecord, CapabilitySnapshot, ClaimBasis
-from nbtriage.capability.teaching.annotations import CapabilityTeachingEntry
+from nbtriage.capability.teaching.annotations import (
+    CAPABILITY_ANNOTATION_SCHEMA_VERSION,
+    CapabilityTeachingEntry,
+)
 from nonebot_plugin_triage.capability.teaching.annotations import (
     CapabilityAnnotationRefreshStatus,
     CapabilityTeachingUnitState,
 )
+from nonebot_plugin_triage.capability.teaching.cache import CapabilityAnnotationPluginCache
 from nonebot_plugin_triage.capability.teaching.help import (
     CapabilityAnnotationLookup,
     CapabilityHelpDisplayPlugin,
@@ -32,6 +36,7 @@ _CURRENT_POINTER_NAME = "current.json"
 _LAST_REFRESH_NAME = "last-refresh.json"
 _HELP_DIRECTORY_NAME = "help-display"
 _ANSWER_DIRECTORY_NAME = "answer-knowledge"
+_ANNOTATIONS_NAME = "annotations.json"
 _HELP_HEADER = "# generated-by: nonebot-plugin-triage/capability-teaching-v1"
 _ANSWER_HEADER = "<!-- generated-by: nonebot-plugin-triage/capability-teaching-v1 -->"
 _WINDOWS_RESERVED_NAMES = frozenset(
@@ -106,6 +111,8 @@ class CapabilityTeachingOutputWriter:
         refresh_status: CapabilityAnnotationRefreshStatus | None = None,
         *,
         plugin_module: str | None = None,
+        annotation_caches: tuple[CapabilityAnnotationPluginCache, ...] | None = None,
+        manual_edit: dict[str, str] | None = None,
     ) -> CapabilityTeachingOutputPublication:
         if not isinstance(snapshot, CapabilitySnapshot):
             raise TypeError("snapshot must be a CapabilitySnapshot")
@@ -120,7 +127,17 @@ class CapabilityTeachingOutputWriter:
         if plugin_module is not None and (not isinstance(plugin_module, str) or not plugin_module):
             raise TypeError("plugin_module must be a non-empty string or None")
 
+        previous = self._read_current_generation() if plugin_module is not None else None
+        if manual_edit is not None and (previous is None or annotation_caches is None):
+            raise CapabilityTeachingOutputError("manual edit requires a published generation")
         coverage = _plugin_coverage(refresh_status)
+        if manual_edit is not None:
+            assert previous is not None
+            for module, item in previous[3].items():
+                active, eligible = item["active_count"], item["eligible_count"]
+                if type(active) is not int or type(eligible) is not int:
+                    raise CapabilityTeachingOutputError("invalid published coverage")
+                coverage[module] = CapabilityTeachingPluginCoverage(module, active, eligible)
         help_plugins = build_capability_help_displays(snapshot, annotation_lookup)
         help_documents = {
             item.filename: _serialize_help(item, coverage.get(item.module_name))
@@ -175,44 +192,73 @@ class CapabilityTeachingOutputWriter:
             module_name: item.to_dict() for module_name, item in sorted(coverage.items())
         }
         preserved_plugin_modules: tuple[str, ...] = ()
-        if plugin_module is not None:
-            previous = self._read_current_generation()
-            if previous is not None:
-                previous_help, previous_answer, previous_units, previous_plugins = previous
-                target_help = _safe_module_filename(plugin_module)
-                if target_help is not None:
-                    previous_help.pop(target_help, None)
-                    previous_answer.pop(f"{target_help.removesuffix('.yml')}.md", None)
-                previous_help.update(help_documents)
-                previous_answer.update(answer_documents)
-                help_documents = previous_help
-                answer_documents = previous_answer
-                unit_manifest = [
-                    item for item in previous_units if item.get("plugin_module") != plugin_module
-                ] + unit_manifest
+        if plugin_module is not None and previous is not None:
+            previous_help, previous_answer, previous_units, previous_plugins = previous
+            target_help = _safe_module_filename(plugin_module)
+            if target_help is not None:
+                previous_help.pop(target_help, None)
+                previous_answer.pop(f"{target_help.removesuffix('.yml')}.md", None)
+            previous_help.update(help_documents)
+            previous_answer.update(answer_documents)
+            help_documents = previous_help
+            answer_documents = previous_answer
+            unit_manifest = (
+                previous_units
+                if manual_edit is not None
+                else [item for item in previous_units if item.get("plugin_module") != plugin_module]
+                + unit_manifest
+            )
+            if manual_edit is None:
                 previous_plugins.pop(plugin_module, None)
-                preserved_plugin_modules = tuple(sorted(previous_plugins))
-                previous_plugins.update(plugin_manifest)
-                plugin_manifest = previous_plugins
-                help_documents = _without_casefold_collisions(
-                    help_documents,
-                    protected_names=active_help_filenames,
+            preserved_plugin_modules = tuple(sorted(previous_plugins))
+            previous_plugins.update(plugin_manifest)
+            plugin_manifest = previous_plugins
+            help_documents = _without_casefold_collisions(
+                help_documents,
+                protected_names=active_help_filenames,
+            )
+            answer_documents = _without_casefold_collisions(
+                answer_documents,
+                protected_names=active_answer_filenames,
+            )
+        annotation_document = None
+        if annotation_caches is not None:
+            stored = (
+                {item.module_name: item for item in self.current_annotation_caches()}
+                if plugin_module is not None
+                else {}
+            )
+            if plugin_module is not None:
+                stored.pop(plugin_module, None)
+            stored.update({item.module_name: item for item in annotation_caches})
+            plugins = {}
+            for module, cache in sorted(stored.items()):
+                payload = json.loads(cache.to_json())
+                # generation 的内容摘要不能反过来包含自身；读取时由活动指针补齐。
+                payload.pop("published_generation")
+                plugins[module] = payload
+            annotation_document = (
+                json.dumps(
+                    {"schema_version": 1, "plugins": plugins, "manual_edit": manual_edit},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
                 )
-                answer_documents = _without_casefold_collisions(
-                    answer_documents,
-                    protected_names=active_answer_filenames,
-                )
+                + "\n"
+            )
         generation = _generation_digest(
             help_documents,
             answer_documents,
             unit_manifest,
             plugin_manifest,
+            annotation_document,
         )
         root = self._resolved_root()
         objects = root / _OBJECTS_DIRECTORY_NAME
         destination = objects / generation
         manifest = {
-            "schema_version": 2,
+            "schema_version": 3 if annotation_document is not None else 2,
             "generation": generation,
             "help_files": sorted(help_documents),
             "answer_files": sorted(answer_documents),
@@ -223,12 +269,18 @@ class CapabilityTeachingOutputWriter:
             "plugins": plugin_manifest,
             "units": unit_manifest,
         }
+        if annotation_document is not None:
+            manifest["annotations_sha256"] = hashlib.sha256(
+                annotation_document.encode("utf-8")
+            ).hexdigest()
         objects.mkdir(parents=True, exist_ok=True)
         if not destination.is_dir():
             with tempfile.TemporaryDirectory(prefix=".publish-", dir=objects) as name:
                 staging = Path(name)
                 _write_documents(staging / _HELP_DIRECTORY_NAME, help_documents)
                 _write_documents(staging / _ANSWER_DIRECTORY_NAME, answer_documents)
+                if annotation_document is not None:
+                    _write_text(staging / _ANNOTATIONS_NAME, annotation_document)
                 _write_text(
                     staging / "manifest.json",
                     json.dumps(
@@ -282,7 +334,7 @@ class CapabilityTeachingOutputWriter:
             ) from error
         if (
             not isinstance(manifest, dict)
-            or set(manifest)
+            or set(manifest) - {"annotations_sha256"}
             != {
                 "schema_version",
                 "generation",
@@ -292,7 +344,7 @@ class CapabilityTeachingOutputWriter:
                 "plugins",
                 "units",
             }
-            or manifest.get("schema_version") != 2
+            or manifest.get("schema_version") not in {2, 3}
             or manifest.get("generation") != generation
         ):
             raise CapabilityTeachingOutputError("current teaching manifest is invalid")
@@ -319,6 +371,51 @@ class CapabilityTeachingOutputWriter:
             [cast(dict[str, object], item) for item in units],
             {module_name: cast(dict[str, object], item) for module_name, item in plugins.items()},
         )
+
+    def current_annotation_caches(self) -> tuple[CapabilityAnnotationPluginCache, ...]:
+        """从活动 generation 恢复原始注释；不把展示层派生边界或未发布候选当作基线。"""
+        generation = self.current_generation()
+        if generation is None:
+            return ()
+        root = self._resolved_root() / _OBJECTS_DIRECTORY_NAME / generation
+        try:
+            manifest = json.loads(_read_utf8_text(root / "manifest.json"))
+            if manifest["generation"] != generation or manifest["schema_version"] not in {2, 3}:
+                raise ValueError("invalid annotation generation")
+            if manifest["schema_version"] == 2:
+                return ()  # 旧 generation 没有结构化恢复材料，继续使用既有缓存。
+            _validate_staged_generation(root, manifest)
+            payload = json.loads(_read_utf8_text(root / _ANNOTATIONS_NAME))
+            if (
+                set(payload) != {"schema_version", "plugins", "manual_edit"}
+                or payload["schema_version"] != 1
+            ):
+                raise ValueError("invalid annotation state")
+            caches = []
+            for module, item in payload["plugins"].items():
+                if item["module_name"] != module:
+                    raise ValueError("invalid annotation module identity")
+                versions = (
+                    annotation["schema_version"]
+                    for unit in item["units"].values()
+                    for annotation in (unit["last_good"], unit["pending"])
+                    if annotation is not None
+                )
+                # 完整旧快照不是当前恢复来源，但不能阻断升级后的正常重建。
+                # 不改写旧文件或自动迁移人工文字；损坏和未知新版本仍由严格解析拒绝。
+                if any(
+                    type(version) is int and 0 < version < CAPABILITY_ANNOTATION_SCHEMA_VERSION
+                    for version in versions
+                ):
+                    continue
+                caches.append(
+                    CapabilityAnnotationPluginCache.from_json(
+                        json.dumps({**item, "published_generation": generation})
+                    )
+                )
+            return tuple(caches)
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError, AttributeError) as error:
+            raise CapabilityTeachingOutputError("published annotations are unavailable") from error
 
     def current_generation(self) -> str | None:
         try:
@@ -484,14 +581,18 @@ def _generation_digest(
     answer_documents: dict[str, str],
     unit_manifest: list[dict[str, object]],
     plugin_manifest: dict[str, dict[str, object]],
+    annotation_document: str | None = None,
 ) -> str:
+    content = {
+        "help": help_documents,
+        "answer": answer_documents,
+        "units": unit_manifest,
+        "plugins": plugin_manifest,
+    }
+    if annotation_document is not None:
+        content["annotations"] = annotation_document
     payload = json.dumps(
-        {
-            "help": help_documents,
-            "answer": answer_documents,
-            "units": unit_manifest,
-            "plugins": plugin_manifest,
-        },
+        content,
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
@@ -557,6 +658,15 @@ def _validate_staged_generation(staging: Path, manifest: dict[str, object]) -> N
         raise CapabilityTeachingOutputError("teaching manifest validation failed") from error
     if parsed != manifest:
         raise CapabilityTeachingOutputError("teaching manifest validation failed")
+    if manifest.get("schema_version") == 3:
+        try:
+            digest = hashlib.sha256(
+                _read_utf8_text(staging / _ANNOTATIONS_NAME).encode("utf-8")
+            ).hexdigest()
+        except (OSError, UnicodeError) as error:
+            raise CapabilityTeachingOutputError("teaching annotations are unavailable") from error
+        if digest != manifest.get("annotations_sha256"):
+            raise CapabilityTeachingOutputError("teaching annotations digest mismatch")
     for directory_name, field_name in (
         (_HELP_DIRECTORY_NAME, "help_files"),
         (_ANSWER_DIRECTORY_NAME, "answer_files"),

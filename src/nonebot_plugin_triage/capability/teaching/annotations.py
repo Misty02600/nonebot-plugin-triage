@@ -37,6 +37,7 @@ from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     capability_analysis_fingerprint,
     project_capability_annotation,
+    validate_capability_public_statement,
     with_argument_limit_boundaries,
 )
 from nbtriage.capability.teaching.model_adapter import (
@@ -368,6 +369,8 @@ class CapabilityAnnotationService:
         source_revision_validator: CapabilityAnnotationSourceRevisionValidator | None = None,
         published_generation_resolver: CapabilityAnnotationPublishedGenerationResolver
         | None = None,
+        published_annotations_resolver: Callable[[], tuple[CapabilityAnnotationPluginCache, ...]]
+        | None = None,
         max_analysis_concurrency: int = 50,
     ) -> None:
         if not callable(client_factory):
@@ -394,6 +397,7 @@ class CapabilityAnnotationService:
         self._evidence_validator = evidence_validator
         self._source_revision_validator = source_revision_validator
         self._published_generation_resolver = published_generation_resolver
+        self._published_annotations_resolver = published_annotations_resolver
         self._max_analysis_concurrency = max_analysis_concurrency
         self._source_slice_caches: dict[str, CapabilitySourceSliceCache] = {}
         self._active_view = _ActiveAnnotationView({}, {}, {})
@@ -415,6 +419,148 @@ class CapabilityAnnotationService:
         if pending is None:
             return None
         return pending.candidate_view.get(capability_id)
+
+    def pending_annotation_caches(self) -> tuple[CapabilityAnnotationPluginCache, ...]:
+        if self._pending is None or not self._pending.publishable:
+            raise RuntimeError("publishable annotation candidate is unavailable")
+        return tuple(
+            update.bind(self._published_generation or "0" * 64)
+            for update in self._pending.cache_updates
+        )
+
+    def editable_boundaries(self, plugin_module: str) -> dict[str, object]:
+        """仅列出当前活动的原始边界；代码派生的数量说明不在可编辑集合中。"""
+        generation = self._resolve_published_generation()
+        if generation is None or generation != self._published_generation:
+            raise ValueError("教学版本未就绪，请先刷新帮助")
+        caches = self._published_annotations()
+        cache = next((item for item in caches if item.module_name == plugin_module), None)
+        if cache is None:
+            raise ValueError("该插件尚无可编辑的已发布注释，请先刷新帮助")
+        return {
+            "generation": generation,
+            "units": [
+                {
+                    "unit_id": unit.analysis_unit_id,
+                    "entries": [
+                        {
+                            "entry_id": entry.entry_id,
+                            "name": entry.name,
+                            "behavior_boundaries": list(entry.behavior_boundaries),
+                        }
+                        for entry in unit.last_good.entries
+                    ],
+                }
+                for unit in cache.units
+                if unit.last_good is not None
+                and self._active_view.annotations.get(unit.analysis_unit_id) == unit.last_good
+                and self._active_view.get(unit.analysis_unit_id) is not None
+            ],
+        }
+
+    async def stage_boundary_edit(
+        self,
+        snapshot: CapabilitySnapshot,
+        *,
+        generation: str,
+        unit_id: str,
+        entry_id: str,
+        old_text: str,
+        new_text: str,
+    ) -> tuple[str, str]:
+        """暂存维护者修订，不调用模型；调用方须在外层教学发布锁内发布或丢弃。
+
+        Returns:
+            待发布刷新 ID 和插件模块名。
+        """
+        async with self._refresh_lock, AsyncExitStack() as scope:
+            if self._pending is not None:
+                raise ValueError("教学刷新尚未发布，请稍后重试")
+            if (
+                generation != self._published_generation
+                or generation != self._resolve_published_generation()
+            ):
+                raise ValueError("教学版本已变化，请重新查看边界")
+            annotation = self._active_view.annotations.get(unit_id)
+            if annotation is None or self._active_view.get(unit_id) is None:
+                raise ValueError("该单元没有当前有效的教学注释")
+            entry = next((item for item in annotation.entries if item.entry_id == entry_id), None)
+            if entry is None or old_text not in entry.behavior_boundaries:
+                raise ValueError("原文不存在或属于自动派生说明，请重新查看边界")
+            new_text = validate_capability_public_statement(new_text)
+            if new_text in entry.behavior_boundaries:
+                raise ValueError("新文字与已有边界重复或没有变化")
+            cache = next(
+                (
+                    item
+                    for item in self._published_annotations()
+                    if any(unit.last_good == annotation for unit in item.units)
+                ),
+                None,
+            )
+            if cache is None:
+                raise ValueError("缺少已发布的结构化注释，请先刷新帮助")
+            plans, _, _ = await asyncio.to_thread(
+                self._plan_preparation, snapshot, cache.module_name
+            )
+            plan = next((item for item in plans if item.expected_unit_id == unit_id), None)
+            if plan is None or snapshot.manifest.partial:
+                raise ValueError("教学入口已变化，请重新生成注释")
+            path, is_package = _plugin_source_root(cache.module_name)
+            await scope.enter_async_context(
+                navigation_session((path if is_package else path.parent,))
+            )
+            prepared = await asyncio.to_thread(
+                self._prepare_one, plan, {}, CapabilitySourceSliceCache()
+            )
+            if (
+                prepared.fingerprint != annotation.request_fingerprint
+                or not self._validate_evidence(
+                    prepared.request, annotation.evidence_manifest
+                ).current
+                or await self._final_source_changed_plugins(
+                    {cache.module_name: cache.plugin_source_revision}
+                )
+            ):
+                raise ValueError("源码、配置或证据已变化，请先重新生成注释")
+            edited_entry = replace(
+                entry,
+                behavior_boundaries=tuple(
+                    new_text if text == old_text else text for text in entry.behavior_boundaries
+                ),
+            )
+            edited = replace(
+                annotation,
+                entries=tuple(
+                    edited_entry if item.entry_id == entry_id else item
+                    for item in annotation.entries
+                ),
+            )
+            annotations = {**self._active_view.annotations, unit_id: edited}
+            public = {
+                **self._active_view.public_annotations,
+                unit_id: with_argument_limit_boundaries(prepared.request, edited),
+            }
+            view = replace(self._active_view, annotations=annotations, public_annotations=public)
+            units = tuple(
+                replace(unit, last_good=edited, pending=None, last_attempt=None)
+                if unit.analysis_unit_id == unit_id
+                else unit
+                for unit in cache.units
+            )
+            refresh_id = uuid4().hex
+            self._pending = _PendingAnnotationRefresh(
+                refresh_id,
+                view,
+                (_PluginCacheUpdate(cache.module_name, cache.plugin_source_revision, units),),
+                (),
+                True,
+            )
+            return refresh_id, cache.module_name
+
+    def _published_annotations(self) -> tuple[CapabilityAnnotationPluginCache, ...]:
+        resolver = self._published_annotations_resolver
+        return resolver() if resolver is not None else ()
 
     async def commit_pending(
         self,
@@ -656,6 +802,37 @@ class CapabilityAnnotationService:
                     continue
                 if cache is not None:
                     cache_by_plugin[module_name] = cache
+            # 已发布结构化内容是恢复来源；缓存只贡献当前版本之后的未发布 checkpoint。
+            for published in await asyncio.to_thread(self._published_annotations):
+                if published.module_name not in known_plugins - invalid_plugins:
+                    continue
+                local = cache_by_plugin.get(published.module_name)
+                if (
+                    local is not None
+                    and local.plugin_source_revision != published.plugin_source_revision
+                ):
+                    # 新源码的一轮中断后，保留已经付费取得的 checkpoint。
+                    continue
+                if (
+                    local is not None
+                    and local.plugin_source_revision == published.plugin_source_revision
+                ):
+                    units = {unit.analysis_unit_id: unit for unit in published.units}
+                    for unit in local.units:
+                        if unit.analysis_unit_id not in units:
+                            units[unit.analysis_unit_id] = unit
+                        elif local.published_generation == published.published_generation and (
+                            unit.pending is not None
+                            or (
+                                unit.last_attempt is not None
+                                and unit.last_attempt.state == "failed"
+                            )
+                        ):
+                            units[unit.analysis_unit_id] = replace(
+                                unit, last_good=units[unit.analysis_unit_id].last_good
+                            )
+                    published = replace(published, units=tuple(units.values()))
+                cache_by_plugin[published.module_name] = published
             cache_units_by_plugin = {
                 module_name: {unit.analysis_unit_id: unit for unit in cache.units}
                 for module_name, cache in cache_by_plugin.items()

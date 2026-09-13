@@ -2387,8 +2387,8 @@ matcher = on_command("secure", permission=ADMIN(), handlers=[handle])
     assert request.gate_candidates == ()
     assert len(request.fixed_constraints) == 1
     fixed = request.fixed_constraints[0]
-    assert fixed.kind is SemanticConstraintKind.PERMISSION
-    assert {item.role for item in fixed.permission_alternatives} == {
+    assert fixed.kind is SemanticConstraintKind.CONDITION_GROUP
+    assert {item.role for item in fixed.alternatives} == {
         TeachingRole.ADMIN,
         TeachingRole.OWNER,
     }
@@ -2507,8 +2507,8 @@ matcher = on_command(
     assert request.gate_candidates == ()
     assert len(request.fixed_constraints) == 1
     fixed = request.fixed_constraints[0]
-    assert fixed.kind is SemanticConstraintKind.PERMISSION
-    assert {item.role for item in fixed.permission_alternatives} == {
+    assert fixed.kind is SemanticConstraintKind.CONDITION_GROUP
+    assert {item.role for item in fixed.alternatives} == {
         TeachingRole.ADMIN,
         TeachingRole.OWNER,
     }
@@ -2572,13 +2572,17 @@ matcher = on_regex("manage", permission=permission_opt, handlers=[handle])
         return
     assert request.gate_candidates == ()
     (fixed,) = request.fixed_constraints
-    assert fixed.kind is SemanticConstraintKind.PERMISSION
-    assert {
-        item.role.value for item in fixed.permission_alternatives if item.role
-    } == expected_roles
-    assert {
-        item.scene.value for item in fixed.permission_alternatives if item.scene
-    } == expected_scenes
+    if len(expected_roles) + len(expected_scenes) == 1:
+        assert fixed.kind is (
+            SemanticConstraintKind.ROLE if expected_roles else SemanticConstraintKind.SCENE
+        )
+        assert ({fixed.role.value} if fixed.role else set()) == expected_roles
+        assert {scene.value for scene in fixed.allowed_scenes} == expected_scenes
+        assert fixed.alternatives == ()
+    else:
+        assert fixed.kind is SemanticConstraintKind.CONDITION_GROUP
+        assert {item.role.value for item in fixed.alternatives if item.role} == expected_roles
+        assert {item.scene.value for item in fixed.alternatives if item.scene} == expected_scenes
     runtime = next(
         item for item in request.evidence_units if item.source_kind == "runtime_capability_facts"
     )
@@ -2663,8 +2667,11 @@ async def handle(event: GroupMessageEvent):
             "symbol": "typed dependency overload",
             "statement": (
                 "NoneBot 的 Handler 及其依赖函数的 Bot、Event 和 Matcher 参数类型注解都参与运行时检查；"
-                "实际对象不匹配时不会执行相应函数。Handler 声明 event: GroupMessageEvent 时，"
-                "私聊事件不会执行该 Handler；同一 Matcher 的其他 Handler 应分别判断。"
+                "实际对象不匹配时不会执行相应函数；同一 Matcher 的其他 Handler 应分别判断。"
+                "例如，nonebot-adapter-onebot 2.4.6 的 nonebot.adapters.onebot.v11.GroupMessageEvent "
+                "表示群消息；当前 Evidence 确认参数限定为该类型时，对应 group（群聊）限制，"
+                "不只是排除私聊。此例不能仅凭同名套用于其他 Adapter 或自定义类型；"
+                "类型来源或含义不明时，不得据此放宽为所有非私聊场景。"
                 "Handler 执行先递归预检查依赖及自身参数类型，通过后才求解依赖并调用函数；"
                 "预检查依赖不等于执行依赖函数体。标准 .got() 的取参与提示作为该 Handler 的"
                 "无参数依赖在求解阶段执行，因此类型预检查失败时也不会发送这条确认提示；"

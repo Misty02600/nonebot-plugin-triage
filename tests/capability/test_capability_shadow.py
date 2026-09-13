@@ -44,8 +44,8 @@ from nbtriage.capability.teaching.analysis import (
 )
 from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
+    CapabilityTeachingConditionAlternative,
     CapabilityTeachingEntry,
-    CapabilityTeachingPermissionAlternative,
     CapabilityTeachingRequirement,
 )
 from nonebot_plugin_triage.capability.shadow import (
@@ -1110,20 +1110,23 @@ def test_public_guidance_projects_observed_non_command_triggers(
 
 
 @pytest.mark.parametrize(
-    ("alternatives", "hidden"),
+    ("alternatives", "role", "hidden"),
     [
-        (("superuser",), True),
-        (("superuser", "superuser"), True),
-        (("superuser", "admin"), False),
-        (("superuser", "custom"), False),
-        (("superuser", "private"), False),
-        (("superuser", "access"), False),
-        ((), False),
+        (("superuser",), None, True),
+        (("superuser", "superuser"), None, True),
+        (("superuser", "admin"), None, False),
+        (("superuser", "custom"), None, False),
+        (("superuser", "private"), None, False),
+        (("superuser", "access"), None, False),
+        ((), None, False),
+        ((), TeachingRole.SUPERUSER, True),
+        ((), TeachingRole.ADMIN, False),
+        (("superuser", "admin"), TeachingRole.SUPERUSER, True),
     ],
 )
 @pytest.mark.asyncio
-async def test_teaching_superuser_permission_only_tightens_public_disclosure(
-    tmp_path: Path, alternatives: tuple[str, ...], hidden: bool
+async def test_teaching_superuser_requirement_only_tightens_public_disclosure(
+    tmp_path: Path, alternatives: tuple[str, ...], role: TeachingRole | None, hidden: bool
 ) -> None:
     record = CapabilityRecord(
         capability_id="command:manage",
@@ -1142,10 +1145,10 @@ async def test_teaching_superuser_permission_only_tightens_public_disclosure(
         behavior_boundaries=("部分维护动作仅超级用户可执行。",),
         requirements=(
             CapabilityTeachingRequirement(
-                kind=SemanticConstraintKind.PERMISSION,
+                kind=SemanticConstraintKind.CONDITION_GROUP,
                 text="需满足指定身份或资格。",
                 alternatives=tuple(
-                    CapabilityTeachingPermissionAlternative(
+                    CapabilityTeachingConditionAlternative(
                         kind=SemanticConstraintKind.SCENE
                         if value == "private"
                         else (
@@ -1164,6 +1167,18 @@ async def test_teaching_superuser_permission_only_tightens_public_disclosure(
         if alternatives
         else (),
     )
+    if role is not None:
+        entry = replace(
+            entry,
+            requirements=(
+                *entry.requirements,
+                CapabilityTeachingRequirement(
+                    kind=SemanticConstraintKind.ROLE,
+                    role=role,
+                    text="需要指定调用者身份。",
+                ),
+            ),
+        )
     annotation = CapabilityTeachingAnnotation(record.capability_id, "a" * 64, entries=(entry,))
     assert entry.superuser_only is hidden
 

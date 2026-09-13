@@ -32,7 +32,7 @@ class BaselineChangeOperation(StrEnum):
 
 
 class SemanticConstraintKind(StrEnum):
-    PERMISSION = "permission"
+    CONDITION_GROUP = "condition_group"
     SCENE = "scene"
     ROLE = "role"
     ACCESS = "access"
@@ -624,7 +624,7 @@ class BaselineMemberChange:
 
 
 @dataclass(frozen=True)
-class PermissionAlternative:
+class ConditionAlternative:
     kind: SemanticConstraintKind
     statement: str
     role: TeachingRole | None = None
@@ -636,8 +636,8 @@ class PermissionAlternative:
             SemanticConstraintKind.SCENE,
             SemanticConstraintKind.ACCESS,
         }:
-            raise CapabilityAnalysisError("permission alternative kind is invalid")
-        _bounded_text(self.statement, "permission alternative statement", max_length=1_000)
+            raise CapabilityAnalysisError("condition alternative kind is invalid")
+        _bounded_text(self.statement, "condition alternative statement", max_length=1_000)
         if self.kind is SemanticConstraintKind.ROLE:
             if not isinstance(self.role, TeachingRole):
                 raise CapabilityAnalysisError("role alternative requires role metadata")
@@ -661,7 +661,7 @@ class SemanticConstraint:
     rate_limit_policy: RateLimitPolicy | None = None
     rate_limit_scope: RateLimitScope | None = None
     gate_candidate_ids: tuple[str, ...] = ()
-    permission_alternatives: tuple[PermissionAlternative, ...] = ()
+    alternatives: tuple[ConditionAlternative, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SemanticConstraintKind):
@@ -699,26 +699,26 @@ class SemanticConstraint:
         if self.kind is SemanticConstraintKind.SCENE:
             if not self.allowed_scenes:
                 raise CapabilityAnalysisError("scene constraint requires allowed scenes")
-        elif self.allowed_scenes and self.kind is not SemanticConstraintKind.PERMISSION:
+        elif self.allowed_scenes and self.kind is not SemanticConstraintKind.CONDITION_GROUP:
             raise CapabilityAnalysisError(
-                "only scene or permission constraints may define allowed scenes"
+                "only scene or condition-group constraints may define allowed scenes"
             )
         if self.kind is SemanticConstraintKind.RATE_LIMIT:
             if self.rate_limit_policy is None or self.rate_limit_scope is None:
                 raise CapabilityAnalysisError("rate-limit constraint requires policy and scope")
         elif self.rate_limit_policy is not None or self.rate_limit_scope is not None:
             raise CapabilityAnalysisError("only rate-limit constraints may define rate metadata")
-        if self.kind is SemanticConstraintKind.PERMISSION:
+        if self.kind is SemanticConstraintKind.CONDITION_GROUP:
             _bounded_instances(
-                self.permission_alternatives,
-                PermissionAlternative,
-                "permission alternatives",
+                self.alternatives,
+                ConditionAlternative,
+                "condition alternatives",
                 min_items=1,
                 max_items=16,
             )
-        elif self.permission_alternatives:
+        elif self.alternatives:
             raise CapabilityAnalysisError(
-                "only permission constraints may define permission alternatives"
+                "only condition-group constraints may define condition alternatives"
             )
 
 
@@ -1259,9 +1259,9 @@ __all__ = (
     "CapabilityInvocationMode",
     "CapabilityInvocationTarget",
     "CapabilitySourceContext",
+    "ConditionAlternative",
     "ConfigProjection",
     "FakeCapabilityAnalysisClient",
-    "PermissionAlternative",
     "RateLimitPolicy",
     "RateLimitScope",
     "SemanticClaim",
