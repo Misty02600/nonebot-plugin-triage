@@ -61,7 +61,9 @@ async def test_capability_registry_is_explicit_and_never_executes_commands() -> 
     assert "管理测试" not in headers
     assert "隐藏测试" not in headers
     assert "停用测试" not in headers
-    assert next(item for item in capabilities if item.header == "公开测试").usage == "公开测试[内容]"
+    assert (
+        next(item for item in capabilities if item.header == "公开测试").usage == "公开测试[内容]"
+    )
     assert called is False
 
 

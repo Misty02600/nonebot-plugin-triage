@@ -196,8 +196,7 @@ def test_get_issue_snapshot_rejects_off_origin_comments_before_request() -> None
     assert all(request.origin_req_host == "api.github.com" for request in transport.requests)
 
 
-def test_authenticated_request_rejects_off_origin_redirect_before_second_request(
-) -> None:
+def test_authenticated_request_rejects_off_origin_redirect_before_second_request() -> None:
     first_url = "https://api.github.com/repos/owner/repo/issues"
     headers = Message()
     headers["Location"] = "https://evil.invalid/steal"

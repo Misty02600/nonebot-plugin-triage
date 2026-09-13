@@ -188,9 +188,7 @@ class CapabilityTeachingOutputWriter:
                 help_documents = previous_help
                 answer_documents = previous_answer
                 unit_manifest = [
-                    item
-                    for item in previous_units
-                    if item.get("plugin_module") != plugin_module
+                    item for item in previous_units if item.get("plugin_module") != plugin_module
                 ] + unit_manifest
                 previous_plugins.pop(plugin_module, None)
                 preserved_plugin_modules = tuple(sorted(previous_plugins))
@@ -263,12 +261,15 @@ class CapabilityTeachingOutputWriter:
 
     def _read_current_generation(
         self,
-    ) -> tuple[
-        dict[str, str],
-        dict[str, str],
-        list[dict[str, object]],
-        dict[str, dict[str, object]],
-    ] | None:
+    ) -> (
+        tuple[
+            dict[str, str],
+            dict[str, str],
+            list[dict[str, object]],
+            dict[str, dict[str, object]],
+        ]
+        | None
+    ):
         generation = self.current_generation()
         if generation is None:
             return None
@@ -316,17 +317,12 @@ class CapabilityTeachingOutputWriter:
             _read_generation_documents(root / _HELP_DIRECTORY_NAME, help_files, ".yml"),
             _read_generation_documents(root / _ANSWER_DIRECTORY_NAME, answer_files, ".md"),
             [cast(dict[str, object], item) for item in units],
-            {
-                module_name: cast(dict[str, object], item)
-                for module_name, item in plugins.items()
-            },
+            {module_name: cast(dict[str, object], item) for module_name, item in plugins.items()},
         )
 
     def current_generation(self) -> str | None:
         try:
-            payload = json.loads(
-                _read_utf8_text(self._resolved_root() / _CURRENT_POINTER_NAME)
-            )
+            payload = json.loads(_read_utf8_text(self._resolved_root() / _CURRENT_POINTER_NAME))
         except (OSError, UnicodeError, json.JSONDecodeError):
             return None
         if (
@@ -569,9 +565,7 @@ def _validate_staged_generation(staging: Path, manifest: dict[str, object]) -> N
         if not isinstance(expected, list) or any(not isinstance(item, str) for item in expected):
             raise CapabilityTeachingOutputError("teaching manifest validation failed")
         with os.scandir(staging / directory_name) as entries:
-            actual = sorted(
-                entry.name for entry in entries if entry.is_file(follow_symlinks=False)
-            )
+            actual = sorted(entry.name for entry in entries if entry.is_file(follow_symlinks=False))
         if actual != expected:
             raise CapabilityTeachingOutputError("teaching generation validation failed")
 
@@ -589,11 +583,7 @@ def _read_generation_documents(
 ) -> dict[str, str]:
     documents: dict[str, str] = {}
     for name in names:
-        if (
-            not isinstance(name, str)
-            or Path(name).name != name
-            or not name.endswith(suffix)
-        ):
+        if not isinstance(name, str) or Path(name).name != name or not name.endswith(suffix):
             raise CapabilityTeachingOutputError("current teaching manifest is invalid")
         try:
             documents[name] = _read_utf8_text(directory / name)
@@ -608,9 +598,7 @@ def _read_utf8_text(path: Path) -> str:
     raw_path = os.path.abspath(path)
     if os.name == "nt" and not raw_path.startswith("\\\\?\\"):
         raw_path = (
-            f"\\\\?\\UNC\\{raw_path[2:]}"
-            if raw_path.startswith("\\\\")
-            else f"\\\\?\\{raw_path}"
+            f"\\\\?\\UNC\\{raw_path[2:]}" if raw_path.startswith("\\\\") else f"\\\\?\\{raw_path}"
         )
     with open(raw_path, encoding="utf-8") as stream:
         return stream.read()

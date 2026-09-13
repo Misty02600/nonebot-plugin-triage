@@ -352,6 +352,7 @@ def test_active_turn_lease_is_bounded_by_absolute_ttl() -> None:
         is None
     )
 
+
 def test_initial_reference_binding_and_failure_are_fail_closed() -> None:
     coordinator, store, index = make_turn_coordinator()
     first = store.create(ThreadKind.GUIDANCE, now=NOW)
@@ -406,6 +407,7 @@ def test_pending_initial_is_protected_from_idle_but_not_absolute_ttl() -> None:
     assert thread.thread_id not in coordinator._pending_initials
     assert store.dropped_count == 1
     assert index.resolve(**reference_scope(), now=NOW + timedelta(seconds=10)) is None
+
 
 def test_expired_turn_lease_closes_thread_and_rejects_late_completion() -> None:
     coordinator, store, index = make_turn_coordinator(lease_timeout_seconds=5)

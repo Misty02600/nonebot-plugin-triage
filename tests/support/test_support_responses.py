@@ -56,6 +56,8 @@ def _discord_target(channel_id: str = "900", guild_id: str = "800") -> Target:
         scope=SupportScope.discord,
         adapter=SupportAdapter.discord,
     )
+
+
 def _receipt(
     bot: Bot,
     target: Event | Target,
