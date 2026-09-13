@@ -12,20 +12,52 @@ import pytest
 
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.knowledge_pack_runtime import (
+    KnowledgePackInstallError,
     KnowledgePackRelease,
+    KnowledgePackService,
     register_knowledge_pack,
 )
 
 
-def _write_pack(path: Path, *, pack_version: str = "test") -> str:
+@pytest.mark.asyncio
+async def test_local_archive_activates_same_service_without_network_or_fallback(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "pack.zip"
+    digest = _write_pack(archive, index_schema=2)
+
+    def no_catalog() -> KnowledgePackRelease:
+        raise AssertionError("local preparation must not fetch a catalog")
+
+    service = KnowledgePackService(
+        no_catalog, track_active_release=True, cache_dir_resolver=lambda: tmp_path / "cache"
+    )
+    await service.install_local_archive(archive, digest)
+    assert service.status.ready
+    assert service.status.archive_sha256 == digest
+    for source, expected, code in (
+        (archive, "0" * 64, "checksum_mismatch"),
+        (tmp_path / "missing.zip", digest, "local_archive_unavailable"),
+    ):
+        with pytest.raises(KnowledgePackInstallError, match=code):
+            await service.install_local_archive(source, expected)
+    assert not (tmp_path / "cache" / "active.json").exists()
+
+
+def _write_pack(path: Path, *, pack_version: str = "test", index_schema: int = 1) -> str:
+    retriever_id = (
+        "knowledge-sqlite-fts5-trigram-v1"
+        if index_schema == 1
+        else "knowledge-sqlite-fts5-jieba-v2"
+    )
     index = path.parent / "index.sqlite3"
     with sqlite3.connect(index) as connection:
         connection.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         connection.executemany(
             "INSERT INTO metadata(key, value) VALUES (?, ?)",
             (
-                ("schema_version", "1"),
-                ("retriever_id", "knowledge-sqlite-fts5-trigram-v1"),
+                ("schema_version", str(index_schema)),
+                ("retriever_id", retriever_id),
                 ("corpus_sha256", "corpus-digest"),
             ),
         )
@@ -33,9 +65,9 @@ def _write_pack(path: Path, *, pack_version: str = "test") -> str:
         "schema_version": 1,
         "pack_id": "nbtriage-default",
         "pack_version": pack_version,
-        "loader_compat": 1,
-        "index_schema": 1,
-        "retriever_id": "knowledge-sqlite-fts5-trigram-v1",
+        "loader_compat": index_schema,
+        "index_schema": index_schema,
+        "retriever_id": retriever_id,
         "corpus_sha256": "corpus-digest",
         "index_sha256": hashlib.sha256(index.read_bytes()).hexdigest(),
         "distribution_reviewed": True,
@@ -84,10 +116,13 @@ async def test_invalid_pin_disables_knowledge_without_blocking_startup() -> None
 
 
 @pytest.mark.asyncio
-async def test_startup_catalog_downloads_and_activates_verified_pack(tmp_path: Path) -> None:
+@pytest.mark.parametrize("index_schema", [1, 2])
+async def test_startup_catalog_downloads_and_activates_verified_pack(
+    tmp_path: Path, index_schema: int
+) -> None:
     source = tmp_path / "source.zip"
     pack_version = "2026.08.1"
-    digest = _write_pack(source, pack_version=pack_version)
+    digest = _write_pack(source, pack_version=pack_version, index_schema=index_schema)
     callbacks: list[Callable[[], Awaitable[None]]] = []
 
     def fetch(_: str, target: Path, expected: str) -> None:

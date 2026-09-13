@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import sqlite3
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import NotRequired, TypedDict
 
 import pytest
+from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import ToolReturnPart
+from pydantic_ai.models.function import FunctionModel
 from tools.nbtriage_maintainer.knowledge_pack.__main__ import main
 from tools.nbtriage_maintainer.knowledge_pack.builder import build_knowledge_index
 from tools.nbtriage_maintainer.knowledge_pack.chunking import source_snapshot_sha256
@@ -18,6 +24,14 @@ from tools.nbtriage_maintainer.knowledge_pack.packaging import (
 from tools.nbtriage_maintainer.knowledge_pack.search import KnowledgeIndex
 from tools.nbtriage_maintainer.knowledge_pack.source_policy import load_sources
 from tools.nbtriage_maintainer.knowledge_pack.write_policy import write_snapshot_policy
+from tools.nbtriage_maintainer.teaching_eval import _prepare_knowledge
+
+from nbtriage.knowledge_index import KnowledgeIndexReader
+from nonebot_plugin_triage.capability.teaching._tools import (
+    CapabilityTeachingToolProvider,
+    _EvidenceCapture,
+)
+from nonebot_plugin_triage.knowledge_pack_runtime import KnowledgePackService, _install_archive
 
 
 class _PolicyEntry(TypedDict):
@@ -202,6 +216,104 @@ def test_build_and_search_filters_version_before_fts_ranking(tmp_path: Path) -> 
     assert unsupported == []
     assert rolling[0].applicability == "snapshot_only"
     assert rolling[0].version is None
+
+
+def test_local_eval_pack_reaches_real_document_tool_and_rejects_wrong_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = _snapshot(tmp_path)
+    policy = _policy(tmp_path, snapshot, source_distribution="redistributable")
+    index_path = tmp_path / "knowledge.sqlite3"
+    build_knowledge_index(snapshot, policy, index_path)
+    archive = tmp_path / "knowledge.zip"
+    packaged = package_knowledge_index(index_path, archive, "fixture")
+    service = KnowledgePackService(
+        lambda: pytest.fail("unexpected catalog request"),
+        track_active_release=False,
+        cache_dir_resolver=lambda: tmp_path / "cache",
+    )
+    runtime = SimpleNamespace(knowledge_pack=service)
+    monkeypatch.setattr("tools.nbtriage_maintainer.teaching_eval.version", lambda _: "2.5.0")
+    asyncio.run(_prepare_knowledge(runtime, archive, str(packaged["sha256"])))
+    provider = CapabilityTeachingToolProvider(
+        knowledge_index_path=lambda: service.status.index_path,
+        knowledge_pack_revision=lambda: service.status.archive_sha256,
+    )
+    capture = _EvidenceCapture("fixture")
+    toolset = provider._knowledge_toolset(capture)
+    assert toolset is not None
+    calls = 0
+
+    def respond(messages, _info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                parts=[ToolCallPart("framework_search_docs", {"query": "Matcher 依赖注入"}, "docs")]
+            )
+        returns = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        assert returns and returns[-1].content
+        return ModelResponse(parts=[TextPart("done")], finish_reason="stop")
+
+    asyncio.run(Agent(FunctionModel(respond), toolsets=[toolset]).run("查阅 Matcher 文档"))
+    assert calls == 2
+    assert capture.units()[0].source_kind == "knowledge_user_docs"
+    monkeypatch.setattr("tools.nbtriage_maintainer.teaching_eval.version", lambda _: "99.0.0")
+    with pytest.raises(RuntimeError, match="no applicable"):
+        asyncio.run(_prepare_knowledge(runtime, archive, str(packaged["sha256"])))
+
+
+def test_new_search_handles_short_chinese_and_dotted_api_without_changing_evidence(
+    tmp_path: Path,
+) -> None:
+    snapshot = _snapshot(tmp_path)
+    _write(
+        snapshot / "nonebot/docs/matcher.md",
+        "# 会话控制\n\n## reject\n\n拒绝当前输入，等待回复后重新执行处理函数。\n",
+    )
+    path = tmp_path / "index.sqlite3"
+    build_knowledge_index(snapshot, _policy(tmp_path, snapshot), path)
+    index = KnowledgeIndexReader(path)
+    chinese = index.search("回复", component="nonebot2", version="2.5.0")
+    api = index.search("Matcher.reject", component="nonebot2", version="2.5.0")
+    assert chinese and api
+    assert chinese[0].evidence_id == api[0].evidence_id
+    assert "等待回复后重新执行" in api[0].excerpt
+    assert api[0].locator.endswith("会话控制 > reject")
+    assert index.search("Matcher.reject", component="napcat", source_kinds=("api_spec",)) == []
+
+
+def test_legacy_index_is_read_with_its_original_tokenizer_and_rejects_mixed_identity(
+    tmp_path: Path,
+) -> None:
+    snapshot = _snapshot(tmp_path)
+    path = tmp_path / "legacy.sqlite3"
+    build_knowledge_index(snapshot, _policy(tmp_path, snapshot), path)
+    with sqlite3.connect(path) as connection:
+        connection.executescript("""
+            DROP TABLE chunks_fts;
+            CREATE VIRTUAL TABLE chunks_fts USING fts5(
+                evidence_id UNINDEXED, component, source_kind, version, title, locator, content,
+                tokenize='trigram'
+            );
+            INSERT INTO chunks_fts SELECT evidence_id, component, source_kind,
+                coalesce(version, ''), title, locator, content FROM chunks;
+            UPDATE metadata SET value='1' WHERE key='schema_version';
+            UPDATE metadata SET value='knowledge-sqlite-fts5-trigram-v1' WHERE key='retriever_id';
+        """)
+    reader = KnowledgeIndexReader(path)
+    found = reader.search("获取群信息 group_id", component="napcat", version="4.18.18")
+    assert found and found[0].source_kind == "api_spec"
+    assert reader.search("获取群信息 group_id", component="napcat", version="4.17.0") == []
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE metadata SET value='2' WHERE key='schema_version'")
+    with pytest.raises(KnowledgePackError, match="identity does not match"):
+        KnowledgeIndexReader(path)
 
 
 def test_structured_chunkers_ignore_fenced_headings_and_extract_typescript(
@@ -424,7 +536,7 @@ def test_package_command_emits_runtime_archive_and_checksum(
         assert set(bundle.namelist()) == {"manifest.json", "index.sqlite3"}
         assert manifest["distribution_reviewed"] is True
         assert manifest["project_revision"] == project_revision
-        assert manifest["loader_compat"] == 1
+        assert manifest["loader_compat"] == 2
     verified = verify_knowledge_archive(
         archive,
         Path(str(result["checksum"])),
@@ -432,6 +544,10 @@ def test_package_command_emits_runtime_archive_and_checksum(
         project_revision,
     )
     assert verified["sha256"] == result["sha256"]
+    installed = _install_archive(archive, tmp_path / "installed")
+    assert KnowledgeIndexReader(installed).search(
+        "获取群信息", component="napcat", version="4.18.18"
+    )
     assert (
         main(
             [

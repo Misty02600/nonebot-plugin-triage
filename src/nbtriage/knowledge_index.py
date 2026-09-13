@@ -5,16 +5,23 @@ from __future__ import annotations
 import re
 import sqlite3
 import unicodedata
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
+
+from .knowledge_tokenization import knowledge_search_tokens
 
 SourceKind = Literal["user_docs", "api_spec", "release_notes", "source_code"]
 Applicability = Literal["exact_version", "declared_range", "snapshot_only"]
 DistributionPolicy = Literal["redistributable", "local_only"]
 
-KNOWLEDGE_INDEX_SCHEMA_VERSION = 1
-KNOWLEDGE_RETRIEVER_ID = "knowledge-sqlite-fts5-trigram-v1"
+KNOWLEDGE_INDEX_SCHEMA_VERSION = 2
+KNOWLEDGE_RETRIEVER_ID = "knowledge-sqlite-fts5-jieba-v2"
+SUPPORTED_KNOWLEDGE_INDEX_FORMATS = {
+    "1": "knowledge-sqlite-fts5-trigram-v1",
+    "2": KNOWLEDGE_RETRIEVER_ID,
+}
 MAX_QUERY_CHARS = 500
 MAX_SEARCH_LIMIT = 20
 MAX_EXCERPT_CHARS = 6_000
@@ -58,14 +65,16 @@ class KnowledgeIndexReader:
         if not self.path.is_file():
             raise KnowledgePackError("knowledge index is unavailable")
         metadata = self.metadata()
-        if metadata.get("schema_version") != str(KNOWLEDGE_INDEX_SCHEMA_VERSION):
+        schema_version = metadata.get("schema_version", "")
+        if schema_version not in SUPPORTED_KNOWLEDGE_INDEX_FORMATS:
             raise KnowledgePackError("unsupported knowledge index schema version")
-        if metadata.get("retriever_id") != KNOWLEDGE_RETRIEVER_ID:
+        if metadata.get("retriever_id") != SUPPORTED_KNOWLEDGE_INDEX_FORMATS[schema_version]:
             raise KnowledgePackError("knowledge index retriever identity does not match")
+        self._legacy = schema_version == "1"
 
     def metadata(self) -> dict[str, str]:
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection:
                 rows = connection.execute("SELECT key, value FROM metadata ORDER BY key")
                 return {str(row["key"]): str(row["value"]) for row in rows}
         except sqlite3.Error as error:
@@ -81,7 +90,7 @@ class KnowledgeIndexReader:
         limit: int = 5,
         max_excerpt_chars: int = 900,
     ) -> list[KnowledgeEvidence]:
-        normalized = _validated_query(query)
+        normalized = _validated_query(query, legacy=self._legacy)
         if type(component) is not str or not component or component != component.strip():
             raise KnowledgePackError("knowledge component must be a trimmed nonempty string")
         if len(component) > 256:
@@ -106,6 +115,27 @@ class KnowledgeIndexReader:
         rows = self._candidates(normalized, component, version, source_kinds, limit)
         return [_row_to_evidence(row, max_excerpt_chars=max_excerpt_chars) for row in rows]
 
+    def has_user_docs(self, *, component: str, version: str) -> bool:
+        """检查文档工具是否有适用语料；沿用检索的版本匹配规则。"""
+        try:
+            with closing(self._connect()) as connection:
+                rows = connection.execute(
+                    "SELECT DISTINCT applicability, version FROM chunks "
+                    "WHERE component = ? AND source_kind = 'user_docs'",
+                    (component,),
+                )
+                return any(
+                    row["applicability"] == "snapshot_only"
+                    or (row["applicability"] == "exact_version" and row["version"] == version)
+                    or (
+                        row["applicability"] == "declared_range"
+                        and _version_matches(row["version"], version)
+                    )
+                    for row in rows
+                )
+        except sqlite3.Error as error:
+            raise KnowledgePackError("failed to inspect applicable knowledge documents") from error
+
     def _candidates(
         self,
         query: str,
@@ -115,7 +145,10 @@ class KnowledgeIndexReader:
         limit: int,
     ) -> list[sqlite3.Row]:
         conditions = ["c.component = ?"]
-        parameters: list[object] = [_fts_query(query), component]
+        expression = _fts_query(query, legacy=self._legacy)
+        if not expression:
+            return []
+        parameters: list[object] = [expression, component]
         if version is None:
             conditions.append("c.applicability = 'snapshot_only'")
         else:
@@ -129,16 +162,22 @@ class KnowledgeIndexReader:
             conditions.append("c.source_kind IN (" + ",".join("?" for _ in source_kinds) + ")")
             parameters.extend(source_kinds)
         parameters.append(limit)
+        rank = (
+            "bm25(chunks_fts, 0.0, 0.5, 0.5, 0.7, 1.8, 1.2, 1.0)"
+            if self._legacy
+            else "bm25(chunks_fts)"
+        )
+        order = "c.source_id, c.relative_path, c.locator" if self._legacy else "c.evidence_id"
         statement = f"""
-            SELECT c.*, bm25(chunks_fts, 0.0, 0.5, 0.5, 0.7, 1.8, 1.2, 1.0) AS score
+            SELECT c.*, {rank} AS score
             FROM chunks_fts
             JOIN chunks AS c ON c.evidence_id = chunks_fts.evidence_id
             WHERE chunks_fts MATCH ? AND {" AND ".join(conditions)}
-            ORDER BY score, c.source_id, c.relative_path, c.locator
+            ORDER BY score, {order}
             LIMIT ?
         """
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection:
                 return list(connection.execute(statement, parameters))
         except sqlite3.Error as error:
             raise KnowledgePackError("knowledge search failed") from error
@@ -151,7 +190,7 @@ class KnowledgeIndexReader:
         return connection
 
 
-def _validated_query(query: str) -> str:
+def _validated_query(query: str, *, legacy: bool = False) -> str:
     if type(query) is not str:
         raise KnowledgePackError("knowledge search query must be a string")
     normalized = " ".join(unicodedata.normalize("NFKC", query).casefold().split())
@@ -161,20 +200,25 @@ def _validated_query(query: str) -> str:
         raise KnowledgePackError(
             f"knowledge search query exceeds the {MAX_QUERY_CHARS}-character limit"
         )
-    if not _query_terms(normalized):
+    if not (_legacy_query_terms(normalized) if legacy else _query_terms(normalized)):
         raise KnowledgePackError("knowledge search query has no indexable term")
     return normalized
 
 
 def _query_terms(query: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(knowledge_search_tokens(query)))[:64]
+
+
+def _legacy_query_terms(query: str) -> tuple[str, ...]:
     terms = _ASCII_TERM.findall(query)
     for sequence in _CJK_SEQUENCE.findall(query):
         terms.extend(sequence[index : index + 3] for index in range(len(sequence) - 2))
     return tuple(dict.fromkeys(term.casefold() for term in terms))[:64]
 
 
-def _fts_query(query: str) -> str:
-    return " OR ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in _query_terms(query))
+def _fts_query(query: str, *, legacy: bool = False) -> str:
+    terms = _legacy_query_terms(query) if legacy else _query_terms(query)
+    return " OR ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms)
 
 
 def _version_matches(declared: str | None, requested: str | None) -> int:
@@ -217,6 +261,7 @@ def _row_to_evidence(row: sqlite3.Row, *, max_excerpt_chars: int) -> KnowledgeEv
 __all__ = (
     "KNOWLEDGE_INDEX_SCHEMA_VERSION",
     "KNOWLEDGE_RETRIEVER_ID",
+    "SUPPORTED_KNOWLEDGE_INDEX_FORMATS",
     "Applicability",
     "DistributionPolicy",
     "KnowledgeEvidence",

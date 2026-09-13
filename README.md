@@ -266,6 +266,36 @@ token。教学注释还会写入独立的无内容 response-shape span，记录�
 该维护命令会把目标插件自己的 LocalStore cache/config/data 重定向到本次临时目录，避免插件加载或旧数据迁移
 读写部署者真实数据；Triage 自己的教学 cache、generation 与诊断输出仍按宿主项目配置保存，便于复核结果。
 
+教学冷测复用同一维护命令的 `--phase preflight|run`，无须另写批次 runner。两种模式共用宿主、适配器加载、
+知识包准备与正式 `refresh_teaching()`；`--all` 逐个刷新宿主 `tool.nonebot.plugins` 声明的插件（排除 Triage），
+也可用 `--plugin <导入名>` 指定一个插件。它们不启动 Bot、连接适配器或执行插件启动钩子。
+
+```powershell
+uv run python -m tools.nbtriage_maintainer analyze-capability-teaching `
+  --host-pyproject E:/Bot/pyproject.toml --all `
+  --phase preflight --knowledge required `
+  --knowledge-archive E:/Packs/knowledge.zip --knowledge-sha256 <归档的64位SHA256> `
+  --run-dir reports/teaching-preflight-001
+```
+
+预检使用当前配置的真实模型/Profile、正式请求预算和工具组装，在第一个模型请求发出前截停，**不调用 Provider**。
+`preflight_ready` 表示首轮模型输入已构建，不验证 Provider 专属 HTTP 编码或服务是否接受请求，也不代表注释生成成功或语义正确。
+日常生成直接复用这些准备步骤并继续请求模型，不会额外先跑一遍预检。预检的内部教学状态使用临时目录，
+结束后清除；报告保留准备失败、预算失败和跳过原因。没有任何单元进入模型阶段时返回失败，不能把空跑算作通过。
+
+正式运行将 `--phase` 改为 `run`，并使用另一个尚不存在的 `--run-dir`。此操作会调用配置的模型并产生费用。
+两种模式都要求新运行目录，正式运行的 LocalStore 状态保存在其中；宿主和所有插件的 LocalStore 基目录及
+单插件覆盖项都被隔离。插件加载仍执行其 Python 导入代码，隔离范围不包含插件自行访问的其他文件或网络。
+`--knowledge required` 必须提供本地归档与 SHA256，直接激活同一个运行时知识服务，检查适用版本的用户文档，
+并在每个单元的首个模型请求前确认 `framework_search_docs` 实际存在；失败时不回退到无文档模式。
+后续正常耗尽补证预算时沿用正式管线的工具撤下与最终提交行为。
+对照组显式指定 `--knowledge off` 并省略归档参数。正式运行使用正常预算，不接受 `--unbounded` 或 `--retry-failed`。
+
+每次生成 `manifest.json`，记录代码摘要、请求/分析 revision、模型/Profile、预算、知识包摘要与检索器版本、
+实际首包工具、输出方式及 Schema 摘要、输入 token 估算、各单元状态和请求数。正式运行另复用现有 `model-output.json` 与生命周期日志。
+报告和生成目录属于本地工件，按上述诊断数据规则管理。预检不验证远端认证、计费、模型响应或检索带来的教学质量；
+后续真实冷测与人工语义评审继续独立记录，不能用缓存命中率、生成成功率替代质量结论。
+
 `NBTRIAGE_RESTRICTED_CONFIG` 的 JSON 数组格式示例：
 
 ```dotenv

@@ -730,11 +730,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate teaching annotations for explicitly selected plugins in one Bot host.",
     )
     capability_teaching_parser.add_argument("--host-pyproject", type=Path, required=True)
-    capability_teaching_parser.add_argument(
+    teaching_targets = capability_teaching_parser.add_mutually_exclusive_group(required=True)
+    teaching_targets.add_argument(
         "--plugin",
-        required=True,
         help="Exact plugin module to load and refresh.",
     )
+    teaching_targets.add_argument(
+        "--all", action="store_true", help="Load the host's declared plugins (evaluation only)."
+    )
+    capability_teaching_parser.add_argument("--phase", choices=("preflight", "run"))
+    capability_teaching_parser.add_argument("--knowledge", choices=("required", "off"))
+    capability_teaching_parser.add_argument(
+        "--run-dir", type=Path, help="New isolated evaluation directory; must not exist."
+    )
+    capability_teaching_parser.add_argument("--knowledge-archive", type=Path)
+    capability_teaching_parser.add_argument("--knowledge-sha256")
     capability_teaching_parser.add_argument(
         "--capture-model-output",
         type=Path,
@@ -837,6 +847,11 @@ def _run_analyze_capability_teaching(args: argparse.Namespace) -> int:
             diagnostic_output=args.capture_model_output,
             unbounded=args.unbounded,
             retry_failed=args.retry_failed,
+            phase=args.phase,
+            knowledge=args.knowledge,
+            run_dir=args.run_dir,
+            knowledge_archive=args.knowledge_archive,
+            knowledge_sha256=args.knowledge_sha256,
         )
     except CapabilityTeachingMaintenanceError as error:
         print(f"capability teaching analysis failed: {error}", file=sys.stderr)

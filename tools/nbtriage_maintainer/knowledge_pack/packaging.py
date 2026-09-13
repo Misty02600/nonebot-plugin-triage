@@ -8,15 +8,18 @@ import subprocess
 import zipfile
 from contextlib import closing
 from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
+
+from nbtriage import knowledge_tokenization
 
 from .builder import KNOWLEDGE_INDEX_SCHEMA_VERSION, KNOWLEDGE_RETRIEVER_ID
 from .models import KnowledgePackError
 
 PACK_ID = "nbtriage-default"
-KNOWLEDGE_LOADER_COMPAT = 1
+KNOWLEDGE_LOADER_COMPAT = 2
 
 
 def package_knowledge_index(
@@ -189,6 +192,8 @@ def _build_revision() -> str:
         digest.update(b"\0")
         digest.update((root / name).read_bytes())
         digest.update(b"\0")
+    digest.update(Path(knowledge_tokenization.__file__).read_bytes())
+    digest.update(f"jieba=={version('jieba')}".encode())
     return f"sha256:{digest.hexdigest()}"
 
 

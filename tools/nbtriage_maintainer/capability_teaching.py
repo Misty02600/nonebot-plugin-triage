@@ -4,13 +4,15 @@ import asyncio
 import json
 import os
 import re
-from contextlib import chdir, suppress
+import sys
+from collections.abc import Iterator
+from contextlib import chdir, contextmanager, suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic_ns
-from typing import Any
+from typing import Any, Literal
 
 from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisClient,
@@ -29,6 +31,17 @@ class CapabilityTeachingMaintenanceError(RuntimeError):
     pass
 
 
+@contextmanager
+def _host_directory(directory: Path) -> Iterator[None]:
+    previous_path = sys.path[:]
+    try:
+        sys.path.insert(0, str(directory))
+        with chdir(directory):
+            yield
+    finally:
+        sys.path[:] = previous_path
+
+
 @dataclass(frozen=True)
 class CapabilityTeachingMaintenanceResult:
     plugin: str
@@ -45,6 +58,9 @@ class CapabilityTeachingMaintenanceResult:
     family_failed: int
     diagnostics_file: str | None
     files: tuple[str, ...]
+    phase: str | None = None
+    preflight_ready: int = 0
+    manifest_file: str | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, sort_keys=True)
@@ -52,20 +68,66 @@ class CapabilityTeachingMaintenanceResult:
 
 def analyze_capability_teaching(
     pyproject_path: Path,
-    plugin_module: str,
+    plugin_module: str | None,
     *,
     diagnostic_output: Path | None = None,
     unbounded: bool = False,
     retry_failed: bool = False,
+    phase: Literal["preflight", "run"] | None = None,
+    knowledge: Literal["required", "off"] | None = None,
+    run_dir: Path | None = None,
+    knowledge_archive: Path | None = None,
+    knowledge_sha256: str | None = None,
 ) -> CapabilityTeachingMaintenanceResult:
-    """在临时 NoneBot 宿主中加载目标插件并调用现有单插件教学刷新 API。"""
+    """在指定宿主运行正式教学刷新，可选隔离冷测或零模型请求预检。"""
     project_file = pyproject_path.resolve()
     if project_file.name != "pyproject.toml" or not project_file.is_file():
         raise CapabilityTeachingMaintenanceError("host pyproject.toml is unavailable")
-    if not _MODULE_NAME.fullmatch(plugin_module):
+    if plugin_module is not None and not _MODULE_NAME.fullmatch(plugin_module):
         raise CapabilityTeachingMaintenanceError("plugin module must be an explicit import name")
     if plugin_module == "nonebot_plugin_triage":
         raise CapabilityTeachingMaintenanceError("the Triage plugin is not an analysis target")
+    if phase is not None:
+        if phase not in {"preflight", "run"} or knowledge not in {"required", "off"}:
+            raise CapabilityTeachingMaintenanceError(
+                "evaluation requires a valid phase and explicit knowledge mode"
+            )
+        if run_dir is None or knowledge is None:
+            raise CapabilityTeachingMaintenanceError(
+                "evaluation requires --run-dir and --knowledge"
+            )
+        if unbounded or retry_failed or diagnostic_output is not None:
+            raise CapabilityTeachingMaintenanceError(
+                "evaluation uses fresh state, normal budgets, and run-dir diagnostics"
+            )
+        if knowledge == "required" and (knowledge_archive is None or knowledge_sha256 is None):
+            raise CapabilityTeachingMaintenanceError(
+                "required knowledge needs --knowledge-archive and --knowledge-sha256"
+            )
+        if knowledge == "off" and (knowledge_archive is not None or knowledge_sha256 is not None):
+            raise CapabilityTeachingMaintenanceError("off mode does not accept a knowledge archive")
+        from .teaching_eval import evaluate_teaching
+
+        resolved_run_dir = run_dir.resolve()
+        if resolved_run_dir.exists():
+            raise CapabilityTeachingMaintenanceError(
+                "run-dir must not exist; each evaluation uses fresh state"
+            )
+        archive = knowledge_archive.resolve() if knowledge_archive else None
+        with _host_directory(project_file.parent):
+            return evaluate_teaching(
+                project_file,
+                plugin_module,
+                phase=phase,
+                knowledge=knowledge,
+                run_dir=resolved_run_dir,
+                archive=archive,
+                sha256=knowledge_sha256,
+            )
+    if plugin_module is None or any(
+        value is not None for value in (knowledge, run_dir, knowledge_archive, knowledge_sha256)
+    ):
+        raise CapabilityTeachingMaintenanceError("--all and evaluation options require --phase")
     if unbounded and diagnostic_output is None:
         raise CapabilityTeachingMaintenanceError(
             "unbounded analysis requires an explicit diagnostic output path"
@@ -74,7 +136,7 @@ def analyze_capability_teaching(
         diagnostic_output.resolve() if diagnostic_output is not None else None
     )
 
-    with chdir(project_file.parent):
+    with _host_directory(project_file.parent):
         return _analyze_in_host(
             plugin_module,
             diagnostic_output=resolved_diagnostic_output,
@@ -90,25 +152,17 @@ def _analyze_in_host(
     unbounded: bool,
     retry_failed: bool,
 ) -> CapabilityTeachingMaintenanceResult:
-    import nonebot
+    from .teaching_eval import initialize_host
 
     with TemporaryDirectory(prefix="nbtriage-capability-teaching-") as temporary_directory:
         localstore_root = Path(temporary_directory)
-        nonebot.init(
-            driver="~none",
-            log_level="INFO",
-            localstore_plugin_cache_dir={plugin_module: localstore_root / "cache"},
-            localstore_plugin_config_dir={plugin_module: localstore_root / "config"},
-            localstore_plugin_data_dir={plugin_module: localstore_root / "data"},
+        plugin_runtime = initialize_host(
+            Path.cwd() / "pyproject.toml",
+            (plugin_module,),
+            localstore_root,
+            knowledge=None,
+            isolate_all=False,
         )
-        if nonebot.load_plugin(plugin_module) is None:
-            raise CapabilityTeachingMaintenanceError(
-                f"requested plugin failed to load: {plugin_module}"
-            )
-        if nonebot.load_plugin("nonebot_plugin_triage") is None:
-            raise CapabilityTeachingMaintenanceError("nonebot_plugin_triage failed to load")
-
-        from nonebot_plugin_triage.handlers import plugin_runtime
 
         shadow = plugin_runtime.capability_shadow
         if shadow is None:

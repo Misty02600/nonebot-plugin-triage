@@ -13,6 +13,7 @@ from nbtriage.knowledge_index import (
     KNOWLEDGE_INDEX_SCHEMA_VERSION,
     KNOWLEDGE_RETRIEVER_ID,
 )
+from nbtriage.knowledge_tokenization import knowledge_search_tokens
 
 from .chunking import load_source_chunks
 from .models import KnowledgeBuildSummary, KnowledgeChunk, KnowledgePackError
@@ -72,18 +73,13 @@ def build_knowledge_index(
             connection.executemany(
                 """
                 INSERT INTO chunks_fts (
-                    evidence_id, component, source_kind, version, title, locator, content
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    evidence_id, text
+                ) VALUES (?, ?)
                 """,
                 [
                     (
                         chunk.evidence_id,
-                        chunk.component,
-                        chunk.source_kind,
-                        chunk.version or "",
-                        chunk.title,
-                        chunk.locator,
-                        chunk.content,
+                        " ".join(knowledge_search_tokens(chunk.locator + "\n" + chunk.content)),
                     )
                     for chunk in all_chunks
                 ],
@@ -152,7 +148,7 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         """
         PRAGMA journal_mode = DELETE;
         PRAGMA synchronous = FULL;
-        PRAGMA user_version = 1;
+        PRAGMA user_version = 2;
 
         CREATE TABLE metadata (
             key TEXT PRIMARY KEY,
@@ -182,13 +178,8 @@ def _create_schema(connection: sqlite3.Connection) -> None:
 
         CREATE VIRTUAL TABLE chunks_fts USING fts5(
             evidence_id UNINDEXED,
-            component,
-            source_kind,
-            version,
-            title,
-            locator,
-            content,
-            tokenize = 'trigram'
+            text,
+            tokenize = 'unicode61'
         );
         """
     )

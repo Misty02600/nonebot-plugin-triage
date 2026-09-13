@@ -109,6 +109,40 @@ def _request() -> CapabilityAnalysisRequest:
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_limit, expected", [(10, "preflight_ready"), (0, "failed")])
+@pytest.mark.parametrize("profile", [_TOOL_PROFILE, _NATIVE_PROFILE], ids=["tool", "native"])
+async def test_maintenance_preflight_preserves_real_request_budget_and_model(
+    request_limit: int, expected: str, profile: ModelProfile
+) -> None:
+    from tools.nbtriage_maintainer.teaching_eval import _EvaluationClient
+
+    def forbidden_provider(_messages: Any, _info: AgentInfo) -> ModelResponse:
+        raise AssertionError("preflight reached the provider")
+
+    model = FunctionModel(forbidden_provider, model_name="fixture-model", profile=profile)
+    client = PydanticAICapabilityAnalysisClient(model, max_output_tokens=1000)
+    client._max_requests = request_limit
+    records: list[dict[str, Any]] = []
+    probe = _EvaluationClient(client, records, phase="preflight", knowledge="off")
+    with pytest.raises(CapabilityModelAdapterError):
+        await probe.analyze(_request())
+    assert records[0]["outcome"] == expected
+    assert records[0]["provider_requests"] == 0
+    if expected == "preflight_ready":
+        assert records[0]["first_request"]["model"] == "fixture-model"
+        assert records[0]["first_request"]["profile"] == dict(model.profile)
+        first_request = records[0]["first_request"]
+        assert first_request["output_mode"] == profile["default_structured_output_mode"]
+        assert first_request["output_tools"] == (
+            ["final_result"] if profile == _TOOL_PROFILE else []
+        )
+        assert first_request["estimated_input_tokens"] > 0
+    else:
+        assert "first_request" not in records[0]
+        assert "budget" in records[0]["reason"].lower()
+
+
 def _entry(
     *,
     usage: str = "搜图 [图片]",
@@ -150,6 +184,93 @@ def _native_response(**entry_kwargs: str) -> ModelResponse:
         parts=[TextPart(json.dumps(_output(**entry_kwargs), ensure_ascii=False))],
         finish_reason="stop",
     )
+
+
+@pytest.mark.asyncio
+async def test_maintenance_run_reuses_capture_and_closes_model(tmp_path) -> None:
+    from tools.nbtriage_maintainer.capability_teaching import _ModelOutputCapture
+    from tools.nbtriage_maintainer.teaching_eval import _EvaluationClient
+
+    closed = []
+
+    class TrackingModel(FunctionModel):
+        async def __aexit__(self, *_args):
+            closed.append(True)
+
+    model = TrackingModel(lambda _messages, _info: _native_response(), profile=_NATIVE_PROFILE)
+    client = PydanticAICapabilityAnalysisClient(model, max_output_tokens=1000)
+    capture = _ModelOutputCapture(tmp_path / "capture.json", plugin_module="plugin.demo")
+    wrapped = capture.wrap_factory(lambda: client, unbounded=False)
+    records: list[dict[str, Any]] = []
+    output = await _EvaluationClient(wrapped, records, phase="run", knowledge="off").analyze(
+        _request()
+    )
+    capture.write()
+    assert output.knowledge_enabled
+    assert closed == [True]
+    assert records[0]["outcome"] == "generated"
+    assert records[0]["provider_requests"] == 1
+    diagnostic = json.loads((tmp_path / "capture.json").read_text(encoding="utf-8"))
+    assert diagnostic["captures"][0]["outcome"] == "succeeded"
+    assert len(diagnostic["captures"][0]["provider_responses"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["preflight", "run"])
+async def test_required_document_tool_missing_blocks_provider(phase: str) -> None:
+    from tools.nbtriage_maintainer.teaching_eval import _EvaluationClient
+
+    def forbidden_provider(_messages, _info):
+        pytest.fail("missing tool must fail before the provider")
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(forbidden_provider, profile=_NATIVE_PROFILE), max_output_tokens=1000
+    )
+    records: list[dict[str, Any]] = []
+    with pytest.raises(CapabilityModelAdapterError):
+        await _EvaluationClient(client, records, phase=phase, knowledge="required").analyze(
+            _request()
+        )
+    assert records[0]["outcome"] == "knowledge_tool_mismatch"
+    assert records[0]["provider_requests"] == 0
+
+
+@pytest.mark.asyncio
+async def test_required_docs_mode_allows_final_output_after_tool_budget_exhaustion() -> None:
+    from tools.nbtriage_maintainer.teaching_eval import _EvaluationClient
+
+    def framework_search_docs(query: str) -> str:
+        return query
+
+    calls = 0
+
+    def respond(_messages, info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                parts=[ToolCallPart("framework_search_docs", {"query": "Matcher"})]
+            )
+        assert not info.function_tools
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, _output())])
+
+    runtime = CapabilityAnalysisToolRuntime(
+        toolsets=(FunctionToolset(tools=[framework_search_docs]),),
+        evidence_units=tuple,
+        validate_source_context=lambda: True,
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, profile=_TOOL_PROFILE),
+        max_output_tokens=1000,
+        max_tool_calls=1,
+        tool_runtime_factory=lambda _request: runtime,
+    )
+    records: list[dict[str, Any]] = []
+    output = await _EvaluationClient(client, records, phase="run", knowledge="required").analyze(
+        _request()
+    )
+    assert output.knowledge_enabled and calls == 2
+    assert records[0]["outcome"] == "generated"
 
 
 @pytest.mark.parametrize(

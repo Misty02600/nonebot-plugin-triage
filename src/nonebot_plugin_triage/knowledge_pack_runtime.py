@@ -18,10 +18,9 @@ from urllib.parse import urlsplit
 
 from nonebot import logger, require
 
+from nbtriage.knowledge_index import SUPPORTED_KNOWLEDGE_INDEX_FORMATS
 from nonebot_plugin_triage.config import NBTriageConfig
 
-_INDEX_SCHEMA_VERSION = "1"
-_RETRIEVER_ID = "knowledge-sqlite-fts5-trigram-v1"
 _MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
 _MAX_INDEX_BYTES = 64 * 1024 * 1024
 _MAX_MANIFEST_BYTES = 1024 * 1024
@@ -193,9 +192,11 @@ def _validate_manifest(manifest: dict[str, object]) -> None:
     if (
         manifest.get("schema_version") != 1
         or manifest.get("pack_id") != "nbtriage-default"
-        or manifest.get("loader_compat") != 1
-        or manifest.get("index_schema") != 1
-        or manifest.get("retriever_id") != _RETRIEVER_ID
+        or type(manifest.get("index_schema")) is not int
+        or str(manifest.get("index_schema")) not in SUPPORTED_KNOWLEDGE_INDEX_FORMATS
+        or manifest.get("loader_compat") != manifest.get("index_schema")
+        or manifest.get("retriever_id")
+        != SUPPORTED_KNOWLEDGE_INDEX_FORMATS.get(str(manifest.get("index_schema")))
         or not isinstance(manifest.get("pack_version"), str)
         or not isinstance(manifest.get("corpus_sha256"), str)
         or not isinstance(manifest.get("index_sha256"), str)
@@ -219,8 +220,8 @@ def _validate_index(path: Path, manifest: dict[str, object]) -> None:
             connection.close()
     if (
         integrity != ("ok",)
-        or metadata.get("schema_version") != _INDEX_SCHEMA_VERSION
-        or metadata.get("retriever_id") != _RETRIEVER_ID
+        or metadata.get("schema_version") != str(manifest["index_schema"])
+        or metadata.get("retriever_id") != manifest["retriever_id"]
         or metadata.get("corpus_sha256") != manifest["corpus_sha256"]
     ):
         raise KnowledgePackInstallError("incompatible_index")
@@ -247,6 +248,41 @@ class KnowledgePackService:
 
     async def ensure_installed(self) -> None:
         await asyncio.to_thread(self._ensure_installed_safely)
+
+    async def install_local_archive(self, archive: Path, expected_sha256: str) -> None:
+        """校验并激活本地固定知识包，不查询远端目录，也不回退到旧包。
+
+        Raises:
+            KnowledgePackInstallError: 文件、摘要或知识包合同不合法。
+        """
+        await asyncio.to_thread(self._install_local_archive, archive, expected_sha256)
+
+    def _install_local_archive(self, archive: Path, expected_sha256: str) -> None:
+        if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+            raise KnowledgePackInstallError("invalid_archive_sha256")
+        try:
+            with archive.open("rb") as source:
+                payload = source.read(_MAX_ARCHIVE_BYTES + 1)
+        except OSError as error:
+            raise KnowledgePackInstallError("local_archive_unavailable") from error
+        if len(payload) > _MAX_ARCHIVE_BYTES:
+            raise KnowledgePackInstallError("archive_too_large")
+        if hashlib.sha256(payload).hexdigest() != expected_sha256:
+            raise KnowledgePackInstallError("checksum_mismatch")
+
+        def copy_archive(_url: str, target: Path, _sha256: str) -> None:
+            target.write_bytes(payload)
+
+        release = KnowledgePackRelease(None, archive.resolve().as_uri(), expected_sha256)
+        index_path, manifest = self._ensure_release(
+            self._cache_dir_resolver(), release, archive_fetcher=copy_archive
+        )
+        self._status = KnowledgePackStatus(
+            ready=True,
+            index_path=index_path,
+            pack_version=str(manifest["pack_version"]),
+            archive_sha256=expected_sha256,
+        )
 
     def _ensure_installed_safely(self) -> None:
         try:
@@ -305,6 +341,8 @@ class KnowledgePackService:
         self,
         root: Path,
         release: KnowledgePackRelease,
+        *,
+        archive_fetcher: ArchiveFetcher | None = None,
     ) -> tuple[Path, dict[str, object]]:
         try:
             return _load_installed_release(root, release.archive_sha256)
@@ -314,13 +352,11 @@ class KnowledgePackService:
         if destination.exists():
             shutil.rmtree(destination)
         root.mkdir(parents=True, exist_ok=True)
-        logger.warning(
-            "NoneBot Triage knowledge pack is not installed; background download started"
-        )
+        logger.info("NoneBot Triage knowledge pack installation started")
         with tempfile.TemporaryDirectory(prefix="install-", dir=root) as staging_name:
             staging = Path(staging_name)
             archive = staging / "pack.zip"
-            self._archive_fetcher(
+            (archive_fetcher or self._archive_fetcher)(
                 release.asset_url,
                 archive,
                 release.archive_sha256,

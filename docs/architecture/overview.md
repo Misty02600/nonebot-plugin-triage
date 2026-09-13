@@ -356,6 +356,12 @@ current runtime capability record → bounded handler/config EvidenceUnit
   catalog；新包校验后才原子切换，任何更新失败都保留旧包或退化为无该类证据，不阻断插件加载。见
   [ADR-0019](../adr/0019-distribute-rag-corpus-as-versioned-knowledge-pack.md) 与
   [ADR-0067](../adr/0067-refresh-knowledge-pack-from-stable-catalog-at-startup.md)；
+- 新构建的知识包使用索引格式 2 / `knowledge-sqlite-fts5-jieba-v2`：文档与查询共用 jieba 搜索分词，
+  点分 API 名保留完整形式并拆出组成部分，SQLite BM25 对定位标题与正文排序。组件、来源种类和版本仍由
+  原文表过滤，Evidence 的原文、定位和哈希保持不变；教学文档工具仍返回最多三条。运行时继续按原算法读取
+  格式 1 的 trigram 旧包，不在安装或查询时改写它。新包的 `loader_compat=2` 必须由新版插件消费；仅升级
+  插件不会让已安装旧包自动获得新排序，需要通过现有流程构建并更新知识包。发布新版插件后再发布新格式包，
+  旧插件会拒绝新格式并保留已验证的旧包。此改动不引入向量模型或模型重排；
 - 能力影子 SQLite 是 LocalStore 插件 cache 中可删除重建的部署本地派生数据，不再暴露路径配置，也不进入
   Git 或发行物；导入期不解析 cache，启动刷新失败不会阻止插件或模型语义分流；首次可服务 generation 发布前
   普通用户回退显式 Provider；带 `analysis_issues` 的记录只有维护者显式检索时返回，`restricted` 会持久化但

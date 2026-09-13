@@ -10,6 +10,7 @@ from nbtriage.knowledge_index import (
     KNOWLEDGE_INDEX_SCHEMA_VERSION,
     KNOWLEDGE_RETRIEVER_ID,
 )
+from nbtriage.knowledge_tokenization import knowledge_search_tokens
 
 
 def _index(
@@ -45,13 +46,8 @@ def _index(
             );
             CREATE VIRTUAL TABLE chunks_fts USING fts5(
                 evidence_id UNINDEXED,
-                component,
-                source_kind,
-                version,
-                title,
-                locator,
-                content,
-                tokenize = 'trigram'
+                text,
+                tokenize = 'unicode61'
             );
             """
         )
@@ -79,8 +75,8 @@ def _index(
         )
         connection.execute("INSERT INTO chunks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
         connection.execute(
-            "INSERT INTO chunks_fts VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (row[0], row[2], row[3], "", row[10], row[9], row[11]),
+            "INSERT INTO chunks_fts VALUES (?, ?)",
+            (row[0], " ".join(knowledge_search_tokens(locator + "\n" + content))),
         )
     return path
 
@@ -118,6 +114,5 @@ def test_design_reader_never_returns_source_code(tmp_path: Path) -> None:
     index = _index(tmp_path / "knowledge.sqlite3")
     with sqlite3.connect(index) as connection:
         connection.execute("UPDATE chunks SET source_kind = 'source_code'")
-        connection.execute("UPDATE chunks_fts SET source_kind = 'source_code'")
 
     assert BugDesignIndexReader(index).search("提醒重复发送", component="reminder") == ()
