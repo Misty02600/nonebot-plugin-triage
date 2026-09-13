@@ -39,16 +39,17 @@ from nbtriage.capability.teaching.usage import (
 )
 
 CAPABILITY_ANNOTATION_SCHEMA_VERSION = 13
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v115-zh"
-CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v82"
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v119-zh"
+CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v96"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
 )
 CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT = 192_000
+CAPABILITY_ANNOTATION_PRELOAD_TOKEN_TARGET = 64_000
 CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
-    "background-unit-10req-10read-navigation-tools-160line-"
-    "192k-reserve-finalize-32768out-0.05usd-schema12"
+    "background-unit-10req-10read-navigation-tools-300line-default-32kchar-read-"
+    "64k-soft-preload-target-192k-reserve-finalize-32768out-0.05usd-schema13"
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SEARCH_TERM_LIST_SEPARATOR = re.compile(r"[,，、;；|]")
@@ -481,6 +482,7 @@ def capability_analysis_fingerprint(
                 "regex_flags": list(item.regex_flags),
                 "keywords": list(item.keywords),
                 "canonical_usages": list(item.canonical_usages),
+                "usage_structure": list(item.usage_structure),
                 "argument_limits": list(item.argument_limits),
                 "aliases": list(item.aliases),
                 "requires_mention": item.requires_mention,
@@ -1151,7 +1153,9 @@ def _validated_usage(
     evidence_ids: tuple[str, ...] = (),
 ) -> str:
     normalized = validate_capability_usage_pattern(
-        value, allow_separated_slots=bool(target.canonical_usages)
+        value,
+        allow_separated_slots=bool(target.canonical_usages)
+        or target.mode is CapabilityInvocationMode.PATTERN,
     )
     shortcut_allowed = bool(set(target.shortcut_evidence_ids).intersection(evidence_ids))
     if target.canonical_usages:
@@ -1205,6 +1209,7 @@ def _validated_usage(
         in {
             CapabilityInvocationMode.COMPLETE,
             CapabilityInvocationMode.REGEX,
+            CapabilityInvocationMode.PATTERN,
         }
         and target.requires_mention
         and len(re.findall(r"(?<!\S)@bot(?=\s)", normalized)) != 1

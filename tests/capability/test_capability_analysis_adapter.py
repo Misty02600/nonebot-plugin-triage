@@ -4,6 +4,7 @@ import ast
 import hashlib
 import json
 import sys
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
@@ -45,6 +46,11 @@ from nbtriage.capability.teaching.source_evidence import (
 )
 from nbtriage.readonly_tools import (
     ReadOnlyRoot,
+)
+from nonebot_plugin_triage.capability.teaching._projection import (
+    _family_member_hints,
+    _selected_registrations,
+    _split_common_family_hints,
 )
 from nonebot_plugin_triage.capability.teaching._source import (
     _append_framework_semantics_evidence,
@@ -736,7 +742,7 @@ async def handle():
     )
 
 
-def test_initial_source_slices_preserve_navigation_target_for_oversized_external_function(
+def test_initial_source_slices_keep_long_external_function_complete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -773,36 +779,11 @@ async def handle():
         ConfigValuePolicy(),
     )
 
-    assert all(item.source_kind != "python_dependency_function" for item in request.evidence_units)
     target = next(
-        item
-        for item in request.evidence_units
-        if item.source_kind == "external_dependency_navigation"
+        item for item in request.evidence_units if item.source_kind == "python_dependency_function"
     )
-    assert module.__file__ is not None
-    module_path = Path(module.__file__)
-    payload = json.loads(target.content)
-    assert payload == {
-        "call_site": {
-            "column": len("    return ") + 1,
-            "line": 4,
-            "relative_path": module_path.name,
-            "root_name": "target_plugin",
-            "source_revision": hashlib.sha256(module_path.read_bytes()).hexdigest(),
-        },
-        "implementation_source_available": True,
-        "navigation_only": True,
-        "read_target": {
-            "line": 1,
-            "relative_path": f"{package_name}/__init__.py",
-            "root_name": "python_purelib",
-            "source_revision": target.revision.removeprefix("sha256:"),
-            "tool": "python_purelib_read_file",
-        },
-        "resolution": "external_dependency",
-        "scope": "external_dependency_navigation",
-        "symbol": f"{package_name}.search_items",
-    }
+    assert '"' + "x" * 8_100 + '"' in target.content
+    assert "return [value, payload]" in target.content
 
 
 def test_parameterized_family_preloads_unique_static_member_callables(
@@ -1162,6 +1143,7 @@ async def handle():
     return True
 
 matcher = on_alconna("词云", handlers=[handle])
+reminder = on_alconna("提醒", handlers=[handle])
 """,
     )
     handler = _handler_reference(module, "handle", 4)
@@ -1632,6 +1614,222 @@ second_handler = _
     assert [item["matcher_names"] for item in second_structure["handlers"]] == [["second"]]
 
 
+def test_shared_handler_registrations_use_runtime_location_not_shared_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = """\
+class FakeMatcher:
+    def handle(self):
+        return lambda function: function
+
+def on_command(*args, **kwargs):
+    return FakeMatcher()
+
+def first_gate():
+    return True
+
+def second_gate():
+    return False
+
+prefix = "probe"
+first = on_command(prefix + "one", rule=first_gate)
+second = on_command(prefix + "two", rule=second_gate)
+@first.handle()
+@second.handle()
+async def shared():
+    return "shared handler"
+"""
+    module = _loaded_module(tmp_path, monkeypatch, source)
+    record = _record(
+        module.__name__,
+        handlers=[_handler_reference(module, "shared", module.shared.__code__.co_firstlineno)],
+        config_references=[],
+        command_header="probeone",
+    )
+    # 源码入口是动态表达式，共享 Handler 无法据此区分两次注册。
+    with pytest.raises(CapabilityAnalysisAdapterError, match="registration source is ambiguous"):
+        build_capability_analysis_request(record, ConfigValuePolicy())
+
+    for name in ("first", "second"):
+        line = next(
+            i for i, text in enumerate(source.splitlines(), 1) if text.startswith(f"{name} =")
+        )
+        located = replace(
+            record,
+            evidence_refs=tuple(
+                replace(
+                    item,
+                    locator=Path(module.__file__).name,
+                    content_hash=hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest(),
+                    payload={"module_name": module.__name__, "line": line},
+                )
+                if item.kind == "matcher_source"
+                else item
+                for item in record.evidence_refs
+            ),
+        )
+        request = build_capability_analysis_request(located, ConfigValuePolicy())
+        assert {gate.symbol for gate in request.gate_candidates} == {f"{name}_gate"}
+        stale = replace(
+            located,
+            evidence_refs=tuple(
+                replace(item, content_hash="0" * 64) if item.kind == "matcher_source" else item
+                for item in located.evidence_refs
+            ),
+        )
+        with pytest.raises(CapabilityAnalysisAdapterError, match="source changed"):
+            build_capability_analysis_request(stale, ConfigValuePolicy())
+
+
+def test_long_handler_is_kept_complete_until_request_budgeting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path, monkeypatch, "def handler():\n    return '" + "x" * 8_000 + "'\n"
+    )
+    record = _record(
+        module.__name__,
+        handlers=[_handler_reference(module, "handler", 1)],
+        config_references=[],
+    )
+    request = build_capability_analysis_request(record, ConfigValuePolicy())
+    handler = next(unit for unit in request.evidence_units if "x" * 8_000 in unit.content)
+    assert handler.content.endswith("'\n") or handler.content.endswith("'")
+    assert not handler.preload_optional
+
+
+@pytest.mark.parametrize("dynamic", ["none", "both", "second", "mismatch"])
+@pytest.mark.parametrize("shared", [False, True])
+def test_same_line_registration_uses_remaining_evidence(
+    tmp_path: Path,
+    dynamic: str,
+    shared: bool,
+) -> None:
+    first = "make_name()" if dynamic == "both" else '"other"' if dynamic == "mismatch" else '"one"'
+    second = "make_name()" if dynamic in {"both", "second"} else '"two"'
+    source = f"from nonebot import on_command\nfirst = on_command({first}); second = on_command({second})\n"
+    if shared:
+        source += "@first.handle()\n@second.handle()\nasync def handler():\n    pass\n"
+    else:
+        source += "@first.handle()\nasync def one():\n    pass\n@second.handle()\nasync def two():\n    pass\n"
+    path = tmp_path / "commands.py"
+    path.write_text(source, encoding="utf-8")
+    pack = build_capability_source_evidence("probe", path)
+    record = _record("probe", handlers=[], config_references=[], command_header="one")
+    record = replace(
+        record,
+        evidence_refs=(
+            *(item for item in record.evidence_refs if item.kind != "matcher_source"),
+            EvidenceRef(
+                evidence_id="evidence:matcher",
+                source_id="runtime",
+                kind="matcher_source",
+                locator="commands.py",
+                content_hash=hashlib.sha256(path.read_bytes()).hexdigest(),
+                payload={"line": 2},
+            ),
+        ),
+    )
+    selected = tuple(h.source for h in pack.handlers if h.name in {"one", "handler"})
+    if dynamic == "mismatch":
+        with pytest.raises(CapabilityAnalysisAdapterError, match="conflict"):
+            _selected_registrations(record, pack, selected)
+    elif dynamic != "none" and shared:
+        with pytest.raises(CapabilityAnalysisAdapterError, match="ambiguous"):
+            _selected_registrations(record, pack, selected)
+    else:
+        assert [r.matcher_name for r in _selected_registrations(record, pack, selected)] == [
+            "first"
+        ]
+
+
+def test_registration_file_identity_and_revision_do_not_use_suffixes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "probe"
+    (root / "probe").mkdir(parents=True)
+    (root / "__init__.py").write_text("", encoding="utf-8")
+    for directory in (root, root / "probe"):
+        (directory / "a.py").write_text(
+            'from nonebot import on_command\nmatcher = on_command("one")\n', encoding="utf-8"
+        )
+    module = ModuleType("probe")
+    module.__file__ = str(root / "__init__.py")
+    child = ModuleType("probe.a")
+    child.__file__ = str(root / "a.py")
+    monkeypatch.setitem(sys.modules, "probe", module)
+    monkeypatch.setitem(sys.modules, "probe.a", child)
+    pack = build_capability_source_evidence("probe", root)
+    record = _record("probe", handlers=[], config_references=[], command_header="one")
+    evidence = EvidenceRef(
+        evidence_id="evidence:matcher",
+        source_id="runtime",
+        kind="matcher_source",
+        locator="probe/a.py",
+        content_hash=hashlib.sha256((root / "a.py").read_bytes()).hexdigest(),
+        payload={"module_name": "probe.a", "line": 2},
+    )
+
+    def choose(reference: EvidenceRef):
+        references = tuple(
+            reference if item.kind == "matcher_source" else item for item in record.evidence_refs
+        )
+        return _selected_registrations(replace(record, evidence_refs=references), pack, ())
+
+    assert [r.source.locator for r in choose(evidence)] == ["a.py"]
+    with pytest.raises(CapabilityAnalysisAdapterError, match="source changed"):
+        choose(replace(evidence, content_hash="0" * 64))
+    # 两份文件内容相同也不能消除路径身份歧义。
+    with pytest.raises(CapabilityAnalysisAdapterError, match="file is ambiguous"):
+        choose(replace(evidence, payload={"line": 2}))
+
+
+def test_registration_fallback_scopes_names_and_preserves_cross_file_entries(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "a.py").write_text(
+        "from nonebot import on_command\nmatcher = on_command(make_name())\n"
+        "@matcher.handle()\nasync def handler():\n    pass\n",
+        encoding="utf-8",
+    )
+    path = tmp_path / "b.py"
+    path.write_text(
+        "from nonebot import on_command\nmatcher = on_command(make_name())\n", encoding="utf-8"
+    )
+    pack = build_capability_source_evidence("probe", tmp_path)
+    assert [h.source.locator for h in pack.handlers] == ["a.py"]
+    record = _record("probe", handlers=[], config_references=[], command_header="one")
+    # 精确 Handler 位于 a.py，不能从 b.py 的同名变量补出绑定。
+    assert [
+        r.source.locator
+        for r in _selected_registrations(record, pack, tuple(h.source for h in pack.handlers))
+    ] == ["a.py"]
+    path.write_text(
+        "from nonebot import on_command\nfrom a import handler\n"
+        'matcher = on_command("one", handlers=[handler])\n',
+        encoding="utf-8",
+    )
+    pack = build_capability_source_evidence("probe", tmp_path)
+    record = replace(
+        record,
+        evidence_refs=tuple(
+            replace(
+                item,
+                locator="b.py",
+                payload={"line": 3},
+                content_hash=hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+            if item.kind == "matcher_source"
+            else item
+            for item in record.evidence_refs
+        ),
+    )
+    assert [r.source.locator for r in _selected_registrations(record, pack, ())] == ["b.py"]
+
+
 @pytest.mark.parametrize("nested_registration", [False, True])
 def test_parameterized_family_is_one_complete_usage_analysis_unit(
     tmp_path: Path,
@@ -1749,7 +1947,7 @@ matcher = on_command(
         for evidence in request.evidence_units
         if evidence.source_kind == "runtime_family_members"
     ]
-    assert all(document["format"] == "columns-v2" for document in member_documents)
+    assert all(document["format"] == "columns-v3" for document in member_documents)
     assert all(document["member_count"] == 2 for document in member_documents)
     assert {
         document["syntax_codes"][row[2]]
@@ -1898,6 +2096,26 @@ third = create_handler("贴贴")
         ),
     )
 
+    records = tuple(
+        replace(
+            record,
+            claims=(
+                *record.claims,
+                Claim("command.prefixes", ["", "/"], ClaimBasis.OBSERVED, ("evidence:matcher",)),
+                Claim("command.compact", False, ClaimBasis.OBSERVED, ("evidence:matcher",)),
+                Claim(
+                    "description",
+                    record.capability_id * 40,
+                    ClaimBasis.DECLARED,
+                    ("evidence:matcher",),
+                ),
+            ),
+        )
+        for record in records
+    )
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability.teaching._projection._MAX_EVIDENCE_CHARS", 1_600
+    )
     request = build_parameterized_family_analysis_request(records, ConfigValuePolicy())
 
     usages = {
@@ -1914,6 +2132,39 @@ third = create_handler("贴贴")
         for evidence in request.evidence_units
         if evidence.source_kind == "runtime_family_members"
     ]
+    assert len(member_documents) > 1
+    originals = {
+        record.capability_id: Counter(
+            json.dumps(hint, sort_keys=True) for hint in _family_member_hints(record)
+        )
+        for record in records
+    }
+    offset = 0
+    for document in member_documents:
+        assert document["row_offset"] == offset
+        assert document["common_hints"] == member_documents[0]["common_hints"]
+        assert ["command.prefixes", ["", "/"], "observed"] in document["common_hints"]
+        assert ["command.compact", False, "observed"] in document["common_hints"]
+        for row in document["rows"]:
+            member = request.family_members[offset]
+            assert not (
+                {hint[0] for hint in document["common_hints"]} & {hint[0] for hint in row[3]}
+            )
+            assert (
+                Counter(
+                    json.dumps(hint, sort_keys=True) for hint in document["common_hints"] + row[3]
+                )
+                == originals[member.capability_id]
+            )
+            evidence = next(
+                item
+                for item in request.evidence_units
+                if item.source_kind == "runtime_family_members"
+                and json.loads(item.content) == document
+            )
+            assert evidence.evidence_id in member.evidence_ids
+            offset += 1
+    assert offset == len(records)
     member_payloads = {
         row[0][0][0]: row for document in member_documents for row in document["rows"]
     }
@@ -1943,6 +2194,49 @@ third = create_handler("贴贴")
     assert request.invocations == (
         CapabilityInvocationTarget("family", CapabilityInvocationMode.COMPLETE),
     )
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "shared"),
+    [
+        ([["prefixes", ["", "/"], "observed"]], [["prefixes", ["", "/"], "observed"]], True),
+        ([["compact", False, "observed"]], [], False),
+        ([["compact", False, "observed"]], [["compact", 0, "observed"]], False),
+        ([["compact", True, "observed"]], [["compact", 1, "observed"]], False),
+        ([["compact", False, "observed"]], [["compact", False, "declared"]], False),
+        (
+            [["header", {"prefix": "a", "tail": "b"}, "observed"]],
+            [["header", {"prefix": "a", "tail": "c"}, "observed"]],
+            False,
+        ),
+        (
+            [["usage", "a", "declared"], ["usage", "b", "declared"]],
+            [["usage", "b", "declared"], ["usage", "a", "declared"]],
+            True,
+        ),
+        (
+            [["usage", "a", "declared"], ["usage", "b", "declared"]],
+            [["usage", "a", "declared"]],
+            False,
+        ),
+        (
+            [["usage", "a", "declared"], ["usage", "a", "declared"]],
+            [["usage", "a", "declared"]],
+            False,
+        ),
+    ],
+)
+def test_family_common_hints_preserve_complete_field_facts(left, right, shared) -> None:
+    before = json.dumps([left, right])
+    common, remaining = _split_common_family_hints((left, right))
+
+    assert common == (left if shared else [])
+    assert json.dumps([left, right]) == before
+    for original, specific in zip((left, right), remaining, strict=True):
+        assert Counter(json.dumps(hint, sort_keys=True) for hint in common + specific) == Counter(
+            json.dumps(hint, sort_keys=True) for hint in original
+        )
+    assert _split_common_family_hints(()) == ([], ())
 
 
 def test_parameterized_handlers_in_same_outer_function_are_not_grouped(

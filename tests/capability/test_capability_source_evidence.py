@@ -190,10 +190,11 @@ def test_extracts_proven_alconna_dispatch_registrations_and_gates(tmp_path: Path
 from nonebot_plugin_alconna import on_alconna as create_matcher
 
 root = create_matcher(Alconna("bili"))
-main = root.dispatch("$main", handlers=[handle_main])
+main = root.dispatch("$main", additional=None, handlers=[handle_main])
 subscribe = root.dispatch(
     path="admin.subscribe",
     permission=GROUP_ADMIN_OR_SUPERUSER,
+    additional=check_subscription,
     handlers=[handle_subscribe],
 )
 
@@ -208,6 +209,7 @@ not_a_matcher = service.dispatch("private")
 
     pack = build_capability_source_evidence("example_plugin", source)
 
+    assert not pack.registrations[1].opaque_fields
     assert [
         (item.matcher_name, item.factory, item.entries, item.handlers)
         for item in pack.registrations
@@ -228,7 +230,8 @@ not_a_matcher = service.dispatch("private")
             StructuralSymbolKind.PERMISSION,
             "GROUP_ADMIN_OR_SUPERUSER",
             "subscribe",
-        )
+        ),
+        (StructuralSymbolKind.RULE, "check_subscription", "subscribe"),
     ]
 
 

@@ -71,9 +71,6 @@ from nonebot_plugin_triage.capability.teaching._source import (
 )
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
 
-_MAX_FUNCTION_CHARS = 8_000
-_MAX_INITIAL_SOURCE_CHARS = 32_000
-
 
 def build_capability_analysis_request(
     record: CapabilityRecord,
@@ -193,16 +190,7 @@ def build_capability_analysis_request(
     ]
     accepted_targets: set[tuple[str, str]] = set()
     accepted_resolved_targets: list[_ResolvedAnalysisTarget] = []
-    source_chars = 0
-
     for target in resolved_targets:
-        if source_chars + len(target.content) > _MAX_INITIAL_SOURCE_CHARS:
-            if target.handler_identity is not None:
-                raise CapabilityAnalysisAdapterError(
-                    "capability has no readable bounded handler evidence"
-                )
-            break
-
         reference = target.reference
         locator = _target_plugin_locator(
             target.source.locator,
@@ -224,7 +212,6 @@ def build_capability_analysis_request(
                 locator=locator,
             )
         )
-        source_chars += len(target.content)
         accepted_targets.add((reference.module, reference.function))
         accepted_resolved_targets.append(target)
 
@@ -246,7 +233,6 @@ def build_capability_analysis_request(
         source_file_revisions={
             item.source.locator: item.source.digest for item in source_pack.files
         },
-        source_chars=source_chars,
         cache=source_slice_cache,
     )
     _append_framework_semantics_evidence(evidence_units, parsed_modules=parsed_modules)
@@ -342,7 +328,7 @@ def build_parameterized_family_analysis_request(
         raise CapabilityAnalysisAdapterError("parameterized handler source is ambiguous")
     content = _function_source(parsed.source, handler, include_decorators=True)
     handler_source = _function_source_span(parsed, handler)
-    if content is None or handler_source is None or len(content) > _MAX_FUNCTION_CHARS:
+    if content is None or handler_source is None:
         raise CapabilityAnalysisAdapterError("parameterized handler source is unavailable")
     _record_preparation_timing(preparation_timings, "target_resolution", stage_started_ns)
 
@@ -419,7 +405,6 @@ def build_parameterized_family_analysis_request(
     accepted_targets: set[tuple[str, str]] = set()
     accepted_resolved_targets: list[_ResolvedAnalysisTarget] = []
     accepted_source_spans: set[tuple[str, int, int, str]] = set()
-    source_chars = 0
     for target in resolved_targets:
         source_key = (
             target.source.locator,
@@ -429,10 +414,6 @@ def build_parameterized_family_analysis_request(
         )
         if source_key in accepted_source_spans:
             continue
-        if source_chars + len(target.content) > _MAX_INITIAL_SOURCE_CHARS:
-            if target.handler_identity is not None:
-                raise CapabilityAnalysisAdapterError("parameterized handler source is unavailable")
-            break
         reference = target.reference
         symbol = reference.qualname or reference.function
         source_position = reference.code_firstlineno or target.source.line
@@ -456,10 +437,9 @@ def build_parameterized_family_analysis_request(
         accepted_source_spans.add(source_key)
         accepted_resolved_targets.append(target)
         accepted_targets.add((reference.module, reference.function))
-        source_chars += len(target.content)
 
     source_file_revisions = {item.source.locator: item.source.digest for item in source_pack.files}
-    source_chars = _append_registration_source_evidence(
+    _append_registration_source_evidence(
         evidence_units,
         analysis_unit_id=identity.analysis_unit_id,
         module_root=identity.module_root,
@@ -467,7 +447,6 @@ def build_parameterized_family_analysis_request(
         parsed_modules=parsed_modules,
         registrations=gate_projection.registrations,
         source_file_revisions=source_file_revisions,
-        source_chars=source_chars,
         runtime_sources=tuple(
             evidence
             for record in records
@@ -482,10 +461,7 @@ def build_parameterized_family_analysis_request(
         handler_qualname=identity.qualname,
         closure_freevars=handler_reference.closure_freevars,
     )
-    callable_chars = sum(len(item.content) for item in callable_units)
-    if source_chars + callable_chars <= _MAX_INITIAL_SOURCE_CHARS:
-        evidence_units.extend(callable_units)
-        source_chars += callable_chars
+    evidence_units.extend(callable_units)
     _record_preparation_timing(preparation_timings, "initial_evidence", stage_started_ns)
 
     gate_names = frozenset(item.symbol.rpartition(".")[2] for item in gate_projection.gate_symbols)
@@ -511,7 +487,6 @@ def build_parameterized_family_analysis_request(
         gate_names=gate_names,
         priority_names=gate_names | _source_symbol_names(source_pack, (handler_source,)),
         source_file_revisions=source_file_revisions,
-        source_chars=source_chars,
         cache=active_source_slice_cache,
     )
     _append_framework_semantics_evidence(evidence_units, parsed_modules=parsed_modules)

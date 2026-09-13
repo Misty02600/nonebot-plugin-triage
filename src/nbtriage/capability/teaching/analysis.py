@@ -79,6 +79,7 @@ class CapabilityInvocationMode(StrEnum):
     """区分确定入口与需要模型完整概括的参数化入口。"""
 
     ANCHORED = "anchored"
+    PATTERN = "pattern"
     KEYWORD = "keyword"
     REGEX = "regex"
     COMPLETE = "complete"
@@ -187,6 +188,8 @@ class CapabilityInvocationTarget:
     keywords: tuple[str, ...] = ()
     # 当前标准模板的 (slot index, 每次显式填写的最大项数)，由代码生成说明。
     argument_limits: tuple[tuple[int, int], ...] = ()
+    # 仅模式命令的输入结构示意；{command} 由匹配 Evidence 解释，不用于输出对齐。
+    usage_structure: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _bounded_text(self.entry_id, "invocation entry_id", max_length=128)
@@ -253,6 +256,17 @@ class CapabilityInvocationTarget:
             _bounded_text(usage, "canonical usage", max_length=160)
         if self.canonical_usages and self.mode is not CapabilityInvocationMode.ANCHORED:
             raise CapabilityAnalysisError("only anchored invocations may define canonical_usages")
+        if (
+            not isinstance(self.usage_structure, tuple)
+            or len(self.usage_structure) > 4
+            or len(set(self.usage_structure)) != len(self.usage_structure)
+            or bool(self.usage_structure) != (self.mode is CapabilityInvocationMode.PATTERN)
+        ):
+            raise CapabilityAnalysisError("only pattern invocations require usage_structure")
+        for usage in self.usage_structure:
+            _bounded_text(usage, "usage structure", max_length=160)
+            if "{command}" not in usage:
+                raise CapabilityAnalysisError("pattern usage structure requires {command}")
         if not isinstance(self.aliases, tuple) or len(self.aliases) > 16:
             raise CapabilityAnalysisError("invocation aliases must be a bounded tuple")
         if len(self.aliases) != len(set(self.aliases)):
@@ -276,8 +290,11 @@ class CapabilityInvocationTarget:
             raise CapabilityAnalysisError(
                 "shortcut_count and shortcut_evidence_ids must be present together"
             )
-        if self.shortcut_count and self.mode is not CapabilityInvocationMode.ANCHORED:
-            raise CapabilityAnalysisError("only anchored invocations may define shortcuts")
+        if self.shortcut_count and self.mode not in {
+            CapabilityInvocationMode.ANCHORED,
+            CapabilityInvocationMode.PATTERN,
+        }:
+            raise CapabilityAnalysisError("only command invocations may define shortcuts")
 
 
 @dataclass(frozen=True)
@@ -297,9 +314,12 @@ class CapabilityFamilyMember:
             min_items=1,
             max_items=32,
         )
-        if any(item.mode is not CapabilityInvocationMode.ANCHORED for item in self.invocations):
+        if any(
+            item.mode not in {CapabilityInvocationMode.ANCHORED, CapabilityInvocationMode.PATTERN}
+            for item in self.invocations
+        ):
             raise CapabilityAnalysisError(
-                "family member invocations must be deterministic anchored entries"
+                "family member invocations must have identified command entries"
             )
         entry_ids = [item.entry_id for item in self.invocations]
         if len(entry_ids) != len(set(entry_ids)):
@@ -314,11 +334,14 @@ class CapabilityEvidenceUnit:
     content: str = field(repr=False)
     revision: str
     locator: str | None = None
+    # 仅用于首包选择，不改变 Evidence 身份，也不表示其业务语义可以忽略。
+    preload_optional: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _bounded_text(self.evidence_id, "evidence_id", max_length=128)
         _bounded_text(self.source_kind, "source_kind", max_length=64)
-        _bounded_text(self.content, "content", max_length=8_000)
+        if not isinstance(self.content, str) or not self.content.strip():
+            raise CapabilityAnalysisError("content must be nonempty text")
         _bounded_text(self.revision, "revision", max_length=256)
         if self.locator is not None:
             _bounded_text(self.locator, "locator", max_length=512)
@@ -559,9 +582,12 @@ class SemanticClaim:
             max_items=16,
             max_length=128,
         )
-        if self.gate_candidate_ids and self.kind is not SemanticClaimKind.BEHAVIOR_BOUNDARY:
+        if self.gate_candidate_ids and self.kind not in {
+            SemanticClaimKind.USAGE,
+            SemanticClaimKind.BEHAVIOR_BOUNDARY,
+        }:
             raise CapabilityAnalysisError(
-                "only behavior-boundary claims may reference gate candidates"
+                "only usage or behavior-boundary claims may reference gate candidates"
             )
 
 
@@ -1046,7 +1072,7 @@ def _validate_gate_resolutions(
         if candidate_id not in candidates:
             raise CapabilityAnalysisError(f"{owner} references an unavailable gate candidate")
         owners = public_owners_by_candidate.setdefault(candidate_id, {})
-        if entry_id in owners:
+        if entry_id in owners and not (owner == owners[entry_id] == "usage"):
             raise CapabilityAnalysisError(
                 "gate candidate must have exactly one public owner per affected entry"
             )
@@ -1055,7 +1081,7 @@ def _validate_gate_resolutions(
     for entry in output.entries:
         for claim in entry.claims:
             for candidate_id in claim.gate_candidate_ids:
-                register_public_owner(candidate_id, entry.entry_id, "behavior boundary")
+                register_public_owner(candidate_id, entry.entry_id, claim.kind.value)
         for constraint in entry.constraints:
             for candidate_id in constraint.gate_candidate_ids:
                 register_public_owner(candidate_id, entry.entry_id, "constraint")
@@ -1080,7 +1106,7 @@ def _validate_gate_resolutions(
             if not set(candidate.entry_ids).issubset(linked_entries):
                 raise CapabilityAnalysisError(
                     "constraint gate resolution must link every affected entry to a public "
-                    "constraint or behavior boundary"
+                    "constraint, usage group or behavior boundary"
                 )
         elif linked_entries:
             raise CapabilityAnalysisError(

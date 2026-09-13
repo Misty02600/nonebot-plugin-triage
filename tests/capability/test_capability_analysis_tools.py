@@ -421,7 +421,8 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
         in tool_descriptions["target_plugin_file_info"]
     )
     assert set(cast(dict[str, object], tool_schemas["python_open_definition"]["properties"])) == {
-        "navigation_ref"
+        "navigation_ref",
+        "offset",
     }
     assert tool_result["resolved"] is True
     assert cast(
@@ -634,6 +635,49 @@ def test_initial_python_evidence_exposes_request_bound_navigation_handles(
     handler.write_text("def helper():\n    return 2\n", encoding="utf-8")
     stale = registry.open_definition(cast(str, target["navigation_ref"]))
     assert stale == {"resolved": False, "failure": "stale_navigation_ref"}
+
+
+def test_definition_read_paginates_by_characters_without_losing_lines(tmp_path: Path) -> None:
+    profiles = _with_target_plugin_alias(_profiles(tmp_path))
+    source = "def helper():\n" + ("    # " + "x" * 80 + "\n") * 420 + "    return 1\n"
+    path = profiles.plugin_source_root.path / "handler.py"
+    path.write_text(source, encoding="utf-8")
+    revision = hashlib.sha256(path.read_bytes()).hexdigest()
+    access = profiles.navigation_profile
+    registry = _NavigationRegistry(
+        access=access,
+        navigator=DefinitionNavigator(
+            PythonNavigationProfile(
+                access=access,
+                project_root_name="target_plugin",
+                source_root_names=tuple(root.name for root in access.roots),
+            )
+        ),
+        capture=_EvidenceCapture("command:demo"),
+    )
+    reference = registry._register_definition(
+        DefinitionLocation(
+            "target_plugin",
+            "handler.py",
+            1,
+            4,
+            "helper",
+            None,
+            "function",
+            revision,
+        )
+    )
+    first = registry.open_definition(reference)
+    assert first["truncated"] is True
+    assert len(str(first["content"])) <= 32_000
+    assert cast(int, first["end_line"]) > 300
+    second = registry.open_definition(reference, offset=cast(int, first["next_offset"]))
+    assert second["start_line"] == cast(int, first["end_line"]) + 1
+    assert second["truncated"] is False
+    assert second["next_offset"] is None
+    marker = "\n[... Triage truncated this citable excerpt ...]"
+    joined = str(first["content"]).removesuffix(marker) + "\n" + str(second["content"])
+    assert joined.splitlines() == source.splitlines()
 
 
 def test_initial_python_evidence_exposes_imported_annotation_navigation_handle(
@@ -960,7 +1004,7 @@ def test_navigation_tool_timeout_does_not_wait_for_blocked_sync_navigation() -> 
     release = Event()
 
     class BlockingNavigation:
-        def open_definition(self, _navigation_ref: str) -> dict[str, object]:
+        def open_definition(self, _navigation_ref: str, offset: int = 0) -> dict[str, object]:
             started.set()
             release.wait(timeout=1)
             return {"resolved": True}

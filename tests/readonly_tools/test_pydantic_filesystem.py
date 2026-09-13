@@ -256,7 +256,8 @@ def test_read_file_rejects_out_of_range_line_arguments_before_harness(
     assert observed_retry is True
 
 
-def test_read_file_clamps_an_oversized_line_limit(tmp_path: Path) -> None:
+@pytest.mark.parametrize("enforce", [True, False])
+def test_read_file_respects_optional_line_limit(tmp_path: Path, enforce: bool) -> None:
     pytest.importorskip("pydantic_ai_harness")
     from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
     from pydantic_ai.messages import ModelRequest, ToolReturnPart
@@ -269,7 +270,7 @@ def test_read_file_clamps_an_oversized_line_limit(tmp_path: Path) -> None:
         task_id="harness.clamped-range",
         roots=(ReadOnlyRoot("project", tmp_path),),
     )
-    bundle = build_read_only_file_toolsets(profile)
+    bundle = build_read_only_file_toolsets(profile, enforce_read_line_limit=enforce)
     tool_result = ""
     calls = 0
 
@@ -302,4 +303,4 @@ def test_read_file_clamps_an_oversized_line_limit(tmp_path: Path) -> None:
     Agent(model, toolsets=cast(Any, list(bundle.toolsets))).run_sync("Read sample.py")
 
     assert "   160\tline 160" in tool_result
-    assert "\tline 161" not in tool_result
+    assert ("\tline 161" not in tool_result) is enforce

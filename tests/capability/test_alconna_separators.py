@@ -33,6 +33,7 @@ from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisRequest,
     CapabilityEvidenceUnit,
     CapabilityIdentity,
+    CapabilityInvocationMode,
 )
 from nbtriage.capability.teaching.annotations import (
     CapabilityAnnotationError,
@@ -49,6 +50,7 @@ from nbtriage.capability.teaching.usage import usage_command_body_pattern
 from nonebot_plugin_triage.capability.discovery.snapshot import (
     _alconna_arguments,
     _alconna_components,
+    _alconna_header_match,
 )
 from nonebot_plugin_triage.capability.teaching._projection import (
     CapabilityAnalysisAdapterError,
@@ -64,6 +66,7 @@ from nonebot_plugin_triage.capability.teaching._source import _append_framework_
 def _record(command: Alconna) -> CapabilityRecord:
     values = {
         "command.header": command.name,
+        "command.header_match": _alconna_header_match(command),
         "command.separators": list(command.separators),
         "command.compact": command.meta.compact,
         "command.aliases": ["alias"],
@@ -95,6 +98,101 @@ def source_pack(tmp_path):
     path = tmp_path / "plugin.py"
     path.write_text("", encoding="utf-8")
     return build_capability_source_evidence("fixture", path)
+
+
+@pytest.mark.parametrize(
+    ("origin", "compact", "separator", "length", "structure", "public", "native"),
+    [
+        (
+            "{action:open|close}",
+            False,
+            " ",
+            None,
+            "{command} <slot:0>",
+            "(open|close) <对象>",
+            "open someone",
+        ),
+        (
+            r"re:lookup(?P<scope>[a-z]{2})",
+            True,
+            "",
+            None,
+            "{command}<slot:0>",
+            "lookup<范围><对象>",
+            "lookupabtarget",
+        ),
+        (
+            r"re:(?P<text>\S{1,4})go",
+            False,
+            ",",
+            2,
+            "{command},<slot:0>...",
+            "<文字>go,<对象>...",
+            "higo,one,two",
+        ),
+    ],
+)
+def test_pattern_header_keeps_parser_facts_without_exact_usage_alignment(
+    origin, compact, separator, length, structure, public, native, source_pack
+):
+    command = Alconna(
+        origin,
+        Args(Arg("object", MultiVar(str, length) if length else str, seps=separator or " ")),
+        meta=CommandMeta(compact=compact),
+        separators=separator or " ",
+        namespace=uuid4().hex,
+    )
+    try:
+        record = _record(command)
+        (target,) = _invocation_targets(record, source_pack, (), runtime_evidence_id=None)
+        assert target.mode is CapabilityInvocationMode.PATTERN
+        assert target.command_body is None and not target.canonical_usages
+        assert target.usage_structure == (structure,)
+        assert not target.argument_limits  # 不再从自由表达反推公开参数名称。
+        assert _validated_usage(public, target=target) == public
+        assert command.parse(native).matched
+        assert deterministic_record_usages(record) == ()  # 不发布原始正则或占位成品。
+        if compact:
+            assert not command.parse("lookupab").matched
+            # 语义漏参不再由对齐器兜底；明确记录校验能力，而非假装等价证明。
+            assert _validated_usage("lookup<范围>", target=target) == "lookup<范围>"
+        mention = replace(target, requires_mention=True)
+        with pytest.raises(CapabilityAnnotationError, match="@bot"):
+            _validated_usage(public, target=mention)
+        assert _validated_usage(f"@bot {public}", target=mention) == f"@bot {public}"
+        members, evidence = _family_member_invocations((record,), source_pack, ())
+        assert members[0].invocations == (target,)
+        member_document = next(
+            json.loads(e.content) for e in evidence if e.source_kind == "runtime_family_members"
+        )
+        assert (
+            member_document["syntax_codes"][member_document["rows"][0][2]]
+            == "parser_with_pattern_header"
+        )
+        hints = member_document["common_hints"] + member_document["rows"][0][3]
+        assert ["command.aliases", ["alias"], "observed"] in hints
+        shape = next(
+            json.loads(e.content)["shapes"][0]
+            for e in evidence
+            if e.source_kind == "runtime_family_shapes"
+        )
+        assert shape["usage_templates"] == [] and shape["usage_structure"] == [structure]
+        if length:
+            assert shape["arguments"][0]["variadic_length"] == length
+        if not compact and length is None:
+            opaque = replace(
+                record,
+                claims=tuple(
+                    replace(claim, value={"origin": origin, "content": {"kind": "opaque"}})
+                    if claim.field == "command.header_match"
+                    else claim
+                    for claim in record.claims
+                ),
+            )
+            with pytest.raises(CapabilityAnalysisAdapterError, match="opaque match facts"):
+                _invocation_targets(opaque, source_pack, (), runtime_evidence_id=None)
+    finally:
+        command_manager.delete(command)
 
 
 @pytest.mark.parametrize(
@@ -592,6 +690,360 @@ def test_unsupported_or_missing_separators_do_not_become_freeform_usages(source_
         command_manager.delete(command)
 
 
+@pytest.mark.parametrize("required", [False, True])
+@pytest.mark.parametrize("case", ["plain", "compact", "separator", "nested", "option"])
+def test_ancestor_arguments_survive_path_templates(required, case, source_pack):
+    separator = "," if case == "separator" else " "
+    args = Args(Arg("mode" if required else "mode?", str, seps=separator))
+    leaf = Subcommand(
+        "child", Args(Arg("target", str, seps=separator)), alias=["c"], separators=separator
+    )
+    children = [leaf]
+    if case == "nested":
+        children = [Subcommand("group", Args["scope", str], leaf)]
+    if case == "option":
+        children.insert(0, Option("--tag", Args["tag", str]))
+    command = Alconna(
+        "probe",
+        args,
+        *children,
+        separators=separator,
+        meta=CommandMeta(compact=case == "compact"),
+        namespace=uuid4().hex,
+    )
+    try:
+        record = _record(command)
+        targets = _invocation_targets(record, source_pack, (), runtime_evidence_id=None)
+        root = "probe" + ("" if case == "compact" else separator)
+        root += "<slot:0>" if required else "[slot:0]"
+        if not required and separator != " ":
+            root = "probe[,<slot:0>]"
+        if case == "option":
+            root += " [--tag <slot:1>]"
+        leaf_template = root + separator
+        if case == "nested":
+            leaf_template += "group <slot:1> "
+        leaf_index = 2 if case in {"nested", "option"} else 1
+        leaf_template += f"(child|c){separator}<slot:{leaf_index}>"
+        assert targets[0].canonical_usages == (root,)
+        assert targets[-1].canonical_usages == (leaf_template,)
+        assert all(
+            target.command_body == "probe" and "alias" in target.aliases for target in targets
+        )
+        for template in (root, leaf_template):
+            public = re.sub(r"slot:(\d+)", r"参数\1", template)
+            validate_capability_usage_template(public, template)
+        public = re.sub(r"slot:(\d+)", r"参数\1", leaf_template)
+        _validated_usage(public, target=targets[-1], display_trigger="probe|alias")
+        with pytest.raises(CapabilityAnnotationError):
+            _validated_usage(
+                public.replace(f"<参数{leaf_index}>", f"[参数{leaf_index}]"),
+                target=targets[-1],
+            )
+        for spelling in ("child", "c"):
+            words = ["probe", "value"]
+            if case == "option":
+                words += ["--tag", "label"]
+            if case == "nested":
+                words += ["group", "scope"]
+            words += [spelling, "target"]
+            text = separator.join(words)
+            if case == "compact":
+                text = text.replace("probe value", "probevalue", 1)
+            parsed = command.parse(text)
+            assert parsed.matched and parsed.all_matched_args["mode"] == "value"
+            assert parsed.all_matched_args["target"] == "target"
+            if not required:
+                without_parent = separator.join(word for word in words if word != "value")
+                assert command.parse(without_parent).matched
+        assert len(deterministic_record_usages(record)) == len(targets)
+        scoped = replace(
+            record,
+            claims=(
+                *record.claims,
+                Claim("command.dispatch_path", "child", ClaimBasis.OBSERVED, ("ev:runtime",)),
+            ),
+        )
+        scoped_targets = _invocation_targets(scoped, source_pack, (), runtime_evidence_id=None)
+        assert [target.canonical_usages for target in scoped_targets] == [(leaf_template,)]
+    finally:
+        command_manager.delete(command)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "mode",
+        "main_args.mode",
+        "$main.mode",
+        "limit",
+        "limit.count",
+        "options.limit",
+        "sub.item",
+        "sub.args.item",
+        "sub.nested.value",
+        "sub.flag",
+        "help",
+    ],
+)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("separator", [" ", ","])
+async def test_dispatch_presence_templates_match_native_parser(path, separator, source_pack):
+    from nonebot.matcher import matchers
+    from nonebot_plugin_alconna import on_alconna
+    from nonebot_plugin_alconna.params import _Dispatch
+
+    from nonebot_plugin_triage.capability.discovery.snapshot import _alconna_matcher_shape
+
+    command = Alconna(
+        "probe",
+        Args(Arg("mode?", str, seps=separator)),
+        Option(
+            "--limit", Args(Arg("count", int, seps=separator)), dest="limit", separators=separator
+        ),
+        Subcommand("帮助", dest="help", separators=separator),
+        Subcommand(
+            "sub",
+            Args(Arg("item?", str, seps=separator)),
+            Subcommand("nested", Args(Arg("value", int, seps=separator)), separators=separator),
+            Option("--flag", dest="flag", separators=separator),
+            separators=separator,
+        ),
+        separators=separator,
+        namespace=uuid4().hex,
+    )
+    root = on_alconna(command)
+    matcher = root.dispatch(path)
+    try:
+        arguments, components, _ = _alconna_matcher_shape(matcher, command)
+        record = _record(command)
+        replacements = {
+            "command.arguments": [asdict(arg) for arg in arguments],
+            "command.components": [asdict(node) for node in components],
+        }
+        record = replace(
+            record,
+            claims=(
+                *(
+                    replace(claim, value=replacements.get(claim.field, claim.value))
+                    for claim in record.claims
+                ),
+                Claim("command.dispatch_path", path, ClaimBasis.OBSERVED, ("ev:runtime",)),
+            ),
+        )
+        targets = _invocation_targets(record, source_pack, (), runtime_evidence_id=None)
+        assert len(targets) == 1
+        template = targets[0].canonical_usages[0]
+        # 槽位填入共同可接受的数字，包含所有可选父参数；不执行插件业务回调。
+        text = re.sub(r"[<\[]slot:\d+[>\]]", "3", template).replace("[", "").replace("]", "")
+        parsed = command.parse(text)
+        assert parsed.matched and await _Dispatch(path).fn(None, None, {}, parsed)
+        public = re.sub(r"slot:(\d+)", r"参数\1", template)
+        _validated_usage(public, target=targets[0])
+        if "limit" in path:
+            assert "[--limit" not in template and "--limit" in template
+        if path in {"mode", "main_args.mode", "$main.mode"}:
+            assert template == "probe" + separator + "<slot:0>"
+        assert deterministic_record_usages(record)
+    finally:
+        matchers[matcher.priority].remove(matcher)
+        root.clean()
+        command_manager.delete(command)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "separator", "head"),
+    [
+        *(
+            (path, sep, "probe")
+            for path in ("help", "flag", "mode", "sub.leaf")
+            for sep in (" ", ",")
+        ),
+        ("help", " ", "{action:probe|inspect}"),
+    ],
+)
+async def test_dispatch_or_not_is_one_target_with_native_main_and_path(
+    path, separator, head, source_pack
+):
+    from nonebot.matcher import matchers
+    from nonebot_plugin_alconna import on_alconna
+    from nonebot_plugin_alconna.params import _Dispatch
+
+    from nonebot_plugin_triage.capability.discovery.snapshot import _alconna_matcher_shape
+
+    command = Alconna(
+        head,
+        Args(Arg("mode?", str, seps=separator)) if path == "mode" else Args(),
+        Subcommand("帮助", dest="help", separators=separator),
+        Option("--flag", dest="flag", separators=separator),
+        Subcommand("sub", Subcommand("leaf", separators=separator), separators=separator),
+        Subcommand("other", separators=separator),
+        separators=separator,
+        namespace=uuid4().hex,
+    )
+    root = on_alconna(command)
+    child = root.dispatch(path, or_not=True)
+    try:
+        args, components, main = _alconna_matcher_shape(child, command)
+        assert main is not None
+        values = {
+            "command.arguments": [asdict(arg) for arg in args],
+            "command.components": [asdict(node) for node in components],
+        }
+        record = _record(command)
+        record = replace(
+            record,
+            claims=(
+                *(
+                    replace(claim, value=values.get(claim.field, claim.value))
+                    for claim in record.claims
+                ),
+                Claim("command.dispatch_path", path, ClaimBasis.OBSERVED, ("ev:runtime",)),
+                Claim(
+                    "command.dispatch_main_arguments",
+                    [asdict(arg) for arg in main],
+                    ClaimBasis.OBSERVED,
+                    ("ev:runtime",),
+                ),
+            ),
+        )
+        (target,) = _invocation_targets(record, source_pack, (), runtime_evidence_id=None)
+        assert target.entry_id == "root"
+        assert target.command_body == ("probe" if head == "probe" else None)
+        branch = {
+            "help": "帮助",
+            "flag": "--flag",
+            "mode": "yes",
+            "sub.leaf": separator.join(("sub", "leaf")),
+        }[path]
+        for text in ("probe", "probe" + separator + branch):
+            result = command.parse(text)
+            assert result.matched and await _Dispatch(path, or_not=True).fn(None, None, {}, result)
+        unrelated = command.parse("probe" + separator + "other")
+        assert unrelated.matched and not await _Dispatch(path, or_not=True).fn(
+            None, None, {}, unrelated
+        )
+        if path != "mode":
+            expected = "probe" + (
+                " [" + branch + "]" if separator == " " else "[" + separator + branch + "]"
+            )
+            if head == "probe":
+                assert target.canonical_usages[0] == expected
+            else:
+                assert target.usage_structure == (expected.replace("probe", "{command}", 1),)
+                assert not target.canonical_usages
+            assert _validated_usage(expected, target=target) == expected
+        for template in target.canonical_usages:
+            _validated_usage(template.replace("slot:0", "内容"), target=target)
+        if head == "probe":
+            with pytest.raises(CapabilityAnnotationError):
+                _validated_usage("probe" + separator + "other", target=target)
+            assert deterministic_record_usages(record)
+    finally:
+        matchers[child.priority].remove(child)
+        root.clean()
+        command_manager.delete(command)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("or_not", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+async def test_dispatch_intermediate_entry_is_folded_without_duplicate_templates(
+    or_not, nested, source_pack
+):
+    from nonebot.matcher import matchers
+    from nonebot_plugin_alconna import on_alconna
+    from nonebot_plugin_alconna.params import _Dispatch
+
+    from nonebot_plugin_triage.capability.discovery.snapshot import _alconna_matcher_shape
+
+    node = Subcommand("group", Subcommand("a"), Subcommand("b"))
+    path = "outer.group" if nested else "group"
+    command = Alconna(
+        "probe",
+        Subcommand("outer", node) if nested else node,
+        Subcommand("other"),
+        namespace=uuid4().hex,
+    )
+    root = on_alconna(command)
+    child = root.dispatch(path, or_not=or_not)
+    try:
+        args, nodes, main = _alconna_matcher_shape(child, command)
+        values = {
+            "command.arguments": [asdict(arg) for arg in args],
+            "command.components": [asdict(node) for node in nodes],
+        }
+        record = _record(command)
+        extra = [Claim("command.dispatch_path", path, ClaimBasis.OBSERVED, ("ev:runtime",))]
+        if main is not None:
+            extra.append(
+                Claim(
+                    "command.dispatch_main_arguments",
+                    [asdict(arg) for arg in main],
+                    ClaimBasis.OBSERVED,
+                    ("ev:runtime",),
+                )
+            )
+        record = replace(
+            record,
+            claims=(
+                *(
+                    replace(claim, value=values.get(claim.field, claim.value))
+                    for claim in record.claims
+                ),
+                *extra,
+            ),
+        )
+        (target,) = _invocation_targets(record, source_pack, (), runtime_evidence_id=None)
+        body = "outer group" if nested else "group"
+        expected = f"probe [{body} [a|b]]" if or_not else f"probe {body} [a|b]"
+        assert target.canonical_usages == (expected,)
+        assert deterministic_record_usages(record) == (expected,)
+        assert _validated_usage(expected, target=target) == expected
+        for text in (f"probe {body}", f"probe {body} a", f"probe {body} b"):
+            parsed = command.parse(text)
+            assert parsed.matched and await _Dispatch(path, or_not=or_not).fn(
+                None, None, {}, parsed
+            )
+        main_result = command.parse("probe")
+        assert main_result.matched
+        assert bool(await _Dispatch(path, or_not=or_not).fn(None, None, {}, main_result)) is or_not
+        if nested:
+            parent = command.parse("probe outer")
+            assert parent.matched and not await _Dispatch(path, or_not=or_not).fn(
+                None, None, {}, parent
+            )
+        assert not command.parse("probe a").matched
+        with pytest.raises(CapabilityAnnotationError):
+            _validated_usage("probe [a|b]", target=target)
+    finally:
+        matchers[child.priority].remove(child)
+        root.clean()
+        command_manager.delete(command)
+
+
+def test_dispatch_argument_default_does_not_become_required():
+    from nonebot.matcher import matchers
+    from nonebot_plugin_alconna import on_alconna
+
+    from nonebot_plugin_triage.capability.discovery.snapshot import _alconna_matcher_shape
+
+    command = Alconna(
+        "probe", Args(Arg("enabled?", bool, Field(default=False))), namespace=uuid4().hex
+    )
+    root = on_alconna(command)
+    matcher = root.dispatch("enabled")
+    try:
+        args, _, _ = _alconna_matcher_shape(matcher, command)
+        assert args[0].has_default and not args[0].required
+        assert command.parse("probe").query("enabled") is False
+    finally:
+        matchers[matcher.priority].remove(matcher)
+        root.clean()
+        command_manager.delete(command)
+
+
 def test_reply_and_repeated_slots_preserve_separator_boundaries():
     template = "probe,<slot:0>...,<slot:1>"
     assert validate_capability_usage_template(
@@ -626,12 +1078,11 @@ def test_family_shape_keeps_full_effective_separator_fact(source_pack):
     assert shapes[0]["usage_templates"] == shapes[1]["usage_templates"]
 
 
-def test_optional_options_with_incompatible_boundaries_fail_closed(source_pack):
-    command = Alconna(
-        "probe", Option("--one"), Option("--two"), separators=",", namespace=uuid4().hex
-    )
+@pytest.mark.parametrize("head", ["probe", "{action:open|close}"])
+def test_optional_options_with_incompatible_boundaries_fail_closed(source_pack, head):
+    command = Alconna(head, Option("--one"), Option("--two"), separators=",", namespace=uuid4().hex)
     try:
-        assert not command.parse("probe,--one,--two").matched
+        assert not command.parse(("probe" if head == "probe" else "open") + ",--one,--two").matched
         with pytest.raises(CapabilityAnalysisAdapterError, match="alternative option boundary"):
             _invocation_targets(_record(command), source_pack, (), runtime_evidence_id=None)
         assert deterministic_record_usages(_record(command)) == ()

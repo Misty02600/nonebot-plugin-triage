@@ -23,6 +23,7 @@ def test_maintenance_capture_keeps_failed_whole_unit_attempt(tmp_path: Path) -> 
         diagnostic_trace = ({"kind": "assistant_text", "content": "invalid candidate"},)
         diagnostic_provider_responses = ()
         diagnostic_provider_errors = ()
+        diagnostic_input_estimates = ({"estimated_input_tokens": 1200},)
 
         async def analyze(self, _request: object) -> object:
             raise CapabilityModelAdapterError(
@@ -63,6 +64,7 @@ def test_maintenance_capture_keeps_failed_whole_unit_attempt(tmp_path: Path) -> 
             "messages": [{"kind": "assistant_text", "content": "invalid candidate"}],
             "provider_responses": [],
             "provider_errors": [],
+            "input_estimates": [{"estimated_input_tokens": 1200}],
         }
     ]
     lifecycle = [
@@ -85,6 +87,7 @@ def test_maintenance_capture_persists_unit_start_before_completion(tmp_path: Pat
         diagnostic_trace = ()
         diagnostic_provider_responses = ()
         diagnostic_provider_errors = ()
+        diagnostic_input_estimates = ()
 
         async def analyze(self, _request: object) -> object:
             started.set()

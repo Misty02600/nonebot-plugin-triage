@@ -49,6 +49,7 @@ from nbtriage._model_runtime.telemetry import (
     record_agent_response_shape,
 )
 from nbtriage._model_runtime.usage import response_model_matches
+from nbtriage.capability.teaching._input_budget import TeachingInputPreparation
 from nbtriage.capability.teaching._prompt import (
     ANCHORED_INSTRUCTION as ANCHORED_INSTRUCTION,
 )
@@ -86,6 +87,7 @@ from nbtriage.capability.teaching.analysis import (
     validate_capability_analysis_output,
 )
 from nbtriage.capability.teaching.annotations import (
+    CAPABILITY_ANNOTATION_PRELOAD_TOKEN_TARGET,
     CAPABILITY_ANNOTATION_PROMPT_ID,
     CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT,
     CapabilityAnnotationError,
@@ -216,16 +218,32 @@ class _BoundedNavigationToolset(WrapperToolset[Any]):
         self._total_tokens_limit = total_tokens_limit
         self._deadline = deadline
         self._announce_budget = announce_budget
+        self._finalizing = False
 
-    def _budget_phase(self, usage: RunUsage) -> Literal["normal", "reserve", "finalize"]:
-        time_phase = self._deadline.phase()
-        if time_phase == "finalize":
+    def _budget_phase(self, ctx: RunContext[Any]) -> Literal["normal", "reserve", "finalize"]:
+        if self._finalizing:
             return "finalize"
+        usage = ctx.usage
+        last_input_tokens = next(
+            (
+                message.usage.input_tokens
+                for message in reversed(ctx.messages)
+                if isinstance(message, ModelResponse)
+            ),
+            0,
+        )
+        time_phase = self._deadline.phase()
         if (
-            self._budget.claimed >= self._budget.limit
+            time_phase == "finalize"
+            or self._budget.claimed >= self._budget.limit
             or usage.requests >= self._max_requests - 1
             or usage.total_tokens * 4 >= self._total_tokens_limit * 3
+            or (
+                last_input_tokens > 0
+                and self._total_tokens_limit - usage.total_tokens <= 2 * last_input_tokens
+            )
         ):
+            self._finalizing = True
             return "finalize"
         if time_phase == "reserve":
             return "reserve"
@@ -244,7 +262,7 @@ class _BoundedNavigationToolset(WrapperToolset[Any]):
         ctx: RunContext[Any],
         tool: ToolsetTool[Any],
     ) -> Any:
-        if self._budget_phase(ctx.usage) == "finalize" or not await self._budget.claim():
+        if self._budget_phase(ctx) == "finalize" or not await self._budget.claim():
             raise ToolFailed(
                 "tool_budget_exhausted: remaining_navigation_calls=0；"
                 "源码导航或时间预算已进入收尾阶段；"
@@ -255,7 +273,7 @@ class _BoundedNavigationToolset(WrapperToolset[Any]):
         budget_state: dict[str, object] = {
             "remaining_navigation_calls": self._budget.remaining,
         }
-        phase = self._budget_phase(ctx.usage)
+        phase = self._budget_phase(ctx)
         if phase != "normal":
             budget_state["navigation_phase"] = phase
         if phase == "finalize":
@@ -271,7 +289,7 @@ class _BoundedNavigationToolset(WrapperToolset[Any]):
         self,
         ctx: RunContext[Any],
     ) -> dict[str, ToolsetTool[Any]]:
-        if self._budget_phase(ctx.usage) == "finalize":
+        if self._budget_phase(ctx) == "finalize":
             return {}
         return await super().get_tools(ctx)
 
@@ -282,7 +300,7 @@ class _BoundedNavigationToolset(WrapperToolset[Any]):
         instructions = await super().get_instructions(ctx)
         if not self._announce_budget:
             return instructions
-        phase = self._budget_phase(ctx.usage)
+        phase = self._budget_phase(ctx)
         if phase == "normal":
             return instructions
         if phase == "reserve":
@@ -343,8 +361,9 @@ class _ClaimOutput(_StrictModel):
         Field(
             max_length=16,
             description=(
-                "内部覆盖关联：仅 behavior_boundary 可以列出其实际解释的业务准备状态 "
-                "gate candidate；其他 claim 必须为空。"
+                "内部覆盖关联：usage 可关联其完整表达的调用结构 gate；behavior_boundary "
+                "可关联按字段规则由本条边界解释的 gate，不限于业务准备状态。"
+                "同一 gate 可由多条 usage 共同表达，但不得跨公开字段重复关联；其他 claim 必须为空。"
             ),
         ),
     ] = []
@@ -358,8 +377,8 @@ class _ClaimOutput(_StrictModel):
         )
         if self.kind == "search_term":
             validate_capability_search_term(self.statement)
-        if self.gate_candidate_ids and self.kind != "behavior_boundary":
-            raise ValueError("only behavior_boundary may reference gate candidates")
+        if self.gate_candidate_ids and self.kind not in {"usage", "behavior_boundary"}:
+            raise ValueError("only usage or behavior_boundary may reference gate candidates")
         return self
 
 
@@ -828,25 +847,29 @@ def _display_trigger_usage_error(
 class _NextRequestTokenLimits(UsageLimits):
     """允许已付费响应完成校验，把 token 超限延迟到下一请求前。"""
 
-    _received_oversized_input = False
-
     def check_tokens(self, usage: RunUsage) -> None:
         response_limits = replace(self, total_tokens_limit=None)
         UsageLimits.check_tokens(response_limits, usage)
 
-    def check_per_request_input_tokens(self, request_input_tokens: int) -> None:
-        limit = self.per_request_input_tokens_limit
-        if limit is not None and request_input_tokens > limit:
-            self._received_oversized_input = True
 
-    def check_before_request(self, usage: RunUsage) -> None:
-        if self._received_oversized_input:
-            limit = self.per_request_input_tokens_limit
-            raise UsageLimitExceeded(
-                "The next request would follow a response whose input exceeded "
-                f"the per_request_input_tokens_limit of {limit}"
-            )
-        UsageLimits.check_before_request(self, usage)
+def _http_failure_detail(error: ModelHTTPError) -> str:
+    body = error.body
+    if error.status_code in {400, 413} and isinstance(body, Mapping):
+        detail = body.get("error", body)
+        if isinstance(detail, Mapping):
+            # 只认明确的容量错误，不把普通 400、配额或输出长度错误归为上下文溢出。
+            code = detail.get("code")
+            message = detail.get("message")
+            if code == "context_length_exceeded" or (
+                isinstance(message, str)
+                and re.search(
+                    r"maximum context length is \d+ tokens[.\s]+However, you requested \d+",
+                    message,
+                    re.IGNORECASE,
+                )
+            ):
+                return "context_length_exceeded"
+    return f"http_{error.status_code}"
 
 
 def _error_chain_contains_timeout(error: BaseException) -> bool:
@@ -994,12 +1017,16 @@ class PydanticAICapabilityAnalysisClient:
                 _AnalysisOutput,
                 name="final_result",
                 description=(
-                    "直接填写 knowledge_enabled、entries 和 gate_resolutions 三个顶层字段；"
+                    "调用本工具提交最终结果。将 knowledge_enabled、entries 和 gate_resolutions "
+                    "直接填写为工具参数；"
                     "不得添加 payload、output 或 result 包装，也不得把对象序列化成 JSON 字符串"
                 ),
             )
             if output_mode == "tool"
             else _AnalysisOutput
+        )
+        self._input_preparation = TeachingInputPreparation(
+            CAPABILITY_ANNOTATION_PRELOAD_TOKEN_TARGET
         )
         self._agent: Agent[CapabilityAnalysisRequest, _AnalysisOutput] = Agent(
             model,
@@ -1017,6 +1044,7 @@ class PydanticAICapabilityAnalysisClient:
             retries={"tools": 0, "output": 2},
             end_strategy="early",
             tool_timeout=min(timeout_seconds, 15.0),
+            capabilities=[self._input_preparation],
         )
         self._agent.instrument = current_agent_instrumentation()
 
@@ -1081,6 +1109,10 @@ class PydanticAICapabilityAnalysisClient:
         return self._diagnostic_trace
 
     @property
+    def diagnostic_input_estimates(self) -> tuple[dict[str, int | None], ...]:
+        return tuple(self._input_preparation.estimates) if self._capture_diagnostics else ()
+
+    @property
     def diagnostic_provider_responses(self) -> tuple[dict[str, Any], ...]:
         model = self._diagnostic_model
         return diagnostic_provider_response_trace(
@@ -1133,6 +1165,7 @@ class PydanticAICapabilityAnalysisClient:
         self._max_tool_calls = None
         self._total_tokens_limit = None
         self._cost_limit_usd = None
+        self._input_preparation.target = None
         model_settings = self._agent.model_settings
         if callable(model_settings):
             raise CapabilityModelAdapterError(
@@ -1200,9 +1233,6 @@ class PydanticAICapabilityAnalysisClient:
                                     else self._max_output_tokens * self._max_requests
                                 ),
                                 total_tokens_limit=self._total_tokens_limit,
-                                per_request_input_tokens_limit=(
-                                    None if self._max_requests is None else 64_000
-                                ),
                             ),
                         )
                         normal_output = result.output
@@ -1216,7 +1246,7 @@ class PydanticAICapabilityAnalysisClient:
                 raise CapabilityModelAdapterError(
                     f"capability model request failed with HTTP {error.status_code}",
                     reason_code=CapabilityModelAdapterReason.HTTP,
-                    detail_code=f"http_{error.status_code}",
+                    detail_code=_http_failure_detail(error),
                 ) from error
             except TimeoutError as error:
                 cancelled_run = RunCancelled.from_cancellation(error)
@@ -1260,8 +1290,9 @@ class PydanticAICapabilityAnalysisClient:
                 ) from error
             except UsageLimitExceeded as error:
                 raise CapabilityModelAdapterError(
-                    f"capability model request exceeded the {usage_limit_name(error)} budget",
+                    f"capability model request exceeded the {usage_limit_name(error)} budget: {error}",
                     reason_code=CapabilityModelAdapterReason.BUDGET,
+                    detail_code=usage_limit_name(error),
                 ) from error
             except UnexpectedModelBehavior as error:
                 truncated = any(
@@ -1441,6 +1472,7 @@ def _validate_entry_usages(
     elif target.mode in {
         CapabilityInvocationMode.REGEX,
         CapabilityInvocationMode.KEYWORD,
+        CapabilityInvocationMode.PATTERN,
     }:
         standard_usage_indexes = set(range(len(usages)))
     elif target.canonical_usages:
@@ -1536,8 +1568,10 @@ def _validate_entry_usages(
     for index, usage in enumerate(usages):
         validate_capability_usage_pattern(
             usage,
-            allow_separated_slots=bool(target.canonical_usages)
-            and index not in shortcut_usage_indexes,
+            allow_separated_slots=(
+                bool(target.canonical_usages) and index not in shortcut_usage_indexes
+            )
+            or target.mode is CapabilityInvocationMode.PATTERN,
         )
         if target.mode is CapabilityInvocationMode.KEYWORD:
             validate_keyword_usage(usage, target)
@@ -1586,6 +1620,7 @@ def _validate_entry_usages(
             in {
                 CapabilityInvocationMode.COMPLETE,
                 CapabilityInvocationMode.REGEX,
+                CapabilityInvocationMode.PATTERN,
             }
             and len(re.findall(r"(?<!\S)@bot(?=\s)", usage)) != 1
         ):
@@ -1705,6 +1740,7 @@ def _build_payload(request: CapabilityAnalysisRequest) -> str:
                 "regex_flags": list(item.regex_flags),
                 "keywords": list(item.keywords),
                 "canonical_usages": list(item.canonical_usages),
+                **({"usage_structure": list(item.usage_structure)} if item.usage_structure else {}),
                 "aliases": list(item.aliases),
                 "requires_mention": item.requires_mention,
                 "shortcut_count": item.shortcut_count,
@@ -1905,7 +1941,7 @@ def _validate_gate_resolution_output(
         if candidate_id not in candidates:
             raise CapabilityAnnotationError(f"{owner} 引用了不存在的 gate candidate")
         owners = public_owners_by_candidate.setdefault(candidate_id, {})
-        if entry_id in owners:
+        if entry_id in owners and not (owner == owners[entry_id] == "usage"):
             raise CapabilityAnnotationError(
                 "同一 gate candidate 在一个 entry 中只能选择一个公开语义所有者"
             )
@@ -1914,7 +1950,7 @@ def _validate_gate_resolution_output(
     for entry in output.entries:
         for claim in entry.claims:
             for candidate_id in claim.gate_candidate_ids:
-                register_public_owner(candidate_id, entry.entry_id, "behavior_boundary")
+                register_public_owner(candidate_id, entry.entry_id, claim.kind)
         for constraint in entry.constraints:
             for candidate_id in constraint.gate_candidate_ids:
                 register_public_owner(candidate_id, entry.entry_id, "constraint")
@@ -1947,12 +1983,13 @@ def _validate_gate_resolution_output(
                     f"candidate_id={candidate_id}；"
                     f"missing_entry_ids={','.join(missing_entry_ids)}；"
                     "调用者身份、会话场景、使用资格或限流使用对应 constraint 关联；"
-                    "能力自身的业务准备状态使用 behavior_boundary claim 关联。"
-                    "只选择一个语义所有者并在其 gate_candidate_ids 中填写上述 candidate_id"
+                    "调用结构可由一组 usage 关联；其余按字段规则属于行为边界的条件使用 "
+                    "behavior_boundary claim 关联。只选择一种公开归属，并在相应 "
+                    "gate_candidate_ids 中填写上述 candidate_id"
                 )
         elif linked_entries:
             raise CapabilityAnnotationError(
-                "no_constraint 或 unresolved 不能关联公开 constraint 或 behavior_boundary"
+                "no_constraint 或 unresolved 不能关联公开 constraint、usage 或 behavior_boundary"
             )
     if output.knowledge_enabled and any(
         item.outcome == "unresolved" for item in output.gate_resolutions

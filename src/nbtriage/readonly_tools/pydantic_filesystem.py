@@ -60,6 +60,7 @@ def build_read_only_file_toolsets(
     *,
     filesystem_factory: FileSystemFactory | None = None,
     tool_names_by_root: Mapping[str, frozenset[str]] | None = None,
+    enforce_read_line_limit: bool = True,
 ) -> ReadOnlyFileToolsets:
     """为任务中的每个批准根构建独立、带前缀的 Harness 只读工具集。
 
@@ -97,6 +98,7 @@ def build_read_only_file_toolsets(
                 prefixed,
                 root_name=root.name,
                 max_read_lines=profile.policy.max_read_lines,
+                enforce_read_line_limit=enforce_read_line_limit,
             )
         except ReadOnlyFileSystemError:
             raise
@@ -131,6 +133,7 @@ def _bounded_read_file_toolset(
     *,
     root_name: str,
     max_read_lines: int,
+    enforce_read_line_limit: bool = True,
 ) -> object:
     from ._pydantic_file_limits import bounded_read_file_toolset
 
@@ -138,6 +141,7 @@ def _bounded_read_file_toolset(
         toolset,
         root_name=root_name,
         max_read_lines=max_read_lines,
+        enforce_read_line_limit=enforce_read_line_limit,
     )
 
 

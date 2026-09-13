@@ -69,6 +69,10 @@ class CapabilityConfidence(StrEnum):
     LOW = "low"
 
 
+class _AlconnaProjectionError(ValueError):
+    """已采集 Matcher 的静态分派结构不受支持，不代表采集清单缺失。"""
+
+
 @dataclass(frozen=True)
 class SourceEvidence:
     source_id: str
@@ -139,6 +143,7 @@ class AlconnaComponent:
     components: tuple[AlconnaComponent, ...]
     separators: str | None = None
     repeatable: bool = False
+    dispatch_required: bool = False
 
 
 @dataclass(frozen=True)
@@ -189,6 +194,10 @@ class CapabilityCandidate:
     trigger_regex_flags: tuple[str, ...] = ()
     shortcuts: tuple[AlconnaShortcut, ...] = ()
     shortcut_count: int = 0
+    dispatch_path: str | None = None
+    dispatch_main_arguments: tuple[AlconnaArgument, ...] | None = None
+    projection_issue: str | None = None
+    header_match: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -624,6 +633,45 @@ def _alconna_command(matcher: object) -> object | None:
     return command
 
 
+def _alconna_header_match(command: Alconna[Any]) -> dict[str, object]:
+    """读取已编译的匹配事实，不解析消息或执行自定义匹配器。
+
+    Note:
+        content 已包含前缀，不能把它的正则类型等同于原始命令是正则。
+        capture_types 只记录转换目标类型，不解释或执行转换逻辑。
+    """
+    header = command_manager.require(command).command_header
+    origin = header.origin[0]
+    return {
+        "origin": origin if isinstance(origin, str) else None,
+        "origin_type": _qualified_type_name(origin),
+        "content": _alconna_header_pattern(header.content),
+        "compact": header.compact,
+        "compact_pattern": (
+            _alconna_header_pattern(header.compact_pattern)
+            if header.compact and header.compact_pattern is not None
+            else None
+        ),
+        "capture_types": {
+            name: _alconna_pattern_type(pattern) for name, pattern in sorted(header.mapping.items())
+        },
+    }
+
+
+def _alconna_header_pattern(value: object) -> dict[str, object]:
+    if isinstance(value, set) and all(isinstance(item, str) for item in value):
+        return {"kind": "literal", "values": sorted(value)}
+    if isinstance(value, re.Pattern) and isinstance(value.pattern, str):
+        return {
+            "kind": "regex",
+            "pattern": value.pattern,
+            "flags": value.flags,
+            "groups": dict(value.groupindex),
+        }
+    # 自定义 Pattern、消息段前缀组合等仍保留为未知，不能用 str(value) 冒充文字。
+    return {"kind": "opaque", "type": _qualified_type_name(value)}
+
+
 def _alconna_shortcuts(
     command: object,
     plugin_module_name: str,
@@ -780,8 +828,16 @@ def _alconna_candidate(
     if name is None or not registered:
         analysis_issues.add(AnalysisIssue.EVIDENCE_INSUFFICIENT)
     confidence = CapabilityConfidence.HIGH if explicitly_public else CapabilityConfidence.MEDIUM
-    arguments = _alconna_arguments(getattr(command, "args", None))
-    components = _alconna_matcher_components(matcher, command)
+    projection_issue = None
+    try:
+        arguments, components, dispatch_main_arguments = _alconna_matcher_shape(matcher, command)
+    except _AlconnaProjectionError as error:
+        # 已知的不支持保留为单元诊断；未知异常仍由采集层记录为 partial。
+        projection_issue = str(error)
+        dispatch_main_arguments = None
+        analysis_issues.add(AnalysisIssue.EVIDENCE_INSUFFICIENT)
+        arguments = _alconna_arguments(getattr(command, "args", None))
+        components = _alconna_components(getattr(command, "options", ()))
     alconna_constraints = set(constraints)
     if bool(getattr(command, "behaviors", ())):
         alconna_constraints.add("alconna_behaviors_opaque")
@@ -833,6 +889,10 @@ def _alconna_candidate(
         evidence=(source,),
         shortcuts=shortcuts,
         shortcut_count=shortcut_count,
+        dispatch_path=getattr(matcher, "basepath", None),
+        dispatch_main_arguments=dispatch_main_arguments,
+        projection_issue=projection_issue,
+        header_match=_alconna_header_match(cast(Alconna[Any], command)) if registered else None,
     )
 
 
@@ -1004,6 +1064,13 @@ def _matcher_constraints(matcher: object) -> tuple[tuple[str, ...], bool]:
             continue
         if _object_has_base(call, "nonebot_plugin_alconna.params", "_Dispatch"):
             constraints.add("routing:alconna_dispatch")
+            try:
+                _path, additional, _or_main = _dispatch_presence(call)
+            except _AlconnaProjectionError:
+                constraints.add("rule:opaque:alconna_dispatch")
+            else:
+                if additional is not None:
+                    constraints.add("rule:opaque:dispatch_additional")
             continue
         if any(
             _object_has_base(call, "nonebot.rule", class_name)
@@ -1458,38 +1525,168 @@ def _alconna_matcher_components(
     matcher: object,
     command: object,
 ) -> tuple[AlconnaComponent, ...]:
+    return _alconna_matcher_shape(matcher, command)[1]
+
+
+def _dispatch_presence(call: object) -> tuple[str, object, bool]:
+    from nonebot_plugin_alconna.params import _Dispatch, assign, match_path
+
+    fn = getattr(call, "fn", None)
+    if type(call) is not _Dispatch or not isinstance(fn, FunctionType):
+        raise _AlconnaProjectionError("unsupported_dispatch_predicate")
+    or_main = any(fn.__code__ is constant for constant in assign.__code__.co_consts)
+    if not or_main and not any(
+        fn.__code__ is constant for constant in match_path.__code__.co_consts
+    ):
+        # 带 value 的 or_not 使用 match_value，不能解释成主入口并集。
+        raise _AlconnaProjectionError("unsupported_dispatch_predicate")
+    captured = inspect.getclosurevars(fn).nonlocals
+    path = captured.get("path")
+    if not isinstance(path, str):
+        raise _AlconnaProjectionError("unavailable_dispatch_path")
+    return path, captured.get("additional"), or_main
+
+
+def _alconna_matcher_shape(
+    matcher: object,
+    command: object,
+) -> tuple[
+    tuple[AlconnaArgument, ...],
+    tuple[AlconnaComponent, ...],
+    tuple[AlconnaArgument, ...] | None,
+]:
+    arguments = _alconna_arguments(getattr(command, "args", None))
     options = getattr(command, "options", ())
     basepath = getattr(matcher, "basepath", None)
     if not isinstance(basepath, str):
-        raise ValueError("Alconna matcher dispatch path is unavailable")
+        raise _AlconnaProjectionError("unavailable_dispatch_path")
     if not basepath:
-        return _alconna_components(options)
+        return arguments, _alconna_components(options), None
+    predicates = [
+        getattr(dependent, "call", None)
+        for dependent in _safe_collection(getattr(getattr(matcher, "rule", None), "checkers", ()))
+        if _object_has_base(
+            getattr(dependent, "call", None), "nonebot_plugin_alconna.params", "_Dispatch"
+        )
+    ]
+    if len(predicates) != 1:
+        raise _AlconnaProjectionError("unsupported_dispatch_predicate")
+    path, _additional, or_main = _dispatch_presence(predicates[0])
+    if path != basepath:
+        raise _AlconnaProjectionError("unsupported_dispatch_predicate")
+    if or_main and any(
+        not _is_tarina_empty(getattr(node, "default", _MISSING))
+        for node in _safe_collection(options)
+    ):
+        raise _AlconnaProjectionError("unsupported_dispatch_node_default")
     if basepath == "$main":
-        return ()
+        return arguments, (), None
+    main_arguments = arguments if or_main else None
 
-    path = tuple(segment for segment in basepath.split(".") if segment)
-    scoped = _alconna_component_path(options, path)
+    path, argument = _alconna_dispatch_target(command, basepath)
+    if not path:
+        return _dispatch_arguments(arguments, argument), (), main_arguments
+    scoped = _alconna_component_path(options, path, argument=argument)
     if scoped is None:
-        raise ValueError("Alconna matcher dispatch path cannot be resolved")
-    return (scoped,)
+        raise _AlconnaProjectionError("unresolved_dispatch_path")
+    return arguments, (scoped,), main_arguments
+
+
+def _alconna_dispatch_target(command: object, path: str) -> tuple[tuple[str, ...], str | None]:
+    """只定位声明中的节点和参数，不模拟 Arparma 的 context / 动态属性查询。"""
+    from nonebot_plugin_alconna.matcher import extract_arg
+
+    parts = path.split(".")
+    node = command
+    resolved: tuple[str, ...] = ()
+    while parts:
+        prefix = parts.pop(0)
+        if prefix in ({"main_args", "$main"} if not resolved else {"args"}):
+            if len(parts) != 1:
+                break
+            prefix = parts.pop()
+            if extract_arg(".".join((*resolved, prefix)), cast(Any, command)) is not None:
+                return resolved, prefix
+            break
+        kind = None
+        if prefix in {"options", "subcommands"}:
+            kind = "option" if prefix == "options" else "subcommand"
+            if not parts:
+                break
+            prefix = parts.pop(0)
+        matches = [
+            child
+            for child in _safe_collection(getattr(node, "options", ()))
+            if not isinstance(child, (Help, Completion, Shortcut))
+            if getattr(child, "dest", None) == prefix
+            and (kind is None or ("option" if isinstance(child, Option) else "subcommand") == kind)
+        ]
+        arg = (
+            extract_arg(".".join((*resolved, prefix)), cast(Any, command))
+            if not parts and kind is None
+            else None
+        )
+        if arg is not None and not matches:
+            return resolved, prefix
+        if arg is not None or len(matches) != 1:
+            break
+        node = matches[0]
+        if not _is_tarina_empty(getattr(node, "default", _MISSING)):
+            raise _AlconnaProjectionError("unsupported_dispatch_node_default")
+        resolved = (*resolved, prefix)
+        if not parts:
+            return resolved, None
+    raise _AlconnaProjectionError("unresolved_dispatch_path")
+
+
+def _dispatch_arguments(
+    arguments: tuple[AlconnaArgument, ...],
+    name: str | None,
+) -> tuple[AlconnaArgument, ...]:
+    if name is None:
+        return arguments
+    target = next((arg for arg in arguments if arg.name == name), None)
+    if target is None:
+        raise _AlconnaProjectionError("unresolved_dispatch_argument")
+    if target.hidden or target.variadic:
+        raise _AlconnaProjectionError("unsupported_dispatch_argument_shape")
+    return tuple(
+        replace(arg, required=True) if arg.name == name and not arg.has_default else arg
+        for arg in arguments
+    )
 
 
 def _alconna_component_path(
     value: object,
     path: tuple[str, ...],
+    *,
+    argument: str | None = None,
 ) -> AlconnaComponent | None:
     if not path or not isinstance(value, Sequence) or isinstance(value, str | bytes):
         return None
     head, *tail = path
     for component in value:
+        if isinstance(component, (Help, Completion, Shortcut)):
+            continue
         if _safe_text(getattr(component, "dest", None)) != head:
             continue
         converted = _alconna_component(component)
-        if converted is None or converted.kind != "subcommand":
+        if converted is None:
             return None
         if not tail:
-            return converted
-        nested = _alconna_component_path(getattr(component, "options", ()), tuple(tail))
+            if converted.kind == "option" and converted.repeatable:
+                raise _AlconnaProjectionError("unsupported_repeated_dispatch_option")
+            return replace(
+                converted,
+                arguments=_dispatch_arguments(converted.arguments, argument),
+                components=tuple(item for item in converted.components if item.kind == "option")
+                if argument is not None
+                else converted.components,
+                dispatch_required=True,
+            )
+        nested = _alconna_component_path(
+            getattr(component, "options", ()), tuple(tail), argument=argument
+        )
         if nested is None:
             return None
         return _alconna_component(component, nested=(nested,))
@@ -1810,6 +2007,7 @@ def _core_record(
         ("invocation.header", _candidate_invocation_header(candidate)),
         ("command.path", candidate.command_path),
         ("command.header", candidate.header),
+        ("command.header_match", candidate.header_match),
         ("command.literals", list(candidate.literal_commands)),
         ("command.aliases", list(candidate.aliases)),
         ("command.prefixes", list(candidate.prefixes)),
@@ -1819,10 +2017,21 @@ def _core_record(
         ("command.enabled", candidate.enabled),
         ("command.arguments", [asdict(item) for item in candidate.arguments]),
         ("command.components", [asdict(item) for item in candidate.components]),
+        ("command.dispatch_path", candidate.dispatch_path),
+        ("command.projection_issue", candidate.projection_issue),
     )
     for field_name, value in observed_values:
         if value is not None and value != []:
             claims.append(Claim(field_name, value, ClaimBasis.OBSERVED, matcher_evidence))
+    if candidate.dispatch_main_arguments is not None:
+        claims.append(
+            Claim(
+                "command.dispatch_main_arguments",
+                [asdict(item) for item in candidate.dispatch_main_arguments],
+                ClaimBasis.OBSERVED,
+                matcher_evidence,
+            )
+        )
     if candidate.shortcut_count:
         claims.extend(
             (

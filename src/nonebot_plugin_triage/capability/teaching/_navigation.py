@@ -7,7 +7,7 @@ import sys
 import textwrap
 from collections import deque
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from itertools import chain
 from pathlib import Path
@@ -35,11 +35,8 @@ from nbtriage.readonly_tools import (
 )
 from nonebot_plugin_triage.evidence_access import python_dependency_navigation_roots
 
-_MAX_MODULES = 16
 _MAX_FILE_CHARS = 1_000_000
 _MAX_AST_NODES = 50_000
-_MAX_FUNCTION_CHARS = 8_000
-_MAX_INITIAL_SOURCE_CHARS = 32_000
 _MAX_SOURCE_SLICE_DEPTH = 2
 _MAX_GATE_BINDING_DEPTH = 3
 
@@ -189,11 +186,10 @@ def _append_bounded_source_slices(
     gate_names: frozenset[str],
     priority_names: frozenset[str],
     source_file_revisions: Mapping[str, str],
-    source_chars: int,
     cache: CapabilitySourceSliceCache | None,
 ) -> None:
     """按两层普通调用 BFS 追加插件函数，并预载一层唯一定位的依赖函数。"""
-    if source_chars >= _MAX_INITIAL_SOURCE_CHARS or not seeds:
+    if not seeds:
         return
     active_cache = cache or CapabilitySourceSliceCache()
     try:
@@ -234,20 +230,17 @@ def _append_bounded_source_slices(
         if definition is None:
             continue
         if definition.kind == "statement":
-            source_chars, binding_functions, exhausted = _append_gate_binding_chain(
+            binding_functions = _append_gate_binding_chain(
                 evidence_units,
                 analysis_unit_id=analysis_unit_id,
                 navigation=navigation,
                 cache=active_cache,
                 definition=definition,
                 known=known,
-                source_chars=source_chars,
             )
-            if exhausted:
-                return
             queued.extend((item, 0) for item in binding_functions)
             continue
-        source_chars, resolved, external, exhausted = _append_call_definition(
+        resolved, external = _append_call_definition(
             evidence_units,
             analysis_unit_id=analysis_unit_id,
             navigation=navigation,
@@ -255,10 +248,7 @@ def _append_bounded_source_slices(
             call=call,
             definition=definition,
             known=known,
-            source_chars=source_chars,
         )
-        if exhausted:
-            return
         if resolved is not None and not external:
             queued.append((resolved, 0))
 
@@ -279,7 +269,7 @@ def _append_bounded_source_slices(
             definition = _cached_call_definition(active_cache, navigation, call)
             if definition is None:
                 continue
-            source_chars, resolved, external, exhausted = _append_call_definition(
+            resolved, external = _append_call_definition(
                 evidence_units,
                 analysis_unit_id=analysis_unit_id,
                 navigation=navigation,
@@ -287,10 +277,7 @@ def _append_bounded_source_slices(
                 call=call,
                 definition=definition,
                 known=known,
-                source_chars=source_chars,
             )
-            if exhausted:
-                return
             if resolved is not None and not external and depth < _MAX_SOURCE_SLICE_DEPTH:
                 queued.append((resolved, depth + 1))
         if depth >= _MAX_SOURCE_SLICE_DEPTH:
@@ -307,7 +294,7 @@ def _append_bounded_source_slices(
             definition = _cached_call_definition(active_cache, navigation, call)
             if definition is None:
                 continue
-            source_chars, resolved, external, exhausted = _append_call_definition(
+            resolved, external = _append_call_definition(
                 evidence_units,
                 analysis_unit_id=analysis_unit_id,
                 navigation=navigation,
@@ -315,10 +302,8 @@ def _append_bounded_source_slices(
                 call=call,
                 definition=definition,
                 known=known,
-                source_chars=source_chars,
+                preload_optional=call.terminal_name not in gate_names,
             )
-            if exhausted:
-                return
             if resolved is not None and not external and depth < _MAX_SOURCE_SLICE_DEPTH:
                 queued.append((resolved, depth + 1))
 
@@ -332,16 +317,25 @@ def _append_call_definition(
     call: _CallSite,
     definition: DefinitionLocation,
     known: set[tuple[str, str, int]],
-    source_chars: int,
-) -> tuple[int, _FunctionSlice | None, bool, bool]:
+    preload_optional: bool = False,
+) -> tuple[_FunctionSlice | None, bool]:
     identity = (definition.root_name, definition.relative_path, definition.line)
     external = not _definition_belongs_to_plugin(navigation, definition)
     if identity in known:
-        return source_chars, None, external, False
+        if not preload_optional:
+            resolved = _cached_definition_slice(cache, navigation, definition)
+            if resolved is not None:
+                evidence_id = _function_slice_evidence(
+                    analysis_unit_id, navigation, resolved, external=external
+                ).evidence_id
+                for index, unit in enumerate(evidence_units):
+                    if unit.evidence_id == evidence_id and unit.preload_optional:
+                        evidence_units[index] = replace(unit, preload_optional=False)
+        return None, external
     known.add(identity)
     external_mode = _external_definition_mode(definition) if external else None
     if external and external_mode is None:
-        return source_chars, None, True, False
+        return None, True
     if external_mode is _ExternalDefinitionMode.STUB:
         navigation_evidence = _external_dependency_navigation_evidence(
             analysis_unit_id,
@@ -349,23 +343,22 @@ def _append_call_definition(
             definition,
             stub_only=True,
         )
-        if source_chars + len(navigation_evidence.content) <= _MAX_INITIAL_SOURCE_CHARS:
-            evidence_units.append(navigation_evidence)
-            source_chars += len(navigation_evidence.content)
-        return source_chars, None, True, False
+        evidence_units.append(navigation_evidence)
+        return None, True
     resolved = _cached_definition_slice(cache, navigation, definition)
-    if resolved is not None and source_chars + len(resolved.content) <= _MAX_INITIAL_SOURCE_CHARS:
+    if resolved is not None:
         evidence_units.append(
             _function_slice_evidence(
                 analysis_unit_id,
                 navigation,
                 resolved,
                 external=external,
+                preload_optional=preload_optional,
             )
         )
-        return source_chars + len(resolved.content), resolved, external, False
+        return resolved, external
     if not external:
-        return source_chars, None, False, resolved is not None
+        return None, False
 
     navigation_evidence = _external_dependency_navigation_evidence(
         analysis_unit_id,
@@ -373,10 +366,8 @@ def _append_call_definition(
         definition,
         stub_only=False,
     )
-    if source_chars + len(navigation_evidence.content) <= _MAX_INITIAL_SOURCE_CHARS:
-        evidence_units.append(navigation_evidence)
-        source_chars += len(navigation_evidence.content)
-    return source_chars, None, True, False
+    evidence_units.append(navigation_evidence)
+    return None, True
 
 
 def _external_definition_mode(
@@ -404,6 +395,7 @@ def _function_slice_evidence(
     resolved: _FunctionSlice,
     *,
     external: bool,
+    preload_optional: bool = False,
 ) -> CapabilityEvidenceUnit:
     symbol = resolved.full_name or resolved.name
     if external:
@@ -426,6 +418,7 @@ def _function_slice_evidence(
         content=resolved.content,
         revision=f"sha256:{resolved.source_revision}",
         locator=locator,
+        preload_optional=preload_optional,
     )
 
 
@@ -609,7 +602,7 @@ def _registration_source_calls(
     known_module_names = {item.module.__name__ for item in available_modules}
     known_locators = {item.locator for item in available_modules}
     for module_name in sorted(sys.modules):
-        if required_locators <= known_locators or len(available_modules) >= _MAX_MODULES:
+        if required_locators <= known_locators:
             break
         if module_name in known_module_names or not _module_belongs_to_plugin(
             module_name, module_root
@@ -674,10 +667,9 @@ def _append_registration_source_evidence(
     parsed_modules: Mapping[str, _ParsedModule],
     registrations: tuple[RegistrationAnchor, ...],
     source_file_revisions: Mapping[str, str],
-    source_chars: int,
     runtime_sources: tuple[EvidenceRef, ...] = (),
-) -> int:
-    """独立保留已定位的注册调用；沿用源码预算，不自动展开其引用定义。"""
+) -> None:
+    """独立保留已定位的注册调用，不自动展开其引用定义。"""
     seen = {item.evidence_id for item in evidence_units}
     for parsed, source, call, revision in chain(
         _registration_source_calls(
@@ -688,9 +680,7 @@ def _append_registration_source_evidence(
         ),
     ):
         content = ast.get_source_segment(source, call)
-        if not content or len(content) > _MAX_FUNCTION_CHARS:
-            continue
-        if source_chars + len(content) > _MAX_INITIAL_SOURCE_CHARS:
+        if not content:
             continue
         evidence_id = _evidence_id(
             analysis_unit_id,
@@ -709,8 +699,6 @@ def _append_registration_source_evidence(
             )
         )
         seen.add(evidence_id)
-        source_chars += len(content)
-    return source_chars
 
 
 def _runtime_registration_source_calls(
@@ -912,8 +900,7 @@ def _append_gate_binding_chain(
     cache: CapabilitySourceSliceCache,
     definition: DefinitionLocation,
     known: set[tuple[str, str, int]],
-    source_chars: int,
-) -> tuple[int, tuple[_FunctionSlice, ...], bool]:
+) -> tuple[_FunctionSlice, ...]:
     pending: deque[tuple[DefinitionLocation, int]] = deque(((definition, 0),))
     resolved_functions: list[_FunctionSlice] = []
     while pending:
@@ -927,10 +914,7 @@ def _append_gate_binding_chain(
         if binding is None:
             continue
         known.add(identity)
-        if source_chars + len(binding.content) > _MAX_INITIAL_SOURCE_CHARS:
-            return source_chars, tuple(resolved_functions), True
         evidence_units.append(_module_binding_evidence(analysis_unit_id, navigation, binding))
-        source_chars += len(binding.content)
         for call in binding.calls:
             child = _cached_gate_definition(cache, navigation, call)
             if child is None:
@@ -939,7 +923,7 @@ def _append_gate_binding_chain(
                 if depth < _MAX_GATE_BINDING_DEPTH:
                     pending.append((child, depth + 1))
                 continue
-            source_chars, resolved, external, exhausted = _append_call_definition(
+            resolved, external = _append_call_definition(
                 evidence_units,
                 analysis_unit_id=analysis_unit_id,
                 navigation=navigation,
@@ -947,13 +931,10 @@ def _append_gate_binding_chain(
                 call=call,
                 definition=child,
                 known=known,
-                source_chars=source_chars,
             )
-            if exhausted:
-                return source_chars, tuple(resolved_functions), True
             if resolved is not None and not external:
                 resolved_functions.append(resolved)
-    return source_chars, tuple(resolved_functions), False
+    return tuple(resolved_functions)
 
 
 def _module_binding_slice(
@@ -987,7 +968,7 @@ def _module_binding_slice(
     statement = candidates[0]
     content = ast.get_source_segment(source, statement)
     value = statement.value if isinstance(statement, ast.Assign | ast.AnnAssign) else None
-    if content is None or value is None or len(content) > _MAX_FUNCTION_CHARS:
+    if content is None or value is None:
         return None
     return _ModuleBindingSlice(
         definition=definition,
@@ -1373,7 +1354,7 @@ def _function_slice_from_ast(
     full_name: str | None,
 ) -> _FunctionSlice | None:
     content = _function_source(source, function)
-    if content is None or len(content) > _MAX_FUNCTION_CHARS:
+    if content is None:
         return None
     calls = _function_call_sites(relative_path, source, source_revision, function)
     parameter_dependencies = _function_parameter_dependencies(

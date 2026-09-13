@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from collections.abc import Iterator, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from itertools import product
 
 from nbtriage.capability.catalog.records import (
     CapabilityRecord,
     ClaimBasis,
     ConstraintEvaluability,
+    EvidenceRef,
 )
 from nbtriage.capability.teaching.analysis import (
     CapabilityEvidenceUnit,
@@ -43,6 +45,10 @@ from nbtriage.capability.teaching.usage import (
 )
 from nonebot_plugin_triage.capability.teaching._navigation import (
     CapabilityAnalysisAdapterError,
+    _module_belongs_to_plugin,
+    _path_belongs_to_source_root,
+    _plugin_source_root,
+    _resolved_python_file,
     _source_location_key,
 )
 from nonebot_plugin_triage.capability.teaching._source import _claim_values
@@ -59,20 +65,21 @@ class _FamilyGateProjection:
     requires_mention: bool = False
 
 
+@dataclass(frozen=True)
+class _FamilyMemberProjection:
+    capability_id: str
+    invocations: tuple[CapabilityInvocationTarget, ...]
+    shape_id: str | None
+    syntax_fidelity: str
+    hints: list[list[object]]
+
+
 def _family_member_invocations(
     records: tuple[CapabilityRecord, ...],
     pack: CapabilitySourceEvidencePack,
     handler_sources: tuple[SourceSpan, ...],
 ) -> tuple[tuple[CapabilityFamilyMember, ...], tuple[CapabilityEvidenceUnit, ...]]:
-    projected: list[
-        tuple[
-            str,
-            tuple[CapabilityInvocationTarget, ...],
-            str | None,
-            str,
-            list[list[object]],
-        ]
-    ] = []
+    projected: list[_FamilyMemberProjection] = []
     shapes: dict[str, dict[str, object]] = {}
     for record in sorted(records, key=lambda item: item.capability_id):
         registrations = _selected_registrations(record, pack, handler_sources)
@@ -99,17 +106,15 @@ def _family_member_invocations(
             shape_id = f"shape:{hashlib.sha256(shape_content.encode('utf-8')).hexdigest()[:24]}"
             shapes.setdefault(shape_id, shape)
         projected.append(
-            (
-                record.capability_id,
-                invocations,
-                shape_id,
-                _family_syntax_fidelity(record),
-                _family_member_hints(record),
+            _FamilyMemberProjection(
+                capability_id=record.capability_id,
+                invocations=invocations,
+                shape_id=shape_id,
+                syntax_fidelity=_family_syntax_fidelity(record),
+                hints=_family_member_hints(record),
             )
         )
 
-    evidence_units: list[CapabilityEvidenceUnit] = []
-    shape_evidence_ids: dict[str, str] = {}
     indexed_shapes = tuple(
         (shape_id, {"index": index, **payload})
         for index, (shape_id, payload) in enumerate(sorted(shapes.items()))
@@ -120,46 +125,29 @@ def _family_member_invocations(
         "format": "indexed-v2",
         "shape_count": len(indexed_shapes),
     }
-    shape_offset = 0
-    for chunk in _family_manifest_chunks(
+    shape_evidence, shape_evidence_ids = _family_manifest_evidence(
         indexed_shapes,
+        kind="shapes",
         envelope=shape_envelope,
         collection_key="shapes",
         label="parameterized family parser shapes",
-    ):
-        content = _bounded_evidence_json(
-            {
-                **shape_envelope,
-                "row_offset": shape_offset,
-                "shapes": [item[1] for item in chunk],
-            },
-            "parameterized family parser shapes",
-        )
-        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        evidence_id = f"evidence:family-shapes:{digest}"
-        evidence_units.append(
-            CapabilityEvidenceUnit(
-                evidence_id=evidence_id,
-                source_kind="runtime_family_shapes",
-                content=content,
-                revision=f"sha256:{digest}",
-            )
-        )
-        shape_evidence_ids.update((item[0], evidence_id) for item in chunk)
-        shape_offset += len(chunk)
+    )
 
-    evidence_by_member: dict[str, str] = {}
     syntax_codes = {
         "a": "anchor_only",
         "l": "literal_exact",
         "o": "open_tail",
         "p": "parser_exact",
+        "s": "parser_with_pattern_header",
         "r": "regex_exact",
     }
     syntax_code_by_value = {value: key for key, value in syntax_codes.items()}
+    common_hints, member_hints = _split_common_family_hints(
+        tuple(member.hints for member in projected)
+    )
     member_rows = tuple(
         (
-            capability_id,
+            member.capability_id,
             [
                 [
                     [
@@ -168,68 +156,118 @@ def _family_member_invocations(
                         invocation.regex_pattern,
                         list(invocation.regex_flags),
                     ]
-                    for invocation in invocations
+                    for invocation in member.invocations
                 ],
-                shape_indexes.get(shape_id) if shape_id is not None else None,
-                syntax_code_by_value[syntax_fidelity],
+                shape_indexes.get(member.shape_id) if member.shape_id is not None else None,
+                syntax_code_by_value[member.syntax_fidelity],
                 hints,
             ],
         )
-        for capability_id, invocations, shape_id, syntax_fidelity, hints in projected
+        for member, hints in zip(projected, member_hints, strict=True)
     )
     member_envelope = {
         "scope": "current_runtime_family_members",
-        "format": "columns-v2",
+        "format": "columns-v3",
         "columns": ["invocations", "shape", "syntax", "hints"],
         "invocation_columns": ["command", "aliases", "regex", "regex_flags"],
         "hint_columns": ["field", "value", "basis"],
+        "common_hints": common_hints,
         "syntax_codes": syntax_codes,
         "member_count": len(member_rows),
     }
-    member_offset = 0
-    for chunk in _family_manifest_chunks(
+    member_evidence, evidence_by_member = _family_manifest_evidence(
         member_rows,
+        kind="members",
         envelope=member_envelope,
         collection_key="rows",
         label="parameterized family member facts",
-    ):
-        content = _bounded_evidence_json(
-            {
-                **member_envelope,
-                "row_offset": member_offset,
-                "rows": [item[1] for item in chunk],
-            },
-            "parameterized family member facts",
-        )
-        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        evidence_id = f"evidence:family-members:{digest}"
-        evidence_units.append(
-            CapabilityEvidenceUnit(
-                evidence_id=evidence_id,
-                source_kind="runtime_family_members",
-                content=content,
-                revision=f"sha256:{digest}",
-            )
-        )
-        evidence_by_member.update((item[0], evidence_id) for item in chunk)
-        member_offset += len(chunk)
+    )
 
     members = tuple(
         CapabilityFamilyMember(
-            capability_id=capability_id,
-            invocations=invocations,
+            capability_id=member.capability_id,
+            invocations=member.invocations,
             evidence_ids=tuple(
                 dict.fromkeys(
                     (
-                        evidence_by_member[capability_id],
-                        *((shape_evidence_ids[shape_id],) if shape_id is not None else ()),
+                        evidence_by_member[member.capability_id],
+                        *(
+                            (shape_evidence_ids[member.shape_id],)
+                            if member.shape_id is not None
+                            else ()
+                        ),
                     )
                 )
             ),
         )
-        for capability_id, invocations, shape_id, _syntax_fidelity, _hints in projected
+        for member in projected
     )
-    return members, tuple(evidence_units)
+    return members, (*shape_evidence, *member_evidence)
+
+
+def _split_common_family_hints(
+    members: tuple[list[list[object]], ...],
+) -> tuple[list[list[object]], tuple[list[list[object]], ...]]:
+    """按完整字段事实提取交集，保留值、来源与重复次数，不推断缺失值。
+
+    Returns:
+        全体共同的 hints 与逐成员剩余 hints；两部分字段互斥，原始输入不变。
+    """
+    common_fields: dict[object, str] = {}
+    for index, hints in enumerate(members):
+        grouped: dict[object, list[list[object]]] = {}
+        for hint in hints:
+            grouped.setdefault(hint[0], []).append(hint)
+        signatures = {
+            field: _canonical_json_sort_key(sorted(rows, key=_canonical_json_sort_key))
+            for field, rows in grouped.items()
+        }
+        if index == 0:
+            common_fields = signatures
+        else:
+            common_fields = {
+                field: signature
+                for field, signature in common_fields.items()
+                if signatures.get(field) == signature
+            }
+        if not common_fields:
+            break
+    common = [hint for hint in members[0] if hint[0] in common_fields] if members else []
+    remaining = tuple([hint for hint in hints if hint[0] not in common_fields] for hints in members)
+    return common, remaining
+
+
+def _family_manifest_evidence(
+    rows: tuple[tuple[str, object], ...],
+    *,
+    kind: str,
+    envelope: Mapping[str, object],
+    collection_key: str,
+    label: str,
+) -> tuple[tuple[CapabilityEvidenceUnit, ...], dict[str, str]]:
+    evidence_units: list[CapabilityEvidenceUnit] = []
+    evidence_by_row: dict[str, str] = {}
+    offset = 0
+    for chunk in _family_manifest_chunks(
+        rows, envelope=envelope, collection_key=collection_key, label=label
+    ):
+        content = _bounded_evidence_json(
+            {**envelope, "row_offset": offset, collection_key: [item[1] for item in chunk]},
+            label,
+        )
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        evidence_id = f"evidence:family-{kind}:{digest}"
+        evidence_units.append(
+            CapabilityEvidenceUnit(
+                evidence_id=evidence_id,
+                source_kind=f"runtime_family_{kind}",
+                content=content,
+                revision=f"sha256:{digest}",
+            )
+        )
+        evidence_by_row.update((item[0], evidence_id) for item in chunk)
+        offset += len(chunk)
+    return tuple(evidence_units), evidence_by_row
 
 
 def _family_manifest_chunks(
@@ -292,6 +330,7 @@ def _family_parser_shape(
             for invocation in invocations
             for usage in invocation.canonical_usages
         ],
+        "usage_structure": [usage for item in invocations for usage in item.usage_structure],
     }
 
 
@@ -324,7 +363,7 @@ def _family_usage_template(invocation: CapabilityInvocationTarget, usage: str) -
 
 def _family_syntax_fidelity(record: CapabilityRecord) -> str:
     if record.kind == "alconna":
-        return "parser_exact"
+        return "parser_with_pattern_header" if _has_pattern_header(record) else "parser_exact"
     factories = {
         claim.value
         for claim in record.claims
@@ -343,6 +382,8 @@ def _family_syntax_fidelity(record: CapabilityRecord) -> str:
 
 def _family_member_hints(record: CapabilityRecord) -> list[list[object]]:
     fields = {
+        "command.header_match",
+        "command.aliases",
         "command.prefixes",
         "command.separators",
         "command.force_whitespace",
@@ -386,7 +427,7 @@ def _family_gate_projection(
     member_facts: list[tuple[PermissionConstraintFact, ...]] = []
 
     for record in records:
-        registrations = _selected_family_registrations(record, pack, handler_sources)
+        registrations = _selected_registrations(record, pack, handler_sources)
         opaque_gate_fields = {
             field_name
             for registration in registrations
@@ -622,71 +663,69 @@ def _family_fixed_constraints(
     )
 
 
-def _selected_family_registrations(
+def _registration_file(
+    evidence: EvidenceRef,
+    pack: CapabilitySourceEvidencePack,
+) -> str | None:
+    """确定源码包中的文件身份；摘要只能验证版本，不能用于选择同名文件。"""
+    files = {item.source.locator: item.source.digest for item in pack.files}
+    module_name = evidence.payload.get("module_name")
+    locator: str | None = None
+    if isinstance(module_name, str):
+        if not _module_belongs_to_plugin(module_name, pack.module_name):
+            return None
+        module = sys.modules.get(module_name)
+        path = _resolved_python_file(module) if module is not None else None
+        if path is not None:
+            root = _plugin_source_root(pack.module_name)
+            if not _path_belongs_to_source_root(path, root):
+                raise CapabilityAnalysisAdapterError(
+                    "Matcher registration source is outside plugin"
+                )
+            locator = path.relative_to(root[0]).as_posix() if root[1] else path.name
+    if locator is None:
+        # 兼容只有 locator 的记录；仅转换完整插件前缀，不做任意路径后缀匹配。
+        raw = evidence.locator.replace("\\", "/")
+        prefix = pack.module_name.replace(".", "/") + "/"
+        candidates = {value for value in (raw, raw.removeprefix(prefix)) if value in files}
+        if len(candidates) > 1:
+            raise CapabilityAnalysisAdapterError("Matcher registration file is ambiguous")
+        locator = next(iter(candidates), None)
+    if locator not in files:
+        return None
+    if evidence.content_hash is not None and evidence.content_hash != files[locator]:
+        raise CapabilityAnalysisAdapterError("plugin source changed during analysis preparation")
+    return locator
+
+
+def _registration_candidates(
     record: CapabilityRecord,
     pack: CapabilitySourceEvidencePack,
-    handler_sources: tuple[SourceSpan, ...],
-) -> tuple[RegistrationAnchor, ...]:
-    source_file_revisions = {item.source.locator: item.source.digest for item in pack.files}
-    matcher_evidence = tuple(item for item in record.evidence_refs if item.kind == "matcher_source")
-    for evidence in matcher_evidence:
-        matching_revisions = {
-            revision
-            for locator, revision in source_file_revisions.items()
-            if _source_locators_match(evidence.locator, locator)
-        }
-        if (
-            evidence.content_hash is not None
-            and len(matching_revisions) == 1
-            and evidence.content_hash not in matching_revisions
-        ):
-            raise CapabilityAnalysisAdapterError(
-                "plugin source changed during analysis preparation"
-            )
-    source_locations = {
-        (item.locator.replace("\\", "/"), line)
-        for item in matcher_evidence
-        for line in (item.payload.get("line"),)
-        if isinstance(line, int) and not isinstance(line, bool) and line > 0
-    }
-    located = tuple(
-        item
-        for item in pack.registrations
-        if any(
-            line == item.source.line and _source_locators_match(locator, item.source.locator)
-            for locator, line in source_locations
+) -> tuple[tuple[RegistrationAnchor, ...], bool]:
+    candidates = pack.registrations
+    located = False
+    known_file: str | None = None
+    for evidence in record.evidence_refs:
+        if evidence.kind != "matcher_source":
+            continue
+        locator = _registration_file(evidence, pack)
+        if locator is None:
+            continue
+        if known_file is not None and known_file != locator:
+            raise CapabilityAnalysisAdapterError("Matcher registration sources conflict")
+        known_file = locator
+        candidates = tuple(item for item in candidates if item.source.locator == locator)
+        line = evidence.payload.get("line")
+        if type(line) is not int or line < 1:
+            continue
+        at_line = tuple(
+            item for item in candidates if item.source.line <= line <= item.source.end_line
         )
-    )
-    if len(located) == 1:
-        return located
-    if len(located) > 1:
-        raise CapabilityAnalysisAdapterError(
-            "parameterized family Matcher registration source is ambiguous"
-        )
-
-    observed_entries = _observed_registration_entries(record)
-    entry_matches = tuple(
-        item
-        for item in pack.registrations
-        if observed_entries.intersection((*item.entries, *item.aliases))
-    )
-    if len(entry_matches) == 1:
-        return entry_matches
-    if len(entry_matches) > 1:
-        raise CapabilityAnalysisAdapterError(
-            "parameterized family Matcher registration source is ambiguous"
-        )
-    return _selected_registrations(record, pack, handler_sources)
-
-
-def _source_locators_match(left: str, right: str) -> bool:
-    normalized_left = left.replace("\\", "/").strip("/")
-    normalized_right = right.replace("\\", "/").strip("/")
-    return (
-        normalized_left == normalized_right
-        or normalized_left.endswith(f"/{normalized_right}")
-        or normalized_right.endswith(f"/{normalized_left}")
-    )
+        if at_line:
+            candidates, located = at_line, True
+        elif located:
+            raise CapabilityAnalysisAdapterError("Matcher registration sources conflict")
+    return candidates, located
 
 
 def _invocation_targets(
@@ -695,6 +734,64 @@ def _invocation_targets(
     selected_registrations: tuple[RegistrationAnchor, ...],
     *,
     runtime_evidence_id: str | None,
+) -> tuple[CapabilityInvocationTarget, ...]:
+    pattern_header = _has_pattern_header(record)
+    targets = _command_invocation_targets(
+        record,
+        source_pack,
+        selected_registrations,
+        runtime_evidence_id=runtime_evidence_id,
+        pattern_header=pattern_header,
+    )
+    if not pattern_header:
+        return targets
+    result = []
+    for target in targets:
+        assert target.command_body is not None
+        head = f"@bot {target.command_body}" if target.requires_mention else target.command_body
+        result.append(
+            replace(
+                target,
+                mode=CapabilityInvocationMode.PATTERN,
+                command_body=None,
+                canonical_usages=(),
+                aliases=(),
+                argument_limits=(),
+                usage_structure=tuple(
+                    usage.replace("__command__", "{command}", 1)
+                    for usage in target.canonical_usages or (head,)
+                ),
+            )
+        )
+    return tuple(result)
+
+
+def _has_pattern_header(record: CapabilityRecord) -> bool:
+    """按已采集的头部匹配事实选择路径，不把模板失败作为宽松回退条件。"""
+    if record.kind != "alconna":
+        return False
+    fact = _single_family_fact(record, "command.header_match", default=None)
+    if fact is None:
+        return False
+    if isinstance(fact, Mapping) and isinstance(content := fact.get("content"), Mapping):
+        if content.get("kind") == "literal":
+            return False
+        if (
+            content.get("kind") == "regex"
+            and isinstance(content.get("pattern"), str)
+            and isinstance(fact.get("origin"), str)
+        ):
+            return True
+    raise CapabilityAnalysisAdapterError("unsupported Alconna command header: opaque match facts")
+
+
+def _command_invocation_targets(
+    record: CapabilityRecord,
+    source_pack: CapabilitySourceEvidencePack,
+    selected_registrations: tuple[RegistrationAnchor, ...],
+    *,
+    runtime_evidence_id: str | None,
+    pattern_header: bool,
 ) -> tuple[CapabilityInvocationTarget, ...]:
     requires_mention = _requires_mention(source_pack, selected_registrations)
     trigger_factories = {
@@ -831,6 +928,62 @@ def _invocation_targets(
     else:
         shortcut_count = 0
         shortcut_evidence_ids = ()
+    if pattern_header:
+        # 复用现有路径/参数渲染，随后将这一输入占位移入 usage_structure。
+        # 真实头部、别名和前缀仍在 Runtime Evidence 中，不作为固定文字校验。
+        header, aliases = "__command__", ()
+    union = _dispatch_union_usages(
+        record,
+        header,
+        command_arguments,
+        command_components,
+        root_separators=root_separators,
+        compact=command_compact,
+    )
+    if union is not None:
+        return (
+            CapabilityInvocationTarget(
+                entry_id="root",
+                mode=CapabilityInvocationMode.ANCHORED,
+                command_body=header,
+                canonical_usages=tuple(
+                    f"@bot {usage}" if requires_mention else usage for usage, _ in union
+                ),
+                aliases=aliases,
+                requires_mention=requires_mention,
+                shortcut_count=shortcut_count,
+                shortcut_evidence_ids=shortcut_evidence_ids,
+                argument_limits=union[0][1],
+            ),
+        )
+    if _has_ancestor_arguments(command_arguments, command_components):
+        return tuple(
+            CapabilityInvocationTarget(
+                entry_id="root"
+                if not path
+                else (
+                    f"subcommand:{hashlib.sha256(' '.join(path).encode('utf-8')).hexdigest()[:16]}"
+                ),
+                mode=CapabilityInvocationMode.ANCHORED,
+                command_body=header,
+                canonical_usages=(f"@bot {usage}" if requires_mention else usage,),
+                aliases=aliases,
+                requires_mention=requires_mention,
+                shortcut_count=shortcut_count,
+                shortcut_evidence_ids=shortcut_evidence_ids,
+                argument_limits=limits,
+            )
+            for path, usage, limits in _argument_path_usages(
+                header,
+                command_arguments,
+                command_components,
+                root_separators=root_separators,
+                compact=command_compact,
+                dispatched=any(
+                    _claim_values(record, "command.dispatch_path", evidence_kind="matcher_source")
+                ),
+            )
+        )
     subcommands = _subcommand_leaves(command_components)
     if not subcommands:
         argument_limits: list[tuple[int, int]] = []
@@ -1043,6 +1196,8 @@ def _deterministic_record_usages(
         raise CapabilityAnalysisAdapterError("record must be a CapabilityRecord")
     if not isinstance(requires_mention, bool):
         raise CapabilityAnalysisAdapterError("requires_mention must be a boolean")
+    if _has_pattern_header(record):
+        return ()
     headers = {
         claim.value
         for field in ("invocation.header", "command.header")
@@ -1078,6 +1233,32 @@ def _deterministic_record_usages(
     if root_separators is not None:
         _validate_separator_tree(
             command_arguments, command_components, root_separators, compact=command_compact
+        )
+    union = _dispatch_union_usages(
+        record,
+        header,
+        command_arguments,
+        command_components,
+        root_separators=root_separators,
+        compact=command_compact,
+        generic_slot_names=True,
+    )
+    if union is not None:
+        return tuple(f"@bot {usage}" if requires_mention else usage for usage, _ in union)
+    if _has_ancestor_arguments(command_arguments, command_components):
+        return tuple(
+            f"@bot {usage}" if requires_mention else usage
+            for _path, usage, _limits in _argument_path_usages(
+                header,
+                command_arguments,
+                command_components,
+                root_separators=root_separators,
+                compact=command_compact,
+                generic_slot_names=True,
+                dispatched=any(
+                    _claim_values(record, "command.dispatch_path", evidence_kind="matcher_source")
+                ),
+            )
         )
     leaves = _subcommand_leaves(command_components)
     if not leaves:
@@ -1403,6 +1584,227 @@ def _option_components(value: object) -> list[object]:
     return [item for item in value if isinstance(item, Mapping) and item.get("kind") == "option"]
 
 
+def _dispatch_union_usages(
+    record: CapabilityRecord,
+    header: str,
+    arguments: object,
+    components: list[object],
+    *,
+    root_separators: str | None,
+    compact: bool,
+    generic_slot_names: bool = False,
+) -> tuple[tuple[str, tuple[tuple[int, int], ...]], ...] | None:
+    """保留 dispatch 目标自身及后续路径，按声明路径无损合并，不分析父子可达性。"""
+    main = _claim_values(record, "command.dispatch_main_arguments", evidence_kind="matcher_source")
+
+    def has_dispatched_children(nodes: object) -> bool:
+        return isinstance(nodes, (list, tuple)) and any(
+            isinstance(node, Mapping)
+            and (
+                (
+                    node.get("dispatch_required") is True
+                    and any(
+                        isinstance(child, Mapping) and child.get("kind") == "subcommand"
+                        for child in node.get("components", ())
+                    )
+                )
+                or has_dispatched_children(node.get("components", ()))
+            )
+            for node in nodes
+        )
+
+    if not main and not has_dispatched_children(components):
+        return None
+    if main and (len(main) != 1 or not isinstance(main[0], list)):
+        raise CapabilityAnalysisAdapterError("capability has conflicting dispatch main arguments")
+    if main and root_separators is not None:
+        _validate_separator_tree(main[0], [], root_separators, compact=compact)
+    branches = [(arguments, components)]
+    if main:
+        branches.insert(0, (main[0], []))
+    routes = tuple(
+        (path, usage, limits)
+        for args, nodes in branches
+        for path, usage, limits in _argument_path_usages(
+            header,
+            args,
+            nodes,
+            root_separators=root_separators,
+            compact=compact,
+            generic_slot_names=generic_slot_names,
+            dispatched=True,
+        )
+    )
+    usages = tuple(dict.fromkeys((usage, limits) for _, usage, limits in routes))
+    if not usages or len({limits for _, limits in usages}) != 1:
+        raise CapabilityAnalysisAdapterError(
+            "unsupported Alconna syntax: dispatch branch argument limits"
+        )
+    limits = usages[0][1]
+
+    def optional_suffixes(head: str, tails: list[str]) -> str:
+        suffixes = [usage[len(head) :] for usage in tails]
+        spaced = all(suffix.startswith(" ") for suffix in suffixes)
+        body = "|".join(suffix[1:] if spaced else suffix for suffix in suffixes)
+        return head + (" [" if spaced else "[") + body + "]"
+
+    # 同一路径的参数必填性可能不同（例如参数型 or_not），此时不按路径覆盖。
+    by_path = {path: usage for path, usage, _ in routes}
+    if len({(path, usage) for path, usage, _ in routes}) == len(by_path):
+
+        def fold(parent: tuple[str, ...] | None) -> list[str]:
+            descendants = [
+                path
+                for path in by_path
+                if parent is None or (len(path) > len(parent) and path[: len(parent)] == parent)
+            ]
+            children = [
+                path
+                for path in descendants
+                if not any(
+                    len(other) < len(path) and path[: len(other)] == other for other in descendants
+                )
+            ]
+            tails = [usage for child in children for usage in fold(child)]
+            if parent is None:
+                return tails
+            head = by_path[parent]
+            if tails and all(usage.startswith(head) and usage != head for usage in tails):
+                return [optional_suffixes(head, tails)]
+            return [head, *tails]
+
+        usages = tuple((usage, limits) for usage in dict.fromkeys(fold(None)))
+    elif len(usages) == 2 and usages[1][0].startswith(usages[0][0]):
+        # Option 分派与主入口同处根路径，但仍可合并完整的可选 Option 段。
+        usages = ((optional_suffixes(usages[0][0], [usages[1][0]]), limits),)
+    if not usages or len(usages) > 4 or (limits and len(usages) != 1):
+        raise CapabilityAnalysisAdapterError(
+            "unsupported Alconna syntax: dispatch template alternatives"
+        )
+    return usages
+
+
+def _has_ancestor_arguments(arguments: object, components: object) -> bool:
+    children = (
+        [
+            item
+            for item in components
+            if isinstance(item, Mapping) and item.get("kind") == "subcommand"
+        ]
+        if isinstance(components, (list, tuple))
+        else []
+    )
+    return bool(arguments and children) or any(
+        _has_ancestor_arguments(child.get("arguments", ()), child.get("components", ()))
+        for child in children
+    )
+
+
+def _argument_path_usages(
+    header: str,
+    arguments: object,
+    components: list[object],
+    *,
+    root_separators: str | None,
+    compact: bool,
+    generic_slot_names: bool = False,
+    dispatched: bool = False,
+) -> Iterator[tuple[tuple[str, ...], str, tuple[tuple[int, int], ...]]]:
+    """按声明路径保留祖先参数；固定子命令不再冒充连续的 command_body。
+
+    每条路径独立分配槽位，分支继承祖先的参数和 Option。这里只渲染一种固定顺序，
+    不尝试枚举 Parser 允许的全部参数排列，也不执行插件的匹配或转换回调。
+    """
+    root = root_separators or " "
+
+    def walk(
+        nodes: tuple[Mapping[str, object], ...], path: tuple[str, ...]
+    ) -> Iterator[tuple[tuple[str, ...], str, tuple[tuple[int, int], ...]]]:
+        node = nodes[-1]
+        nested = node.get("components", ())
+        if not isinstance(nested, (list, tuple)):
+            raise CapabilityAnalysisAdapterError(
+                "unsupported Alconna syntax: invalid ancestor node"
+            )
+        children = [
+            child
+            for child in nested
+            if isinstance(child, Mapping) and child.get("kind") == "subcommand"
+        ]
+        if (
+            not children
+            or (node.get("arguments") and not dispatched)
+            or (dispatched and any(item.get("dispatch_required") is True for item in nodes))
+        ):
+            indexes = iter(range(1_000))
+            limits: list[tuple[int, int]] = []
+            usage = header
+            for index, current in enumerate(nodes):
+                if index:
+                    previous = nodes[index - 1]
+                    raw_args = previous.get("arguments", ())
+                    if not isinstance(raw_args, (list, tuple)):
+                        raise CapabilityAnalysisAdapterError(
+                            "unsupported Alconna syntax: invalid ancestor arguments"
+                        )
+                    previous_args = [
+                        arg
+                        for arg in raw_args
+                        if isinstance(arg, Mapping) and not arg.get("hidden")
+                    ]
+                    boundary = _separator(previous["separators"])
+                    if not _option_components(previous.get("components", ())):
+                        if previous_args:
+                            boundary = _argument_separator(previous_args, -1, root_separators)
+                        elif previous.get("compact"):
+                            boundary = ""
+                    name = current["name"]
+                    aliases = current.get("aliases", ())
+                    if (
+                        not isinstance(name, str)
+                        or not isinstance(aliases, (list, tuple))
+                        or any(not isinstance(alias, str) for alias in aliases)
+                    ):
+                        raise CapabilityAnalysisAdapterError(
+                            "unsupported Alconna syntax: invalid ancestor names"
+                        )
+                    names = tuple(dict.fromkeys((name, *aliases)))
+                    name = names[0] if len(names) == 1 else f"({'|'.join(names)})"
+                    requires = _node_requires(current)
+                    usage += boundary + _separator(root).join((*requires, name))
+                rendered = _structured_usage(
+                    usage,
+                    current.get("arguments", ()),
+                    _option_components(current.get("components", ())),
+                    compact=current.get("compact") is True,
+                    generic_slot_names=generic_slot_names,
+                    separators=current["separators"],
+                    root_separators=root_separators,
+                    argument_limits=limits,
+                    slot_indexes=indexes,
+                )
+                if rendered is None:
+                    raise CapabilityAnalysisAdapterError(
+                        "unsupported Alconna syntax: ancestor path"
+                    )
+                usage = rendered
+            yield path, usage, tuple(limits)
+        for child in children:
+            yield from walk((*nodes, child), (*path, str(child["name"])))
+
+    yield from walk(
+        (
+            {
+                "arguments": arguments,
+                "components": components,
+                "separators": root,
+                "compact": compact,
+            },
+        ),
+        (),
+    )
+
+
 def _structured_usage(
     command_body: str,
     arguments: object,
@@ -1413,6 +1815,7 @@ def _structured_usage(
     separators: object = " ",
     root_separators: str | None = None,
     argument_limits: list[tuple[int, int]] | None = None,
+    slot_indexes: Iterator[int] | None = None,
 ) -> str | None:
     """把 Runtime parser 结构渲染为匿名模板或保守的直接帮助用法。"""
     if not isinstance(arguments, (list, tuple)):
@@ -1422,7 +1825,8 @@ def _structured_usage(
     strict = root_separators is not None
     root_separators = root_separators if strict else separators
     _separator(separators)
-    slot_indexes = iter(range(1_000))
+    if slot_indexes is None:
+        slot_indexes = iter(range(1_000))
     rendered_arguments = _render_arguments(
         arguments,
         slot_indexes=slot_indexes,
@@ -1460,7 +1864,13 @@ def _structured_usage(
             outgoing if index or rendered_arguments else ("" if compact else _separator(separators))
         )
         # 重复标记属于整个 Option 组，移入分隔符时保留组后的后缀。
-        result += f"[{sep}{rendered[1:]}" if sep not in {"", " "} else sep + rendered
+        option = options[index] if len(options) <= 3 else None
+        required_option = isinstance(option, Mapping) and option.get("dispatch_required") is True
+        result += (
+            f"[{sep}{rendered[1:]}"
+            if not required_option and sep not in {"", " "}
+            else sep + rendered
+        )
         # 后续 Option 可独立省略，必须可从根 / 当前节点继续读取。
         outgoing = _separator(separators)
         if rendered_arguments and outgoing != _argument_separator(
@@ -1584,7 +1994,19 @@ def _validate_separator_tree(
     if arguments and any(
         isinstance(c, Mapping) and c.get("kind") == "subcommand" for c in components
     ):
-        raise CapabilityAnalysisAdapterError("unsupported Alconna separators: ancestor arguments")
+        visible = [arg for arg in arguments if isinstance(arg, Mapping) and not arg.get("hidden")]
+        if any(arg.get("variadic") for arg in visible):
+            raise CapabilityAnalysisAdapterError(
+                "unsupported Alconna syntax: variadic ancestor before subcommand"
+            )
+        if (
+            visible
+            and visible[-1].get("required") is False
+            and _argument_separator(visible, -1, root) != current_separator
+        ):
+            raise CapabilityAnalysisAdapterError(
+                "unsupported Alconna separators: optional ancestor boundary"
+            )
     node_names: list[set[str]] = []
     for component in components:
         if not isinstance(component, Mapping):
@@ -1762,6 +2184,12 @@ def _render_options(
     argument_limits: list[tuple[int, int]] | None = None,
 ) -> tuple[str, ...] | None:
     if len(options) > 3:
+        if any(
+            isinstance(option, Mapping) and option.get("dispatch_required") for option in options
+        ):
+            raise CapabilityAnalysisAdapterError(
+                "unsupported Alconna syntax: collapsed dispatch option"
+            )
         return ("[可选参数]",)
     result: list[str] = []
     for option in options:
@@ -1790,18 +2218,19 @@ def _render_options(
         )
         if rendered_arguments is None:
             return None
-        if len(names) > 3:
+        dispatch_required = option.get("dispatch_required") is True
+        if len(names) > 3 and not dispatch_required:
             option_head = "<选项>"
         elif len(names) == 1:
             option_head = names[0]
-        elif rendered_arguments:
+        elif rendered_arguments or dispatch_required:
             option_head = f"({'|'.join(names)})"
         else:
             option_head = "|".join(names)
         separator = _separator(option.get("separators")) if root_separators is not None else " "
         if root_separators is not None and (requires := _node_requires(option)):
             # 前置词属于整个可选节点，备选只作用于节点名称。
-            if len(names) > 1 and not rendered_arguments:
+            if len(names) > 1 and not rendered_arguments and not dispatch_required:
                 option_head = f"({option_head})"
             option_head = _separator(root_separators).join((*requires, option_head))
         rendered, _outgoing = _join_arguments(
@@ -1812,7 +2241,9 @@ def _render_options(
             root_separators=root_separators,
         )
         repeat = option.get("repeatable") is True and len(names) <= 3
-        result.append(f"[{rendered}]" + ("..." if repeat else ""))
+        result.append(
+            rendered if dispatch_required else f"[{rendered}]" + ("..." if repeat else "")
+        )
     return tuple(result)
 
 
@@ -1860,6 +2291,7 @@ def _runtime_fact_claims(record: CapabilityRecord) -> list[dict[str, object]]:
         "invocation.header",
         "command.path",
         "command.header",
+        "command.header_match",
         "command.literals",
         "command.aliases",
         "command.prefixes",
@@ -1869,6 +2301,8 @@ def _runtime_fact_claims(record: CapabilityRecord) -> list[dict[str, object]]:
         "command.enabled",
         "command.arguments",
         "command.components",
+        "command.dispatch_path",
+        "command.dispatch_main_arguments",
         "command.shortcut_count",
         "command.shortcuts",
         "trigger.factory",
@@ -1949,33 +2383,60 @@ def _selected_registrations(
     pack: CapabilitySourceEvidencePack,
     handler_sources: tuple[SourceSpan, ...],
 ) -> tuple[RegistrationAnchor, ...]:
+    candidates, located = _registration_candidates(record, pack)
+    if located and len(candidates) == 1:
+        return candidates
     handler_source_keys = {_source_location_key(item) for item in handler_sources}
     selected_handlers = tuple(
         item for item in pack.handlers if _source_location_key(item.source) in handler_source_keys
     )
-    handler_names = {item.name for item in selected_handlers}
     observed_entries = _observed_registration_entries(record)
-    matcher_names = {name for item in selected_handlers for name in item.matcher_names}
-    entry_candidates = tuple(
+    entry_matches = tuple(
+        item for item in candidates if observed_entries.intersection((*item.entries, *item.aliases))
+    )
+    bound = tuple(
         item
-        for item in pack.registrations
-        if not item.entries or bool(set(item.entries).intersection(observed_entries))
+        for item in candidates
+        if any(
+            item.source.locator == handler.source.locator
+            and item.matcher_name in handler.matcher_names
+            for handler in selected_handlers
+        )
     )
-    precise = tuple(
-        item
-        for item in entry_candidates
-        if item.matcher_name is not None and item.matcher_name in matcher_names
-    )
-    if len(precise) == 1:
-        return precise
-    if len(precise) > 1:
+    if not bound:
+        # 匿名 Handler 或被重复定义的名称不能代替函数身份。
+        bound = tuple(
+            item
+            for item in candidates
+            if any(
+                item.source.locator == handler.source.locator
+                and handler.name in item.handlers
+                and sum(
+                    other.source.locator == handler.source.locator and other.name == handler.name
+                    for other in pack.handlers
+                )
+                == 1
+                for handler in selected_handlers
+            )
+        )
+    if bound:
+        candidates = bound
+    if observed_entries:
+        # 一个静态入口命中，不能证明另一动态入口不可能产生同一个命令。
+        candidates = tuple(
+            item
+            for item in candidates
+            if item in entry_matches
+            or not item.entries
+            or {"entry", "aliases"}.intersection(item.opaque_fields)
+        )
+        if not candidates and (located or bound):
+            raise CapabilityAnalysisAdapterError("Matcher registration bindings conflict")
+    if located or bound or entry_matches:
+        if len(candidates) == 1:
+            return candidates
         raise CapabilityAnalysisAdapterError("Matcher registration source is ambiguous")
-    fallback = tuple(
-        item for item in entry_candidates if set(item.handlers).intersection(handler_names)
-    )
-    if len(fallback) > 1:
-        raise CapabilityAnalysisAdapterError("Matcher registration source is ambiguous")
-    return fallback
+    return ()
 
 
 def _observed_registration_entries(record: CapabilityRecord) -> set[str]:

@@ -9,12 +9,19 @@ import pytest
 from pydantic_ai import ModelResponse, TextPart, ThinkingPart, ToolCallPart, models
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelRequest, RetryPromptPart, ToolReturnPart, UserPromptPart
+from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
+from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.usage import RequestUsage
 
-from nbtriage.capability.teaching._prompt import CONFIG_INSTRUCTION
+from nbtriage.capability.teaching._input_budget import estimate_request_tokens
+from nbtriage.capability.teaching._prompt import (
+    CONFIG_INSTRUCTION,
+    PATTERN_INSTRUCTION,
+    _instructions_for_request,
+)
 from nbtriage.capability.teaching.analysis import (
     BaselineChangeOperation,
     BaselineMemberField,
@@ -44,6 +51,7 @@ from nbtriage.capability.teaching.annotations import (
     _validated_usage,
     capability_analysis_fingerprint,
     project_capability_annotation,
+    with_argument_limit_boundaries,
 )
 from nbtriage.capability.teaching.model_adapter import (
     ANCHORED_INSTRUCTION,
@@ -141,6 +149,58 @@ def _native_response(**entry_kwargs: str) -> ModelResponse:
     return ModelResponse(
         parts=[TextPart(json.dumps(_output(**entry_kwargs), ensure_ascii=False))],
         finish_reason="stop",
+    )
+
+
+@pytest.mark.parametrize(
+    ("structure", "usage"),
+    [
+        ("@bot {command}<slot:0>", "@bot lookup<范围><对象>"),
+        ("@bot {command} [slot:0]", "[回复图片] @bot <风格>制作 [图片]"),
+    ],
+)
+def test_pattern_usage_survives_agent_projection_and_reload(structure: str, usage: str) -> None:
+    target = CapabilityInvocationTarget(
+        "root",
+        CapabilityInvocationMode.PATTERN,
+        requires_mention=True,
+        usage_structure=(structure,),
+    )
+    request = replace(_request(), invocations=(target,))
+    calls = 0
+
+    def respond(messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        payload = next(
+            json.loads(part.content)
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, UserPromptPart) and isinstance(part.content, str)
+        )
+        assert payload["invocations"][0]["mode"] == "pattern"
+        assert payload["invocations"][0]["canonical_usages"] == []
+        assert payload["invocations"][0]["usage_structure"] == [structure]
+        return _native_response(usage=usage)
+
+    assert PATTERN_INSTRUCTION in _instructions_for_request(request)
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
+        max_output_tokens=240,
+    )
+    result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
+    annotation = project_capability_annotation(request, result, analysis_revision="pattern-fixture")
+    reloaded = CapabilityTeachingAnnotation.from_dict(annotation.to_dict())
+    assert calls == 1 and reloaded == annotation
+    assert with_argument_limit_boundaries(request, reloaded) == annotation
+    assert reloaded.entries[0].usages == (usage,)
+    changed = replace(
+        request, invocations=(replace(target, usage_structure=(structure + " [--flag]",)),)
+    )
+    assert (
+        capability_analysis_fingerprint(changed, analysis_revision="pattern-fixture")
+        != annotation.request_fingerprint
     )
 
 
@@ -776,6 +836,46 @@ def test_maintenance_diagnostics_capture_redacted_http_error() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ({"error": {"code": "context_length_exceeded"}}, "context_length_exceeded"),
+        ({"code": "context_length_exceeded"}, "context_length_exceeded"),
+        (
+            {
+                "error": {
+                    "code": "invalid_request_error",
+                    "message": "This model's maximum context length is 131072 tokens. "
+                    "However, you requested 131074 tokens (99074 in the messages, 32000 in the completion).",
+                }
+            },
+            "context_length_exceeded",
+        ),
+        ({"error": {"code": "invalid_request_error", "message": "invalid max_tokens"}}, "http_400"),
+    ],
+    ids=["nested-code", "direct-code", "deepseek-message", "other-bad-request"],
+)
+def test_context_overflow_is_distinct_from_budget_and_not_retried(body, expected) -> None:
+    calls = 0
+
+    async def fail(_messages, _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        raise ModelHTTPError(400, "fixture-model", body)
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(fail, model_name="fixture-model", profile=_TOOL_PROFILE),
+        max_output_tokens=240,
+        capture_diagnostics=True,
+    )
+    with pytest.raises(CapabilityModelAdapterError) as error:
+        asyncio.run(client.analyze(_request()))
+    assert error.value.reason_code is CapabilityModelAdapterReason.HTTP
+    assert error.value.detail_code == expected
+    assert calls == 1
+    assert len(client.diagnostic_input_estimates) == 1
+
+
 def test_total_token_limit_accepts_received_valid_response_but_blocks_further_correction() -> None:
     def run(*, repair_second_response: bool):
         provider_calls = 0
@@ -813,10 +913,11 @@ def test_total_token_limit_accepts_received_valid_response_but_blocks_further_co
         asyncio.run(CapabilityAnalysisService(invalid_client).analyze(_request()))
 
     assert error_info.value.reason_code is CapabilityModelAdapterReason.BUDGET
+    assert error_info.value.detail_code == "total_tokens_limit"
     assert invalid_calls() == 2
 
 
-def test_per_request_input_limit_accepts_received_final_result_but_blocks_retry() -> None:
+def test_large_actual_input_allows_correction_within_total_budget() -> None:
     def run(*, repair_second_response: bool):
         provider_calls = 0
 
@@ -833,7 +934,7 @@ def test_per_request_input_limit_accepts_received_final_result_but_blocks_retry(
                     finish_reason="tool_call",
                 )
             output = _output()
-            if not repair_second_response:
+            if provider_calls == 2 and not repair_second_response:
                 entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
                 entry["entry_id"] = "other"
             return ModelResponse(
@@ -864,14 +965,186 @@ def test_per_request_input_limit_accepts_received_final_result_but_blocks_retry(
     assert valid_client.last_usage.input_tokens == 65_010
 
     invalid_client, invalid_calls = run(repair_second_response=False)
-    with pytest.raises(CapabilityModelAdapterError) as error_info:
-        asyncio.run(CapabilityAnalysisService(invalid_client).analyze(_request()))
-
-    assert error_info.value.reason_code is CapabilityModelAdapterReason.BUDGET
-    assert invalid_calls() == 2
+    result = asyncio.run(CapabilityAnalysisService(invalid_client).analyze(_request()))
+    assert result.entries[0].entry_id == "root"
+    assert invalid_calls() == 3
 
 
-def test_navigation_budget_reserves_a_final_submission_before_the_hard_limit() -> None:
+@pytest.mark.parametrize("kind", ["optional", "required", "referenced"])
+def test_full_input_budget_removes_only_optional_preloads_before_sending(kind: str) -> None:
+    request = _request()
+    large = CapabilityEvidenceUnit(
+        "large-helper",
+        "python_function",
+        "x" * 270_000,
+        "sha256:large",
+        preload_optional=kind != "required",
+    )
+    request = replace(
+        request,
+        evidence_units=(*request.evidence_units, large),
+        gate_candidates=(
+            (
+                CapabilityGateCandidate(
+                    "gate-large",
+                    CapabilityGateKind.RULE,
+                    ("root",),
+                    (large.evidence_id,),
+                ),
+            )
+            if kind == "referenced"
+            else ()
+        ),
+    )
+    sent: list[dict[str, Any]] = []
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        prompt = next(
+            part.content
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, UserPromptPart)
+        )
+        assert isinstance(prompt, str)
+        sent.append(json.loads(prompt))
+        output = _output()
+        if kind == "referenced":
+            output = {
+                "knowledge_enabled": False,
+                "entries": [],
+                "gate_resolutions": [
+                    {
+                        "candidate_id": "gate-large",
+                        "outcome": "unresolved",
+                        "evidence_ids": [large.evidence_id],
+                    }
+                ],
+            }
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, output)])
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
+        max_output_tokens=240,
+    )
+    client.enable_maintenance_diagnostics()
+    result = asyncio.run(client.analyze(request))
+    assert result.knowledge_enabled == (kind != "referenced")
+    assert len(sent) == 1
+    if kind == "optional":
+        assert sent[0]["allowed_evidence_ids"] == ["evidence-handler"]
+        assert all(unit["evidence_id"] != large.evidence_id for unit in sent[0]["evidence_units"])
+    else:
+        assert large.evidence_id in sent[0]["allowed_evidence_ids"]
+        assert (
+            next(u for u in sent[0]["evidence_units"] if u["evidence_id"] == large.evidence_id)[
+                "content"
+            ]
+            == large.content
+        )
+    estimate = client.diagnostic_input_estimates[0]
+    assert estimate["estimated_input_tokens_before"] is not None
+    assert estimate["estimated_input_tokens_before"] > 64_000
+    assert estimate["removed_optional_preloads"] == (1 if kind == "optional" else 0)
+
+
+def test_input_estimate_keeps_large_tool_history_and_allows_final_result() -> None:
+    calls = 0
+
+    def large_read() -> str:
+        return "x" * 270_000
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(parts=[ToolCallPart("large_read", {})])
+        assert any(
+            isinstance(part, ToolReturnPart) and "x" * 270_000 in str(part.content)
+            for message in messages
+            for part in message.parts
+        )
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, _output())])
+
+    runtime = CapabilityAnalysisToolRuntime(
+        toolsets=(FunctionToolset(tools=[large_read]),),
+        evidence_units=tuple,
+        validate_source_context=lambda: True,
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
+        max_output_tokens=240,
+        tool_runtime_factory=lambda _: runtime,
+    )
+    client.enable_maintenance_diagnostics()
+    assert asyncio.run(client.analyze(_request())).knowledge_enabled
+    assert calls == 2
+    estimated_input = client.diagnostic_input_estimates[-1]["estimated_input_tokens"]
+    assert estimated_input is not None and estimated_input > 64_000
+    assert client.diagnostic_input_estimates[-1]["removed_optional_preloads"] == 0
+
+
+def test_input_estimate_includes_instructions_and_visible_tool_schema() -> None:
+    model = FunctionModel(lambda _messages, _info: ModelResponse(parts=[]))
+    context = ModelRequestContext(
+        model=model,
+        model_settings=None,
+        messages=[ModelRequest(parts=[UserPromptPart("request")])],
+        model_request_parameters=ModelRequestParameters(),
+    )
+    plain = estimate_request_tokens(context)
+    assert isinstance(context.messages[0], ModelRequest)
+    context.messages[0].instructions = "x" * 8_000
+    instructed = estimate_request_tokens(context)
+    context.model_request_parameters = ModelRequestParameters(
+        function_tools=[
+            ToolDefinition(
+                name="read", description="x" * 8_000, parameters_json_schema={"type": "object"}
+            ),
+        ]
+    )
+    assert instructed >= plain + 2_000
+    assert estimate_request_tokens(context) >= instructed + 2_000
+
+
+@pytest.mark.parametrize(
+    ("instructions", "tool_chars", "expected"),
+    [
+        ("x" * 8_000 + "done", 400, 63_101),
+        ("x" * 4_000, 400, 63_100),
+        ("x" * 16_000, 400, 65_100),
+        ("x" * 8_000 + "done", 8_400, 65_101),
+    ],
+    ids=["small-growth", "shorter", "large-growth", "large-tool-result"],
+)
+def test_input_estimate_counts_only_instruction_growth_after_usage_anchor(
+    instructions: str, tool_chars: int, expected: int
+) -> None:
+    messages = [
+        ModelRequest(parts=[UserPromptPart("request")], instructions="x" * 8_000),
+        ModelResponse(
+            parts=[ToolCallPart("read", {})],
+            usage=RequestUsage(input_tokens=62_000, output_tokens=1_000),
+        ),
+        ModelRequest(parts=[ToolReturnPart("read", "y" * tool_chars)], instructions=instructions),
+    ]
+    context = ModelRequestContext(
+        model=FunctionModel(lambda _messages, _info: ModelResponse(parts=[])),
+        model_settings=None,
+        messages=messages,
+        model_request_parameters=ModelRequestParameters(),
+    )
+    assert estimate_request_tokens(context) == expected
+    assert [message.instructions for message in messages if isinstance(message, ModelRequest)] == [
+        "x" * 8_000,
+        instructions,
+    ]
+
+
+@pytest.mark.parametrize("early_finalization", [False, True])
+def test_navigation_budget_reserves_a_final_submission_before_the_hard_limit(
+    early_finalization: bool,
+) -> None:
     provider_calls = 0
     observed_tools: list[tuple[str, ...]] = []
     observed_instructions: list[str] = []
@@ -884,13 +1157,20 @@ def test_navigation_budget_reserves_a_final_submission_before_the_hard_limit() -
         provider_calls += 1
         observed_tools.append(tuple(tool.name for tool in info.function_tools))
         observed_instructions.append(info.instructions or "")
-        if provider_calls < 3:
+        assert "不能在普通回复正文中输出 JSON 代替调用" in (info.instructions or "")
+        if provider_calls == 1 or (provider_calls == 2 and not early_finalization):
             return ModelResponse(
                 parts=[ToolCallPart("read_dependency", {}, f"call-read-{provider_calls}")],
                 usage=RequestUsage(
-                    input_tokens=45 if provider_calls == 1 else 20,
-                    output_tokens=5,
+                    input_tokens=45 if early_finalization else 20,
+                    output_tokens=30 if provider_calls == 1 and not early_finalization else 5,
                 ),
+            )
+        if provider_calls == 2:
+            # 收尾中的短纠错响应不能重新打开源码工具。
+            return ModelResponse(
+                parts=[ToolCallPart(info.output_tools[0].name, {"knowledge_enabled": "invalid"})],
+                usage=RequestUsage(input_tokens=1, output_tokens=1),
             )
         return ModelResponse(
             parts=[ToolCallPart(info.output_tools[0].name, _output(), "call-output")],
@@ -917,13 +1197,15 @@ def test_navigation_budget_reserves_a_final_submission_before_the_hard_limit() -
     assert result.entries[0].entry_id == "root"
     assert observed_tools == [
         ("read_dependency",),
-        ("read_dependency",),
+        () if early_finalization else ("read_dependency",),
         (),
     ]
-    assert "最终提交预留阶段" in observed_instructions[1]
+    assert (
+        "只读补证阶段已经结束" if early_finalization else "最终提交预留阶段"
+    ) in observed_instructions[1]
     assert "只读补证阶段已经结束" in observed_instructions[2]
     assert client.last_usage is not None
-    assert client.last_usage.total_tokens == 100
+    assert client.last_usage.total_tokens == (77 if early_finalization else 100)
 
 
 def test_parallel_navigation_batch_respects_budget_then_finalizes() -> None:
@@ -1097,7 +1379,8 @@ def test_agent_uses_profile_selected_output_tool() -> None:
     assert info.model_request_parameters.function_tools == []
     output_tool = info.output_tools[0]
     assert output_tool.name == "final_result"
-    assert "knowledge_enabled、entries 和 gate_resolutions 三个顶层字段" in (
+    assert "调用本工具提交最终结果" in (output_tool.description or "")
+    assert "knowledge_enabled、entries 和 gate_resolutions 直接填写为工具参数" in (
         output_tool.description or ""
     )
     assert "不得添加 payload、output 或 result 包装" in (output_tool.description or "")
@@ -2150,19 +2433,27 @@ def test_agent_requires_real_constraint_to_link_gate_candidate(
         CapabilityTeachingAnnotation.from_dict(old_payload)
 
 
-def test_agent_accepts_business_state_permission_gate_as_behavior_boundary() -> None:
+@pytest.mark.parametrize("usage_owner", [False, True])
+def test_agent_accepts_gate_as_boundary_or_usage_group(usage_owner: bool) -> None:
     def respond(_messages, _info: AgentInfo) -> ModelResponse:
         output = _output()
         entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
         claims = cast(list[dict[str, object]], entry["claims"])
-        claims.append(
+        if usage_owner:
+            claims[:] = [claim for claim in claims if claim["kind"] != "usage"]
+        claims.extend(
             {
-                "kind": "behavior_boundary",
-                "statement": "使用前需先开始当前业务流程",
+                "kind": "usage" if usage_owner else "behavior_boundary",
+                "statement": statement,
                 "evidence_ids": ["evidence-handler", "evidence-definition"],
                 "config_reference_ids": [],
                 "gate_candidate_ids": ["gate:game-started"],
             }
+            for statement in (
+                ("搜图 <图片>", "<回复图片> 搜图")
+                if usage_owner
+                else ("使用前需先开始当前业务流程",)
+            )
         )
         output["gate_resolutions"] = [
             {
@@ -2185,14 +2476,16 @@ def test_agent_accepts_business_state_permission_gate_as_behavior_boundary() -> 
             CapabilityEvidenceUnit(
                 "evidence-definition",
                 "approved_python_definition",
-                "def game_started(group_id): return group_id in active_games",
+                "def valid_input(image, reply): return image is not None or reply is not None"
+                if usage_owner
+                else "def game_started(group_id): return group_id in active_games",
                 "sha256:definition",
             ),
         ),
         gate_candidates=(
             CapabilityGateCandidate(
                 "gate:game-started",
-                CapabilityGateKind.PERMISSION,
+                CapabilityGateKind.RULE if usage_owner else CapabilityGateKind.PERMISSION,
                 ("root",),
                 ("evidence-handler",),
             ),
@@ -2205,10 +2498,10 @@ def test_agent_accepts_business_state_permission_gate_as_behavior_boundary() -> 
 
     result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
 
-    linked = next(
-        claim
-        for claim in result.entries[0].claims
-        if claim.kind is SemanticClaimKind.BEHAVIOR_BOUNDARY
-    )
+    linked = next(claim for claim in result.entries[0].claims if claim.gate_candidate_ids)
     assert linked.gate_candidate_ids == ("gate:game-started",)
     assert result.entries[0].constraints == ()
+    annotation = project_capability_annotation(request, result, analysis_revision="fixture-v1")
+    if usage_owner:
+        assert len(annotation.entries[0].usages) == 2
+        assert annotation.entries[0].behavior_boundaries == ()

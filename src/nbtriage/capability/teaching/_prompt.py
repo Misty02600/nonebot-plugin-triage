@@ -60,7 +60,8 @@ CORE_INSTRUCTION = """\
 - 一项能力的 Handler、提示或帮助文字不能证明另一项能力的详细合同；跨条目生成详细用法、输入格式或交互方式时，必须同时具有目标条目的当前 Runtime 调用事实或实现 Evidence。
 - 没有 previous_annotation 时 baseline_changes 必须为空。
 - 没有 gate_candidates 时 gate_resolutions 必须为空。
-- 只通过已配置的结构化输出直接填写 knowledge_enabled、entries 和 gate_resolutions 三个顶层字段；不得添加 payload、output 或 result 包装，也不得把对象序列化成 JSON 字符串。
+- 本轮提供 final_result 时，最终结果必须调用该工具提交，不能在普通回复正文中输出 JSON 代替调用。源码工具关闭后，final_result 仍然可用；启用或关闭知识的结果均通过它提交。未提供该工具时，按已配置的原生结构化输出提交。
+- 直接填写 knowledge_enabled、entries 和 gate_resolutions 三个顶层字段；不得添加 payload、output 或 result 包装，也不得把对象序列化成 JSON 字符串。
 """
 
 ANCHORED_INSTRUCTION = """\
@@ -79,7 +80,8 @@ CONFIG_INSTRUCTION = """\
 
 GATE_INSTRUCTION = """\
 本轮 gate candidates 的解释与关联：
-- gate_candidates 只是静态层发现的疑似执行控制点，不等于已经存在约束。owner 与 symbol 只定位候选所属对象和字段或符号，不证明其公开语义；缺失时依据所引 Evidence 定位。必须逐项依据当前 Evidence 给出 constraint、no_constraint 或 unresolved；现有材料足够时直接完成，不要求额外工具调查，只有缺少明确事实时才补证。同一注册表达式中的多个未解析 Permission 符号会合并为一个候选；若它是复合 OR，必须在这一条 permission constraint 的 alternatives 中完整解释，不能把同一表达式拆成互不相干的候选。`gate_resolutions[].candidate_id` 负责给每个候选下结论；公开角色、场景、资格或限流前提使用 `constraints[].gate_candidate_ids` 关联，能力自身的业务准备状态使用 `behavior_boundary` claim 的 `gate_candidate_ids` 关联。两种关联都只是内部覆盖关系，不是 Evidence ID、entry ID 或 Permission alternative，也不表达 AND / OR。
+- gate_candidates 只是静态层发现的疑似执行控制点，不等于已经存在约束。owner 与 symbol 只定位候选所属对象和字段或符号，不证明其公开语义；缺失时依据所引 Evidence 定位。必须逐项依据当前 Evidence 给出 constraint、no_constraint 或 unresolved；现有材料足够时直接完成，不要求额外工具调查，只有缺少明确事实时才补证。同一注册表达式中的多个未解析 Permission 符号会合并为一个候选；若它是复合 OR，必须在这一条 permission constraint 的 alternatives 中完整解释，不能把同一表达式拆成互不相干的候选。`gate_resolutions[].candidate_id` 负责给每个候选下结论；outcome=constraint 表示存在实际限制，不代表公开归属必须是 constraints 数组。按字段规则由结构化约束表达的条件使用 `constraints[].gate_candidate_ids` 关联；调用结构使用 `usage` claim 关联；其余属于行为边界的条件使用 `behavior_boundary` claim 关联，不限于业务准备状态。关联只是内部覆盖关系，不是 Evidence ID、entry ID 或 Permission alternative，也不表达 AND / OR。
+- 同一 gate 可由多条 usage 共同完整表达，不得跨公开字段重复关联。usage 已完整表达时，不为覆盖 gate 再写重复边界；仍有无法由 usage 表达的边界条件时，由 behavior_boundary 承接，usage 正常展示。关联 ID 不证明语义完整；调用者身份、场景、授权或限流不得借 usage 替代结构化条件。name、summary、search_term 不关联 gate。
 - 解释请求 JSON 中已有 gate_candidates 的真实执行条件必须关联该 candidate_id。
 - no_constraint 只允许在函数定义、框架事实或当前运行配置明确证明它不会限制使用时选择。unresolved 表示补证后仍不能确认。
 - 如果完整门禁定义表明布尔结果直接由当前运行配置决定，而当前投影值已经使门禁放行，例如 `return enabled` 且 `enabled=true`，该门禁必须解释为 no_constraint。
@@ -116,6 +118,13 @@ KEYWORD_INSTRUCTION = """\
 - 优先用槽位、简短备选和可选部分概括完整输入；只有单条表达会产生不存在的组合或丢失真实结构时才拆分，最多三条。不要因触发条件宽泛而声称任意含关键词的消息都能完成业务。display_trigger 使用 null。
 """
 
+PATTERN_INSTRUCTION = """\
+Alconna 模式命令头：
+- mode=pattern 或 family 成员语法为 parser_with_pattern_header 时，command.header_match 是已注册的命令头匹配事实，不是公开用法。结合原始声明、编译规则、捕获组与源码解释头部；content 已包含前缀，不要重复添加。命令头捕获和后续 Args 是不同输入来源，不得遗漏或重复。
+- usage_structure 只是当前入口的结构示意：{command} 代表整个命令头，slot:N 代表后续 Parser 参数；都不得原样公开，也不是要求逐字对齐的 canonical_usages。结合 command.arguments、command.components 与源码生成完整 usage，保留当前路径、必选性、重复性、Option 和实际分隔方式；compact 不能被猜成必须加空格。此入口的 display_trigger 保持 null，模式备选直接写入 usage。
+- 参数数量上限等事实仍需按其实际适用参数说明，不能因没有 canonical_usages 就当成无限制。仅有头部捕获不证明支持回复补参，回复或 shortcut 必须由对应的接入及实现 Evidence 支持。原始正则只用于理解，不直接作为公开 usage；复杂动态行为无法确认时不猜。
+"""
+
 REGEX_INSTRUCTION = """\
 Regex Matcher：
 - mode=regex 时，regex_pattern 和 regex_flags 是当前 Runtime 已确认的触发规则，只用于理解触发条件。结合捕获组、固定文字、Handler 对 RegexGroup 的读取方式和当前 Evidence，将其转换为统一的帮助记法：可选部分用 `[...]`，备选用 `(A|B)`，重复用 `...`，默认只输出一条 usage。不得直接展示原始正则或混入正则量词、转义语法、flags 名称；固定字面字符按实际输入保留。
@@ -136,7 +145,7 @@ FAMILY_INSTRUCTION = """\
 - complete 聚合必须明确包含成员选择位；只有共同输入而没有成员选择不算聚合用法。选择位使用 `<概念名>`，或用 `(A|B)` 枚举固定成员；不要给单个概念槽位再套分组括号，源码本身包含的字面括号除外。只有 Evidence 明确证明的业务前后缀才能保留；不使用花括号模板，也不得从示例或常识补充符号。
 - family 成员命令遵守统一的固定选项数量边界；七个及以上成员时，不得在 summary 或 behavior_boundary 中逐项列出成员名，即使完整成员清单已经作为 Runtime Evidence 提供。
 - `python_family_callable` 是模型外从静态工厂表中唯一绑定到成员 Callable 字段的业务函数源码。它用于解释不同成员的字符串、数值或媒体参数分别表示什么；它不是额外成员，也不得据此为每个成员创建输出 entry。
-- 参数化能力只保证所有 Runtime Matcher 执行同一段闭包 Handler 代码。请求 JSON 的 family_manifest 给出成员数量和完整 manifest 的 Evidence ID；必须阅读全部 `runtime_family_members`，并在使用 parser 结构时同时阅读它引用的 `runtime_family_shapes`。成员 Evidence 使用无损列式格式：按 `columns` 解释每个 `rows` 数组，按 `invocation_columns` 解释其中的调用数组，按 `syntax_codes` 还原语法精度；`shape` 整数引用 `runtime_family_shapes` 中相同 `index` 的结构。`row_offset` 只表示该分片在完整有序清单中的起点，不能只阅读首个分片。只有还原为 `parser_exact` 才表示参数结构完整，`anchor_only`、`open_tail` 或 `literal_exact` 不能被猜成 Alconna 参数 AST。成员事实是共同语义和聚合用法的输入，但不会各自变成模型输出 entry。不得遗漏成员、跨 family 合并成员或猜测未提供的参数。
+- 参数化能力只保证所有 Runtime Matcher 执行同一段闭包 Handler 代码。请求 JSON 的 family_manifest 给出成员数量和完整 manifest 的 Evidence ID；必须阅读全部 `runtime_family_members`，并在使用 parser 结构时同时阅读它引用的 `runtime_family_shapes`。成员 Evidence 使用无损列式格式：按 `columns` 解释每个 `rows` 数组，按 `invocation_columns` 解释其中的调用数组，按 `syntax_codes` 还原语法精度；`shape` 整数引用 `runtime_family_shapes` 中相同 `index` 的结构。`columns-v3` 中，每个分片的 `common_hints` 适用于全部成员，与各行 `hints` 合起来才是该成员的完整附带事实；两者均按 `hint_columns` 解释，字段互不重叠，不存在覆盖关系。`row_offset` 只表示该分片在完整有序清单中的起点，不能只阅读首个分片。`parser_exact` 提供标准结构模板；`parser_with_pattern_header` 保留后续 Parser 结构，但头部需要结合 hints 中的匹配事实解释，完整用法不做模板对齐。`anchor_only`、`open_tail` 或 `literal_exact` 不能被猜成 Alconna 参数 AST。成员事实是共同语义和聚合用法的输入，但不会各自变成模型输出 entry。不得遗漏成员、跨 family 合并成员或猜测未提供的参数。
 """
 
 BASELINE_INSTRUCTION = """\
@@ -158,6 +167,7 @@ SYSTEM_INSTRUCTION = "\n\n".join(
         SHORTCUT_INSTRUCTION,
         CANONICAL_INSTRUCTION,
         KEYWORD_INSTRUCTION,
+        PATTERN_INSTRUCTION,
         REGEX_INSTRUCTION,
         FAMILY_INSTRUCTION,
         BASELINE_INSTRUCTION,
@@ -182,6 +192,12 @@ def _instructions_for_request(request: CapabilityAnalysisRequest) -> str:
         parts.append(CANONICAL_INSTRUCTION)
     if CapabilityInvocationMode.KEYWORD in invocation_modes:
         parts.append(KEYWORD_INSTRUCTION)
+    if CapabilityInvocationMode.PATTERN in invocation_modes or any(
+        item.mode is CapabilityInvocationMode.PATTERN
+        for member in request.family_members
+        for item in member.invocations
+    ):
+        parts.append(PATTERN_INSTRUCTION)
     if CapabilityInvocationMode.REGEX in invocation_modes:
         parts.append(REGEX_INSTRUCTION)
     if CapabilityInvocationMode.COMPLETE in invocation_modes:
@@ -201,6 +217,7 @@ __all__ = (
     "FAMILY_INSTRUCTION",
     "GATE_INSTRUCTION",
     "KEYWORD_INSTRUCTION",
+    "PATTERN_INSTRUCTION",
     "REGEX_INSTRUCTION",
     "SHORTCUT_INSTRUCTION",
     "SYSTEM_INSTRUCTION",

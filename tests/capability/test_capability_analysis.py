@@ -292,7 +292,8 @@ def test_service_accepts_gate_proven_to_have_no_constraint() -> None:
     assert client.requests == [request]
 
 
-def test_service_accepts_business_state_gate_owned_by_behavior_boundary() -> None:
+@pytest.mark.parametrize("usage_owner", [False, True])
+def test_service_accepts_gate_owned_by_boundary_or_usage_group(usage_owner: bool) -> None:
     request = replace(
         _request(),
         evidence_units=(
@@ -300,14 +301,18 @@ def test_service_accepts_business_state_gate_owned_by_behavior_boundary() -> Non
             CapabilityEvidenceUnit(
                 evidence_id="ev-definition",
                 source_kind="approved_python_definition",
-                content="def game_started(group_id): return group_id in active_games",
+                content=(
+                    "def valid_input(image, reply): return image is not None or reply is not None"
+                    if usage_owner
+                    else "def game_started(group_id): return group_id in active_games"
+                ),
                 revision="sha256:definition",
             ),
         ),
         gate_candidates=(
             CapabilityGateCandidate(
                 "gate:game-started",
-                CapabilityGateKind.PERMISSION,
+                CapabilityGateKind.RULE if usage_owner else CapabilityGateKind.PERMISSION,
                 ("root",),
                 ("ev-handler",),
             ),
@@ -321,11 +326,20 @@ def test_service_accepts_business_state_gate_owned_by_behavior_boundary() -> Non
                 base_output.entries[0],
                 claims=(
                     *base_output.entries[0].claims,
-                    SemanticClaim(
-                        SemanticClaimKind.BEHAVIOR_BOUNDARY,
-                        "使用前需先开始当前业务流程",
-                        ("ev-handler", "ev-definition"),
-                        gate_candidate_ids=("gate:game-started",),
+                    *(
+                        SemanticClaim(
+                            SemanticClaimKind.USAGE
+                            if usage_owner
+                            else SemanticClaimKind.BEHAVIOR_BOUNDARY,
+                            statement,
+                            ("ev-handler", "ev-definition"),
+                            gate_candidate_ids=("gate:game-started",),
+                        )
+                        for statement in (
+                            ("搜图 <图片>", "<回复图片> 搜图")
+                            if usage_owner
+                            else ("使用前需先开始当前业务流程",)
+                        )
                     ),
                 ),
             ),
@@ -346,14 +360,56 @@ def test_service_accepts_business_state_gate_owned_by_behavior_boundary() -> Non
     assert result == expected
     assert result.entries[0].constraints == ()
 
+    if usage_owner:
+        entry = expected.entries[0]
+        extra_claim = replace(entry.claims[-1], kind=SemanticClaimKind.BEHAVIOR_BOUNDARY)
+        conflicting = replace(
+            expected, entries=(replace(entry, claims=(*entry.claims, extra_claim)),)
+        )
+        with pytest.raises(CapabilityAnalysisError, match="one public owner"):
+            asyncio.run(
+                CapabilityAnalysisService(FakeCapabilityAnalysisClient(conflicting)).analyze(
+                    request
+                )
+            )
+        without_links = replace(
+            expected,
+            entries=(
+                replace(
+                    entry, claims=tuple(replace(c, gate_candidate_ids=()) for c in entry.claims)
+                ),
+            ),
+        )
+        with pytest.raises(CapabilityAnalysisError, match="link every affected entry"):
+            asyncio.run(
+                CapabilityAnalysisService(FakeCapabilityAnalysisClient(without_links)).analyze(
+                    request
+                )
+            )
+        without_support = replace(
+            expected,
+            gate_resolutions=(replace(expected.gate_resolutions[0], evidence_ids=("ev-handler",)),),
+        )
+        with pytest.raises(CapabilityAnalysisError, match="requires definition"):
+            asyncio.run(
+                CapabilityAnalysisService(FakeCapabilityAnalysisClient(without_support)).analyze(
+                    request
+                )
+            )
 
-def test_claim_rejects_gate_candidate_link_outside_behavior_boundary() -> None:
+
+@pytest.mark.parametrize(
+    "kind", [SemanticClaimKind.NAME, SemanticClaimKind.SUMMARY, SemanticClaimKind.SEARCH_TERM]
+)
+def test_claim_rejects_gate_candidate_link_outside_usage_and_boundary(
+    kind: SemanticClaimKind,
+) -> None:
     with pytest.raises(
         CapabilityAnalysisError,
-        match="only behavior-boundary claims",
+        match="only usage or behavior-boundary claims",
     ):
         SemanticClaim(
-            SemanticClaimKind.SUMMARY,
+            kind,
             "查找图片来源",
             ("ev-handler",),
             gate_candidate_ids=("gate:state",),

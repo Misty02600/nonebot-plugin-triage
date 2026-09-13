@@ -16,7 +16,7 @@ class _BoundedReadFileToolset(WrapperToolset[Any]):
         wrapped: AbstractToolset[Any],
         *,
         read_tool_name: str,
-        max_read_lines: int,
+        max_read_lines: int | None,
     ) -> None:
         super().__init__(wrapped=wrapped)
         self._read_tool_name = read_tool_name
@@ -39,6 +39,7 @@ def bounded_read_file_toolset(
     *,
     root_name: str,
     max_read_lines: int,
+    enforce_read_line_limit: bool = True,
 ) -> object:
     read_tool_name = f"{root_name}_read_file"
 
@@ -47,7 +48,11 @@ def bounded_read_file_toolset(
         definitions: list[ToolDefinition],
     ) -> list[ToolDefinition]:
         return [
-            _bounded_read_definition(definition, max_read_lines=max_read_lines)
+            _bounded_read_definition(
+                definition,
+                max_read_lines=max_read_lines,
+                enforce_read_line_limit=enforce_read_line_limit,
+            )
             if definition.name == read_tool_name
             else definition
             for definition in definitions
@@ -58,7 +63,7 @@ def bounded_read_file_toolset(
     return _BoundedReadFileToolset(
         prepared,
         read_tool_name=read_tool_name,
-        max_read_lines=max_read_lines,
+        max_read_lines=max_read_lines if enforce_read_line_limit else None,
     )
 
 
@@ -66,6 +71,7 @@ def _bounded_read_definition(
     definition: ToolDefinition,
     *,
     max_read_lines: int,
+    enforce_read_line_limit: bool = True,
 ) -> ToolDefinition:
     schema = deepcopy(definition.parameters_json_schema)
     properties = cast(dict[str, Any], schema.setdefault("properties", {}))
@@ -77,20 +83,23 @@ def _bounded_read_definition(
         {
             "type": "integer",
             "minimum": 1,
-            "maximum": max_read_lines,
             "default": max_read_lines,
             "description": (
                 f"Maximum number of lines to return. Must be between 1 and {max_read_lines}."
+                if enforce_read_line_limit
+                else f"Number of lines to read; defaults to {max_read_lines}. Must be positive."
             ),
         }
     )
+    if enforce_read_line_limit:
+        limit["maximum"] = max_read_lines
     return replace(definition, parameters_json_schema=schema)
 
 
 def _validate_read_arguments(
     arguments: dict[str, Any],
     *,
-    max_read_lines: int,
+    max_read_lines: int | None,
 ) -> None:
     offset = arguments.get("offset", 0)
     if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
@@ -99,8 +108,12 @@ def _validate_read_arguments(
     if limit is None:
         return
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
-        raise ModelRetry(f"read_file limit must be an integer between 1 and {max_read_lines}")
-    if limit > max_read_lines:
+        raise ModelRetry(
+            "read_file limit must be a positive integer"
+            if max_read_lines is None
+            else f"read_file limit must be an integer between 1 and {max_read_lines}"
+        )
+    if max_read_lines is not None and limit > max_read_lines:
         arguments["limit"] = max_read_lines
 
 

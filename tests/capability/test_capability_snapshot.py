@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Iterator
 from contextlib import suppress
@@ -9,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 from arclet.alconna import Alconna, Args, CommandMeta, MultiVar, Option, Subcommand, command_manager
+from nepattern import BasePattern, MatchMode
 from nonebot import (
     get_driver,
     on_command,
@@ -38,6 +40,10 @@ from nbtriage.capability.catalog.records import (
     RecordState,
 )
 from nonebot_plugin_triage.capability.discovery.snapshot import build_capability_snapshot
+from nonebot_plugin_triage.capability.teaching._projection import (
+    _family_member_hints,
+    _runtime_fact_evidence,
+)
 
 
 @pytest.fixture
@@ -319,6 +325,9 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
     assert _record_values(disabled_record, "command.enabled") == (False,)
     assert _record_values(public_record, "command.header") == ("image",)
     assert _record_values(public_record, "command.compact") == (True,)
+    header_match = _record_values(public_record, "command.header_match")[0]
+    assert header_match["compact"] is True
+    assert header_match["compact_pattern"]["pattern"] == "^image"
     assert _record_values(public_record, "usage") == ("image <query> [--limit <count>]",)
     assert _record_values(public_record, "command.arguments")[0][0]["name"] == "query"
     assert _record_values(public_record, "command.arguments")[0][0]["notice"] == "关键词"
@@ -347,6 +356,108 @@ def test_collects_alconna_structure_with_automatic_or_explicit_disclosure(
         }
     ]
     assert called is False
+    command_manager.delete(command)
+
+
+@pytest.mark.parametrize(
+    ("origin", "prefixes", "expected_content", "capture_types"),
+    [
+        (
+            r"probe\{literal\}",
+            ["", "/"],
+            {"kind": "literal", "values": ["/probe{literal}", "probe{literal}"]},
+            {},
+        ),
+        (
+            "{action:start|stop}",
+            ["", "/"],
+            {
+                "kind": "regex",
+                "pattern": r"(?:|/)(?P<action>start|stop)",
+                "flags": 32,
+                "groups": {"action": 1},
+            },
+            {},
+        ),
+        (
+            r"re:(?i:(?P<text>\S{1,4})\s+go)",
+            [],
+            {
+                "kind": "regex",
+                "pattern": r"(?i:(?P<text>\S{1,4})\s+go)",
+                "flags": 32,
+                "groups": {"text": 1},
+            },
+            {},
+        ),
+        (
+            "v{version:int}",
+            [],
+            {
+                "kind": "regex",
+                "pattern": r"v(?P<version>\-?\d+)",
+                "flags": 32,
+                "groups": {"version": 1},
+            },
+            {"version": "builtins.int"},
+        ),
+    ],
+)
+def test_compiled_alconna_header_reaches_runtime_and_family_evidence(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+    origin,
+    prefixes,
+    expected_content,
+    capture_types,
+) -> None:
+    command = Alconna(prefixes, origin, namespace=f"snapshot-{uuid4().hex}")
+    matcher = on_alconna(command)
+    matcher_cleanup.append(matcher)
+    plugin = _plugin(tmp_path, monkeypatch, {matcher})
+
+    (record,) = build_capability_snapshot(plugins=[plugin]).records
+    (fact,) = _record_values(record, "command.header_match")
+
+    assert fact["origin"] == origin
+    assert fact["content"] == expected_content
+    assert fact["capture_types"] == capture_types
+    runtime = json.loads(_runtime_fact_evidence(record).content)
+    assert (
+        next(c["value"] for c in runtime["claims"] if c["field"] == "command.header_match") == fact
+    )
+    assert (
+        next(h[1] for h in _family_member_hints(record) if h[0] == "command.header_match") == fact
+    )
+    command_manager.delete(command)
+
+
+def test_compiled_custom_header_stays_opaque_without_running_converter(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    def converter(pattern, value):
+        pytest.fail("Snapshot must not execute the header converter")
+
+    pattern = BasePattern(
+        pattern="probe.+",
+        mode=MatchMode.REGEX_CONVERT,
+        origin=str,
+        converter=converter,
+        alias="custom-header",
+    )
+    command = Alconna(pattern, namespace=f"snapshot-{uuid4().hex}")
+    matcher = on_alconna(command)
+    matcher_cleanup.append(matcher)
+    plugin = _plugin(tmp_path, monkeypatch, {matcher})
+
+    (record,) = build_capability_snapshot(plugins=[plugin]).records
+    (fact,) = _record_values(record, "command.header_match")
+
+    assert fact["origin"] is None
+    assert fact["content"] == {"kind": "opaque", "type": "nepattern.core.BasePattern"}
     command_manager.delete(command)
 
 
@@ -433,6 +544,9 @@ def test_alconna_dispatch_matchers_only_expose_their_own_subcommand_scope(
         )
 
         assert len(snapshot.records) == 3
+        assert {
+            _record_values(record, "command.dispatch_path")[0] for record in snapshot.records
+        } == {"$main", "help", "new"}
         assert all(
             any(
                 constraint.kind == "routing" and constraint.operation == "alconna_dispatch"
@@ -458,6 +572,135 @@ def test_alconna_dispatch_matchers_only_expose_their_own_subcommand_scope(
         root.clean()
         with suppress(ValueError, KeyError):
             command_manager.delete(command)
+
+
+@pytest.mark.parametrize("case", ["path", "value", "value_or_not", "default", "unexpected"])
+def test_dispatch_projection_issue_is_local_but_unknown_failure_remains_partial(
+    case,
+    tmp_path,
+    monkeypatch,
+):
+    from nonebot_plugin_triage.capability.discovery import snapshot as collector
+
+    command = Alconna(
+        "probe",
+        Subcommand("child", default=True) if case == "default" else Subcommand("child"),
+        namespace=uuid4().hex,
+    )
+    root = on_alconna(command)
+    child = root.dispatch(
+        "missing" if case == "path" else "child",
+        **(
+            {"value": True, "or_not": case == "value_or_not"}
+            if case in {"value", "value_or_not"}
+            else {}
+        ),
+    )
+    try:
+        if case == "unexpected":
+            original = collector._alconna_matcher_shape
+
+            def fail_selected(matcher, cmd):
+                if matcher is child:
+                    raise RuntimeError("unexpected collector bug")
+                return original(matcher, cmd)
+
+            monkeypatch.setattr(collector, "_alconna_matcher_shape", fail_selected)
+        snapshot = build_capability_snapshot(
+            plugins=[_plugin(tmp_path, monkeypatch, {root, child})]
+        )
+        assert snapshot.manifest.partial is (case == "unexpected")
+        assert any(not record.analysis_issues for record in snapshot.records)
+        if case != "unexpected":
+            assert len(snapshot.records) == 2
+            unresolved = next(record for record in snapshot.records if record.analysis_issues)
+            assert AnalysisIssue.EVIDENCE_INSUFFICIENT in unresolved.analysis_issues
+            assert _record_values(unresolved, "command.projection_issue")
+        else:
+            assert snapshot.manifest.errors
+    finally:
+        matchers[child.priority].remove(child)
+        root.clean()
+        command_manager.delete(command)
+
+
+@pytest.mark.parametrize("root_business", [False, True])
+def test_dispatch_internal_forwarding_is_not_an_independent_teaching_handler(
+    tmp_path, monkeypatch, root_business
+):
+    from nonebot_plugin_triage.capability.teaching.annotations import _eligible_record
+
+    plugin = _source_plugin(
+        tmp_path,
+        monkeypatch,
+        """\
+from uuid import uuid4
+from arclet.alconna import Alconna, Subcommand
+from nonebot_plugin_alconna import on_alconna
+
+command = Alconna("probe", Subcommand("help"), namespace=uuid4().hex)
+root = on_alconna(command, block=False)
+child = root.dispatch("help", or_not=True)
+
+@child.handle()
+async def show_help():
+    await child.send("help")
+
+async def root_handler():
+    await root.send("root behavior")
+""",
+    )
+    root = plugin.module.root
+    child = plugin.module.child
+    if root_business:
+        root.handle()(plugin.module.root_handler)
+    try:
+        snapshot = build_capability_snapshot(plugins=[plugin])
+        assert not snapshot.manifest.partial and len(snapshot.records) == 2
+        child_record = next(
+            record
+            for record in snapshot.records
+            if _record_values(record, "command.dispatch_path") == ("help",)
+        )
+        root_record = next(record for record in snapshot.records if record is not child_record)
+        assert _eligible_record(child_record)
+        assert _eligible_record(root_record) is root_business
+        assert _record_values(child_record, "command.dispatch_main_arguments") == ([],)
+        references = _record_values(child_record, "handler.references")[0]
+        assert [ref["function"] for ref in references] == ["show_help"]
+        if root_business:
+            assert [
+                ref["function"] for ref in _record_values(root_record, "handler.references")[0]
+            ] == ["root_handler"]
+        else:
+            assert not _record_values(root_record, "handler.references")
+    finally:
+        matchers[child.priority].remove(child)
+        root.clean()
+        command_manager.delete(plugin.module.command)
+
+
+def test_dispatch_additional_is_an_unexecuted_gate(tmp_path, monkeypatch):
+    from nonebot_plugin_triage.capability.discovery.snapshot import _matcher_constraints
+
+    calls = []
+
+    async def additional(*args):
+        calls.append(args)
+        return False
+
+    command = Alconna("probe", namespace=uuid4().hex)
+    root = on_alconna(command)
+    child = root.dispatch("$main", additional=additional)
+    try:
+        snapshot = build_capability_snapshot(plugins=[_plugin(tmp_path, monkeypatch, {child})])
+        assert not snapshot.manifest.partial and not snapshot.records[0].analysis_issues
+        assert "rule:opaque:dispatch_additional" in _matcher_constraints(child)[0]
+        assert calls == []
+    finally:
+        matchers[child.priority].remove(child)
+        root.clean()
+        command_manager.delete(command)
 
 
 def test_superuser_and_custom_constraints_fail_closed_without_execution(

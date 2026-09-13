@@ -675,13 +675,18 @@ def _registration_anchors(
         for keyword, kind in (
             ("permission", StructuralSymbolKind.PERMISSION),
             ("rule", StructuralSymbolKind.RULE),
+            ("additional", StructuralSymbolKind.RULE),
         ):
+            if keyword == "additional" and factory != "dispatch":
+                continue
             expression = _keyword_value(call, keyword)
             if expression is None:
                 continue
+            if keyword == "additional" and expression.text() == "None":
+                continue
             names = _expression_symbols(expression)
             if not names:
-                anchor.opaque_fields.add(keyword)
+                anchor.opaque_fields.add("rule" if keyword == "additional" else keyword)
             for name in names:
                 symbols.append(
                     StructuralSymbolFact(

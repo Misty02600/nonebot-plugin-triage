@@ -9,6 +9,19 @@
 Alconna 命令管理器，生成部署本地快照与 FTS5 索引。它不调用 Matcher 的 Rule、Permission、handler 或
 Alconna `parse()`，也尚未接入任何第三方帮助插件。
 
+Alconna 命令头直接读取已注册解析器的 `command_header`，以 `command.header_match` 保存原始声明、
+编译后的固定文字集合或正则及 flags / 捕获组、compact 匹配信息和捕获转换目标类型。编译内容已包含
+前缀，其正则类型不等于原始命令必定是正则。自定义 Pattern 与复杂前缀组合保留为 opaque，不执行匹配、
+转换或从对象字符串猜语法；不新增跨版本兼容层。这些事实进入普通 Runtime Evidence 与 family 成员材料。
+request v91 / Prompt v116 为可解释的模式命令头使用内部 `pattern` 入口；公开 Schema v13 不变。
+当前已编译为正则且保留字符串声明的头部走此路径；固定文字仍使用原模板，opaque 不自动降级，
+也不通过捕获模板错误来选择宽松模式。输入 `usage_structure` 复用既有路径和参数渲染，以 `{command}`
+代替整个头部，保留 Args、Option、子命令与 dispatch 结构；匹配规则和业务源码由模型解释为完整 usage。
+它不是 `canonical_usages`，不逐字对齐，不从公开文字反推头尾，也不要求模型返回额外头部字段。
+普通输出及重读投影保留公开语法、Evidence 与独立门禁校验；参数遗漏、错误备选等模式表达语义不由
+模板校验保证。有限参数数量仍在 Runtime 事实中，由模型解释；此路径不反推公开槽位名自动追加数量说明。
+没有足够事实解释的自定义模式、既有不支持的参数/dispatch 结构仍保留明确原因，不据此声称支持全部语法。
+
 普通 Matcher 的入口识别会读取 NoneBot 2.5 的 `Rule.checkers` 结构。当前版本适配层识别 Command、
 Startswith、Endswith、Fullmatch、Keywords、Regex 与 IsType Rule；这不是稳定的跨版本公共协议，因此遇到
 未知 checker 或结构变化时保留未知约束并失败关闭，不能猜成公开、可执行能力。
@@ -26,6 +39,37 @@ Startswith、Endswith、Fullmatch、Keywords、Regex 与 IsType Rule；这不是
 决定披露或平台、声称精确语法，或清除 issue。
 
 ## Handler 形参与用户语法的边界
+
+普通单元与 family 共用注册关联逻辑：先确定插件根内的实际文件、核对摘要，再按 Runtime 注册位置缩小候选。
+位置缺失或同一行有多个调用时，继续结合入口与同文件 Handler 绑定；所有可用依据仍不能唯一确定时才拒绝猜测。
+变量同名或共享 Handler 不构成拒绝理由，也不能据此合并注册 gate。文件身份不靠任意路径后缀或相同摘要猜测，
+版本或绑定冲突不回退到较弱匹配；动态入口未知也不能当成与当前入口不同。request v88 收敛此边界，不做通用数据流分析。
+request v89 移除单函数/单份 Evidence 8,000 字符、初始源码总字符数、目标函数数和已解析模块数的独立门槛。
+Handler、wrapper、注册材料及直接 gate/参数依赖优先完整保留；普通调用与静态 family Callable 的实现是可选
+预载。每次发送前复用 Harness 文本估算，并补计当前工具与结构化输出 Schema。request v92 将 64k 改为首包
+可选预载的整理阈值，不作为单次输入硬上限或模型容量声明。首包超出时只移除未被结构化事实引用的可选预载；
+必要材料及后续历史即使仍超出估算阈值也不拒绝、不截断。维护 capture 保存逐请求估算、整理阈值和移除数量，
+与 Provider 实际用量分开。明确的 Provider 上下文超限记录为 HTTP/context_length_exceeded，未知 400 不猜测；
+正式刷新不自动重跑整个单元。已完整到达的最终候选仍可校验。192k 单元累计预算、时间/请求/工具限制和本地文件/AST
+资源保护保留。自动普通调用展开仍为两层，不因取消字符门槛而递归展开整个依赖树。
+
+request v94 在既有时间、请求、工具和累计 75% 收尾条件之外，增加历史规模信号：剩余累计预算不超过
+最近一次 Provider 实际输入用量的两倍时停止源码补证，只保留输出工具并要求提交。进入收尾后不重新开放
+导航；没有实际输入用量时不使用此信号。两倍只是提前收尾的启发式，不保证剩余预算够两轮完整请求，
+也不替代实际用量硬上限或结果校验；不因这一信号删除 Evidence 或直接判定教学失败。
+
+request v93 / Prompt v117 允许 `usage` 沿用 claim 的 `gate_candidate_ids` 关联调用结构条件，
+同一 entry 的多条 usage 可共同承接一个 gate；不要求为覆盖检查追加重复的 behavior_boundary。
+其余按字段规则属于行为边界的条件由 behavior_boundary 承接，不限于业务准备状态；全局身份、场景、
+授权和限流仍使用结构化约束。gate resolution 的 `constraint` 表示存在实际限制，不指定公开字段。
+同一 gate 不跨 usage、边界和结构化约束重复关联；名称、摘要和检索词不允许关联。候选及实现 Evidence、
+受影响 entry 的覆盖和公开用法校验保持不变；关联合法不等于已证明任意 Python 条件的语义覆盖。
+公开 Schema v13 不变，不增加字段或通用条件树，也不改变消费者的文档结构。
+
+教学文件工具默认读取 300 行，但允许显式扩大范围；该任务不再将默认行数强制用作行数上限。定义导航尽量
+返回完整定义，单次可引用读取最多 32,000 字符，按整行截断并给出续读位置；`python_open_definition` 的
+`offset` 相对定义开头，普通 `read_file` 的 `offset` 相对文件开头。超长单行无法容纳时明确报错，不假装读全。
+根目录、revision、稳定读取和只读权限边界不变；其他 Agent 的文件读取策略不受此项调整影响。
 
 Python handler 的函数形参通常描述 NoneBot 如何注入运行上下文，不等同于用户要输入的命令参数。例如
 `Bot`、`Event`、`Matcher`、`T_State`、`UniMessage` 和 `MsgTarget` 只让 handler 取得当前事件、消息或目标。
@@ -47,12 +91,51 @@ Alconna 教学用法读取根命令、Subcommand、Option 和 Arg 各自已经�
 可选参数的分隔符随参数一起省略，例如 `probe,<slot:0>[,<slot:1>]`；Help / Answer 保留这一结构。
 
 公开模板在各边界优先选择普通空格，否则从有界安全可见字符中稳定选择一个；原始分隔事实仍完整进入
-Evidence、family shape 和缓存指纹。仅有控制字符或用法元字符、缺失分隔事实、祖先位置参数与子命令并存、
+Evidence、family shape 和缓存指纹。仅有控制字符或用法元字符、缺失分隔事实、
 超出下述支持范围的 `requires`，以及无法一致省略的可选参数 / Option 边界，均在准备阶段记为 `unsupported_syntax`。
 这会关闭对应 teaching unit；family 不删除失败成员后继续发布，同插件的其他独立单元仍可工作。
 分隔规则变化后重新生成失败也不会恢复旧用法。显式 Provider 没有声明 usage 时，共享确定性渲染边界。
 本轮语义核验针对 `arclet-alconna 1.8.44` / `nonebot-plugin-alconna 0.62.1`；不覆盖全部 Alconna 配置、
 动态 Extension 或具体参数值的任意引用 / 转义。原生 parser 回归只使用无业务回调的合成命令。
+
+祖先节点的普通位置参数与子命令共存时，模板沿声明路径保留各层参数和 Option，槽位连续编号；
+例如 `probe <slot:0> child <slot:1>`，不会把参数删除后伪装成连续命令头 `probe child`。
+这类调用以根命令作为固定锚点，子命令及其别名保留在模板中。普通根 Matcher 同时保留父参数入口；
+已有 dispatch 范围的 Matcher 不据此新增父入口。祖先变长参数，以及可选祖先参数省略前后无法保持同一
+分隔边界的组合仍停止生成。
+
+普通路径存在型 dispatch 可定位声明中的位置参数、Option、Subcommand 及其嵌套参数；参数定位复用
+Alconna 的 `extract_arg`，不执行解析或业务回调。分派目标没有默认值时，相关参数 / Option 在该分支
+模板中必须出现；已有默认值（包括 `False`）不被当作缺失。内置 Help / Completion / Shortcut 节点沿用
+现有过滤规则，避免与业务节点的 dest 重名造成误判。`additional` 回调进入既有 Rule 证据链，不能当作
+纯路由忽略，采集阶段不执行回调。
+
+未指定 value 的 `or_not=True` 保留主入口（没有 Option / 子命令）与目标路径的并集，两者属于同一个
+子 Matcher 教学目标；快照另存主入口参数，避免目标路径提升必填性后污染主入口。渲染结果精确共享
+完整主入口时，用整段可省略的模板替换已覆盖的展开形式，如 `probe [help]`，不重复追加模板，
+也不放宽原有结构校验。分派到中间子命令时，同时保留该节点自身入口与后续路径；按声明路径逐层合并，
+例如普通分派为 `probe group [a|b]`，带主入口并集时为 `probe [group [a|b]]`。
+未命中的上级节点不会因合并而新增入口；无法安全合并的形式仍受现有模板数量和参数结构限制。
+父子 Matcher 仍独立分析，不因入口重叠合并业务，也不默认互斥。仅有框架内部传递 Handler 的根 Matcher
+没有本插件业务 Handler 引用，沿用现有资格规则排除；存在业务 Handler 时根据自身 Evidence 分析。
+当前不建立父级执行链或全局可达性分析，不承诺识别任意提前结束 / 阻断传播的交互。
+
+值比较（包括带 value 的 `or_not`）、节点默认结果、被分派目标为重复 Option、隐藏或变长参数以及无法唯一定位的动态路径目前不做
+完整投影。这些已知的不支持保留在记录的 `command.projection_issue`，同时标记证据不足并排除教学
+生成；不会使整个快照成为 partial。真正的采集异常仍保持全局错误，不通过宽泛捕获隐藏故障。
+request v86 使旧请求重新验证；Prompt v115 / 公开 Schema v13 不变。这不是完整 Alconna 查询解析器。
+
+上述三个 dispatch 支持缺口的具体含义：
+
+- `value` 比较约束的是解析后的值，不能仅凭值为字符串就当作固定输入替换槽位；带 value 的 `or_not`
+  接受值相等或查询路径不存在，不等同于无 value 时的主入口并集。
+- Option / Subcommand 的节点默认结果可能在用户未输入该节点时仍形成查询结果；不能用“路径存在”
+  推导该节点必须显式输入。这不等于普通参数默认值都不支持。
+- 分派到追加或计数型重复 Option，需要同时保留目标必须出现与整组选项可重复的结构；当前明确拒绝
+  该组合，不代表所有普通重复 Option 都不支持。
+
+合并后的模板仍受每条 160 字符、最多四条等既有合同约束；分支多而不能在边界内无损表达时仍可能停止
+生成，不能把模板去重修复理解为任意命令树都能合并。这些是当前支持限制，不是插件注册错误。
 
 顶层 Option / Subcommand 的常规 `requires` 已支持；多词节点名由 Alconna 拆出的前置词同样处理。
 快照按运行时原顺序保存，不排序或去重；固定前置词由代码加入 canonical 模板和子命令完整路径，
@@ -218,13 +301,15 @@ Gold 和本任务生成的 help-display，避免秘密外发与评价数据泄�
 
 一次能力分析可以包含多个由模型外固定 ID 的公开 entry：普通命令通常只有一项，确定性的 Alconna 叶子
 子命令分别成为独立项，同一功能的 Option、别名、回复输入和参数变体仍保留在该项的有序 `usages` 中。模型
-直接输出完整命令正文，不再使用 `{command}`；普通 entry 必须包含 runtime / parser 给定的 anchored 正文，
+直接输出完整命令正文，不再使用 `{command}`；anchored entry 必须包含 runtime / parser 给定的正文，
 参数化工厂请求会携带全部当前公开成员，但不再逐成员复制通用 claims 和相同 Parser AST：紧凑成员清单保留
 anchored 命令、alias 与语法可信度，只有 Runtime adapter 能证明完整的参数结构才按 `shape_id` 去重保存。
-当前 Alconna 使用 `parser_exact`，普通 `on_command` 保持 `anchor_only`，不能把缺少结构化参数误读为没有参数。
+固定头 Alconna 使用 `parser_exact`；模式头成员使用 `parser_with_pattern_header`，保留匹配事实、别名和
+后续 Parser shape，不把完整公开用法标为可精确对齐。普通 `on_command` 保持 `anchor_only`，不能把缺少
+结构化参数误读为没有参数。
 `parser_exact` 只冻结参数顺序、必选性、重复性、Option 和别名；内部 `Arg.name` 会先匿名化为 `slot:N`，
 公开槽位名由模型依据 notice、声明 usage 与源码 Evidence 生成，模型外再按匿名模板校验结构。
-Parser 模板约束解析后的输入，不能单独证明用户必须将全部参数直接附在命令消息中。标准用法仍须完整保留；
+Parser 模板约束解析后的输入，不能单独证明用户必须将全部参数直接附在命令消息中。有标准模板的入口仍须完整保留；
 有当前注册及处理实现 Evidence 支持时，可增加独立的前置回复形式：`<回复消息>` 为必需回复，`[回复消息]`
 为可选回复。必需回复可替代能够唯一对齐的普通参数槽位，可选回复只能省略可选槽位；Option/分支内部参数、
 其他保留槽位的顺序、必选性和重复性仍受校验。程序只验证结构对应，回复实际提供哪些内容及数量由模型依据

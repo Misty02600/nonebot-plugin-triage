@@ -339,7 +339,10 @@ def alconna_dispatch_profile() -> FrameworkFieldSemanticProfile:
             FrameworkFieldSemantic(
                 "AlconnaMatcher.dispatch",
                 "dispatch 按已经解析的 Alconna path 选择同一命令的 Matcher 分支；"
-                "它是命令路由，不表示额外的角色、资格、场景或业务执行限制。",
+                "路径存在判断本身是命令路由，不表示角色、资格或场景限制；"
+                "未指定 value 时，or_not=True 表示主入口（无 Option/子命令）或目标路径，属于同一 Matcher 的调用形式；"
+                "父子 Matcher 独立分析，入口重叠不表示功能互斥或应合并条目；"
+                "additional 回调则是独立执行条件，必须依据其实现解释，不能当成纯路由忽略。",
             ),
         ),
     )

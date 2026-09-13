@@ -235,6 +235,7 @@ class _CapturedCapabilityClient:
                 trace=self._inner.diagnostic_trace,
                 provider_responses=self._inner.diagnostic_provider_responses,
                 provider_errors=self._inner.diagnostic_provider_errors,
+                input_estimates=self._inner.diagnostic_input_estimates,
             )
 
     async def _record_deadline_overrun(
@@ -329,6 +330,7 @@ class _ModelOutputCapture:
         trace: tuple[dict[str, Any], ...],
         provider_responses: tuple[dict[str, Any], ...],
         provider_errors: tuple[dict[str, Any], ...],
+        input_estimates: tuple[dict[str, int | None], ...] = (),
     ) -> None:
         record = {
             "sequence": sequence,
@@ -338,6 +340,7 @@ class _ModelOutputCapture:
             "messages": trace,
             "provider_responses": provider_responses,
             "provider_errors": provider_errors,
+            "input_estimates": input_estimates,
         }
         self._records.append(record)
         self._journal_path.parent.mkdir(parents=True, exist_ok=True)

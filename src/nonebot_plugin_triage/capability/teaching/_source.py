@@ -35,8 +35,6 @@ from nbtriage.capability.teaching.source_evidence import (
 )
 from nbtriage.readonly_tools.python_navigation import DefinitionLocation
 from nonebot_plugin_triage.capability.teaching._navigation import (
-    _MAX_FUNCTION_CHARS,
-    _MAX_MODULES,
     CapabilityAnalysisAdapterError,
     HandlerCodeIdentity,
     _evidence_id,
@@ -60,7 +58,6 @@ from nonebot_plugin_triage.runtime_config_evidence import (
     runtime_config_reference_id,
 )
 
-_MAX_FUNCTIONS = 32
 _MAX_CONFIG_REFERENCES = 64
 
 
@@ -314,7 +311,7 @@ def _family_static_callable_evidence(
         function = parsed.functions[function_name][0]
         content = _function_source(parsed.source, function)
         source = _function_source_span(parsed, function)
-        if content is None or source is None or len(content) > _MAX_FUNCTION_CHARS:
+        if content is None or source is None:
             return ()
         units.append(
             CapabilityEvidenceUnit(
@@ -324,6 +321,7 @@ def _family_static_callable_evidence(
                     f"family-callable:{function_name}@{function.lineno}",
                 ),
                 source_kind="python_family_callable",
+                preload_optional=True,
                 content=content,
                 revision=parsed.revision,
                 locator=_target_plugin_locator(source.locator, function_name, function.lineno),
@@ -986,8 +984,6 @@ def _analysis_targets(
         if identity is None:
             raise CapabilityAnalysisAdapterError("handler code identity is unavailable")
         handler_targets.setdefault(identity, reference)
-    if len(handler_targets) > _MAX_FUNCTIONS:
-        raise CapabilityAnalysisAdapterError("capability handler count exceeds budget")
 
     handler_symbols = {
         (
@@ -1041,7 +1037,6 @@ def _analysis_targets(
             ),
         )
     )
-    remaining = _MAX_FUNCTIONS - len(ordered_handlers)
     ordered_wrappers = tuple(
         sorted(
             wrapper_targets.values(),
@@ -1051,14 +1046,13 @@ def _analysis_targets(
                 item.code_firstlineno or item.line or 0,
             ),
         )
-    )[:remaining]
-    remaining -= len(ordered_wrappers)
+    )
     ordered_config = tuple(
         sorted(
             config_targets.values(),
             key=lambda item: (item.module, item.function, item.line or 0),
         )
-    )[:remaining]
+    )
     return (*ordered_handlers, *ordered_wrappers, *ordered_config)
 
 
@@ -1074,8 +1068,6 @@ def _resolve_analysis_targets(
     for target in targets:
         parsed = parsed_modules.get(target.module)
         if parsed is None:
-            if len(parsed_modules) >= _MAX_MODULES:
-                continue
             parsed = _load_parsed_module(target.module, module_root, source_root)
             if parsed is None:
                 continue
@@ -1091,7 +1083,7 @@ def _resolve_analysis_targets(
             include_decorators=target.binding_index is not None,
         )
         source = _function_source_span(parsed, function)
-        if content is None or source is None or len(content) > _MAX_FUNCTION_CHARS:
+        if content is None or source is None:
             continue
         source_span_key = (source.locator, source.line, source.end_line, source.digest)
         if source_span_key in resolved_source_spans:

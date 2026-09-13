@@ -14,6 +14,7 @@ from tokenize import detect_encoding
 from typing import Any, cast
 
 from pydantic_ai import ToolDefinition
+from pydantic_ai.exceptions import ToolFailed
 from pydantic_ai.tools import RunContext
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset, ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
@@ -64,11 +65,12 @@ from nonebot_plugin_triage.evidence_access import (
 )
 
 _TARGET_PLUGIN_ROOT_NAME = "target_plugin"
-_MAX_CITABLE_FILE_EXCERPT_CHARS = 7_600
+_MAX_CITABLE_FILE_EXCERPT_CHARS = 32_000
+_EXCERPT_TRUNCATION_MARKER = "\n[... Triage truncated this citable excerpt ...]"
 _DYNAMIC_EVIDENCE_SOURCE_KIND = "approved_file_excerpt"
 _MAX_NAVIGATION_TARGETS_PER_EVIDENCE = 24
 _MAX_INITIAL_NAVIGATION_TARGETS = 64
-_MAX_OPEN_DEFINITION_LINES = 120
+_DEFAULT_OPEN_DEFINITION_LINES = 300
 _NAVIGATION_TOOL_TIMEOUT_SECONDS = 15.0
 _NAVIGABLE_PYTHON_SOURCE_KINDS = frozenset(
     {
@@ -355,12 +357,14 @@ class _NavigationRegistry:
             )
         )
 
-    def open_definition(self, navigation_ref: str) -> dict[str, object]:
+    def open_definition(self, navigation_ref: str, offset: int = 0) -> dict[str, object]:
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            return {"resolved": False, "failure": "invalid_offset"}
         anchor = self._anchors.get(navigation_ref)
         if anchor is None:
             return {"resolved": False, "failure": "invalid_navigation_ref"}
         if isinstance(anchor, _DefinitionNavigationAnchor):
-            return self._open_resolved_definition(anchor)
+            return self._open_resolved_definition(anchor, offset=offset)
         try:
             result = self._navigator.go_to_definition(
                 GoToDefinitionRequest(
@@ -387,7 +391,9 @@ class _NavigationRegistry:
             }
         if len(result.definitions) == 1:
             definition = result.definitions[0]
-            return self._open_resolved_definition(self._definition_anchor(definition))
+            return self._open_resolved_definition(
+                self._definition_anchor(definition), offset=offset
+            )
         return {
             "resolved": False,
             "failure": "ambiguous_definition",
@@ -466,6 +472,8 @@ class _NavigationRegistry:
     def _open_resolved_definition(
         self,
         anchor: _DefinitionNavigationAnchor,
+        *,
+        offset: int = 0,
     ) -> dict[str, object]:
         loaded = self._load_source(
             root_name=anchor.root_name,
@@ -480,6 +488,9 @@ class _NavigationRegistry:
             line=anchor.line,
             name=anchor.display.rsplit(".", 1)[-1],
         )
+        start_line += offset
+        if start_line > end_line:
+            return {"resolved": False, "failure": "offset_out_of_range"}
         lines = source.splitlines(keepends=True)
         excerpt = "".join(lines[start_line - 1 : end_line]).rstrip()
         if not excerpt:
@@ -498,6 +509,8 @@ class _NavigationRegistry:
             arguments=arguments,
             content=excerpt,
         )
+        read_lines = len(unit.content.removesuffix(_EXCERPT_TRUNCATION_MARKER).splitlines())
+        arguments["limit"] = read_lines
         targets = self.register_evidence(unit, read_arguments=arguments)
         return {
             "resolved": True,
@@ -512,6 +525,10 @@ class _NavigationRegistry:
                 "line": anchor.line,
             },
             "content": unit.content,
+            "start_line": start_line,
+            "end_line": start_line + read_lines - 1,
+            "truncated": unit.content != excerpt,
+            "next_offset": offset + read_lines if unit.content != excerpt else None,
             "navigation_targets": targets,
             "framework_evidence": self.framework_evidence(unit, qualified_name=anchor.display),
         }
@@ -602,15 +619,25 @@ class _EvidenceRecordingToolset(WrapperToolset[Any]):
                 "citable": False,
                 "reason": "file_changed_or_became_unavailable",
             }
+        bounded = _bounded_excerpt(result)
+        if bounded != result and re.search(r"^\s*\d+\t", bounded, re.MULTILINE) is None:
+            raise ToolFailed("first requested source line exceeds excerpt character limit")
         unit = self._capture.record(
             root=self._root,
             state=after,
             arguments=tool_args,
             content=result,
         )
+        returned_lines = [
+            int(match.group(1)) for match in re.finditer(r"^\s*(\d+)\t", unit.content, re.MULTILINE)
+        ]
+        read_arguments = dict(tool_args)
+        if returned_lines:
+            read_arguments["offset"] = returned_lines[0] - 1
+            read_arguments["limit"] = returned_lines[-1] - returned_lines[0] + 1
         navigation_targets = self._navigation.register_evidence(
             unit,
-            read_arguments=tool_args,
+            read_arguments=read_arguments,
         )
         return {
             "citable": True,
@@ -619,6 +646,10 @@ class _EvidenceRecordingToolset(WrapperToolset[Any]):
             "locator": unit.locator,
             "revision": unit.revision,
             "content": unit.content,
+            "truncated": unit.content != result,
+            "next_offset": returned_lines[-1]
+            if unit.content != result and returned_lines
+            else None,
             "navigation_targets": navigation_targets,
             "framework_evidence": self._navigation.framework_evidence(unit),
         }
@@ -680,6 +711,7 @@ class CapabilityTeachingToolProvider:
             }
             file_bundle = build_read_only_file_toolsets(
                 profiles.file_profile,
+                enforce_read_line_limit=False,
                 tool_names_by_root=tool_names,
             )
             file_tool_roots = tuple(
@@ -965,18 +997,20 @@ def _navigation_toolset(
     selective_family: bool = False,
     timeout_seconds: float = _NAVIGATION_TOOL_TIMEOUT_SECONDS,
 ) -> AbstractToolset[Any]:
-    async def open_definition(navigation_ref: str) -> dict[str, object]:
+    async def open_definition(navigation_ref: str, offset: int = 0) -> dict[str, object]:
         """打开 Evidence 标注或同插件入口索引提供的 Python 定义并返回可引用源码；例如 Evidence 给出
         `nav:abc` 时调用 `python_open_definition(navigation_ref="nav:abc")`，不要把依赖
         包名交给 `file_info`。
 
         resolved=true 只表示已定位定义，不保证找到运行时实际调用的实现或完整行为。
+        默认读取完整定义；超过 32000 字符时按整行截断，可沿 next_offset 续读。
         若结果仅为变量绑定、容器或声明，仍不足以解释当前行为，可用文本搜索查找相关赋值、注册或实现位置。
 
         Args:
             navigation_ref: Evidence 或同插件入口索引提供的位置句柄。
+            offset: 相对该定义开头的行偏移，默认 0。返回 truncated=true 时用 next_offset 续读。
         """
-        return await asyncio.to_thread(navigation.open_definition, navigation_ref)
+        return await asyncio.to_thread(navigation.open_definition, navigation_ref, offset)
 
     sidecar = (
         "当前初始 Evidence 可直接导航的位置如下："
@@ -1060,6 +1094,11 @@ def _file_tool_definition_preparer(
                     "不要传目录、依赖包名、根名或目标插件模块名。"
                     "已知 Python 符号的定义位置应使用 python_open_definition。"
                 )
+                if suffix == "read_file":
+                    description += (
+                        "默认分页读取，可用 offset/limit 指定范围；每次返回最多 32000 字符。"
+                        "遇到截断时按 next_offset 续读，不代表整个文件已经读完。"
+                    )
             elif suffix == "list_directory":
                 description = (
                     f"{description.rstrip()} 当前文件根固定为 {root.name}；"
@@ -1234,7 +1273,7 @@ def _definition_excerpt_range(
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError):
-        return line, min(total_lines, line + _MAX_OPEN_DEFINITION_LINES - 1)
+        return line, min(total_lines, line + _DEFAULT_OPEN_DEFINITION_LINES - 1)
     candidates = tuple(
         node
         for node in ast.walk(tree)
@@ -1244,14 +1283,11 @@ def _definition_excerpt_range(
         and node.end_lineno is not None
     )
     if len(candidates) != 1:
-        return line, min(total_lines, line + _MAX_OPEN_DEFINITION_LINES - 1)
+        return line, min(total_lines, line + _DEFAULT_OPEN_DEFINITION_LINES - 1)
     node = candidates[0]
     decorator_lines = tuple(item.lineno for item in node.decorator_list)
     start_line = min((node.lineno, *decorator_lines))
-    end_line = min(
-        cast(int, node.end_lineno),
-        start_line + _MAX_OPEN_DEFINITION_LINES - 1,
-    )
+    end_line = cast(int, node.end_lineno)
     return start_line, end_line
 
 
@@ -1470,8 +1506,10 @@ def _known_file_failure(
 def _bounded_excerpt(value: str) -> str:
     if len(value) <= _MAX_CITABLE_FILE_EXCERPT_CHARS:
         return value
-    marker = "\n[... Triage truncated this citable excerpt ...]"
-    return value[: _MAX_CITABLE_FILE_EXCERPT_CHARS - len(marker)] + marker
+    end = value.rfind("\n", 0, _MAX_CITABLE_FILE_EXCERPT_CHARS - len(_EXCERPT_TRUNCATION_MARKER))
+    if end < 0:
+        raise ToolFailed("source line exceeds excerpt character limit; this line was not read")
+    return value[:end] + _EXCERPT_TRUNCATION_MARKER
 
 
 def _source_inventory_complete(errors: tuple[str, ...]) -> bool:

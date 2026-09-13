@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from .models import DEFAULT_MAX_READ_LINES, ReadOnlyPolicyProfile
+from .models import ReadOnlyPolicyProfile
+
+TEACHING_DEFAULT_READ_LINES = 300
 
 TEACHING_TASK_DENIED_PATTERNS = (
     "*.log",
@@ -30,7 +32,7 @@ TEACHING_TASK_DENIED_PATTERNS = (
 def teaching_read_only_policy(
     *,
     additional_denied_patterns: tuple[str, ...] = (),
-    max_read_lines: int = DEFAULT_MAX_READ_LINES,
+    max_read_lines: int = TEACHING_DEFAULT_READ_LINES,
     max_search_results: int = 200,
     max_find_results: int = 200,
 ) -> ReadOnlyPolicyProfile:
