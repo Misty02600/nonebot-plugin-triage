@@ -296,6 +296,29 @@ uv run python -m tools.nbtriage_maintainer analyze-capability-teaching `
 报告和生成目录属于本地工件，按上述诊断数据规则管理。预检不验证远端认证、计费、模型响应或检索带来的教学质量；
 后续真实冷测与人工语义评审继续独立记录，不能用缓存命中率、生成成功率替代质量结论。
 
+教学 fixture 评测使用 Pydantic Evals 2.28.0 调度，继续调用现有教学分析与领域评分函数。维护者安装
+`uv sync --group maintainer` 后，沿用 `evaluate-capability-teaching` 的模型、预算与付费确认参数；可加
+`--repeat 3` 独立运行每题三次。重复次数大于 1 时只形成诊断结果，不授予模型资格。总预算覆盖全部重复，
+达到阈值或无法确定费用后不再创建后续模型客户端；已开始的一例仍可能使总费用超过阈值，因此它不是请求内
+的美元硬上限。SDK 重试与教学轮内纠错沿用实际模型配置，评测层不自动重跑失败任务。
+
+正式 JSON 报告保留逐例结果与质量门槛，新增执行/评分失败、未执行计数、重复运行名称、评分版本，以及复评
+所需的请求与输出快照。报告包含合成源码证据，属于本地工件，不自动上传。评测直接保存本地 JSON，支持离线复评。
+原生框架平均分不作为资格结论，未执行或评分器故障使本次实验不完整。历史 v8–v13 fixture 的请求合同与当前
+生产合同可能不同，版本或源码审计不通过时应保持拒绝，不能通过修改历史预期来制造新的合格结论。
+
+离线复评读取上述完整报告，不需要模型凭据、付费确认或原 fixture 目录：
+
+```powershell
+uv run --group maintainer python -m tools.nbtriage_maintainer replay-capability-teaching `
+  --source-report reports/teaching-original.json --report reports/teaching-rescored.json
+```
+
+复评使用保存的最终投影与模型输出，执行当前评分规则，不重新生成或重新投影；原报告不会被覆盖。新报告记录
+来源文件摘要、原评分版本及当前评分版本，原生成费用放在 `generation_usage`，本次请求数和费用为零。
+缺少必要快照、只有 partial 报告或请求 revision 不兼容时拒绝复评。复评结果不构成新的独立冷测或资格证明；
+真实宿主冷测的 `manifest.json` 也不直接作为 fixture 复评输入。正常运行和复评都要求新的报告路径。
+
 `NBTRIAGE_RESTRICTED_CONFIG` 的 JSON 数组格式示例：
 
 ```dotenv

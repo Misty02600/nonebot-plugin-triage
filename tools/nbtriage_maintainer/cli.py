@@ -75,6 +75,7 @@ from tools.nbtriage_maintainer.capability_teaching_evaluation import (
     CAPABILITY_TEACHING_QUALIFIED_TIMEOUT_SECONDS,
     CapabilityTeachingEvaluationError,
     evaluate_capability_teaching,
+    replay_capability_teaching,
 )
 from tools.nbtriage_maintainer.collector import ManifestError, collect_manifest
 from tools.nbtriage_maintainer.curation import (
@@ -361,6 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("evals/datasets/fixtures/capability-teaching-v13-forward-heldout.json"),
     )
     capability_teaching_evaluation_parser.add_argument("--report", type=Path, required=True)
+    capability_teaching_evaluation_parser.add_argument("--repeat", type=_positive_int, default=1)
     capability_teaching_evaluation_parser.add_argument(
         "--declared-budget-usd",
         type=_positive_float,
@@ -406,6 +408,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_model_evaluation_target_arguments(capability_teaching_evaluation_parser)
+
+    teaching_replay_parser = subparsers.add_parser(
+        "replay-capability-teaching",
+        help="Rescore saved teaching inputs and outputs without model or tool calls.",
+    )
+    teaching_replay_parser.add_argument("--source-report", type=Path, required=True)
+    teaching_replay_parser.add_argument("--report", type=Path, required=True)
 
     evaluation_parser = subparsers.add_parser(
         "evaluate-b0",
@@ -802,6 +811,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_evaluate_bug_assessment(args)
     if args.command == "evaluate-capability-teaching":
         return _run_evaluate_capability_teaching(args)
+    if args.command == "replay-capability-teaching":
+        return _run_replay_capability_teaching(args)
     if args.command == "evaluate-b0":
         return _run_evaluate_b0(args)
     if args.command == "evaluate-s3":
@@ -1389,6 +1400,7 @@ def _run_evaluate_capability_teaching(args: argparse.Namespace) -> int:
                 selected_case_ids=(frozenset(args.case_id) if args.case_id else None),
                 enforce_qualification_preflight=True,
                 diagnostic_output_path=diagnostic_output,
+                repeat=args.repeat,
             )
         )
         write_new_evaluation_report(args.report, report)
@@ -1415,6 +1427,18 @@ def _run_evaluate_capability_teaching(args: argparse.Namespace) -> int:
     if diagnostic_output is not None:
         print(f"invalid-output diagnostics: {diagnostic_output}")
     return 0 if report["quality_gate"]["status"] == "passed" else 1
+
+
+def _run_replay_capability_teaching(args: argparse.Namespace) -> int:
+    try:
+        _require_new_report_target(args.report)
+        report = asyncio.run(replay_capability_teaching(args.source_report))
+        write_new_evaluation_report(args.report, report)
+    except (CapabilityTeachingEvaluationError, OSError, ValueError, KeyError, TypeError) as error:
+        print(f"capability teaching replay failed: {error}", file=sys.stderr)
+        return 1
+    print(f"teaching replay: {report['summary']['case_count']} case(s), report: {args.report}")
+    return 0 if report["complete"] else 1
 
 
 def _run_evaluate_s3(args: argparse.Namespace) -> int:

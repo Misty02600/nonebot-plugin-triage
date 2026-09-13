@@ -5,23 +5,29 @@ import hashlib
 import importlib
 import json
 import keyword
+import math
 import re
 import sys
 import textwrap
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
 from decimal import ROUND_CEILING, Decimal
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Protocol, cast
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 from pydantic_ai.usage import RunUsage
 from pydantic_core import to_jsonable_python
+from pydantic_evals import Case, Dataset
+from pydantic_evals.evaluators import Evaluator, EvaluatorContext
+from pydantic_evals.lifecycle import CaseLifecycle
+from pydantic_evals.reporting import ReportCase, ReportCaseFailure
 
 from nbtriage._model_runtime.usage import provider_response_identity
 from nbtriage.capability.catalog.records import (
@@ -275,12 +281,15 @@ async def evaluate_capability_teaching(
     selected_case_ids: frozenset[str] | None = None,
     enforce_qualification_preflight: bool = False,
     diagnostic_output_path: Path | None = None,
+    repeat: int = 1,
 ) -> dict[str, Any]:
     fixture_raw = fixtures_path.read_bytes()
     payload = json.loads(fixture_raw)
     all_cases = _validate_fixture(payload)
     fixture_sha256 = _fixture_bundle_sha256(fixtures_path, fixture_raw, all_cases)
-    diagnostic_mode = selected_case_ids is not None
+    if isinstance(repeat, bool) or not isinstance(repeat, int) or repeat < 1:
+        raise CapabilityTeachingEvaluationError("repeat must be a positive integer")
+    diagnostic_mode = selected_case_ids is not None or repeat > 1
     if selected_case_ids is None:
         cases = all_cases
     else:
@@ -300,7 +309,7 @@ async def evaluate_capability_teaching(
             raise CapabilityTeachingEvaluationError(
                 "diagnostic capability teaching evaluation requires at least one case"
             )
-    if declared_budget_usd <= 0:
+    if not math.isfinite(declared_budget_usd) or declared_budget_usd <= 0:
         raise CapabilityTeachingEvaluationError("declared budget must be positive")
     if timeout_seconds <= 0 or max_output_tokens < 1:
         raise CapabilityTeachingEvaluationError("model runtime limits must be positive")
@@ -373,111 +382,55 @@ async def evaluate_capability_teaching(
     total_input_tokens = 0
     total_output_tokens = 0
     total_requests = 0
-    schema_valid = 0
-    evidence_closed = 0
-    projection_valid = 0
-    safety_compliant = 0
-    semantics_compliant = 0
-    baseline_case_count = 0
-    baseline_cases_preserved = 0
-    baseline_member_case_count = 0
-    baseline_member_cases_preserved = 0
-    budget_compliant = 0
-    tool_cases_compliant = 0
-    tool_case_count = 0
-    source_case_count = 0
-    adapter_source_case_count = 0
-    source_extraction_valid = 0
-    observed_coverage: set[str] = set()
-    case_ids: set[str] = set()
-    if partial_report_path is not None:
-        _write_partial_report(
-            partial_report_path,
-            status="running",
-            fixture_sha256=fixture_sha256,
-            rows=rows,
-            total_cost_microusd=0,
-            evaluation_id=evaluation_id,
-            evaluation_revision=evaluation_revision,
-        )
+    attempts: dict[int, dict[str, Any]] = {}
+    prepared_by_request = {id(item.request): item for item in prepared_cases}
+    stop_reason: str | None = None
 
-    for prepared in prepared_cases:
+    def persist_rows(status: str) -> None:
+        if partial_report_path is not None:
+            _write_partial_report(
+                partial_report_path,
+                status=status,
+                fixture_sha256=fixture_sha256,
+                rows=rows,
+                total_cost_microusd=total_cost_microusd,
+                evaluation_id=evaluation_id,
+                evaluation_revision=evaluation_revision,
+            )
+
+    async def run_case(request: CapabilityAnalysisRequest) -> dict[str, Any]:
+        nonlocal total_cost_microusd, total_requests, total_input_tokens, total_output_tokens
+        nonlocal stop_reason
+        attempts.pop(id(request), None)
+        if stop_reason is not None:
+            raise CapabilityTeachingEvaluationError(stop_reason)
+        if total_cost_microusd >= round(declared_budget_usd * 1_000_000):
+            stop_reason = "budget_exhausted"
+            raise CapabilityTeachingEvaluationError(stop_reason)
+        prepared = prepared_by_request[id(request)]
         raw_case = prepared.raw
         case_id = _required_text(raw_case, "case_id")
-        if case_id in case_ids:
-            raise CapabilityTeachingEvaluationError("duplicate capability teaching case id")
-        case_ids.add(case_id)
         coverage = _string_list(raw_case.get("coverage"), "coverage")
-        observed_coverage.update(coverage)
-        request = prepared.request
-        if prepared.input_kind in {"source", "adapter_source"}:
-            source_case_count += 1
-            source_extraction_valid += 1
-        if prepared.input_kind == "adapter_source":
-            adapter_source_case_count += 1
-        expected = _required_dict(raw_case, "expected")
         tool_state = _FixtureToolState(
-            case_id,
-            _dict_list(raw_case.get("tool_evidence", []), "tool_evidence"),
+            case_id, _dict_list(raw_case.get("tool_evidence", []), "tool_evidence")
         )
         tool_runtime = tool_state.runtime()
         runtime_factory = (lambda _request, value=tool_runtime: value) if tool_runtime else None
         client = client_factory(runtime_factory)
         output: CapabilityAnalysisOutput | None = None
         annotation: CapabilityTeachingAnnotation | None = None
+        error: Exception | None = None
         error_type: str | None = None
         error_message: str | None = None
         try:
             output = await CapabilityAnalysisService(client).analyze(request)
-            schema_valid += 1
-            evidence_closed += 1
             annotation = project_capability_annotation(
-                request,
-                output,
-                analysis_revision=evaluation_revision,
+                request, output, analysis_revision=evaluation_revision
             )
-            projection_valid += 1
-        except Exception as error:
-            error_type = type(error).__name__
-            error_message = str(error)[:240] or None
-
-        checks = _score_case(
-            expected,
-            request=request,
-            output=output,
-            annotation=annotation,
-            tool_call_count=tool_state.call_count,
-        )
-        safety_ok = all(
-            checks[name]
-            for name in (
-                "projection_valid",
-                "forbidden_public_text_absent",
-                "unexpected_options_absent",
-                "forbidden_constraint_kinds_absent",
-            )
-        )
-        semantic_ok = all(value for name, value in checks.items() if name != "baseline_preserved")
-        safety_compliant += safety_ok
-        semantics_compliant += semantic_ok
-        if expected.get("preserve_baseline_fields"):
-            baseline_case_count += 1
-            baseline_cases_preserved += checks["baseline_preserved"]
-        if expected.get("preserve_baseline_member_fields"):
-            baseline_member_case_count += 1
-            baseline_member_cases_preserved += checks["baseline_members_preserved"]
-
-        requires_tool = (
-            _nonnegative_int(
-                expected.get("minimum_tool_calls", 0),
-                "minimum_tool_calls",
-            )
-            > 0
-        )
-        if requires_tool:
-            tool_case_count += 1
-            tool_cases_compliant += checks["minimum_tool_calls"]
-
+        except Exception as exc:
+            error = exc
+            error_type = type(exc).__name__
+            error_message = str(exc)[:240] or None
         usage = client.last_usage
         response = client.last_response
         if usage is None or response is None:
@@ -527,7 +480,6 @@ async def evaluate_capability_teaching(
             and provider_identity_valid
             and response_id_present
         )
-        budget_compliant += within_budget
         trace = getattr(client, "diagnostic_trace", ())
         if (
             diagnostic_output_path is not None
@@ -557,40 +509,102 @@ async def evaluate_capability_teaching(
                 evaluation_id=evaluation_id,
                 evaluation_revision=evaluation_revision,
             )
-        rows.append(
-            {
-                "case_id": case_id,
-                "coverage": coverage,
-                "input_kind": prepared.input_kind,
-                "source_audit": prepared.source_audit,
-                "passed": semantic_ok and within_budget,
-                "error_type": error_type,
-                "error_message": error_message,
-                "checks": checks,
-                "candidate": _candidate_payload(output),
-                "actual": annotation.to_dict() if annotation is not None else None,
-                "provider_requests": requests,
-                "tool_calls": usage.tool_calls if usage is not None else None,
-                "fixture_tool_calls": tool_state.call_count,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cost_microusd": cost_microusd,
-                "provider_response_id_present": response_id_present,
-                "provider_identity_valid": provider_identity_valid,
-            }
-        )
-        if partial_report_path is not None:
-            _write_partial_report(
-                partial_report_path,
-                status="running",
-                fixture_sha256=fixture_sha256,
-                rows=rows,
-                total_cost_microusd=total_cost_microusd,
-                evaluation_id=evaluation_id,
-                evaluation_revision=evaluation_revision,
+        if cost_microusd is None:
+            stop_reason = "cost_unavailable"
+        elif total_cost_microusd >= round(declared_budget_usd * 1_000_000):
+            stop_reason = "budget_exhausted"
+        row = {
+            "case_id": case_id,
+            "coverage": coverage,
+            "input_kind": prepared.input_kind,
+            "source_audit": prepared.source_audit,
+            "passed": False,
+            "budget_compliant": within_budget,
+            "schema_valid": output is not None,
+            "evidence_closed": output is not None,
+            "error_type": error_type,
+            "error_message": error_message,
+            "checks": {},
+            "candidate": _candidate_payload(output),
+            "actual": annotation.to_dict() if annotation is not None else None,
+            "provider_requests": requests,
+            "tool_calls": usage.tool_calls if usage is not None else None,
+            "fixture_tool_calls": tool_state.call_count,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_microusd": cost_microusd,
+            "provider_response_id_present": response_id_present,
+            "provider_identity_valid": provider_identity_valid,
+        }
+        row["replay"] = {
+            "request": TypeAdapter(CapabilityAnalysisRequest).dump_python(request, mode="json"),
+            "output": TypeAdapter(CapabilityAnalysisOutput | None).dump_python(output, mode="json"),
+            "expected": _required_dict(raw_case, "expected"),
+        }
+        attempts[id(request)] = row
+        if error is not None:
+            raise error
+        return row
+
+    class CollectResult(CaseLifecycle[CapabilityAnalysisRequest, dict[str, Any], dict[str, Any]]):
+        async def teardown(self, result: ReportCase | ReportCaseFailure | None) -> None:
+            nonlocal stop_reason
+            if result is None:
+                persist_rows("interrupted")
+                return
+            row = attempts.pop(id(self.case.inputs), None)
+            if row is None:
+                row = _unexecuted_row(self.case.metadata or {}, stop_reason)
+                if stop_reason is None:
+                    stop_reason = "execution_error"
+            _apply_evaluation_result(row, result)
+            rows.append(row)
+            persist_rows("running")
+
+    dataset = Dataset(
+        name=payload["fixture_set_id"],
+        cases=[
+            Case(
+                name=_required_text(item.raw, "case_id"),
+                inputs=item.request,
+                metadata={
+                    "case_id": item.raw["case_id"],
+                    "coverage": item.raw["coverage"],
+                    "input_kind": item.input_kind,
+                    "source_audit": item.source_audit,
+                    "expected": item.raw["expected"],
+                },
             )
-        if total_cost_microusd > round(declared_budget_usd * 1_000_000):
-            raise CapabilityTeachingEvaluationError("declared budget exceeded")
+            for item in prepared_cases
+        ],
+        evaluators=[_TeachingEvaluator()],
+    )
+    persist_rows("running")
+    await dataset.evaluate(
+        run_case,
+        max_concurrency=1,
+        repeat=repeat,
+        progress=False,
+        retry_task=None,
+        retry_evaluators=None,
+        lifecycle=CollectResult,
+    )
+    totals = _teaching_totals(rows)
+    schema_valid = totals["schema_valid"]
+    evidence_closed = totals["evidence_closed"]
+    projection_valid = totals["projection_valid"]
+    safety_compliant = totals["safety_compliant"]
+    semantics_compliant = totals["semantics_compliant"]
+    baseline_case_count = totals["baseline_case_count"]
+    baseline_cases_preserved = totals["baseline_cases_preserved"]
+    baseline_member_case_count = totals["baseline_member_case_count"]
+    baseline_member_cases_preserved = totals["baseline_member_cases_preserved"]
+    budget_compliant = totals["budget_compliant"]
+    tool_cases_compliant = totals["tool_cases_compliant"]
+    tool_case_count = totals["tool_case_count"]
+    source_case_count = totals["source_case_count"]
+    adapter_source_case_count = totals["adapter_source_case_count"]
+    source_extraction_valid = totals["source_extraction_valid"]
 
     count = len(rows)
     expected_contract = _expected_qualification_contract()
@@ -609,8 +623,11 @@ async def evaluate_capability_teaching(
         if baseline_member_case_count
         else 1.0
     )
+    complete = all(row["outcome"] in {"completed", "task_failed"} for row in rows)
     passed = (
-        all(qualification_checks.values())
+        complete
+        and total_cost_microusd <= round(declared_budget_usd * 1_000_000)
+        and all(qualification_checks.values())
         and schema_rate == 1.0
         and evidence_rate == 1.0
         and projection_rate == 1.0
@@ -622,6 +639,13 @@ async def evaluate_capability_teaching(
     )
     report = {
         "schema_version": 1,
+        "runner": "pydantic-evals/2.28.0",
+        "generated_at": datetime.now(UTC).isoformat(),
+        "scoring_revision": _scoring_revision(),
+        "repeat": repeat,
+        "complete": complete,
+        "stop_reason": stop_reason,
+        "declared_budget_usd": declared_budget_usd,
         "fixture_schema_version": payload["schema_version"],
         "mode": "diagnostic" if diagnostic_mode else "qualification",
         "evaluation_id": evaluation_id,
@@ -666,7 +690,7 @@ async def evaluate_capability_teaching(
         },
         "quality_gate": {
             "status": "passed" if passed else "failed",
-            "qualification_eligible": all(qualification_checks.values()),
+            "qualification_eligible": complete and all(qualification_checks.values()),
             "qualification_checks": qualification_checks,
             "required_schema_valid_rate": 1.0,
             "required_evidence_closure_rate": 1.0,
@@ -680,6 +704,7 @@ async def evaluate_capability_teaching(
         "pricing_profile": pricing_profile,
         "rows": rows,
     }
+    _add_execution_summary(report)
     if partial_report_path is not None:
         _write_partial_report(
             partial_report_path,
@@ -702,14 +727,269 @@ async def evaluate_capability_teaching(
     return report
 
 
-def _score_case(
-    expected: dict[str, object],
-    *,
-    request: CapabilityAnalysisRequest,
-    output: CapabilityAnalysisOutput | None,
-    annotation: CapabilityTeachingAnnotation | None,
-    tool_call_count: int,
-) -> dict[str, bool]:
+class _TeachingEvaluator(Evaluator[CapabilityAnalysisRequest, dict[str, Any], dict[str, Any]]):
+    async def evaluate(
+        self, ctx: EvaluatorContext[CapabilityAnalysisRequest, dict[str, Any], dict[str, Any]]
+    ) -> dict[str, bool]:
+        row = ctx.output
+        output = TypeAdapter(CapabilityAnalysisOutput | None).validate_python(
+            row["replay"]["output"]
+        )
+        annotation = (
+            CapabilityTeachingAnnotation.from_dict(row["actual"])
+            if row["actual"] is not None
+            else None
+        )
+        return _score_case(
+            (ctx.metadata or {})["expected"],
+            request=ctx.inputs,
+            output=output,
+            annotation=annotation,
+            tool_call_count=row["fixture_tool_calls"],
+        )
+
+
+def _scoring_revision() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _unexecuted_row(metadata: dict[str, Any], reason: str | None) -> dict[str, Any]:
+    return {
+        **metadata,
+        "passed": False,
+        "checks": {},
+        "candidate": None,
+        "actual": None,
+        "schema_valid": False,
+        "evidence_closed": False,
+        "budget_compliant": False,
+        "provider_requests": 0,
+        "tool_calls": 0,
+        "fixture_tool_calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_microusd": 0,
+        "provider_response_id_present": False,
+        "provider_identity_valid": False,
+        "error_type": None,
+        "error_message": None,
+        "outcome": "not_executed" if reason else "task_failed",
+        "stop_reason": reason,
+    }
+
+
+def _apply_evaluation_result(row: dict[str, Any], result: ReportCase | ReportCaseFailure) -> None:
+    row["run_name"] = result.name
+    if isinstance(result, ReportCaseFailure):
+        row["checks"] = _empty_teaching_checks(
+            row.get("replay", {}).get("expected", row.get("expected", {}))
+        )
+        row.setdefault("outcome", "task_failed")
+        if not row.get("error_type"):
+            row["error_type"] = result.error_message.partition(":")[0]
+            row["error_message"] = result.error_message[:240]
+        row["passed"] = False
+        return
+    row["checks"] = {name: check.value for name, check in result.assertions.items()}
+    row["evaluator_failures"] = [
+        {
+            "name": failure.name,
+            "error_type": failure.error_type,
+            "error_message": failure.error_message[:240],
+        }
+        for failure in result.evaluator_failures
+    ]
+    row["outcome"] = (
+        "scoring_failed"
+        if result.evaluator_failures
+        else "task_failed"
+        if row.get("error_type")
+        else "completed"
+    )
+    row["passed"] = (
+        row["outcome"] == "completed"
+        and row["budget_compliant"]
+        and bool(row["checks"])
+        and all(value for name, value in row["checks"].items() if name != "baseline_preserved")
+    )
+
+
+def _teaching_totals(rows: list[dict[str, Any]]) -> dict[str, int]:
+    totals: dict[str, int] = dict.fromkeys(
+        (
+            "schema_valid",
+            "evidence_closed",
+            "projection_valid",
+            "safety_compliant",
+            "semantics_compliant",
+            "baseline_case_count",
+            "baseline_cases_preserved",
+            "baseline_member_case_count",
+            "baseline_member_cases_preserved",
+            "budget_compliant",
+            "tool_cases_compliant",
+            "tool_case_count",
+            "source_case_count",
+            "adapter_source_case_count",
+            "source_extraction_valid",
+        ),
+        0,
+    )
+    for row in rows:
+        checks = row["checks"]
+        expected = row.get("replay", {}).get("expected", row.get("expected", {}))
+        for name in ("schema_valid", "evidence_closed", "budget_compliant"):
+            totals[name] += bool(row.get(name))
+        totals["projection_valid"] += row["actual"] is not None
+        scored = row["outcome"] == "completed" and bool(checks)
+        totals["safety_compliant"] += scored and all(
+            checks.get(name, False)
+            for name in (
+                "projection_valid",
+                "forbidden_public_text_absent",
+                "unexpected_options_absent",
+                "forbidden_constraint_kinds_absent",
+            )
+        )
+        totals["semantics_compliant"] += scored and all(
+            value for name, value in checks.items() if name != "baseline_preserved"
+        )
+        if expected.get("preserve_baseline_fields"):
+            totals["baseline_case_count"] += 1
+            totals["baseline_cases_preserved"] += checks.get("baseline_preserved", False)
+        if expected.get("preserve_baseline_member_fields"):
+            totals["baseline_member_case_count"] += 1
+            totals["baseline_member_cases_preserved"] += checks.get(
+                "baseline_members_preserved", False
+            )
+        if expected.get("minimum_tool_calls", 0) > 0:
+            totals["tool_case_count"] += 1
+            totals["tool_cases_compliant"] += checks.get("minimum_tool_calls", False)
+        source = row["input_kind"] in {"source", "adapter_source"}
+        totals["source_case_count"] += source
+        totals["source_extraction_valid"] += source
+        totals["adapter_source_case_count"] += row["input_kind"] == "adapter_source"
+    return totals
+
+
+def _add_execution_summary(report: dict[str, Any]) -> None:
+    rows = report["rows"]
+    report["summary"].update(
+        {
+            "planned_case_count": len(rows),
+            "executed_case_count": sum(row["outcome"] != "not_executed" for row in rows),
+            "task_failed_count": sum(row["outcome"] == "task_failed" for row in rows),
+            "scoring_failed_count": sum(row["outcome"] == "scoring_failed" for row in rows),
+            "not_executed_count": sum(row["outcome"] == "not_executed" for row in rows),
+        }
+    )
+
+
+async def replay_capability_teaching(report_path: Path) -> dict[str, Any]:
+    """仅使用保存的请求、输出与预期条件复评，不构建模型、宿主或工具。
+
+    Raises:
+        CapabilityTeachingEvaluationError: 工件不完整或与当前请求类型不兼容。
+    """
+    raw = report_path.read_bytes()
+    report = json.loads(raw)
+    if not isinstance(report, dict):
+        raise CapabilityTeachingEvaluationError("replay report must be an object")
+    original_rows = report.get("rows", [])
+    if not original_rows or report.get("runner") != "pydantic-evals/2.28.0":
+        raise CapabilityTeachingEvaluationError("report lacks replay evidence")
+    if report.get("request_revision") != CAPABILITY_ANNOTATION_REQUEST_REVISION:
+        raise CapabilityTeachingEvaluationError("replay request revision mismatch")
+    cases = []
+    saved: dict[int, dict[str, Any]] = {}
+    for row in original_rows:
+        evidence = row.get("replay")
+        if (
+            not isinstance(evidence, dict)
+            or not {"request", "output", "expected"} <= evidence.keys()
+        ):
+            raise CapabilityTeachingEvaluationError("report lacks replay evidence")
+        request = TypeAdapter(CapabilityAnalysisRequest).validate_python(evidence["request"])
+        TypeAdapter(CapabilityAnalysisOutput | None).validate_python(evidence["output"])
+        _validate_expected_request_contract(evidence["expected"], request)
+        saved[id(request)] = row
+        cases.append(
+            Case(name=row["run_name"], inputs=request, metadata={"expected": evidence["expected"]})
+        )
+
+    async def load_output(request: CapabilityAnalysisRequest) -> dict[str, Any]:
+        return saved[id(request)]
+
+    result = await Dataset(
+        name="teaching-replay", cases=cases, evaluators=[_TeachingEvaluator()]
+    ).evaluate(
+        load_output,
+        max_concurrency=1,
+        progress=False,
+        retry_task=None,
+        retry_evaluators=None,
+    )
+    if result.failures:
+        raise CapabilityTeachingEvaluationError("replay failed to load saved outputs")
+    for case in result.cases:
+        _apply_evaluation_result(case.output, case)
+    report["mode"] = "replay"
+    report["replay_source"] = {
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "evaluation_revision": report["evaluation_revision"],
+        "scoring_revision": report["scoring_revision"],
+        "generated_at": report.get("generated_at"),
+    }
+    report["generated_at"] = datetime.now(UTC).isoformat()
+    report["scoring_revision"] = _scoring_revision()
+    report["complete"] = all(row["outcome"] != "scoring_failed" for row in original_rows)
+    report["quality_gate"]["qualification_eligible"] = False
+    report["quality_gate"]["status"] = "not_qualified"
+    report["generation_usage"] = report.get("generation_usage") or {
+        key: report["summary"][key]
+        for key in (
+            "provider_requests",
+            "input_tokens",
+            "output_tokens",
+            "cost_microusd",
+        )
+    }
+    for key in report["generation_usage"]:
+        report["summary"][key] = 0
+    totals = _teaching_totals(original_rows)
+    for metric, numerator in (
+        ("schema_valid_rate", "schema_valid"),
+        ("evidence_closure_rate", "evidence_closed"),
+        ("projection_valid_rate", "projection_valid"),
+        ("safety_compliance_rate", "safety_compliant"),
+        ("semantic_compliance_rate", "semantics_compliant"),
+        ("budget_compliance_rate", "budget_compliant"),
+    ):
+        report["summary"][metric] = totals[numerator] / len(original_rows)
+    for metric, numerator, denominator, empty in (
+        (
+            "baseline_exact_preservation_rate",
+            "baseline_cases_preserved",
+            "baseline_case_count",
+            1.0,
+        ),
+        (
+            "baseline_member_preservation_rate",
+            "baseline_member_cases_preserved",
+            "baseline_member_case_count",
+            1.0,
+        ),
+        ("tool_case_compliance_rate", "tool_cases_compliant", "tool_case_count", 1.0),
+        ("source_extraction_valid_rate", "source_extraction_valid", "source_case_count", 0.0),
+    ):
+        report["summary"][metric] = (
+            totals[numerator] / totals[denominator] if totals[denominator] else empty
+        )
+    _add_execution_summary(report)
+    return report
+
+
+def _empty_teaching_checks(expected: dict[str, object]) -> dict[str, bool]:
     candidate_claim_key = (
         "required_candidate_claim_kinds"
         if "required_candidate_claim_kinds" in expected
@@ -738,6 +1018,23 @@ def _score_case(
         checks["maximum_candidate_constraint_count"] = False
     if "required_gate_resolution_outcomes" in expected:
         checks["required_gate_resolution_outcomes"] = False
+    return checks
+
+
+def _score_case(
+    expected: dict[str, object],
+    *,
+    request: CapabilityAnalysisRequest,
+    output: CapabilityAnalysisOutput | None,
+    annotation: CapabilityTeachingAnnotation | None,
+    tool_call_count: int,
+) -> dict[str, bool]:
+    candidate_claim_key = (
+        "required_candidate_claim_kinds"
+        if "required_candidate_claim_kinds" in expected
+        else "required_claim_kinds"
+    )
+    checks = _empty_teaching_checks(expected)
     if output is None or annotation is None:
         return checks
     expected_enabled = expected.get("knowledge_enabled")

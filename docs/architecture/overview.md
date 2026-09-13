@@ -432,6 +432,15 @@ current runtime capability record → bounded handler/config EvidenceUnit
 
 ## 质量与演进检查点
 
+教学 fixture 评测的通用执行层使用维护者依赖 Pydantic Evals 2.28.0：原生 Dataset / Case / Evaluator /
+CaseLifecycle 负责串行运行、显式重复及异常记录，现有领域评分负责教学语义与质量门槛。全部重复共享费用
+预算，费用达到阈值或未知后不再发起后续用例；普通任务失败和评分器故障分开统计。框架默认平均分不替代
+项目通过率，未执行或评分器故障使实验不完整。CLI 保存本地业务报告，没有第二套正式报告。
+`replay-capability-teaching` 使用报告中的请求、模型输出和已生成投影运行当前评分器，不调用模型、工具或
+源码准备，也不重新投影；保存来源摘要与评分版本，复评不产生独立冷测或模型资格。历史报告缺少证据或
+请求 revision 不兼容时拒绝复评。真实 NoneBot 宿主冷测继续使用原来的 preflight/run 入口。
+确定性回归仍通过现有 pytest / CI 执行；不自动运行付费评测。
+
 版本化评测合同保留 Data Gate、B0/B1 基线、S3 安全拒绝、B3 审批补证和 B4 有界 Agent 的独立 Fixture、
 split、rubric 与资格门。模型质量只绑定精确的模型、Provider、Prompt、Schema、工具和数据投影 revision；
 旧 Prompt、单次 smoke 或 scripted run 的结果不能继承为当前组合的质量结论。
