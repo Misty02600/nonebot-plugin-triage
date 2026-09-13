@@ -3,7 +3,7 @@
 这里列出仍作为当前一等架构约束的 ADR。精确状态、局部替代关系和完整理由以各 ADR 正文为准；
 已经替代、未采纳、评测性、实现级或仅作支持性解释的记录见[历史 ADR](history/README.md)。
 
-当前根目录保留 60 份，历史区保存 62 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
+当前根目录保留 61 份，历史区保存 62 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
 为了简短而合并决定。阅读系统现状时先从[架构入口](../architecture/README.md)进入，再按问题查本索引。
 
 没有进入 ADR 的理由也不会丢失：跨实现的当前事实进入 architecture / flow，局部不变量进入代码注释和
@@ -43,7 +43,7 @@
 |---|---|
 | [ADR-0007](0007-single-distribution-dual-namespace.md) | 采用单仓库、单发行包、插件入口与领域核心双命名空间结构 |
 | [ADR-0008](0008-pydantic-ai-controlled-model-adaptation.md) | 采用 Pydantic AI 的 Model / Provider / Profile 与 Direct Request 作为受控 B1 多模型 API 适配层 |
-| [ADR-0016](0016-keep-maintainer-evaluation-tooling-out-of-install-surface.md) | 保留双命名空间领域核心，但把维护者 CLI、MLflow 和历史机器报告排除在插件安装发行面之外 |
+| [ADR-0016](0016-keep-maintainer-evaluation-tooling-out-of-install-surface.md) | 把维护者 CLI 和历史机器报告排除在插件安装发行面之外；MLflow 依赖与发布安排由 ADR-0125 局部替代 |
 | [ADR-0042](0042-use-pydantic-ai-model-profile-for-structured-output.md) | 由 Pydantic AI ModelProfile 唯一决定结构化输出方式，项目只维护任务资格 |
 | [ADR-0063](0063-keep-plugin-startup-independent-from-model-enhancements.md) | 未配置或技术不可用的模型增强不得阻断插件导入；未评测组合本身不再触发降级 |
 | [ADR-0084](0084-install-pydantic-ai-control-plane-by-default-and-keep-providers-and-adapters-optional.md) | 默认安装 Pydantic AI 控制层、Harness 与导航依赖；具体导航后端由 ADR-0123 替代为 ty；Provider SDK 和 Adapter 按需安装 |
@@ -56,7 +56,8 @@
 
 | ADR | 当前决定 |
 |---|---|
-| [ADR-0015](0015-separate-versioned-evals-from-local-runtime-data.md) | 用 `evals/` 保存版本化评测合同，并与本地数据、报告和 MLflow 运行状态分离；冻结机器报告的发布边界由 ADR-0016 收紧 |
+| [ADR-0015](0015-separate-versioned-evals-from-local-runtime-data.md) | 用 `evals/` 保存版本化评测合同，并与本地数据和报告分离；发布边界由 ADR-0016 收紧，MLflow 安排由 ADR-0125 局部替代 |
+| [ADR-0125](0125-remove-mlflow-tracking-from-maintainer-evaluations.md) | 移除 MLflow 依赖及专用发布入口，使用本地评测报告追溯与复评，保留 pytest / CI 和评测合同边界 |
 | [ADR-0019](0019-distribute-rag-corpus-as-versioned-knowledge-pack.md) | 基础发行包不内置 RAG 语料；默认发现与更新改由 stable catalog 提供 |
 | [ADR-0051](0051-let-the-bug-assessment-agent-query-design-rag.md) | 允许 Bug Agent 在历史与公开合同初检未命中后查询版本化设计 RAG，并保持设计、源码与运行证据分层 |
 | [ADR-0067](0067-refresh-knowledge-pack-from-stable-catalog-at-startup.md) | 启动后后台检查 stable catalog，校验新包后原子切换；所有更新失败均保留旧包或降级且不阻断插件加载 |

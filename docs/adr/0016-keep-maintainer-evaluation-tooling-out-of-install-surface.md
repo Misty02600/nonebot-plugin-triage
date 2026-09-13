@@ -4,6 +4,8 @@
 
 已采纳
 
+MLflow 依赖、发布入口及 Tracking 历史安排由 [ADR-0125](0125-remove-mlflow-tracking-from-maintainer-evaluations.md) 局部替代；插件发行隔离继续有效。
+
 ## 日期
 
 2026-08-10

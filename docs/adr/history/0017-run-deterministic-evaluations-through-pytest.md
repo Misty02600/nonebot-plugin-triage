@@ -4,6 +4,8 @@
 
 已采纳
 
+MLflow 实验历史安排由 [ADR-0125](../0125-remove-mlflow-tracking-from-maintainer-evaluations.md) 局部替代；pytest / CI 决定继续有效。
+
 ## 日期
 
 2026-08-10

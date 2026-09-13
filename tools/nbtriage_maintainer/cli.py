@@ -107,12 +107,6 @@ from tools.nbtriage_maintainer.evidence_receipt_evaluation import (
 )
 from tools.nbtriage_maintainer.gate import evaluate_cases, write_report
 from tools.nbtriage_maintainer.github import GitHubApiError, GitHubClient
-from tools.nbtriage_maintainer.mlflow_tracking import (
-    DEFAULT_MLFLOW_EXPERIMENT,
-    DEFAULT_MLFLOW_TRACKING_URI,
-    MLflowTrackingError,
-    publish_evaluation_to_mlflow,
-)
 from tools.nbtriage_maintainer.model_evaluation_target import (
     ModelEvaluationTargetError,
     TokenPriceProfile,
@@ -658,27 +652,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Acknowledge that uncached requests can incur API charges.",
     )
 
-    mlflow_parser = subparsers.add_parser(
-        "publish-evaluation-mlflow",
-        help="Publish an existing evaluation JSON artifact to an explicit MLflow server.",
-    )
-    mlflow_parser.add_argument("--report", type=Path, required=True)
-    mlflow_parser.add_argument(
-        "--tracking-uri",
-        default=DEFAULT_MLFLOW_TRACKING_URI,
-        help="Explicit MLflow Tracking URI; defaults to the local loopback server.",
-    )
-    mlflow_parser.add_argument(
-        "--experiment",
-        default=DEFAULT_MLFLOW_EXPERIMENT,
-    )
-    mlflow_parser.add_argument("--run-name")
-    mlflow_parser.add_argument(
-        "--allow-unqualified",
-        action="store_true",
-        help="Publish a custom or unknown artifact as a non-comparable MLflow run.",
-    )
-
     session_create_parser = subparsers.add_parser(
         "session-create",
         help="Create an auditable support session from a frozen B1 prediction.",
@@ -833,8 +806,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_evaluate_b1_openai(args)
     if args.command == "evaluate-b1-deepseek":
         return _run_evaluate_b1_deepseek(args)
-    if args.command == "publish-evaluation-mlflow":
-        return _run_publish_evaluation_mlflow(args)
     if args.command == "session-create":
         return _run_session_create(args)
     if args.command == "session-approve":
@@ -916,26 +887,6 @@ def _run_search_capabilities(args: argparse.Namespace) -> int:
         ],
     }
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-    return 0
-
-
-def _run_publish_evaluation_mlflow(args: argparse.Namespace) -> int:
-    try:
-        publication = publish_evaluation_to_mlflow(
-            args.report,
-            tracking_uri=args.tracking_uri,
-            experiment_name=args.experiment,
-            run_name=args.run_name,
-            allow_unqualified=args.allow_unqualified,
-        )
-    except MLflowTrackingError as error:
-        print(f"MLflow publication failed: {error}", file=sys.stderr)
-        return 1
-
-    action = "created" if publication.created else "already exists"
-    print(f"MLflow run {action}: {publication.run_id}")
-    print(f"experiment: {publication.experiment_id}")
-    print(f"artifact sha256: {publication.artifact_sha256}")
     return 0
 
 

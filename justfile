@@ -9,9 +9,6 @@ run:
 maintainer *args:
     uv run --group maintainer python -m tools.nbtriage_maintainer {{ args }}
 
-mlflow-server host="127.0.0.1" port="5000":
-    uv run --group maintainer mlflow server --host {{ host }} --port {{ port }} --workers 1 --backend-store-uri sqlite:///mlflow.db --artifacts-destination ./mlartifacts
-
 test:
     uv run pytest
 

@@ -173,7 +173,7 @@ Artifact revision、幂等窗口和投递状态，不保存用户原文、完整
 下表同时记录插件运行入口和仓库维护命令。`just maintainer <command>` 只在源码仓库可用，等价于
 `uv run --group maintainer python -m tools.nbtriage_maintainer <command>`，不是面向插件安装者的稳定公开接口。
 [ADR-0016](../adr/0016-keep-maintainer-evaluation-tooling-out-of-install-surface.md) 保留 `nbtriage` 领域核心，
-但已将 console script、评测 / 采集 orchestrator 和 MLflow 发布器迁到不进入 wheel 或 sdist 的仓库工具。
+但已将 console script、评测 / 采集 orchestrator 迁到不进入 wheel 或 sdist 的仓库工具。
 
 | 核心能力或公开入口 | 对外含义与适用场景 | 关键状态或副作用 | 主要实现位置 |
 |---|---|---|---|
@@ -198,7 +198,6 @@ Artifact revision、幂等窗口和投递状态，不保存用户原文、完整
 | `just maintainer evaluate-answer-quality` | 用四轴 0–2 人工 rubric 汇总固定 `answer + citations` 标注 | 默认合成校准只验证评分锚点；候选质量必须来自真实 B4 的 `forward_hidden` 多 trial 报告、使用独立人工复核，并同时通过来源 B4 Gate、均值、逐样本和关键零分硬门；结果只属于 `offline_fixed_fixture`，不构成生产质量证据；非校准报告拒绝覆盖 | `tools/nbtriage_maintainer/answer_quality_evaluation.py`、`evals/rubrics/answer-quality-v1.json`、`evals/datasets/fixtures/answer-quality-calibration-v1.json` |
 | `just maintainer evaluate-b4-scripted` | 用 scripted model 在冻结 regression / forward-hidden split 上验证动态 action、预算、暂停恢复、轨迹评分和 Gold 隔离 | 0 真实 Provider 请求、0 外部工具调用；报告记录 Prompt/schema/policy/source revision 与结构化输出通过率，但明确不具备晋级资格 | `src/nbtriage/bounded_agent.py`、`tools/nbtriage_maintainer/agent_evaluation.py`、`evals/datasets/fixtures/b4-bounded-agent-v1.json`、`evals/datasets/splits/b4-gate-v1.json` |
 | `just maintainer evaluate-b4-real` | 在明确付费/出站授权后，让同一 Provider/model 多 trial 对照 B1、B3 与 B4 | 支持 DeepSeek / OpenAI Responses 与 Anthropic Messages；只用 forward-hidden 指标判断晋级；B1/B4 后验结构拒绝计入 trial，未知费用仍中止；每次请求前/响应后更新 partial audit，success/partial 路径禁止覆盖；仍无完整质量报告或 Provider 资格 | `tools/nbtriage_maintainer/agent_evaluation.py`、`tools/nbtriage_maintainer/cli.py`、`evals/datasets/splits/b4-gate-v1.json` |
-| `just maintainer publish-evaluation-mlflow` | 维护者把已经落盘的评测 JSON 发布到显式 MLflow experiment 以比较迭代；不属于插件安装接口 | MLflow 只持有按内容摘要幂等的查询副本，不重新执行评测；默认只接受小型正式评测 ID 白名单，显式允许的自定义或未知工件统一标为不可比较；真实 B4 成功报告还必须配对完成态同名 audit 且来源摘要一致；默认写本机 `127.0.0.1` | `tools/nbtriage_maintainer/mlflow_tracking.py`、`tools/nbtriage_maintainer/cli.py`、`docs/adr/0016-keep-maintainer-evaluation-tooling-out-of-install-surface.md` |
 | `just maintainer session-*` | 从冻结 B1 预测创建、接收脱敏回执、审批、关联已有 Oracle 结果并查看支持会话 | `needs_evidence` 只接收当前槽位并从剩余候选重规划；`verify` 未显式审批不能附加结果；不执行代码或外部写入 | `tools/nbtriage_maintainer/sessions.py`、`tools/nbtriage_maintainer/cli.py` |
 | `RuntimeObservation` / `RuntimeObservationBuffer` | 接收 NoneBot 观察桥提交的最小化事件、Matcher、插件、API 与异常标识，并按关联 ID 生成证据包 | 不接收消息正文、用户 / 群 ID、API 参数或结果；容量与 TTL 必须由调用方显式给出；仅单进程内存 | `src/nbtriage/runtime_observations.py` |
 | `NoneBotRuntimeObserver` | 显式注册 NoneBot 2.5 公共 hook，用事件 state 关联 event、实际 Matcher 与其内部 API 生命周期 | fail-open；只读取框架 / 插件标识和异常类 / 栈模块；Matcher 外 API 不猜测归属 | `src/nonebot_plugin_triage/nonebot_runtime.py` |
@@ -306,7 +305,7 @@ current runtime capability record → bounded handler/config EvidenceUnit
 | Provider response usage / identity | 从 Pydantic AI 响应提取 Provider、model、request ID 与可选 fingerprint，并按返回身份归一化 microUSD | 返回 Provider 不匹配或模型漂移时不回退请求侧价格；身份缺失可记录但真实 Gate 不得晋级 | 无长期状态 | `src/nbtriage/_model_runtime/usage.py`、`src/nbtriage/model_adapters.py`、`src/nbtriage/pydantic_agent_adapter.py` |
 | Evidence request policy | 按故障阶段把 B1 多槽位候选收缩为当前轮唯一问题 | 只用于维护者离线评测与会话；只能选择模型候选；空候选失败；validation 冻结后等待前向隐藏集 | validation 策略工件 | `tools/nbtriage_maintainer/evidence_policy.py`、`tools/nbtriage_maintainer/evidence_policy_evaluation.py` |
 | Evidence receipt contract | 把九类补证限制为已脱敏、字段白名单化的结构摘要和原始材料指纹；schema v2 以域分隔规范摘要绑定 receipt / session / Case / slot、原始材料指纹、字节数与规范化 facts | 拒绝任意额外字段、疑似 secret、错绑、不完整摘要和版本错配；不读取原始材料；`receipt_revision` 是内容地址而非签名，不能证明 facts 真实来自指纹所指材料 | 合成 Fixture 与冻结守门报告 | `src/nbtriage/evidence_receipts.py`、`tools/nbtriage_maintainer/evidence_receipt_evaluation.py` |
-| Answer review exporter / rubric evaluator | B4 schema v3 先保留完成态 `answer + citations` 和白名单化 review context；导出器再把真实多 trial 的 `forward_hidden` 候选转换为待人工评分的固定集，评分器按 groundedness、completeness、limitation awareness 和 overclaim control 四轴汇总 | Gold 只在模型运行后生成评审要点；标注 schema v3 绑定整个 Fixture 与冻结 rubric；候选来源要求真实 B4 报告、同名 completed partial audit，以及一致的 evaluation contract、Fixture/split ID 与摘要。该校验防止明显错绑，不重演账本、trial 指标或 promotion gate，也不是本地文件防篡改签名或 Provider 身份证明 | 版本化 rubric、合成校准 Fixture与校准标注；候选评审包和完整报告写入本地 `artifacts/` 或显式 MLflow | `tools/nbtriage_maintainer/answer_review_export.py`、`tools/nbtriage_maintainer/answer_quality_evaluation.py`、`evals/rubrics/answer-quality-v1.json`、`evals/curation/answer-quality/calibration-v1.json` |
+| Answer review exporter / rubric evaluator | B4 schema v3 先保留完成态 `answer + citations` 和白名单化 review context；导出器再把真实多 trial 的 `forward_hidden` 候选转换为待人工评分的固定集，评分器按 groundedness、completeness、limitation awareness 和 overclaim control 四轴汇总 | Gold 只在模型运行后生成评审要点；标注 schema v3 绑定整个 Fixture 与冻结 rubric；候选来源要求真实 B4 报告、同名 completed partial audit，以及一致的 evaluation contract、Fixture/split ID 与摘要。该校验防止明显错绑，不重演账本、trial 指标或 promotion gate，也不是本地文件防篡改签名或 Provider 身份证明 | 版本化 rubric、合成校准 Fixture与校准标注；候选评审包和完整报告写入本地 `artifacts/` | `tools/nbtriage_maintainer/answer_review_export.py`、`tools/nbtriage_maintainer/answer_quality_evaluation.py`、`evals/rubrics/answer-quality-v1.json`、`evals/curation/answer-quality/calibration-v1.json` |
 | Support session control plane | 把 B1 route 映射为固定动作，约束回执、重规划、审批与结果附加的合法状态变化 | 读取冻结报告、合格回执和 Runtime validator 结论；不读取 Issue 指令执行工具 | schema v4 本地会话 JSON、预测报告哈希、带 `receipt_revision` 的脱敏回执摘要、action result 与顺序事件；旧 schema 失败关闭 | `tools/nbtriage_maintainer/sessions.py` |
 | B4 bounded Agent runtime | 拥有循环、按 capability / 已观察轨迹收缩 action 白名单、参数二次校验、跨步预算、observation 执行、暂停恢复和稳定停止原因 | 只读取既有 `RuntimeEvidenceBundle`、train-only retriever 与精确绑定的脱敏回执；不导入 Provider、Pydantic AI 或 NoneBot 类型 | schema v2 `AgentRunState`：结构化 action、可重算 `receipt_revision` 的规范化 observation、摘要、引用、usage、outcome 与可选脱敏终态失败分类；旧 state 失败关闭 | `src/nbtriage/bounded_agent.py` |
 | Pydantic AI Agent step adapter | 把本步允许 action 与 citation 约束映射为唯一 `propose_action` 原生工具信封，并把唯一调用 deferred 给领域层 | 每步一个临时 Agent；`retries=0`、一次请求、最多一个调用；hard timeout 取 client timeout 与领域剩余 deadline 的较小值，零剩余值不耗 call slot，`TimeoutError` 交给 runner 映射 `DEADLINE`；不执行项目工具、不持久化框架历史；DeepSeek Responses 依赖 Pydantic + 领域本地复核；Provider 响应后的框架错误通过 `capture_run_messages()` 保留 usage / identity | 无长期状态 | `src/nbtriage/pydantic_agent_adapter.py`、`tools/nbtriage_maintainer/deepseek_adapter.py`、`src/nbtriage/openai_adapter.py`、`src/nbtriage/anthropic_adapter.py` |
@@ -369,13 +368,13 @@ current runtime capability record → bounded handler/config EvidenceUnit
   当前尚无这个按能力排除接口；
 - `evals/curation/batches/` 保存人工晋级批次，`evals/curation/annotations/` 保存可复建的人工结论；二者不复制原始 Issue 正文；
 - `evals/datasets/catalog/`、`evals/datasets/fixtures/` 与 `evals/datasets/splits/` 保存可审查输入、合成安全集合和冻结切分；
-- `evals/oracles/` 保存 schema v2 Oracle 历史声明，以 Case / Oracle 规范化版本与 Probe 原始字节 SHA-256 绑定引用校验，可作为回归合同复建依据；它没有原始 stdout、退出码、统一 Runner 回执或外部签名，不能单独证明 Probe 实际执行；完整机器报告已迁入本地 `reports/` 或 MLflow，`evals/` 不再保存运行快照；
+- `evals/oracles/` 保存 schema v2 Oracle 历史声明，以 Case / Oracle 规范化版本与 Probe 原始字节 SHA-256 绑定引用校验，可作为回归合同复建依据；它没有原始 stdout、退出码、统一 Runner 回执或外部签名，不能单独证明 Probe 实际执行；完整机器报告已迁入本地 `reports/`，`evals/` 不再保存运行快照；
 - `curation.field_provenance` 为每个资格字段记录 `source.body`、`gold.comment.<id>` 或策展推断来源；Gate 不接受没有来源标记的完整字段；
 - `visibility_boundary` 固定为目标 Issue 的 `opened_at`；当前 GitHub API 无法证明 Issue 正文未在后来编辑，因此 schema 明确记录 `body_edit_history_unavailable`，不能把当前正文误称为严格历史快照；
 - `evals/datasets/splits/data-gate-v1.json` 按 `opened_at` 建立 train / validation / held-out 时间窗；相同根因簇、重复 / 回移植和相同 Oracle 引用必须留在同一 split；
 - `artifacts/sessions/` 保存本地会话状态、白名单化脱敏回执摘要及其内容地址、审批与结果引用；不复制 Issue 正文、原始日志或配置值，当前文件适配器不提供多进程并发写入协调；
 - `artifacts/answer-quality/<evaluation-id>/` 保存从真实 B4 固定合成集导出的候选、待完成或已完成人工标注与离线质量报告；它不属于插件实例状态或生产数据，文件默认拒绝覆盖；
-- `artifacts/` 与 `reports/` 整体是本地运行输出；MLflow 的 `mlruns/`、`mlartifacts/`、数据库和 WAL/SHM 同样不进入 Git。未来 run 记录应引用 Git 中 `evals/` 合同的内容哈希或 revision；
+- `artifacts/` 与 `reports/` 整体是本地运行输出；旧 MLflow 目录、数据库和 WAL/SHM 的忽略保护继续保留，防止残留工件进入 Git。未来 run 记录应引用 Git 中 `evals/` 合同的内容哈希或 revision；
 - `RuntimeObservationBuffer` 当前只保存进程内最小化标识；领域构造器要求显式容量和 TTL，NoneBot 部署层
   默认使用 10,000 条和 900 秒，容量或过期淘汰计数进入证据包；当前不提供崩溃恢复；
 - `NoneBotRuntimeObserver` 的关联 ID 只存在于 NoneBot event / Matcher state 和上述缓冲；hook 采集失败只增加观察器本地丢弃计数，不中断 Bot，Matcher 外 API 当前不记录；
@@ -439,14 +438,15 @@ CaseLifecycle 负责串行运行、显式重复及异常记录，现有领域评
 `replay-capability-teaching` 使用报告中的请求、模型输出和已生成投影运行当前评分器，不调用模型、工具或
 源码准备，也不重新投影；保存来源摘要与评分版本，复评不产生独立冷测或模型资格。历史报告缺少证据或
 请求 revision 不兼容时拒绝复评。真实 NoneBot 宿主冷测继续使用原来的 preflight/run 入口。
-确定性回归仍通过现有 pytest / CI 执行；不自动运行付费评测。
+确定性回归仍通过现有 pytest / CI 执行；不自动运行付费评测。MLflow 依赖、专用发布器和服务器启动入口已按
+[ADR-0125](../adr/0125-remove-mlflow-tracking-from-maintainer-evaluations.md) 移除，结果追溯与复评使用本地 JSON。
 
 版本化评测合同保留 Data Gate、B0/B1 基线、S3 安全拒绝、B3 审批补证和 B4 有界 Agent 的独立 Fixture、
 split、rubric 与资格门。模型质量只绑定精确的模型、Provider、Prompt、Schema、工具和数据投影 revision；
 旧 Prompt、单次 smoke 或 scripted run 的结果不能继承为当前组合的质量结论。
 
 公开 CI 只运行可重复、无网络、无凭据的测试合同。真实 Provider 运行、费用、延迟、partial audit 和机器报告
-保存在本地 `reports/` 或 MLflow，并由对应评测合同引用；一次运行的精确 token、耗时和通过数量不属于稳定
+保存在本地 `reports/`，并由对应评测合同引用；一次运行的精确 token、耗时和通过数量不属于稳定
 架构事实。当前 revision 的质量结论必须由当前代码重新执行 lock、lint、type、test 和构建检查得出，不能从
 本页历史文字继承。
 

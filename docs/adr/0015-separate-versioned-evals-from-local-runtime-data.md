@@ -4,6 +4,8 @@
 
 已采纳；允许 `evals/snapshots/` 保存冻结机器报告的部分由 [ADR-0016](0016-keep-maintainer-evaluation-tooling-out-of-install-surface.md) 替代
 
+MLflow Tracking 的保留安排由 [ADR-0125](0125-remove-mlflow-tracking-from-maintainer-evaluations.md) 局部替代。
+
 ## 日期
 
 2026-08-10

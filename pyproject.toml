@@ -57,7 +57,6 @@ module-name = ["nbtriage", "nonebot_plugin_triage"]
 [dependency-groups]
 maintainer = [
     "markdown-it-py==4.2.0",
-    "mlflow==3.14.0",
     "pydantic-ai-slim[openai]==2.28.0",
     "pydantic-evals==2.28.0",
     "tree-sitter==0.25.2",
