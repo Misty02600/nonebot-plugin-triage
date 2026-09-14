@@ -39,7 +39,7 @@ from nbtriage.capability.teaching.usage import (
 )
 
 CAPABILITY_ANNOTATION_SCHEMA_VERSION = 15
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v134-zh"
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v135-zh"
 CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v114"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
