@@ -40,6 +40,10 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--fixtures", type=Path, required=True)
     evaluate.add_argument("--index", type=Path, default=DEFAULT_KNOWLEDGE_INDEX_PATH)
     evaluate.add_argument("--report", type=Path)
+    evaluate.add_argument("--limit", type=_positive_int)
+    evaluate.add_argument(
+        "--strategy", choices=("bm25", "identifier_variants"), default="identifier_variants"
+    )
 
     prepare = commands.add_parser(
         "prepare-policy",
@@ -84,7 +88,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             result = {"query": args.query, "hits": [hit.to_dict() for hit in hits]}
         elif args.command == "evaluate":
-            result = evaluate_knowledge_retrieval(args.index, args.fixtures)
+            result = evaluate_knowledge_retrieval(
+                args.index, args.fixtures, limit=args.limit, strategy=args.strategy
+            )
             if args.report is not None:
                 if args.report.exists():
                     raise KnowledgePackError(f"knowledge report already exists: {args.report}")

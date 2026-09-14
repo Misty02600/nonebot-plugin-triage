@@ -21,6 +21,7 @@ from nbtriage.capability.teaching._prompt import (
     CONFIG_INSTRUCTION,
     PATTERN_INSTRUCTION,
     _instructions_for_request,
+    stable_instruction_prefix,
 )
 from nbtriage.capability.teaching.analysis import (
     BaselineChangeOperation,
@@ -217,7 +218,8 @@ async def test_maintenance_run_reuses_capture_and_closes_model(tmp_path) -> None
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["preflight", "run"])
-async def test_required_document_tool_missing_blocks_provider(phase: str) -> None:
+@pytest.mark.parametrize("family", [False, True])
+async def test_required_document_tool_missing_blocks_provider(phase: str, family: bool) -> None:
     from tools.nbtriage_maintainer.teaching_eval import _EvaluationClient
 
     def forbidden_provider(_messages, _info):
@@ -227,10 +229,17 @@ async def test_required_document_tool_missing_blocks_provider(phase: str) -> Non
         FunctionModel(forbidden_provider, profile=_NATIVE_PROFILE), max_output_tokens=1000
     )
     records: list[dict[str, Any]] = []
-    with pytest.raises(CapabilityModelAdapterError):
-        await _EvaluationClient(client, records, phase=phase, knowledge="required").analyze(
-            _request()
+    request = _request()
+    if family:
+        request = replace(
+            request,
+            capability=replace(request.capability, kind="command_family"),
+            family_members=(
+                CapabilityFamilyMember("command:demo", request.invocations, ("evidence-handler",)),
+            ),
         )
+    with pytest.raises(CapabilityModelAdapterError):
+        await _EvaluationClient(client, records, phase=phase, knowledge="required").analyze(request)
     assert records[0]["outcome"] == "knowledge_tool_mismatch"
     assert records[0]["provider_requests"] == 0
 
@@ -1091,12 +1100,12 @@ def test_large_actual_input_allows_correction_within_total_budget() -> None:
     assert invalid_calls() == 3
 
 
-@pytest.mark.parametrize("kind", ["optional", "required", "referenced"])
+@pytest.mark.parametrize("kind", ["optional", "assignment", "required", "referenced"])
 def test_full_input_budget_removes_only_optional_preloads_before_sending(kind: str) -> None:
     request = _request()
     large = CapabilityEvidenceUnit(
         "large-helper",
-        "python_function",
+        "python_assignment" if kind == "assignment" else "python_function",
         "x" * 270_000,
         "sha256:large",
         preload_optional=kind != "required",
@@ -1152,7 +1161,7 @@ def test_full_input_budget_removes_only_optional_preloads_before_sending(kind: s
     result = asyncio.run(client.analyze(request))
     assert result.knowledge_enabled == (kind != "referenced")
     assert len(sent) == 1
-    if kind == "optional":
+    if kind in {"optional", "assignment"}:
         assert sent[0]["allowed_evidence_ids"] == ["evidence-handler"]
         assert all(unit["evidence_id"] != large.evidence_id for unit in sent[0]["evidence_units"])
     else:
@@ -1166,7 +1175,52 @@ def test_full_input_budget_removes_only_optional_preloads_before_sending(kind: s
     estimate = client.diagnostic_input_estimates[0]
     assert estimate["estimated_input_tokens_before"] is not None
     assert estimate["estimated_input_tokens_before"] > 64_000
-    assert estimate["removed_optional_preloads"] == (1 if kind == "optional" else 0)
+    assert estimate["removed_optional_preloads"] == (1 if kind in {"optional", "assignment"} else 0)
+
+
+@pytest.mark.parametrize("window", [None, 5_000, 100_000])
+def test_framework_context_window_gate_runs_before_provider(window: int | None) -> None:
+    request = _request()
+    document = CapabilityEvidenceUnit(
+        "knowledge:fixture",
+        "knowledge_user_docs",
+        "DOCUMENT_BODY " * 1500,
+        "pack:fixture:revision",
+        "knowledge/nonebot2/guide.md#Guide",
+    )
+    request = replace(request, evidence_units=(*request.evidence_units, document))
+    calls = 0
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        initial = next(message for message in messages if isinstance(message, ModelRequest))
+        assert initial.instructions.startswith(stable_instruction_prefix(request))
+        assert initial.instructions.count(document.content) == 1
+        assert all(
+            document.content not in part.content
+            for part in initial.parts
+            if isinstance(part, UserPromptPart)
+        )
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, _output())])
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, model_name="unknown-fixture-model", profile=_TOOL_PROFILE),
+        max_output_tokens=240,
+        context_window=window,
+    )
+    client.enable_maintenance_diagnostics()
+    if window == 100_000:
+        asyncio.run(client.analyze(request))
+        assert calls == 1
+    else:
+        with pytest.raises(CapabilityModelAdapterError, match="context"):
+            asyncio.run(client.analyze(request))
+        assert calls == 0
+    estimate = client.diagnostic_input_estimates[0]
+    assert estimate["context_window"] == window
+    assert estimate["output_reserve"] == 240
+    assert estimate["estimated_input_tokens"] > len(document.content) // 4
 
 
 def test_input_estimate_keeps_large_tool_history_and_allows_final_result() -> None:
@@ -1779,13 +1833,25 @@ def test_family_reply_variants_preserve_standard_input_coverage(
     assert annotation.entries[0].usages == usages
 
 
-def test_agent_uses_factored_expression_for_more_than_four_fixed_aliases() -> None:
-    aliases = ("禁他", "禁她", "口他", "口她", "踩他", "踩她")
+@pytest.mark.parametrize(
+    ("command", "aliases", "expression"),
+    (
+        ("禁言", ("禁他", "禁她", "口他", "口她", "踩他", "踩她"), "(禁言|(禁|口|踩)(他|她))"),
+        (
+            "查询状态",
+            ("查看状态", "检查状态", "读取任务状态", "读取系统状态"),
+            "(查询状态|查看状态|检查状态|读取(任务|系统)状态)",
+        ),
+    ),
+)
+def test_agent_uses_factored_expression_for_more_than_four_fixed_aliases(
+    command: str, aliases: tuple[str, ...], expression: str
+) -> None:
 
     def respond(_messages, _info: AgentInfo) -> ModelResponse:
-        output = _output(usage="禁言 <用户>")
+        output = _output(usage=f"{command} <用户>")
         entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
-        entry["display_trigger"] = "(禁言|(禁|口|踩)(他|她))"
+        entry["display_trigger"] = expression
         return ModelResponse(
             parts=[TextPart(json.dumps(output, ensure_ascii=False))],
             finish_reason="stop",
@@ -1797,7 +1863,7 @@ def test_agent_uses_factored_expression_for_more_than_four_fixed_aliases() -> No
             CapabilityInvocationTarget(
                 "root",
                 CapabilityInvocationMode.ANCHORED,
-                "禁言",
+                command,
                 aliases=aliases,
             ),
         ),
@@ -1809,7 +1875,12 @@ def test_agent_uses_factored_expression_for_more_than_four_fixed_aliases() -> No
 
     result = asyncio.run(CapabilityAnalysisService(client).analyze(request))
 
-    assert result.entries[0].display_trigger == "(禁言|(禁|口|踩)(他|她))"
+    assert result.entries[0].display_trigger == expression
+    annotation = project_capability_annotation(
+        request, result, analysis_revision="factored-aliases"
+    )
+    assert annotation.entries[0].usages == (f"{expression} <用户>",)
+    assert CapabilityTeachingAnnotation.from_dict(annotation.to_dict()) == annotation
 
 
 def test_agent_retries_alias_pattern_once_then_uses_deterministic_fallback() -> None:

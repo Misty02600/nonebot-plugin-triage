@@ -228,9 +228,14 @@ def test_task_deny_applies_to_navigation_source_and_definition_paths(tmp_path: P
 @pytest.mark.asyncio
 async def test_ty_cold_concurrent_definitions_and_refresh_cleanup(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import sysconfig
+
     from nbtriage.readonly_tools.ty_navigation import navigation_session
 
+    # stdlib 是运行时 sys.path 的正常成员，不能作为高优先级源码覆盖 typeshed。
+    monkeypatch.syspath_prepend(sysconfig.get_path("stdlib"))
     profile, project, dependency = _fixture_profile(tmp_path)
     # Namespace package + builtins relative import: the previous engine returned no definition.
     builtins = dependency.path / "sample" / "builtins"
@@ -248,6 +253,11 @@ async def test_ty_cold_concurrent_definitions_and_refresh_cleanup(
     (dependency.path / "operation.pyi").write_text(
         "def operation() -> bool: ...\n", encoding="utf-8"
     )
+    (dependency.path / "aliases.py").write_text(
+        "from typing import Annotated\nfrom sample import Derived\n"
+        'ClientDep = Annotated[Derived, "dependency"]\n',
+        encoding="utf-8",
+    )
     cases = [
         ("from sample import Derived\nDerived().run()\n", 2, 10, {("run", 2, "function")}),
         (
@@ -263,6 +273,19 @@ async def test_ty_cold_concurrent_definitions_and_refresh_cleanup(
             {("run", 2, "function"), ("run", 4, "function")},
         ),
         ("from operation import operation\noperation()\n", 2, 2, {("operation", 1, "function")}),
+        (
+            "from typing import Annotated\nfrom sample import Derived\n"
+            'def handler(value: Annotated[Derived, "dependency"]):\n    value.run()\n',
+            4,
+            11,
+            {("run", 2, "function")},
+        ),
+        (
+            "from aliases import ClientDep\ndef handler(value: ClientDep):\n    value.run()\n",
+            3,
+            11,
+            {("run", 2, "function")},
+        ),
         ("not_a_real_symbol()\n", 1, 3, set()),
     ]
     requests = []

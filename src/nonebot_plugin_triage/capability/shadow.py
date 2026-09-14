@@ -34,7 +34,10 @@ from nbtriage.capability.catalog.records import (
     capability_index_public_records,
     search_capability_index,
 )
-from nbtriage.capability.teaching.analysis import CapabilityAnalysisClient
+from nbtriage.capability.teaching.analysis import (
+    CapabilityAnalysisClient,
+    CapabilityAnalysisRequest,
+)
 from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
@@ -58,6 +61,7 @@ from nonebot_plugin_triage.capability.teaching.analysis import (
 from nonebot_plugin_triage.capability.teaching.annotations import (
     CapabilityAnnotationEvidenceValidator,
     CapabilityAnnotationService,
+    teaching_plugin_scope,
 )
 from nonebot_plugin_triage.capability.teaching.outputs import (
     CapabilityTeachingOutputError,
@@ -488,8 +492,16 @@ class CapabilityShadowService:
         plugin_module: str | None = None,
         *,
         force: bool = True,
+        plugin_modules: tuple[str, ...] | None = None,
     ) -> CapabilityTeachingRefreshResult:
-        """由已鉴权维护入口刷新，并原子发布可信的完整或 partial generation。"""
+        """由已鉴权维护入口刷新，并原子发布可信的完整或 partial generation。
+
+        Args:
+            plugin_module: 单插件范围；与 plugin_modules 互斥。
+            force: 是否绕过可复用注释重新分析。
+            plugin_modules: 非空批量范围，共用一次快照；两个范围参数均为空时刷新全量。
+        """
+        selected_plugins = teaching_plugin_scope(plugin_module, plugin_modules)
         if self._annotation_service is None or self._teaching_output_writer is None:
             raise RuntimeError("capability teaching model is unavailable")
         async with self._teaching_refresh_lock:
@@ -504,6 +516,7 @@ class CapabilityShadowService:
             status = await self._annotation_service.refresh(
                 snapshot,
                 plugin_module=plugin_module,
+                plugin_modules=plugin_modules,
                 force=force,
             )
             annotation_finished_ns = monotonic_ns()
@@ -515,6 +528,7 @@ class CapabilityShadowService:
                     self._annotation_service.get_pending,
                     status,
                     plugin_module=plugin_module,
+                    plugin_modules=plugin_modules,
                     annotation_caches=(
                         self._annotation_service.pending_annotation_caches()
                         if status.publishable
@@ -539,7 +553,7 @@ class CapabilityShadowService:
             logger.info(
                 "NoneBot Triage 教学知识已手动刷新：plugin={}, "
                 "generated={}, cached={}, skipped={}, files={}",
-                plugin_module or "all",
+                sorted(selected_plugins) if selected_plugins is not None else "all",
                 status.generated_count,
                 status.cached_count,
                 status.skipped_count,
@@ -548,7 +562,7 @@ class CapabilityShadowService:
             logger.info(
                 "NoneBot Triage 教学知识手动刷新阶段耗时：plugin={}, snapshot_ms={}, "
                 "annotation_ms={}, publish_ms={}, commit_ms={}, total_ms={}",
-                plugin_module or "all",
+                sorted(selected_plugins) if selected_plugins is not None else "all",
                 _elapsed_ms(snapshot_started_ns, snapshot_finished_ns),
                 _elapsed_ms(annotation_started_ns, annotation_finished_ns),
                 _elapsed_ms(publish_started_ns, publish_finished_ns),
@@ -749,6 +763,8 @@ def register_capability_shadow(
     config_policy: ConfigValuePolicy | None = None,
     annotation_analysis_revision: str | None = None,
     annotation_evidence_validator: CapabilityAnnotationEvidenceValidator | None = None,
+    annotation_request_enricher: Callable[[CapabilityAnalysisRequest], CapabilityAnalysisRequest]
+    | None = None,
     annotation_max_concurrency: int = 50,
 ) -> CapabilityShadowService:
     """注册后台能力快照刷新，并把 LocalStore 路径解析延后到启动阶段。"""
@@ -768,6 +784,7 @@ def register_capability_shadow(
             config_policy=config_policy,
             analysis_revision=annotation_analysis_revision,
             evidence_validator=annotation_evidence_validator,
+            request_enricher=annotation_request_enricher,
             source_revision_validator=plugin_source_revision_matches,
             published_generation_resolver=teaching_output_writer.current_generation,
             published_annotations_resolver=teaching_output_writer.current_annotation_caches,

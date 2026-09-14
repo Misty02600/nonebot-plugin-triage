@@ -967,6 +967,7 @@ class PydanticAICapabilityAnalysisClient:
         total_tokens_limit: int = CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT,
         cost_limit_usd: Decimal = Decimal("0.05"),
         capture_diagnostics: bool = False,
+        context_window: int | None = None,
     ) -> None:
         if timeout_seconds <= 0:
             raise CapabilityModelAdapterError(
@@ -983,6 +984,8 @@ class PydanticAICapabilityAnalysisClient:
                 "capability Agent budgets are invalid",
                 reason_code=CapabilityModelAdapterReason.BUDGET,
             )
+        if context_window is not None and context_window < 1:
+            raise CapabilityModelAdapterError("context_window must be positive")
         if cost_limit_usd <= 0:
             raise CapabilityModelAdapterError(
                 "cost_limit_usd must be positive",
@@ -1034,7 +1037,8 @@ class PydanticAICapabilityAnalysisClient:
             else _AnalysisOutput
         )
         self._input_preparation = TeachingInputPreparation(
-            CAPABILITY_ANNOTATION_PRELOAD_TOKEN_TARGET
+            CAPABILITY_ANNOTATION_PRELOAD_TOKEN_TARGET,
+            context_window=context_window,
         )
         self._agent: Agent[CapabilityAnalysisRequest, _AnalysisOutput] = Agent(
             model,
@@ -1826,6 +1830,7 @@ def _build_payload(request: CapabilityAnalysisRequest) -> str:
                 "locator": unit.locator,
             }
             for unit in sorted(request.evidence_units, key=lambda item: item.evidence_id)
+            if not unit.source_kind.startswith("knowledge_")
         ],
         "config_projections": [
             {

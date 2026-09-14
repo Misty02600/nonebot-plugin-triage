@@ -39,8 +39,8 @@ from nbtriage.capability.teaching.usage import (
 )
 
 CAPABILITY_ANNOTATION_SCHEMA_VERSION = 15
-CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v128-zh"
-CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v105"
+CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v134-zh"
+CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v114"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
@@ -49,7 +49,7 @@ CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT = 192_000
 CAPABILITY_ANNOTATION_PRELOAD_TOKEN_TARGET = 64_000
 CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
     "background-unit-10req-10read-navigation-tools-300line-default-32kchar-read-"
-    "64k-soft-preload-target-192k-reserve-finalize-32768out-0.05usd-schema15"
+    "64k-soft-preload-target-window90pct-192k-reserve-finalize-32768out-0.05usd-schema15"
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SEARCH_TERM_LIST_SEPARATOR = re.compile(r"[,，、;；|]")
@@ -927,12 +927,16 @@ def validate_capability_usage_pattern(
     ):
         raise CapabilityAnnotationError("省略号只能紧跟一个完整参数槽位")
     if not allow_verified_aliases:
-        for opening, closing in (("[", "]"), ("(", ")"), ("<", ">")):
-            for content in re.findall(
-                rf"{re.escape(opening)}([^{re.escape(closing)}]+){re.escape(closing)}",
-                normalized,
-            ):
-                if content.count("|") >= MAX_EXPLICIT_USAGE_ALTERNATIVES:
+        # _usage_pattern 已校验括号平衡；内层分支不占外层位置的枚举预算。
+        alternative_counts: list[int] = []
+        for character in normalized:
+            if character in "[(<":
+                alternative_counts.append(1)
+            elif character in "])>":
+                alternative_counts.pop()
+            elif character == "|" and alternative_counts:
+                alternative_counts[-1] += 1
+                if alternative_counts[-1] > MAX_EXPLICIT_USAGE_ALTERNATIVES:
                     raise CapabilityAnnotationError(
                         "同一用法槽位最多枚举四个备选值；超过四个时必须改用一个简短概念槽位，"
                         "例如 <滤镜名>，不得继续列出成员"

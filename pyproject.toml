@@ -32,6 +32,7 @@ dependencies = [
     "pyyaml>=6.0.3,<7",
     "ty==0.0.80",
     "jieba==0.42.1",
+    "libcst==1.9.0",
 ]
 
 [project.urls]

@@ -186,6 +186,12 @@ def test_optional_prompt_rules_follow_facts_across_mixed_entries(features):
     assert "可以引用源码作条件性说明，不需要虚构当前配置引用" in instruction
     assert "不以普通用户能否修改配置作为展示依据" in instruction
     assert "入口始终检查的授权资格仍归 access" in instruction
+    assert "控制规则与当前状态分别判断" in instruction
+    assert "未发现配置或注册调用、源码中的默认值都不构成当前状态证明" in instruction
+    assert "当前状态证据必须与教学覆盖范围一致" in instruction
+    assert "控制是否接入或生效状态未知的条件性说明统一归 behavior_boundary" in instruction
+    if "gates" in features:
+        assert "规则已明确而接入或生效状态未知时，使用 constraint" in instruction
     assert "证据或对齐不明确时省略该回复变体" in instruction
     assert "按下一条处理" not in instruction
 
@@ -195,7 +201,9 @@ def test_prompt_preserves_unique_model_only_contracts() -> None:
         "core": (
             prompt.CORE_INSTRUCTION,
             (
-                "不得为了再次确认而重读整个文件",
+                "不为再次确认而重读文件或换用另一种来源",
+                "已发现但尚未查明的限制必须定向补证",
+                "可选说明缺少证据时省略该说明，不因此开启新的探索",
                 "`navigation_ref` 调用 `python_open_definition`",
                 "不得依据预训练知识、库名或符号名",
                 "可执行源码和 Runtime 事实是业务语义的主要证据",
@@ -220,6 +228,9 @@ def test_prompt_preserves_unique_model_only_contracts() -> None:
                 "证据或对齐不明确时省略该回复变体",
                 "优先在槽位内部用 `|` 简洁列举；这仍是一个参数",
                 "可选不等于可独立省略",
+                "这只表示合法的输入组合，不表示执行效果相互独立",
+                "不能因为输入之间存在优先级或条件关联，就把某种输入方式从 usage 移到说明中",
+                "提交前核对 summary 和 behavior_boundary",
                 "`[确认]` 是可选固定文字，`[<用户名>]` 是可选槽位",
                 "`[<参数甲> [<参数乙>]]`",
                 "共同场景与分支组为 AND",
@@ -239,8 +250,10 @@ def test_prompt_preserves_unique_model_only_contracts() -> None:
             prompt.ANCHORED_INSTRUCTION,
             (
                 "同一 entry 默认只输出一条 usage",
+                "先保证已证实输入方式的覆盖完整，再压缩用法",
+                "组合合法性无法确认时不强行合并，也不删除已分别证实的调用方式",
                 "aliases 为空时，display_trigger 使用 null",
-                "已确认范围与 @用户可以独立提供时",
+                "已确认范围与 @用户均可单独提供、也可同时提供时",
             ),
         ),
         "aliases": (prompt.ALIAS_INSTRUCTION, ("展开后必须恰好等于全部入口",)),

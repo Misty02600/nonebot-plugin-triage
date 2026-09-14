@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import sysconfig
 from collections.abc import AsyncIterator, Iterator
 from concurrent.futures import Future
 from contextlib import asynccontextmanager, closing, contextmanager
@@ -57,11 +58,17 @@ class _TyClient:
         self._ready = Event()
         self._configured = False
         self._failure: Exception | None = None
-        paths = dict.fromkeys(
-            str(_import_root(path.resolve()))
+        # extra-paths 优先于 typeshed；运行时 stdlib 会遮蔽 typing 等特殊类型声明。
+        # 只排除标准库根本身，保留其下的 site-packages 和宿主源码搜索路径。
+        stdlib_roots = {
+            Path(sysconfig.get_path(name)).resolve() for name in ("stdlib", "platstdlib")
+        }
+        roots = (
+            _import_root(path.resolve())
             for path in (*source_paths, *(Path(p or os.curdir) for p in sys.path))
             if path.is_dir()
         )
+        paths = dict.fromkeys(str(root) for root in roots if root not in stdlib_roots)
         self._settings = {
             "diagnosticMode": "off",
             "configuration": {

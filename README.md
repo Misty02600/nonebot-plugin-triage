@@ -267,7 +267,8 @@ token。教学注释还会写入独立的无内容 response-shape span，记录�
 读写部署者真实数据；Triage 自己的教学 cache、generation 与诊断输出仍按宿主项目配置保存，便于复核结果。
 
 教学冷测复用同一维护命令的 `--phase preflight|run`，无须另写批次 runner。两种模式共用宿主、适配器加载、
-知识包准备与正式 `refresh_teaching()`；`--all` 逐个刷新宿主 `tool.nonebot.plugins` 声明的插件（排除 Triage），
+知识包准备与正式 `refresh_teaching()`；`--all` 将宿主 `tool.nonebot.plugins` 声明的插件（排除 Triage）
+作为一组目标，仅构建一次宿主快照并执行一次批量刷新，
 也可用 `--plugin <导入名>` 指定一个插件。它们不启动 Bot、连接适配器或执行插件启动钩子。
 
 ```powershell

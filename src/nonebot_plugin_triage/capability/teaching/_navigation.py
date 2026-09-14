@@ -13,6 +13,8 @@ from itertools import chain
 from pathlib import Path
 from types import ModuleType
 
+import libcst as cst
+
 from nbtriage.capability.catalog.records import EvidenceRef
 from nbtriage.capability.teaching.analysis import CapabilityEvidenceUnit
 from nbtriage.capability.teaching.source_evidence import (
@@ -33,6 +35,7 @@ from nbtriage.readonly_tools import (
     ReadOnlyToolsError,
     teaching_read_only_policy,
 )
+from nbtriage.readonly_tools.python_structure import python_structure
 from nonebot_plugin_triage.evidence_access import python_dependency_navigation_roots
 
 _MAX_FILE_CHARS = 1_000_000
@@ -254,6 +257,12 @@ def _append_bounded_source_slices(
 
     while queued:
         current, depth = queued.popleft()
+        _append_direct_binding_evidence(
+            evidence_units,
+            analysis_unit_id,
+            navigation,
+            current,
+        )
         for dependency in current.parameter_dependencies:
             call = (
                 _cached_annotation_dependency_provider(
@@ -306,6 +315,54 @@ def _append_bounded_source_slices(
             )
             if resolved is not None and not external and depth < _MAX_SOURCE_SLICE_DEPTH:
                 queued.append((resolved, depth + 1))
+
+
+def _append_direct_binding_evidence(
+    evidence_units: list[CapabilityEvidenceUnit],
+    analysis_unit_id: str,
+    navigation: _SourceSliceNavigation,
+    function: _FunctionSlice,
+) -> None:
+    root = navigation.approved_root(function.root_name)
+    if root is None or root != navigation.root:
+        return
+    try:
+        raw = root.path.joinpath(*function.relative_path.split("/")).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != function.source_revision:
+            raise CapabilityAnalysisAdapterError("source changed during analysis preparation")
+        structure = python_structure(raw.decode("utf-8"))
+    except (OSError, UnicodeError):
+        return
+    if structure is None:
+        return
+    known = {unit.evidence_id for unit in evidence_units}
+    for binding in structure.direct_bindings(
+        function.line,
+        function.line + len(function.content.splitlines()) - 1,
+    ):
+        span = structure.positions[binding]
+        evidence_id = _evidence_id(
+            analysis_unit_id,
+            f"{function.root_name}:{function.relative_path}",
+            f"assignment@{span.start.line}:{span.start.column}",
+        )
+        if evidence_id in known:
+            continue
+        evidence_units.append(
+            CapabilityEvidenceUnit(
+                evidence_id=evidence_id,
+                source_kind="python_assignment",
+                content=structure.text(binding),
+                revision=f"sha256:{function.source_revision}",
+                locator=_target_plugin_locator(
+                    _source_slice_relative_path(function.relative_path, navigation.source_root),
+                    "assignment",
+                    span.start.line,
+                ),
+                preload_optional=True,
+            )
+        )
+        known.add(evidence_id)
 
 
 def _append_call_definition(
@@ -952,72 +1009,27 @@ def _module_binding_slice(
     if hashlib.sha256(raw).hexdigest() != definition.source_revision:
         raise CapabilityAnalysisAdapterError("source changed during analysis preparation")
     try:
-        source = raw.decode("utf-8")
-        tree = ast.parse(source)
-    except (UnicodeError, SyntaxError, ValueError, RecursionError):
+        structure = python_structure(raw.decode("utf-8"))
+    except UnicodeError:
         return None
-    if sum(1 for _ in ast.walk(tree)) > _MAX_AST_NODES:
+    if structure is None:
         return None
-    candidates = tuple(
-        statement
-        for statement in tree.body
-        if statement.lineno == definition.line and _statement_binds_name(statement, definition.name)
-    )
-    if len(candidates) != 1:
+    statement = structure.definition(definition.line, definition.name)
+    if not isinstance(statement, cst.Assign | cst.AnnAssign) or statement.value is None:
         return None
-    statement = candidates[0]
-    content = ast.get_source_segment(source, statement)
-    value = statement.value if isinstance(statement, ast.Assign | ast.AnnAssign) else None
-    if content is None or value is None:
+    owner = structure.parents.get(statement)
+    if not isinstance(owner, cst.SimpleStatementLine) or not isinstance(
+        structure.parents.get(owner), cst.Module
+    ):
         return None
     return _ModuleBindingSlice(
         definition=definition,
-        content=content,
-        calls=_binding_call_sites(
-            definition.relative_path,
-            source,
-            definition.source_revision,
-            value,
+        content=structure.text(statement),
+        calls=tuple(
+            _CallSite(definition.relative_path, line, column, definition.source_revision, name)
+            for line, column, name in structure.read_targets(statement.value)
         ),
     )
-
-
-def _statement_binds_name(statement: ast.stmt, name: str) -> bool:
-    if isinstance(statement, ast.Assign):
-        return any(
-            isinstance(target, ast.Name) and target.id == name for target in statement.targets
-        )
-    return (
-        isinstance(statement, ast.AnnAssign)
-        and isinstance(statement.target, ast.Name)
-        and statement.target.id == name
-    )
-
-
-def _binding_call_sites(
-    relative_path: str,
-    source: str,
-    source_revision: str,
-    value: ast.expr,
-) -> tuple[_CallSite, ...]:
-    parents = {
-        child: parent for parent in ast.walk(value) for child in ast.iter_child_nodes(parent)
-    }
-    calls: dict[tuple[int, int], _CallSite] = {}
-    for node in ast.walk(value):
-        if not isinstance(node, ast.Name | ast.Attribute) or not isinstance(node.ctx, ast.Load):
-            continue
-        parent = parents.get(node)
-        if (
-            isinstance(node, ast.Name)
-            and isinstance(parent, ast.Attribute)
-            and parent.value is node
-        ):
-            continue
-        call = _navigation_call_site(relative_path, source, source_revision, node)
-        if call is not None:
-            calls.setdefault((call.line, call.column), call)
-    return tuple(calls[key] for key in sorted(calls))
 
 
 def _module_binding_evidence(

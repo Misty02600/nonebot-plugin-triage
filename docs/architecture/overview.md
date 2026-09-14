@@ -361,6 +361,13 @@ current runtime capability record → bounded handler/config EvidenceUnit
   格式 1 的 trigram 旧包，不在安装或查询时改写它。新包的 `loader_compat=2` 必须由新版插件消费；仅升级
   插件不会让已安装旧包自动获得新排序，需要通过现有流程构建并更新知识包。发布新版插件后再发布新格式包，
   旧插件会拒绝新格式并保留已验证的旧包。此改动不引入向量模型或模型重排；
+- 格式 2 的 reader 另有 `identifier-context-v2` 查询排序修订：保留原 BM25 前两名，第三位最多补一个片段。
+  同来源、同文件的直接父节若包含前两条缺少的中文问题词及相关 API，可以补回切块丢失的上下文；否则在
+  snake_case / CamelCase 拆词查询的前 20 个候选中，优先选择主 API 标题下同时提及其他所问 API 的片段，
+  没有这种候选时沿用拆词前三名内取首个未重复片段的规则。结果按 Evidence ID 去重；所有查询使用相同组件、版本和
+  来源过滤，不修改语料、Evidence 哈希或索引格式；该修订仅需升级 reader，已有格式 2 包无需重建。格式 1
+  仍走原算法。各片段 score 是所在查询的 BM25 分数，跨查询不可比较，调用方应保留返回顺序。
+  框架文档评测复用生产 reader，按前 3 条 / 每条 1800 字符核对答案事实，并独立记录排序修订与代码摘要；
 - 能力影子 SQLite 是 LocalStore 插件 cache 中可删除重建的部署本地派生数据，不再暴露路径配置，也不进入
   Git 或发行物；导入期不解析 cache，启动刷新失败不会阻止插件或模型语义分流；首次可服务 generation 发布前
   普通用户回退显式 Provider；带 `analysis_issues` 的记录只有维护者显式检索时返回，`restricted` 会持久化但

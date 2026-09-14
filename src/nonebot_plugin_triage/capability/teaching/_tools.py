@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import asyncio
 import hashlib
 import json
@@ -11,7 +10,7 @@ from importlib.metadata import PackageNotFoundError, version
 from io import BytesIO
 from pathlib import Path
 from tokenize import detect_encoding
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from pydantic_ai import ToolDefinition
 from pydantic_ai.exceptions import ToolFailed
@@ -48,6 +47,7 @@ from nbtriage.readonly_tools import (
     normalized_locator,
     path_is_allowed,
 )
+from nbtriage.readonly_tools.python_structure import python_structure
 from nonebot_plugin_triage.capability.teaching._evidence_validation import (
     EvidenceMismatch,
     EvidenceMismatchReason,
@@ -80,6 +80,7 @@ _NAVIGABLE_PYTHON_SOURCE_KINDS = frozenset(
         "python_function",
         "python_registration",
         "python_gate_binding",
+        "python_assignment",
     }
 )
 _PYTHON_EVIDENCE_LOCATOR = re.compile(
@@ -118,6 +119,7 @@ class _DefinitionNavigationAnchor:
     column: int
     display: str
     kind: str
+    span: tuple[int, int] | None = None
 
 
 _NavigationAnchor = _SourceNavigationAnchor | _DefinitionNavigationAnchor
@@ -205,7 +207,51 @@ class _EvidenceCapture:
             revision=f"pack:{pack_revision}:{evidence.revision}",
             locator=f"knowledge/{evidence.component}/{evidence.locator}",
         )
+        existing = self._units.get(unit.evidence_id)
+        if existing is not None and existing != unit:
+            # 同一个索引区块的完整正文和检索摘录可能不同，不能覆盖已经引用的证据内容。
+            unit = replace(
+                unit,
+                evidence_id="evidence:knowledge-excerpt:"
+                + hashlib.sha256(
+                    f"{unit.evidence_id}\0{unit.revision}\0{unit.content}".encode()
+                ).hexdigest(),
+            )
         return self._register(unit)
+
+    def knowledge_result(
+        self,
+        evidence: KnowledgeEvidence,
+        *,
+        pack_revision: str,
+    ) -> dict[str, object]:
+        revision = f"pack:{pack_revision}:{evidence.revision}"
+        locator = f"knowledge/{evidence.component}/{evidence.locator}"
+        existing = next(
+            (
+                unit
+                for unit in self._units.values()
+                if unit.locator == locator
+                and unit.revision == revision
+                and unit.content.startswith(evidence.excerpt)
+            ),
+            None,
+        )
+        result: dict[str, object] = {
+            "component": evidence.component,
+            "version": evidence.version,
+            "locator": evidence.locator,
+        }
+        if existing is not None:
+            result.update(evidence_id=existing.evidence_id, already_available=True)
+        else:
+            unit = self.record_knowledge(evidence, pack_revision=pack_revision)
+            result.update(
+                evidence_id=unit.evidence_id,
+                content=unit.content,
+                excerpt_truncated=evidence.excerpt_truncated,
+            )
+        return result
 
 
 class _InvalidFileAttemptRegistry:
@@ -245,10 +291,7 @@ class _NavigationRegistry:
             tuple[str, str, str],
             tuple[ReadOnlyRoot, _FileState, str],
         ] = {}
-        self._source_targets: dict[
-            tuple[str, str, str],
-            tuple[tuple[int, int, str, str], ...],
-        ] = {}
+        self._available_ranges: dict[tuple[str, str, str], list[tuple[int, int]]] = {}
 
     def register_evidence(
         self,
@@ -277,15 +320,14 @@ class _NavigationRegistry:
         _root, _state, content = loaded
         start_line, end_line = line_range
         source_key = (root_name, relative_path, source_revision)
-        all_targets = self._source_targets.get(source_key)
-        if all_targets is None:
-            all_targets = _python_navigation_targets(
-                content,
-                start_line=1,
-                end_line=max(1, len(content.splitlines())),
-            )
-            self._source_targets[source_key] = all_targets
-        targets = tuple(item for item in all_targets if start_line <= item[0] <= end_line)
+        structure = python_structure(content)
+        if structure is None:
+            return ()
+        targets = structure.navigation_targets(
+            start_line=start_line,
+            end_line=end_line,
+            available_ranges=tuple(self._available_ranges.get(source_key, ())),
+        )
         result: list[dict[str, object]] = []
         for line, column, display, kind in targets[:_MAX_NAVIGATION_TARGETS_PER_EVIDENCE]:
             key = (evidence.evidence_id, line, column, kind)
@@ -316,6 +358,13 @@ class _NavigationRegistry:
         self,
         evidence_units: tuple[CapabilityEvidenceUnit, ...],
     ) -> tuple[dict[str, object], ...]:
+        for evidence in evidence_units:
+            source = _python_source_locator(self._access, evidence)
+            span = _evidence_line_range(
+                evidence, read_arguments=None, default_limit=self._access.policy.max_read_lines
+            )
+            if source is not None and span is not None:
+                self._available_ranges.setdefault(source, []).append(span)
         remaining = _MAX_INITIAL_NAVIGATION_TARGETS
         sidecar: list[dict[str, object]] = []
         for evidence in evidence_units:
@@ -388,6 +437,11 @@ class _NavigationRegistry:
                 "resolved": False,
                 "failure": result.failure.value if result.failure is not None else "not_found",
                 "ignored_failures": [item.value for item in result.ignored_failures],
+                **(
+                    self._receiver_annotation_hint(anchor)
+                    if result.failure is DefinitionFailureReason.DEFINITION_NOT_FOUND
+                    else {}
+                ),
             }
         if len(result.definitions) == 1:
             definition = result.definitions[0]
@@ -408,6 +462,30 @@ class _NavigationRegistry:
                 }
                 for item in result.definitions
             ],
+        }
+
+    def _receiver_annotation_hint(self, anchor: _SourceNavigationAnchor) -> dict[str, object]:
+        loaded = self._load_source(
+            root_name=anchor.root_name,
+            relative_path=anchor.relative_path,
+            expected_revision=anchor.source_revision,
+        )
+        structure = python_structure(loaded[2]) if loaded is not None else None
+        target = structure.receiver_annotation(anchor.line, anchor.column) if structure else None
+        if target is None:
+            return {}
+        line, column, display = target
+        related = replace(anchor, line=line, column=column, display=display, kind="annotation")
+        return {
+            "related_definitions": [
+                {
+                    "navigation_ref": self._store_anchor(related, key=(related, "annotation")),
+                    "display": display,
+                    "kind": "receiver_annotation",
+                    "citable": False,
+                }
+            ],
+            "hint": "方法定义尚未定位；可先打开接收者参数的类型标注，再沿已读取的类型或别名继续定位，不得仅凭方法名推断实现。",
         }
 
     def plugin_entry_sidecar(
@@ -483,7 +561,7 @@ class _NavigationRegistry:
         if loaded is None:
             return {"resolved": False, "failure": "stale_navigation_ref"}
         root, state, source = loaded
-        start_line, end_line = _definition_excerpt_range(
+        start_line, end_line = anchor.span or _definition_excerpt_range(
             source,
             line=anchor.line,
             name=anchor.display.rsplit(".", 1)[-1],
@@ -512,6 +590,55 @@ class _NavigationRegistry:
         read_lines = len(unit.content.removesuffix(_EXCERPT_TRUNCATION_MARKER).splitlines())
         arguments["limit"] = read_lines
         targets = self.register_evidence(unit, read_arguments=arguments)
+        context_refs: list[dict[str, object]] = []
+        structure = python_structure(source)
+        node = (
+            structure.definition(anchor.line, anchor.display.rsplit(".", 1)[-1])
+            if structure
+            else None
+        )
+        if structure is not None and node is not None and anchor.span is None:
+            for parent, header, span in structure.outer_contexts(node):
+                context_anchor = replace(
+                    anchor,
+                    line=span[0],
+                    column=0,
+                    display=type(parent).__name__,
+                    kind="source_context",
+                    span=span,
+                )
+                reference = self._store_anchor(context_anchor, key=(context_anchor, "context"))
+                context_refs.append(
+                    {
+                        "navigation_ref": reference,
+                        "kind": type(parent).__name__,
+                        "start_line": span[0],
+                        "end_line": span[1],
+                        "header_start_line": header[0],
+                        "header_end_line": header[1],
+                        "header": _bounded_excerpt(
+                            "".join(lines[header[0] - 1 : header[1]]).rstrip()
+                        ),
+                        "citable": False,
+                    }
+                )
+        window_refs: dict[str, str] = {}
+        if node is None and anchor.kind != "source_context":
+            total = len(lines)
+            window_start, window_end = anchor.span or _definition_excerpt_range(
+                source,
+                line=anchor.line,
+                name=anchor.display.rsplit(".", 1)[-1],
+            )
+            for direction, span in (
+                ("previous", (max(1, window_start - 300), window_start - 1)),
+                ("next", (window_end + 1, min(total, window_end + 300))),
+            ):
+                if span[0] <= span[1]:
+                    window_anchor = replace(anchor, kind="source_window", span=span)
+                    window_refs[direction] = self._store_anchor(
+                        window_anchor, key=(window_anchor, "window")
+                    )
         return {
             "resolved": True,
             "citable": True,
@@ -530,6 +657,11 @@ class _NavigationRegistry:
             "truncated": unit.content != excerpt,
             "next_offset": offset + read_lines if unit.content != excerpt else None,
             "navigation_targets": targets,
+            "enclosing_contexts": context_refs,
+            "adjacent_windows": window_refs,
+            "range_kind": anchor.kind
+            if anchor.span
+            else ("definition" if node else "source_window"),
             "framework_evidence": self.framework_evidence(unit, qualified_name=anchor.display),
         }
 
@@ -547,7 +679,7 @@ class _NavigationRegistry:
             if _file_state(self._access, root, relative_path) == state:
                 return cached
             self._sources.pop(key, None)
-            self._source_targets.pop(key, None)
+            self._available_ranges.pop(key, None)
             return None
         loaded = _stable_python_source(
             self._access,
@@ -671,6 +803,20 @@ class CapabilityTeachingToolProvider:
         self._knowledge_index_path = knowledge_index_path
         self._knowledge_pack_revision = knowledge_pack_revision
         self._profiles_by_module: dict[str, tuple[str, EvidenceAccessProfiles]] = {}
+
+    def prepare_request(self, request: CapabilityAnalysisRequest) -> CapabilityAnalysisRequest:
+        from ._bootstrap_docs import add_bootstrap_docs
+
+        if self._knowledge_index_path is None or self._knowledge_pack_revision is None:
+            return request
+        path, revision = self._knowledge_index_path(), self._knowledge_pack_revision()
+        if path is None or revision is None:
+            return request
+        try:
+            reader = KnowledgeIndexReader(path)
+            return add_bootstrap_docs(request, reader, pack_revision=revision)
+        except KnowledgePackError:
+            return request
 
     def _profiles(self, source_context: CapabilitySourceContext) -> EvidenceAccessProfiles:
         cached = self._profiles_by_module.get(source_context.module_name)
@@ -799,7 +945,7 @@ class CapabilityTeachingToolProvider:
             )
 
         toolsets = (
-            (navigation_toolset,)
+            tuple(item for item in (navigation_toolset, knowledge_toolset) if item is not None)
             if request.family_members
             else tuple(
                 item
@@ -833,7 +979,11 @@ class CapabilityTeachingToolProvider:
                 revision=item.revision,
             )
             for item in request.evidence_units
-            if item.source_kind == "python_dependency_function" and item.locator is not None
+            if (
+                item.source_kind == "python_dependency_function"
+                or item.source_kind.startswith("knowledge_")
+            )
+            and item.locator is not None
         )
         references = (*manifest, *dependency_manifest)
         if not references:
@@ -945,32 +1095,28 @@ class CapabilityTeachingToolProvider:
         except (KnowledgePackError, PackageNotFoundError):
             return None
 
-        async def search_docs(query: str) -> list[dict[str, object]]:
+        async def search_docs(
+            query: str,
+            component: Literal["nonebot2", "nonebot-plugin-uninfo"] = "nonebot2",
+        ) -> list[dict[str, object]]:
             """检索当前 NoneBot 版本对应的公开框架文档片段。"""
             try:
+                component_version = (
+                    nonebot_version if component == "nonebot2" else version("nonebot-plugin-uninfo")
+                )
                 evidence = await asyncio.to_thread(
                     reader.search,
                     query,
-                    component="nonebot2",
-                    version=nonebot_version,
+                    component=component,
+                    version=component_version,
                     source_kinds=("user_docs",),
                     limit=3,
                     max_excerpt_chars=1_800,
                 )
-            except KnowledgePackError:
+            except (KnowledgePackError, PackageNotFoundError):
                 return []
             return [
-                {
-                    "evidence_id": capture.record_knowledge(
-                        item,
-                        pack_revision=pack_revision,
-                    ).evidence_id,
-                    "component": item.component,
-                    "version": item.version,
-                    "locator": item.locator,
-                    "content": item.excerpt,
-                }
-                for item in evidence
+                capture.knowledge_result(item, pack_revision=pack_revision) for item in evidence
             ]
 
         return cast(
@@ -978,8 +1124,11 @@ class CapabilityTeachingToolProvider:
             FunctionToolset(
                 tools=[search_docs],
                 instructions=(
-                    "framework_search_docs 只检索与当前运行环境版本匹配的 NoneBot 公开文档。"
+                    "framework_search_docs 只检索知识包中与当前运行环境版本匹配的公开文档。"
+                    "component 默认 nonebot2，包含其 Alconna 教学；Uninfo 文档使用 nonebot-plugin-uninfo。"
+                    "already_available=true 表示该命中的正文已提供，可直接引用 evidence_id；不是未找到答案。"
                     "已有 Evidence 足够时直接使用，不因出现框架 API 就检索，也不要求文档和源码各查一遍。"
+                    "检索前先确定当前教学结论尚缺的具体事实；已读源码（含 docstring）或文档已明确说明该事实且无冲突时，直接引用已有 Evidence，不换来源重复确认，也不继续追踪与该结论无关的内部实现。"
                     "缺少框架 API 的一般含义时优先查询文档，查询带上具体 API 名（如 Matcher.reject）和待确认的问题，避免只搜泛词。"
                     "判断当前插件实际行为时，以插件源码和 Runtime 事实中的参数、分支及调用位置为准。"
                     "文档未命中、未覆盖影响教学的细节，或与源码存在疑问时，核对适用版本，并按需通过源码导航补读当前安装框架的对应定义。"
@@ -1004,6 +1153,8 @@ def _navigation_toolset(
 
         resolved=true 只表示已定位定义，不保证找到运行时实际调用的实现或完整行为。
         默认读取完整定义；超过 32000 字符时按整行截断，可沿 next_offset 续读。
+        enclosing_contexts 提供外层分支的源码线索与展开句柄；header 不可直接引用，需打开后取证。
+        无法识别定义范围时读取前后合计最多 300 行，沿 adjacent_windows 向前或向后补读。
         若结果仅为变量绑定、容器或声明，仍不足以解释当前行为，可用文本搜索查找相关赋值、注册或实现位置。
 
         Args:
@@ -1143,125 +1294,16 @@ def _evidence_line_range(
         return None
     if start_line < 1:
         return None
-    line_count = max(1, len(evidence.content.splitlines()))
+    lines = evidence.content.splitlines()
+    if evidence.source_kind == "python_function" and evidence.content.startswith("@"):
+        # locator 指向 def；正文可能从装饰器开始。范围只覆盖已给出的正文，不扩至未读函数尾部。
+        decorator_lines = next(
+            (index for index, line in enumerate(lines) if re.match(r"(?:async )?def \w", line)),
+            0,
+        )
+        start_line = max(1, start_line - decorator_lines)
+    line_count = max(1, len(lines))
     return start_line, start_line + line_count - 1
-
-
-def _python_navigation_targets(
-    source: str,
-    *,
-    start_line: int,
-    end_line: int,
-) -> tuple[tuple[int, int, str, str], ...]:
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError, RecursionError):
-        return ()
-    lines = source.splitlines()
-    targets: dict[tuple[int, int], tuple[int, int, str, str]] = {}
-
-    def add(expression: ast.expr, kind: str) -> None:
-        target = _navigation_expression(expression, lines)
-        if target is None:
-            return
-        line, column, display = target
-        if start_line <= line <= end_line:
-            targets.setdefault((line, column), (line, column, display, kind))
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            for decorator in node.decorator_list:
-                add(decorator, "decorator")
-        if isinstance(node, ast.ClassDef):
-            for base in node.bases:
-                add(base, "base")
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            add(node.func, "call")
-
-    imported_bindings = _python_imported_bindings(tree)
-    if imported_bindings:
-        parents = {
-            child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
-        }
-        imported_targets: list[tuple[int, int, str, str]] = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Name | ast.Attribute):
-                continue
-            parent = parents.get(node)
-            if isinstance(parent, ast.Attribute) and parent.value is node:
-                continue
-            root_name = _navigation_root_name(node)
-            if root_name not in imported_bindings:
-                continue
-            target = _navigation_expression(node, lines)
-            if target is None:
-                continue
-            line, column, display = target
-            if start_line <= line <= end_line:
-                imported_targets.append((line, column, display, "imported_symbol"))
-
-        seen_displays: set[str] = set()
-        for target in sorted(imported_targets):
-            line, column, display, _kind = target
-            if display in seen_displays:
-                continue
-            seen_displays.add(display)
-            targets.setdefault((line, column), target)
-    return tuple(targets[key] for key in sorted(targets))
-
-
-def _python_imported_bindings(tree: ast.AST) -> frozenset[str]:
-    bindings: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            bindings.update(alias.asname or alias.name.partition(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            bindings.update(alias.asname or alias.name for alias in node.names if alias.name != "*")
-    return frozenset(bindings)
-
-
-def _navigation_root_name(expression: ast.Name | ast.Attribute) -> str:
-    cursor: ast.expr = expression
-    while isinstance(cursor, ast.Attribute):
-        cursor = cursor.value
-    return cursor.id if isinstance(cursor, ast.Name) else ""
-
-
-def _navigation_expression(
-    expression: ast.expr,
-    lines: list[str],
-) -> tuple[int, int, str] | None:
-    while isinstance(expression, ast.Call | ast.Subscript):
-        expression = expression.func if isinstance(expression, ast.Call) else expression.value
-    if not isinstance(expression, ast.Name | ast.Attribute):
-        return None
-    line = getattr(expression, "lineno", None)
-    if not isinstance(line, int) or line < 1 or line > len(lines):
-        return None
-    source_line = lines[line - 1]
-    if isinstance(expression, ast.Name):
-        display = expression.id
-        column = _character_column(source_line, expression.col_offset)
-    else:
-        try:
-            display = ast.unparse(expression)
-        except ValueError:
-            return None
-        end_offset = expression.end_col_offset
-        if end_offset is None:
-            return None
-        end_column = _character_column(source_line, end_offset)
-        column = end_column - len(expression.attr)
-    display = " ".join(display.split())
-    if not display or len(display) > 160 or column < 0:
-        return None
-    return line, column, display
-
-
-def _character_column(line: str, utf8_byte_offset: int) -> int:
-    raw = line.encode("utf-8")[:utf8_byte_offset]
-    return len(raw.decode("utf-8", errors="ignore"))
 
 
 def _definition_excerpt_range(
@@ -1270,26 +1312,17 @@ def _definition_excerpt_range(
     line: int,
     name: str,
 ) -> tuple[int, int]:
-    total_lines = max(1, len(source.splitlines()))
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError, RecursionError):
-        return line, min(total_lines, line + _DEFAULT_OPEN_DEFINITION_LINES - 1)
-    candidates = tuple(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
-        and node.name == name
-        and node.lineno == line
-        and node.end_lineno is not None
+    structure = python_structure(source)
+    if structure is not None:
+        node = structure.definition(line, name)
+        if node is not None:
+            return structure.line_range(node)
+    total = max(1, len(source.splitlines()))
+    start = max(
+        1,
+        min(line - _DEFAULT_OPEN_DEFINITION_LINES // 2, total - _DEFAULT_OPEN_DEFINITION_LINES + 1),
     )
-    if len(candidates) != 1:
-        return line, min(total_lines, line + _DEFAULT_OPEN_DEFINITION_LINES - 1)
-    node = candidates[0]
-    decorator_lines = tuple(item.lineno for item in node.decorator_list)
-    start_line = min((node.lineno, *decorator_lines))
-    end_line = cast(int, node.end_lineno)
-    return start_line, end_line
+    return start, min(total, start + _DEFAULT_OPEN_DEFINITION_LINES - 1)
 
 
 def _stable_python_source(

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from nbtriage.capability.teaching.annotations import validate_capability_usage_pattern
+from nbtriage.capability.teaching.annotations import (
+    CapabilityAnnotationError,
+    validate_capability_usage_pattern,
+)
 from nbtriage.capability.teaching.usage import (
     CapabilityUsageExpressionError,
     deterministic_literal_expression,
@@ -86,6 +89,24 @@ def test_public_selector_accepts_more_than_four_expansions_after_local_factoring
 def test_public_selector_rejects_non_executable_concept_for_aliases() -> None:
     with pytest.raises(CapabilityUsageExpressionError):
         validate_usage_selector("<指令>", ("禁言", "口他", "禁他", "口她", "禁她"))
+
+
+@pytest.mark.parametrize(
+    ("usage", "valid"),
+    (
+        ("(查|看|读|重置(任务|系统)) <对象>", True),
+        ("查询 [(任务|系统) <名称|编号|标签|链接>]", True),
+        ("(查|看|读|重置(任务|系统)|删除) <对象>", False),
+        ("查询 [(任务|系统) <名称|编号|标签|链接|序号>]", False),
+        ("(查询|重置(任务|系统|缓存|配置|日志))", False),
+    ),
+)
+def test_usage_alternative_limit_counts_each_delimiter_level(usage: str, valid: bool) -> None:
+    if valid:
+        assert validate_capability_usage_pattern(usage) == usage
+    else:
+        with pytest.raises(CapabilityAnnotationError, match="最多枚举四个备选值"):
+            validate_capability_usage_pattern(usage)
 
 
 def test_family_usage_accepts_repeating_image_or_text_inputs() -> None:

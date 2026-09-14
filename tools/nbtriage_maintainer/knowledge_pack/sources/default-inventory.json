@@ -37,6 +37,18 @@
       "distribution": "local_only"
     },
     {
+      "id": "uninfo-docs-0.11.1",
+      "component": "nonebot-plugin-uninfo",
+      "kind": "user_docs",
+      "applicability": "exact_version",
+      "version": "0.11.1",
+      "revision": "2c6ace7681e4bf6dab9bbe1f0814792aab57f3d2",
+      "source_url": "https://github.com/RF-Tar-Railt/nonebot-plugin-uninfo",
+      "root": "uninfo",
+      "include": ["README.md"],
+      "distribution": "redistributable"
+    },
+    {
       "id": "nonebot-docs-2.5.0",
       "component": "nonebot2",
       "kind": "user_docs",

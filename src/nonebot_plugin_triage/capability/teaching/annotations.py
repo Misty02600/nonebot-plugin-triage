@@ -355,6 +355,27 @@ class _PendingAnnotationRefresh:
     replaced_unit_ids: frozenset[str] = frozenset()
 
 
+def teaching_plugin_scope(
+    plugin_module: str | None, plugin_modules: tuple[str, ...] | None
+) -> frozenset[str] | None:
+    """统一单插件和批量范围；None 表示全量，空集合或冲突参数不能扩大为全量。"""
+    if plugin_module is not None:
+        if plugin_modules is not None:
+            raise ValueError("plugin_module and plugin_modules are mutually exclusive")
+        if not isinstance(plugin_module, str) or not plugin_module:
+            raise TypeError("plugin_module must be a non-empty string or None")
+        return frozenset((plugin_module,))
+    if plugin_modules is None:
+        return None
+    if not isinstance(plugin_modules, tuple) or any(
+        not isinstance(module, str) or not module for module in plugin_modules
+    ):
+        raise TypeError("plugin_modules must be a tuple of non-empty strings or None")
+    if not plugin_modules:
+        raise ValueError("plugin_modules must not be empty")
+    return frozenset(plugin_modules)
+
+
 class CapabilityAnnotationService:
     """为当前已注册公开能力生成独立、可删除重建的教学注释缓存。"""
 
@@ -365,6 +386,8 @@ class CapabilityAnnotationService:
         client_factory: CapabilityAnalysisClientFactory,
         config_policy: ConfigValuePolicy,
         analysis_revision: str,
+        request_enricher: Callable[[CapabilityAnalysisRequest], CapabilityAnalysisRequest]
+        | None = None,
         evidence_validator: CapabilityAnnotationEvidenceValidator | None = None,
         source_revision_validator: CapabilityAnnotationSourceRevisionValidator | None = None,
         published_generation_resolver: CapabilityAnnotationPublishedGenerationResolver
@@ -394,6 +417,7 @@ class CapabilityAnnotationService:
         self._client_factory = client_factory
         self._config_policy = config_policy
         self._analysis_revision = analysis_revision
+        self._request_enricher = request_enricher
         self._evidence_validator = evidence_validator
         self._source_revision_validator = source_revision_validator
         self._published_generation_resolver = published_generation_resolver
@@ -701,11 +725,13 @@ class CapabilityAnnotationService:
         snapshot: CapabilitySnapshot,
         *,
         plugin_module: str | None = None,
+        plugin_modules: tuple[str, ...] | None = None,
         force: bool = False,
     ) -> CapabilityAnnotationRefreshStatus:
         """刷新当前 runtime snapshot 的自动注释；单项失败不影响其他能力或基础索引。"""
         if not isinstance(snapshot, CapabilitySnapshot):
             raise TypeError("snapshot must be CapabilitySnapshot")
+        selected_plugins = teaching_plugin_scope(plugin_module, plugin_modules)
         async with self._refresh_lock, AsyncExitStack() as navigation_scope:
             refresh_started_ns = monotonic_ns()
             self._pending = None
@@ -725,13 +751,14 @@ class CapabilityAnnotationService:
                 "NoneBot Triage 教学注释准备开始：refresh_id={}, snapshot_records={}, scope={}",
                 refresh_id,
                 len(snapshot.records),
-                plugin_module or "all",
+                sorted(selected_plugins) if selected_plugins is not None else "all",
             )
             planning_started_ns = monotonic_ns()
             preparation_plans, skipped_units, skip_reasons = await asyncio.to_thread(
                 self._plan_preparation,
                 snapshot,
                 plugin_module,
+                plugin_modules=plugin_modules,
             )
             skipped = list(skipped_units)
             skip_reason_counts = dict(skip_reasons)
@@ -785,7 +812,8 @@ class CapabilityAnnotationService:
                 preparation_plans = tuple(retained_plans)
 
             cache_by_plugin: dict[str, CapabilityAnnotationPluginCache] = {}
-            for module_name in sorted(known_plugins - invalid_plugins):
+            cache_plugins = (known_plugins | (selected_plugins or frozenset())) - invalid_plugins
+            for module_name in sorted(cache_plugins):
                 try:
                     cache = await asyncio.to_thread(
                         read_capability_annotation_plugin_cache,
@@ -804,7 +832,7 @@ class CapabilityAnnotationService:
                     cache_by_plugin[module_name] = cache
             # 已发布结构化内容是恢复来源；缓存只贡献当前版本之后的未发布 checkpoint。
             for published in await asyncio.to_thread(self._published_annotations):
-                if published.module_name not in known_plugins - invalid_plugins:
+                if published.module_name not in cache_plugins:
                     continue
                 local = cache_by_plugin.get(published.module_name)
                 if (
@@ -1146,7 +1174,7 @@ class CapabilityAnnotationService:
             }
             # Cache 是候选加速层，不能覆盖已经由 current.json 发布的内存视图。
             base_annotations = {**reusable_annotations, **active_fallbacks}
-            if plugin_module is None:
+            if selected_plugins is None:
                 self._active_view = _annotation_view(
                     current_fingerprints,
                     active_fallbacks,
@@ -1272,7 +1300,7 @@ class CapabilityAnnotationService:
                 capability_to_unit,
                 requests=current_requests,
             )
-            if plugin_module is None:
+            if selected_plugins is None:
                 self._active_view = active_view
             global_failure = next(
                 (
@@ -1446,12 +1474,12 @@ class CapabilityAnnotationService:
                 published_generation,
             )
             replaced_unit_ids = frozenset(current_fingerprints)
-            if (
-                plugin_module is not None
-                and (previous_plugin_cache := cache_by_plugin.get(plugin_module)) is not None
-            ):
+            if selected_plugins is not None:
                 replaced_unit_ids = replaced_unit_ids.union(
-                    item.analysis_unit_id for item in previous_plugin_cache.units
+                    item.analysis_unit_id
+                    for module in selected_plugins
+                    if (previous_plugin_cache := cache_by_plugin.get(module)) is not None
+                    for item in previous_plugin_cache.units
                 )
             self._pending = _PendingAnnotationRefresh(
                 refresh_id,
@@ -1459,7 +1487,9 @@ class CapabilityAnnotationService:
                 cache_updates,
                 failure_cache_updates,
                 global_failure is None,
-                previous_active_view=(previous_active_view if plugin_module is not None else None),
+                previous_active_view=(
+                    previous_active_view if selected_plugins is not None else None
+                ),
                 replaced_unit_ids=replaced_unit_ids,
             )
             if disabled_items:
@@ -1856,6 +1886,8 @@ class CapabilityAnnotationService:
         self,
         snapshot: CapabilitySnapshot,
         plugin_module: str | None = None,
+        *,
+        plugin_modules: tuple[str, ...] | None = None,
     ) -> tuple[
         tuple[_PreparationPlan, ...],
         tuple[CapabilityTeachingUnitStatus, ...],
@@ -1863,13 +1895,14 @@ class CapabilityAnnotationService:
     ]:
         skipped_units: list[CapabilityTeachingUnitStatus] = []
         skip_reasons: dict[str, int] = {}
+        selected_plugins = teaching_plugin_scope(plugin_module, plugin_modules)
         scoped_records = (
             snapshot.records
-            if plugin_module is None
+            if selected_plugins is None
             else tuple(
                 record
                 for record in snapshot.records
-                if _records_plugin_module((record,)) == plugin_module
+                if _records_plugin_module((record,)) in selected_plugins
             )
         )
         eligible = _ordered_eligible_records(scoped_records)
@@ -1975,6 +2008,8 @@ class CapabilityAnnotationService:
             )
         )
         request = replace(request, plugin_entries=plan.plugin_entries)
+        if self._request_enricher is not None:
+            request = self._request_enricher(request)
         request_finished_ns = monotonic_ns()
         fingerprint_started_ns = request_finished_ns
         fingerprint = capability_analysis_fingerprint(
@@ -2036,7 +2071,9 @@ class CapabilityAnnotationService:
         manifest: tuple[CapabilityAnnotationEvidenceRef, ...],
     ) -> EvidenceValidationResult:
         has_initial_dependency_evidence = any(
-            item.source_kind == "python_dependency_function" for item in request.evidence_units
+            item.source_kind == "python_dependency_function"
+            or item.source_kind.startswith("knowledge_")
+            for item in request.evidence_units
         )
         if not manifest and not has_initial_dependency_evidence:
             return EvidenceValidationResult.valid()
@@ -2050,7 +2087,11 @@ class CapabilityAnnotationService:
                     revision=item.revision,
                 )
                 for item in request.evidence_units
-                if item.source_kind == "python_dependency_function" and item.locator is not None
+                if (
+                    item.source_kind == "python_dependency_function"
+                    or item.source_kind.startswith("knowledge_")
+                )
+                and item.locator is not None
             )
         if self._evidence_validator is None:
             return _generic_evidence_validation(

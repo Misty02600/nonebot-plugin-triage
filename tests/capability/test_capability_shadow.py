@@ -278,9 +278,11 @@ async def test_manual_nonpublishable_teaching_refresh_preserves_last_good_view(
             _snapshot: CapabilitySnapshot,
             *,
             plugin_module: str | None = None,
+            plugin_modules: tuple[str, ...] | None = None,
             force: bool = False,
         ) -> CapabilityAnnotationRefreshStatus:
             assert plugin_module is None
+            assert plugin_modules is None
             assert force is expected_force
             return CapabilityAnnotationRefreshStatus(
                 refresh_id="refresh-failed",

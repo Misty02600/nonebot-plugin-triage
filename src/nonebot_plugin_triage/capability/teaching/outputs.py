@@ -22,6 +22,7 @@ from nbtriage.capability.teaching.annotations import (
 from nonebot_plugin_triage.capability.teaching.annotations import (
     CapabilityAnnotationRefreshStatus,
     CapabilityTeachingUnitState,
+    teaching_plugin_scope,
 )
 from nonebot_plugin_triage.capability.teaching.cache import CapabilityAnnotationPluginCache
 from nonebot_plugin_triage.capability.teaching.help import (
@@ -111,9 +112,11 @@ class CapabilityTeachingOutputWriter:
         refresh_status: CapabilityAnnotationRefreshStatus | None = None,
         *,
         plugin_module: str | None = None,
+        plugin_modules: tuple[str, ...] | None = None,
         annotation_caches: tuple[CapabilityAnnotationPluginCache, ...] | None = None,
         manual_edit: dict[str, str] | None = None,
     ) -> CapabilityTeachingOutputPublication:
+        selected_plugins = teaching_plugin_scope(plugin_module, plugin_modules)
         if not isinstance(snapshot, CapabilitySnapshot):
             raise TypeError("snapshot must be a CapabilitySnapshot")
         if not callable(annotation_lookup):
@@ -124,10 +127,7 @@ class CapabilityTeachingOutputWriter:
                 raise CapabilityTeachingOutputError("teaching refresh is not publishable")
         if snapshot.manifest.partial:
             raise CapabilityTeachingOutputError("partial snapshot is not publishable")
-        if plugin_module is not None and (not isinstance(plugin_module, str) or not plugin_module):
-            raise TypeError("plugin_module must be a non-empty string or None")
-
-        previous = self._read_current_generation() if plugin_module is not None else None
+        previous = self._read_current_generation() if selected_plugins is not None else None
         if manual_edit is not None and (previous is None or annotation_caches is None):
             raise CapabilityTeachingOutputError("manual edit requires a published generation")
         coverage = _plugin_coverage(refresh_status)
@@ -192,12 +192,13 @@ class CapabilityTeachingOutputWriter:
             module_name: item.to_dict() for module_name, item in sorted(coverage.items())
         }
         preserved_plugin_modules: tuple[str, ...] = ()
-        if plugin_module is not None and previous is not None:
+        if selected_plugins is not None and previous is not None:
             previous_help, previous_answer, previous_units, previous_plugins = previous
-            target_help = _safe_module_filename(plugin_module)
-            if target_help is not None:
-                previous_help.pop(target_help, None)
-                previous_answer.pop(f"{target_help.removesuffix('.yml')}.md", None)
+            for module in selected_plugins:
+                target_help = _safe_module_filename(module)
+                if target_help is not None:
+                    previous_help.pop(target_help, None)
+                    previous_answer.pop(f"{target_help.removesuffix('.yml')}.md", None)
             previous_help.update(help_documents)
             previous_answer.update(answer_documents)
             help_documents = previous_help
@@ -205,11 +206,16 @@ class CapabilityTeachingOutputWriter:
             unit_manifest = (
                 previous_units
                 if manual_edit is not None
-                else [item for item in previous_units if item.get("plugin_module") != plugin_module]
+                else [
+                    item
+                    for item in previous_units
+                    if item.get("plugin_module") not in selected_plugins
+                ]
                 + unit_manifest
             )
             if manual_edit is None:
-                previous_plugins.pop(plugin_module, None)
+                for module in selected_plugins:
+                    previous_plugins.pop(module, None)
             preserved_plugin_modules = tuple(sorted(previous_plugins))
             previous_plugins.update(plugin_manifest)
             plugin_manifest = previous_plugins
@@ -225,11 +231,12 @@ class CapabilityTeachingOutputWriter:
         if annotation_caches is not None:
             stored = (
                 {item.module_name: item for item in self.current_annotation_caches()}
-                if plugin_module is not None
+                if selected_plugins is not None
                 else {}
             )
-            if plugin_module is not None:
-                stored.pop(plugin_module, None)
+            if selected_plugins is not None:
+                for module in selected_plugins:
+                    stored.pop(module, None)
             stored.update({item.module_name: item for item in annotation_caches})
             plugins = {}
             for module, cache in sorted(stored.items()):

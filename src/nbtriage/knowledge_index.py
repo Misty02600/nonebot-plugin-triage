@@ -18,6 +18,7 @@ DistributionPolicy = Literal["redistributable", "local_only"]
 
 KNOWLEDGE_INDEX_SCHEMA_VERSION = 2
 KNOWLEDGE_RETRIEVER_ID = "knowledge-sqlite-fts5-jieba-v2"
+KNOWLEDGE_RANKING_REVISION = "identifier-context-v2"
 SUPPORTED_KNOWLEDGE_INDEX_FORMATS = {
     "1": "knowledge-sqlite-fts5-trigram-v1",
     "2": KNOWLEDGE_RETRIEVER_ID,
@@ -25,6 +26,9 @@ SUPPORTED_KNOWLEDGE_INDEX_FORMATS = {
 MAX_QUERY_CHARS = 500
 MAX_SEARCH_LIMIT = 20
 MAX_EXCERPT_CHARS = 6_000
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*")
+_HEADING_SYMBOL = re.compile(r"`([A-Za-z][A-Za-z0-9_]*)(?:\(|`)")
 
 _SOURCE_KINDS = frozenset({"user_docs", "api_spec", "release_notes", "source_code"})
 _ASCII_TERM = re.compile(r"[a-z0-9][a-z0-9_.:/-]{2,}", re.IGNORECASE)
@@ -89,8 +93,11 @@ class KnowledgeIndexReader:
         source_kinds: tuple[SourceKind, ...] | None = None,
         limit: int = 5,
         max_excerpt_chars: int = 900,
+        strategy: Literal["bm25", "identifier_variants"] = "identifier_variants",
     ) -> list[KnowledgeEvidence]:
         normalized = _validated_query(query, legacy=self._legacy)
+        if strategy not in {"bm25", "identifier_variants"}:
+            raise KnowledgePackError("unsupported knowledge search strategy")
         if type(component) is not str or not component or component != component.strip():
             raise KnowledgePackError("knowledge component must be a trimmed nonempty string")
         if len(component) > 256:
@@ -113,6 +120,60 @@ class KnowledgeIndexReader:
                 raise KnowledgePackError("knowledge source kind is invalid")
 
         rows = self._candidates(normalized, component, version, source_kinds, limit)
+        if not self._legacy and strategy == "identifier_variants" and limit >= 3:
+            groups = _symbol_groups(query)
+            visible = "\n".join(str(row["content"])[:max_excerpt_chars] for row in rows[:2])
+            missing = {
+                word for word in knowledge_search_tokens(normalized) if not word.isascii()
+            } - set(knowledge_search_tokens(visible))
+            supplement = None
+            if missing and groups:
+                parents = self._candidates(
+                    normalized, component, version, source_kinds, 2, parent_of=rows[:2]
+                )
+                supplement = next(
+                    (
+                        row
+                        for row in parents
+                        if missing.intersection(
+                            knowledge_search_tokens(str(row["content"])[:max_excerpt_chars])
+                        )
+                        and any(
+                            group & _symbol_words(str(row["content"])[:max_excerpt_chars])
+                            for group in groups
+                        )
+                    ),
+                    None,
+                )
+            variant = _identifier_variant(query)
+            retained = {row["evidence_id"] for row in rows[:2]}
+            if (
+                supplement is None
+                and variant is not None
+                and _query_terms(variant) != _query_terms(normalized)
+            ):
+                alternatives = self._candidates(variant, component, version, source_kinds, 20)
+                supplement = next(
+                    (
+                        row
+                        for row in alternatives
+                        if row["evidence_id"] not in retained
+                        and _connects_symbols(row, groups, max_excerpt_chars)
+                    ),
+                    None,
+                )
+                if supplement is None:
+                    supplement = next(
+                        (row for row in alternatives[:3] if row["evidence_id"] not in retained),
+                        None,
+                    )
+            # 只调整补充位置，保留原查询前两名和原文 Evidence。各路 BM25 分数不可混排。
+            unique = {row["evidence_id"]: row for row in rows[:2]}
+            if supplement is not None:
+                unique.setdefault(supplement["evidence_id"], supplement)
+            for row in rows[2:]:
+                unique.setdefault(row["evidence_id"], row)
+            rows = list(unique.values())[:limit]
         return [_row_to_evidence(row, max_excerpt_chars=max_excerpt_chars) for row in rows]
 
     def has_user_docs(self, *, component: str, version: str) -> bool:
@@ -136,6 +197,61 @@ class KnowledgeIndexReader:
         except sqlite3.Error as error:
             raise KnowledgePackError("failed to inspect applicable knowledge documents") from error
 
+    def read_sections(
+        self,
+        *,
+        component: str,
+        version: str,
+        sections: tuple[tuple[str, str], ...],
+    ) -> list[KnowledgeEvidence]:
+        """按文件和标题路径读取完整公开文档区块，包含子节，不经过相关性排序。
+
+        Args:
+            component: 知识组件。
+            version: 使用与检索相同的版本匹配规则。
+            sections: 有序的 (relative_path, 标题路径)；每项必须存在且来源唯一。
+
+        Raises:
+            KnowledgePackError: 选段缺失、来源歧义或数据库不可读。
+        """
+        selected: dict[str, KnowledgeEvidence] = {}
+        try:
+            with closing(self._connect()) as connection:
+                for relative_path, heading in sections:
+                    rows = list(
+                        connection.execute(
+                            "SELECT c.*, 0.0 AS score FROM chunks c "
+                            "WHERE component = ? AND source_kind = 'user_docs' "
+                            "AND relative_path = ? "
+                            "AND (locator = ? OR substr(locator, 1, ?) = ?) "
+                            "AND (applicability = 'snapshot_only' "
+                            "OR (applicability = 'exact_version' AND version = ?) "
+                            "OR (applicability = 'declared_range' AND version_matches(version, ?))) "
+                            "ORDER BY c.rowid",
+                            (
+                                component,
+                                relative_path,
+                                heading,
+                                len(heading) + 3,
+                                heading + " > ",
+                                version,
+                                version,
+                            ),
+                        )
+                    )
+                    if not rows or not any(row["locator"] == heading for row in rows):
+                        raise KnowledgePackError(
+                            f"knowledge section unavailable: {relative_path}#{heading}"
+                        )
+                    if len({(row["source_id"], row["revision"]) for row in rows}) != 1:
+                        raise KnowledgePackError("knowledge section has ambiguous sources")
+                    for row in rows:
+                        evidence = _row_to_evidence(row, max_excerpt_chars=len(row["content"]))
+                        selected.setdefault(evidence.evidence_id, evidence)
+        except sqlite3.Error as error:
+            raise KnowledgePackError("failed to read knowledge sections") from error
+        return list(selected.values())
+
     def _candidates(
         self,
         query: str,
@@ -143,6 +259,8 @@ class KnowledgeIndexReader:
         version: str | None,
         source_kinds: tuple[SourceKind, ...] | None,
         limit: int,
+        *,
+        parent_of: list[sqlite3.Row] | None = None,
     ) -> list[sqlite3.Row]:
         conditions = ["c.component = ?"]
         expression = _fts_query(query, legacy=self._legacy)
@@ -161,6 +279,28 @@ class KnowledgeIndexReader:
         if source_kinds is not None:
             conditions.append("c.source_kind IN (" + ",".join("?" for _ in source_kinds) + ")")
             parameters.extend(source_kinds)
+        if parent_of is not None:
+            parents = sorted(
+                {
+                    (
+                        row["source_id"],
+                        row["relative_path"],
+                        str(row["locator"]).rsplit(" > ", 1)[0],
+                    )
+                    for row in parent_of
+                    if " > " in str(row["locator"])
+                }
+            )
+            if not parents:
+                return []
+            conditions.append(
+                "("
+                + " OR ".join(
+                    "(c.source_id = ? AND c.relative_path = ? AND c.locator = ?)" for _ in parents
+                )
+                + ")"
+            )
+            parameters.extend(value for parent in parents for value in parent)
         parameters.append(limit)
         rank = (
             "bm25(chunks_fts, 0.0, 0.5, 0.5, 0.7, 1.8, 1.2, 1.0)"
@@ -207,6 +347,53 @@ def _validated_query(query: str, *, legacy: bool = False) -> str:
 
 def _query_terms(query: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(knowledge_search_tokens(query)))[:64]
+
+
+def _identifier_variant(query: str) -> str | None:
+    """让命名中的词也能匹配正文；不维护框架 API 别名或猜测 API 含义。"""
+    if "_" not in query and _CAMEL_BOUNDARY.search(query) is None:
+        return None
+    return _CAMEL_BOUNDARY.sub(" ", query).replace("_", " ").replace(".", " ").casefold()
+
+
+def _symbol_words(text: str) -> set[str]:
+    words = set()
+    for name in re.findall(r"[A-Za-z][A-Za-z0-9_]*", text):
+        if len(name) >= 3:
+            words.add(name.casefold())
+        # 完整短符号仍可匹配；拆出来的 on/get/arg 等短词不用于联系不同 API。
+        words.update(
+            word for word in _CAMEL_BOUNDARY.sub("_", name).casefold().split("_") if len(word) > 3
+        )
+    return words
+
+
+def _symbol_groups(query: str) -> list[set[str]]:
+    """把共享词根的 API 合为一组，避免重复名字挤掉查询中另一个 API 的语义。"""
+    groups: list[set[str]] = []
+    for name in _IDENTIFIER.findall(query):
+        if not ("_" in name or "." in name or _CAMEL_BOUNDARY.search(name)):
+            continue
+        words = _symbol_words(name.rsplit(".", 1)[-1])
+        if not words:
+            continue
+        related = next((group for group in groups if group & words), None)
+        if related is None:
+            groups.append(words)
+        else:
+            related.intersection_update(words)
+    return groups
+
+
+def _connects_symbols(row: sqlite3.Row, groups: list[set[str]], excerpt_chars: int) -> bool:
+    """优先主 API 标题下同时提及其他 API 的片段；只判相关性，不推断调用关系。"""
+    if len(groups) < 2:
+        return False
+    heading = str(row["locator"]).rsplit(" > ", 1)[-1]
+    symbol = _HEADING_SYMBOL.search(heading)
+    title_words = _symbol_words(symbol[1] if symbol else heading)
+    body_words = _symbol_words(str(row["content"])[:excerpt_chars])
+    return bool(title_words & groups[0]) and all(body_words & group for group in groups[1:])
 
 
 def _legacy_query_terms(query: str) -> tuple[str, ...]:

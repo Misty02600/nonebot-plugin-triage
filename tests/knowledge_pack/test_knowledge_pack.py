@@ -288,6 +288,179 @@ def test_new_search_handles_short_chinese_and_dotted_api_without_changing_eviden
     assert index.search("Matcher.reject", component="napcat", source_kinds=("api_spec",)) == []
 
 
+def test_identifier_variant_recovers_body_answer_with_original_filters(tmp_path: Path) -> None:
+    snapshot = _snapshot(tmp_path)
+    _write(
+        snapshot / "nonebot/docs/matcher.md",
+        """# API
+
+## get_plaintext
+event.get_plaintext 获取纯文本。
+
+## 事件纯文本消息
+event.get_plaintext 获取事件纯文本内容。
+
+## RegexRule
+on_regex RegexRule 检查消息字符串。
+
+## regex
+正则表达式匹配使用消息字符串而非纯文本。regex 匹配消息。
+""",
+    )
+    path = tmp_path / "index.sqlite3"
+    build_knowledge_index(snapshot, _policy(tmp_path, snapshot), path)
+    reader = KnowledgeIndexReader(path)
+    query = "nonebot2 on_regex RegexRule 匹配 event.get_plaintext"
+    before = reader.search(
+        query,
+        strategy="bm25",
+        component="nonebot2",
+        version="2.5.0",
+        source_kinds=("user_docs",),
+        limit=3,
+    )
+    after = reader.search(
+        query, component="nonebot2", version="2.5.0", source_kinds=("user_docs",), limit=3
+    )
+    assert after[:2] == before[:2]
+    assert not any("而非" in hit.excerpt for hit in before)
+    assert any("而非" in hit.excerpt for hit in after)
+    assert len({hit.evidence_id for hit in after}) == len(after)
+    assert reader.search(query, component="nonebot2", version="99.0.0") == []
+    assert (
+        reader.search(query, component="nonebot2", version="2.5.0", source_kinds=("api_spec",))
+        == []
+    )
+
+
+def test_answer_eval_checks_visible_facts_and_separates_nonretrieval_failures(
+    tmp_path: Path,
+) -> None:
+    snapshot = _snapshot(tmp_path)
+    # 同一章节中的关键句超出工具片段，不能因章节命中就得分。
+    _write(
+        snapshot / "nonebot/docs/matcher.md",
+        "# matcher\n\nvisible fact " + "正文" * 950 + " hidden fact",
+    )
+    path = tmp_path / "index.sqlite3"
+    build = build_knowledge_index(snapshot, _policy(tmp_path, snapshot), path)
+    locator = (
+        KnowledgeIndexReader(path)
+        .search("matcher", component="nonebot2", version="2.5.0")[0]
+        .locator
+    )
+    base = {"query": "matcher", "category": "facts", "status": "answerable", "note": "synthetic"}
+    visible = [[{"locator": locator, "required_text": ["visible fact"]}]]
+    hidden = [[{"locator": locator, "required_text": ["hidden fact"]}]]
+    fixture = {
+        "schema_version": 2,
+        "fixture_id": "synthetic",
+        "description": "synthetic",
+        "source": "test",
+        "corpus_sha256": build.corpus_sha256,
+        "component": "nonebot2",
+        "version": "2.5.0",
+        "cases": [
+            {**base, "case_id": "visible", "answer_groups": visible},
+            {**base, "case_id": "truncated", "answer_groups": hidden},
+            {**base, "case_id": "two-facts", "answer_groups": visible + hidden},
+            {**base, "case_id": "missing", "status": "corpus_gap", "answer_groups": []},
+            {**base, "case_id": "blocked", "budget_blocked": True, "answer_groups": visible},
+        ],
+    }
+    fixture_path = tmp_path / "answers.json"
+    fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+    report = evaluate_knowledge_retrieval(path, fixture_path)
+    assert report["result_limit"] == 3 and report["max_excerpt_chars"] == 1800
+    assert report["summary"]["answerable_count"] == 3
+    assert report["summary"]["answer_hit_at_3"] == 0.333333
+    assert report["summary"]["corpus_gap_count"] == 1
+    assert report["summary"]["budget_blocked_count"] == 1
+    assert report["predictions"][-1]["hits"] == []
+    assert report["predictions"][1]["hits"][0]["excerpt_truncated"]
+    fixture["corpus_sha256"] = "0" * 64
+    fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+    with pytest.raises(KnowledgePackError, match="does not match index"):
+        evaluate_knowledge_retrieval(path, fixture_path)
+
+
+def test_identifier_context_connects_apis_instead_of_selecting_a_constant(tmp_path: Path) -> None:
+    snapshot = _snapshot(tmp_path)
+    _write(
+        snapshot / "nonebot/docs/matcher.md",
+        """# 通用接口
+## get_payload
+get_payload 获取消息内容。
+## FilterMatched
+FilterMatched 参数获取匹配结果。
+## FilterRule
+on_filter FilterRule 匹配消息内容。
+## FILTER_MATCHED
+filter matched 匹配结果存储常量。
+""",
+    )
+    _write(
+        snapshot / "nonebot/docs/guide.md",
+        """# 规则指南
+## filter
+on_filter 使用 FilterRule 匹配消息。FilterMatched 是匹配结果。
+""",
+    )
+    _write(
+        snapshot / "nonebot/docs/rule.md",
+        """# 规则接口
+## filter
+匹配 EventPayload 的字符串表示。
+""",
+    )
+    path = tmp_path / "index.sqlite3"
+    build_knowledge_index(snapshot, _policy(tmp_path, snapshot), path)
+    reader = KnowledgeIndexReader(path)
+    query = "on_filter FilterRule 匹配的消息内容 get_payload FilterMatched 参数"
+    before = reader.search(query, component="nonebot2", version="2.5.0", strategy="bm25", limit=3)
+    after = reader.search(query, component="nonebot2", version="2.5.0", limit=3)
+    assert after[:2] == before[:2]
+    assert not any("EventPayload" in hit.excerpt for hit in before)
+    assert "EventPayload" in after[2].excerpt
+
+
+def test_parent_context_completes_handler_order_without_crossing_versions(tmp_path: Path) -> None:
+    snapshot = _snapshot(tmp_path)
+    _write(
+        snapshot / "nonebot/docs/matcher.md",
+        """# 会话控制
+## 操作
+Matcher.finish 之前，处理函数按照添加顺序依次执行。
+### finish
+Matcher.finish 终止当前处理函数和后续处理函数。
+""",
+    )
+    _write(
+        snapshot / "nonebot/docs/exception.md",
+        """# FinishedException
+Matcher.finish 结束当前 Handler，后续 Handler 不执行。
+""",
+    )
+    _write(
+        snapshot / "nonebot/docs/registration.md",
+        """# on_command
+on_command 的 handlers 参数指定 Handler 列表。
+""",
+    )
+    path = tmp_path / "index.sqlite3"
+    build_knowledge_index(snapshot, _policy(tmp_path, snapshot), path)
+    reader = KnowledgeIndexReader(path)
+    found = reader.search(
+        "Matcher on_command handlers 参数 顺序 matcher.finish 后续 handler",
+        component="nonebot2",
+        version="2.5.0",
+        limit=3,
+    )
+    assert any("按照添加顺序" in hit.excerpt for hit in found)
+    assert any("终止" in hit.excerpt or "后续 Handler 不执行" in hit.excerpt for hit in found)
+    assert reader.search("Matcher.finish 顺序", component="nonebot2", version="99.0.0") == []
+
+
 def test_legacy_index_is_read_with_its_original_tokenizer_and_rejects_mixed_identity(
     tmp_path: Path,
 ) -> None:

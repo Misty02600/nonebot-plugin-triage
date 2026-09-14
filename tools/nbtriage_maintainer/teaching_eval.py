@@ -10,7 +10,7 @@ import subprocess
 import tomllib
 import traceback
 from contextlib import nullcontext
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -22,6 +22,7 @@ from pydantic_ai.models import Model, ModelRequestContext, ModelRequestParameter
 from pydantic_ai.models.wrapper import WrapperModel
 
 from nbtriage.capability.teaching._input_budget import estimate_request_tokens
+from nbtriage.capability.teaching._prompt import stable_instruction_prefix
 from nbtriage.capability.teaching.analysis import CapabilityAnalysisRequest
 from nbtriage.capability.teaching.annotations import CAPABILITY_ANNOTATION_REQUEST_REVISION
 from nbtriage.capability.teaching.model_adapter import PydanticAICapabilityAnalysisClient
@@ -93,7 +94,7 @@ class _RequestGate(WrapperModel):
                 ),
             },
         )
-        # 正常管线耗尽补证预算后会撤下工具，允许模型用已有证据提交最终结果。
+        # required 对普通与 family 单元使用同一首请求合同；后续可按正常预算撤下工具。
         if (
             first_request and self.knowledge == "required" and "framework_search_docs" not in names
         ) or (self.knowledge == "off" and "framework_search_docs" in names):
@@ -103,7 +104,17 @@ class _RequestGate(WrapperModel):
             self.record["outcome"] = "preflight_ready"
             raise _PreflightComplete
         self.record["provider_requests"] += 1
-        return await self.wrapped.request(messages, model_settings, model_request_parameters)
+        response = await self.wrapped.request(messages, model_settings, model_request_parameters)
+        self.record.setdefault("request_usage", []).append(
+            {
+                "request_index": self.record["provider_requests"],
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+                "cache_read_tokens": response.usage.cache_read_tokens,
+                "cache_write_tokens": response.usage.cache_write_tokens,
+            }
+        )
+        return response
 
     async def count_tokens(self, *args: Any, **kwargs: Any) -> Any:
         if self.phase == "preflight":
@@ -133,6 +144,20 @@ class _EvaluationClient:
             "outcome": "preparing_request",
             "family": bool(request.family_members),
             "provider_requests": 0,
+            "stable_instruction_prefix_sha256": hashlib.sha256(
+                stable_instruction_prefix(request).encode()
+            ).hexdigest(),
+            "stable_instruction_prefix_chars": len(stable_instruction_prefix(request)),
+            "bootstrap_documents": [
+                {
+                    "evidence_id": unit.evidence_id,
+                    "locator": unit.locator,
+                    "revision": unit.revision,
+                    "content_chars": len(unit.content),
+                }
+                for unit in request.evidence_units
+                if unit.source_kind.startswith("knowledge_")
+            ],
             "request_sha256": hashlib.sha256(
                 json.dumps(asdict(request), sort_keys=True, default=str).encode()
             ).hexdigest(),
@@ -295,6 +320,7 @@ def evaluate_teaching(
         "started_at": datetime.now(UTC).isoformat(),
         "outcome": "preparing",
         "units": records,
+        "skipped_plugins": [],
         "startup_hooks_executed": False,
         "state_reused": False,
     }
@@ -353,35 +379,24 @@ def evaluate_teaching(
                     manifest["knowledge_pack"] = await _prepare_knowledge(runtime, archive, sha256)
                 else:
                     manifest["knowledge_pack"] = None
-                results = []
-                statuses = []
-                for target in plugins:
-                    results.append(await shadow.refresh_teaching(target, force=True))
-                    statuses.append(service.status.to_dict())
-                return results, statuses
+                result = await shadow.refresh_teaching(plugin_modules=plugins, force=True)
+                status = service.status.to_dict()
+                planned_plugins = {unit["plugin_module"] for unit in status["units"]}
+                manifest["skipped_plugins"] = [
+                    {"plugin": target, "reason": "no_teaching_unit"}
+                    for target in plugins
+                    if target not in planned_plugins
+                ]
+                return result, status
 
-            results, statuses = asyncio.run(refresh())
-            result = replace(
-                results[0],
-                **{
-                    key: sum(getattr(item, key) for item in results)
-                    for key in asdict(results[0])
-                    if key.endswith("_count")
-                },
-                files=tuple(dict.fromkeys(path for item in results for path in item.files)),
-            )
+            result, refresh_status = asyncio.run(refresh())
             status = {
-                **{
-                    key: sum(item[key] for item in statuses)
-                    for key in statuses[0]
-                    if key.endswith("_count")
-                },
-                "units": [unit for item in statuses for unit in item["units"]],
-                "global_failure_reasons": [
-                    item["global_failure_reason"]
-                    for item in statuses
-                    if item["global_failure_reason"]
-                ],
+                **refresh_status,
+                "global_failure_reasons": (
+                    [refresh_status["global_failure_reason"]]
+                    if refresh_status["global_failure_reason"]
+                    else []
+                ),
             }
             ready = sum(item["outcome"] == "preflight_ready" for item in records)
             failed = (

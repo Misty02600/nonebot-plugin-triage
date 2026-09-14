@@ -4,10 +4,15 @@ import json
 from dataclasses import replace
 
 from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart
 from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.tools import RunContext
-from pydantic_ai_harness.compaction import estimate_context_tokens, estimate_token_count
+from pydantic_ai_harness.compaction import (
+    estimate_context_tokens,
+    estimate_token_count,
+    resolve_context_window,
+)
 from pydantic_core import to_json
 
 from nbtriage.capability.teaching.analysis import CapabilityAnalysisRequest
@@ -70,10 +75,11 @@ def _estimate_anchored_input(request: ModelRequestContext) -> int:
 
 
 class TeachingInputPreparation(AbstractCapability[CapabilityAnalysisRequest]):
-    """估算仅触发首包可选预载整理，不拒绝必要材料或截断已有历史。"""
+    """整理首包可选预载，并按模型窗口和输出预留检查完整请求；不截断必要资料。"""
 
-    def __init__(self, target: int | None) -> None:
+    def __init__(self, target: int | None, *, context_window: int | None = None) -> None:
         self.target = target
+        self.context_window = context_window
         self.estimates: list[dict[str, int | None]] = []
 
     async def before_model_request(
@@ -83,20 +89,35 @@ class TeachingInputPreparation(AbstractCapability[CapabilityAnalysisRequest]):
     ) -> ModelRequestContext:
         target = self.target
         estimated = estimate_request_tokens(request_context)
+        estimated_before = estimated
         removed = 0
         if target is not None and estimated > target and ctx.usage.requests == 0:
             removed = self._trim_preloads(ctx.deps, request_context, target)
+        estimated = estimate_request_tokens(request_context) if removed else estimated
+        window = (
+            self.context_window
+            or resolve_context_window(request_context.model)
+            # OpenAI 兼容网关的 provider ID 不一定收录在模型目录中。
+            or resolve_context_window(request_context.model.model_name)
+        )
+        output_reserve = (request_context.model_settings or {}).get("max_tokens") or 0
         self.estimates.append(
             {
                 "request_index": ctx.usage.requests + 1,
-                "estimated_input_tokens_before": estimated,
-                "estimated_input_tokens": (
-                    estimate_request_tokens(request_context) if removed else estimated
-                ),
+                "estimated_input_tokens_before": estimated_before,
+                "estimated_input_tokens": estimated,
                 "preload_token_target": target,
                 "removed_optional_preloads": removed,
+                "context_window": window,
+                "output_reserve": output_reserve,
             }
         )
+        if window is None and any(
+            unit.source_kind.startswith("knowledge_") for unit in ctx.deps.evidence_units
+        ):
+            raise UsageLimitExceeded("expanded framework context requires a known context window")
+        if window is not None and estimated + output_reserve > window * 0.9:
+            raise UsageLimitExceeded("teaching context estimate exceeds window with output reserve")
         return request_context
 
     @staticmethod

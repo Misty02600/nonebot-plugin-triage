@@ -2000,9 +2000,12 @@ async def test_restart_does_not_reuse_shard_from_older_published_generation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("batch", "remove_second"), [(False, False), (True, False), (True, True)])
 async def test_scoped_commit_preserves_other_active_annotations_and_caches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    batch: bool,
+    remove_second: bool,
 ) -> None:
     old_generation = "a" * 64
     new_generation = "b" * 64
@@ -2031,22 +2034,31 @@ async def test_scoped_commit_preserves_other_active_annotations_and_caches(
     )
     records = (
         replace(_record("command:target", Disclosure.PUBLIC), owner="plugin.target"),
+        replace(_record("command:second", Disclosure.PUBLIC), owner="plugin.second"),
         replace(_record("command:other", Disclosure.PUBLIC), owner="plugin.other"),
     )
     snapshot = CapabilitySnapshot.create(records)
     first = await service.refresh(snapshot)
     await service.commit_pending(first.refresh_id, old_generation)
 
+    if remove_second:
+        snapshot = CapabilitySnapshot.create(
+            record for record in records if record.owner != "plugin.second"
+        )
     scoped = await service.refresh(
         snapshot,
-        plugin_module="plugin.target",
+        plugin_module=None if batch else "plugin.target",
+        plugin_modules=("plugin.target", "plugin.second") if batch else None,
         force=True,
     )
     assert service.get_pending("command:other") is None
+    assert {unit.plugin_module for unit in scoped.units} == (
+        {"plugin.target", "plugin.second"} if batch and not remove_second else {"plugin.target"}
+    )
     await service.commit_pending(
         scoped.refresh_id,
         new_generation,
-        preserved_plugin_modules=("plugin.other",),
+        preserved_plugin_modules=("plugin.other",) if batch else ("plugin.other", "plugin.second"),
     )
 
     rebound = read_capability_annotation_plugin_cache(cache_directory, "plugin.other")
@@ -2054,6 +2066,7 @@ async def test_scoped_commit_preserves_other_active_annotations_and_caches(
     assert rebound.published_generation == new_generation
     assert service.get("command:target") is not None
     assert service.get("command:other") is not None
+    assert (service.get("command:second") is None) is remove_second
 
 
 @pytest.mark.asyncio

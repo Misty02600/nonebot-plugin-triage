@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import hashlib
 import json
 import sys
@@ -12,6 +13,9 @@ from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel
+from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.profiles import ModelProfile
 
 import nonebot_plugin_triage.capability.teaching._navigation as capability_analysis_navigation
 from nbtriage.capability.catalog.records import (
@@ -40,6 +44,7 @@ from nbtriage.capability.teaching.annotations import (
     _validated_usage,
     capability_analysis_fingerprint,
 )
+from nbtriage.capability.teaching.model_adapter import PydanticAICapabilityAnalysisClient
 from nbtriage.capability.teaching.source_evidence import (
     build_capability_source_evidence,
     registration_source_at,
@@ -682,6 +687,73 @@ async def handle():
     }
     assert "def depth_two(target=Depends(resolve_target)):" in functions
     assert "def resolve_target():" in functions
+
+
+def test_depth_two_helper_preloads_direct_condition_assignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        """ALLOWED = frozenset({"private", "group", "channel_text"})
+def resolve(scene):
+    if scene not in ALLOWED:
+        raise ValueError("unsupported")
+    return scene
+def require(scene):
+    return resolve(scene)
+async def handle(scene):
+    return require(scene)
+""",
+    )
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle", 8)],
+            config_references=[],
+            command_header="subscribe",
+        ),
+        ConfigValuePolicy(),
+    )
+    bindings = [unit for unit in request.evidence_units if unit.source_kind == "python_assignment"]
+    assert len(bindings) == 1
+    assert '"channel_text"' in bindings[0].content
+    assert bindings[0].preload_optional
+    sent = []
+
+    def respond(messages, info):
+        payload = next(
+            json.loads(part.content)
+            for message in messages
+            for part in message.parts
+            if isinstance(part, UserPromptPart) and isinstance(part.content, str)
+        )
+        sent.append(payload)
+        assert bindings[0].evidence_id in payload["allowed_evidence_ids"]
+        assert any(unit["content"] == bindings[0].content for unit in payload["evidence_units"])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    info.output_tools[0].name,
+                    {
+                        "knowledge_enabled": False,
+                        "entries": [],
+                        "gate_resolutions": [],
+                    },
+                )
+            ]
+        )
+
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(
+            respond,
+            profile=ModelProfile(supports_tools=True, default_structured_output_mode="tool"),
+        ),
+        max_output_tokens=240,
+    )
+    asyncio.run(client.analyze(request))
+    assert len(sent) == 1
 
 
 def test_initial_source_slices_preload_only_direct_external_function(

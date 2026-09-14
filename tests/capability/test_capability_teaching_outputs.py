@@ -321,7 +321,8 @@ def test_partial_generation_persists_unit_states_and_plugin_coverage(
     assert "目前可说明以下功能（1/2）" in answer_text
 
 
-def test_scoped_publish_replaces_only_target_plugin(tmp_path: Path) -> None:
+@pytest.mark.parametrize("batch", [False, True])
+def test_scoped_publish_replaces_only_target_plugin(tmp_path: Path, batch: bool) -> None:
     target = _record()
     other = replace(
         target,
@@ -333,7 +334,15 @@ def test_scoped_publish_replaces_only_target_plugin(tmp_path: Path) -> None:
             Claim("plugin.metadata", {"name": "其他功能"}, ClaimBasis.DECLARED),
         ),
     )
-    snapshot = CapabilitySnapshot.create((target, other))
+    second = replace(
+        other,
+        capability_id="command:second",
+        claims=(
+            Claim("plugin.module_name", "plugin_second", ClaimBasis.OBSERVED),
+            Claim("command.header", "查图", ClaimBasis.OBSERVED),
+        ),
+    )
+    snapshot = CapabilitySnapshot.create((target, other, second))
     root = tmp_path / "capability-teaching"
     writer = CapabilityTeachingOutputWriter(root)
     initial_status = CapabilityAnnotationRefreshStatus(
@@ -370,6 +379,24 @@ def test_scoped_publish_replaces_only_target_plugin(tmp_path: Path) -> None:
             capability_id=other.capability_id,
         ),
     }
+    initial_status = replace(
+        initial_status,
+        eligible_count=3,
+        generated_count=3,
+        units=(
+            *initial_status.units,
+            replace(
+                initial_status.units[1],
+                unit_id=second.capability_id,
+                plugin_module="plugin_second",
+                member_capability_ids=(second.capability_id,),
+            ),
+        ),
+    )
+    initial_annotations[second.capability_id] = replace(
+        _annotation("第二个目标旧说明。"),
+        capability_id=second.capability_id,
+    )
 
     def cache(module, annotation):
         return CapabilityAnnotationPluginCache(
@@ -386,35 +413,50 @@ def test_scoped_publish_replaces_only_target_plugin(tmp_path: Path) -> None:
         annotation_caches=(
             cache("plugin_image", initial_annotations[target.capability_id]),
             cache("plugin_other", initial_annotations[other.capability_id]),
+            cache("plugin_second", initial_annotations[second.capability_id]),
         ),
     )
     target_status = CapabilityAnnotationRefreshStatus(
         refresh_id="refresh-target",
-        eligible_count=1,
-        generated_count=1,
-        units=(initial_status.units[0],),
+        eligible_count=2 if batch else 1,
+        generated_count=2 if batch else 1,
+        units=(initial_status.units[0], initial_status.units[2])
+        if batch
+        else (initial_status.units[0],),
     )
+    updated = {target.capability_id: _annotation("新目标说明。")}
+    updated_caches = [cache("plugin_image", updated[target.capability_id])]
+    if batch:
+        updated[second.capability_id] = replace(
+            _annotation("第二个目标新说明。"), capability_id=second.capability_id
+        )
+        updated_caches.append(cache("plugin_second", updated[second.capability_id]))
 
     publication = writer.publish(
         snapshot,
-        lambda capability_id: (
-            _annotation("新目标说明。") if capability_id == target.capability_id else None
-        ),
+        updated.get,
         target_status,
-        plugin_module="plugin_image",
-        annotation_caches=(cache("plugin_image", _annotation("新目标说明。")),),
+        plugin_module=None if batch else "plugin_image",
+        plugin_modules=("plugin_image", "plugin_second") if batch else None,
+        annotation_caches=tuple(updated_caches),
     )
 
     generation_root = root / "objects" / publication.generation
     manifest = json.loads((generation_root / "manifest.json").read_text(encoding="utf-8"))
-    assert publication.preserved_plugin_modules == ("plugin_other",)
+    assert publication.preserved_plugin_modules == (
+        ("plugin_other",) if batch else ("plugin_other", "plugin_second")
+    )
     recovered = {item.module_name: item for item in writer.current_annotation_caches()}
     assert recovered["plugin_other"].units[0].last_good == initial_annotations[other.capability_id]
     assert recovered["plugin_image"].units[0].last_good == _annotation("新目标说明。")
-    assert set(manifest["plugins"]) == {"plugin_image", "plugin_other"}
+    assert recovered["plugin_second"].units[0].last_good == (
+        updated[second.capability_id] if batch else initial_annotations[second.capability_id]
+    )
+    assert set(manifest["plugins"]) == {"plugin_image", "plugin_other", "plugin_second"}
     assert {item["plugin_module"] for item in manifest["units"]} == {
         "plugin_image",
         "plugin_other",
+        "plugin_second",
     }
     assert "新目标说明" in (generation_root / "answer-knowledge" / "plugin_image.md").read_text(
         encoding="utf-8"

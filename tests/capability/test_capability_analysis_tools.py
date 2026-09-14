@@ -711,6 +711,91 @@ def test_definition_read_paginates_by_characters_without_losing_lines(tmp_path: 
     assert joined.splitlines() == source.splitlines()
 
 
+def test_definition_context_can_be_opened_without_file_tools(tmp_path: Path) -> None:
+    profiles = _with_target_plugin_alias(_profiles(tmp_path))
+    root = profiles.navigation_profile.root("python_purelib")
+    assert root is not None
+    source = "if enabled:\n    ALLOWED = {1}\nelse:\n    ALLOWED = {2}\n"
+    path = root.path / "conditional.py"
+    path.write_text(source, encoding="utf-8")
+    revision = hashlib.sha256(path.read_bytes()).hexdigest()
+    registry = _NavigationRegistry(
+        access=profiles.navigation_profile,
+        navigator=DefinitionNavigator(
+            PythonNavigationProfile(
+                access=profiles.navigation_profile,
+                project_root_name="target_plugin",
+                source_root_names=tuple(item.name for item in profiles.navigation_profile.roots),
+            )
+        ),
+        capture=_EvidenceCapture("command:context"),
+    )
+    ref = registry._register_definition(
+        DefinitionLocation(
+            root.name,
+            "conditional.py",
+            2,
+            4,
+            "ALLOWED",
+            None,
+            "statement",
+            revision,
+        )
+    )
+    result = registry.open_definition(ref)
+    assert result["content"] == "    ALLOWED = {1}"
+    context = cast(list[dict[str, object]], result["enclosing_contexts"])[0]
+    assert context["header"] == "if enabled:"
+    assert context["citable"] is False
+    opened = registry.open_definition(cast(str, context["navigation_ref"]))
+    assert str(opened["content"]).splitlines() == source.splitlines()
+    assert opened["citable"] is True
+    path.write_text("ALLOWED = {3}\n", encoding="utf-8")
+    assert (
+        registry.open_definition(cast(str, context["navigation_ref"]))["failure"]
+        == "stale_navigation_ref"
+    )
+
+
+def test_unparsed_definition_window_can_move_backwards_and_forwards(tmp_path: Path) -> None:
+    profiles = _with_target_plugin_alias(_profiles(tmp_path))
+    source = "".join(f"# line {line}\n" for line in range(1, 400)) + "if (\n" + "# tail\n" * 350
+    path = profiles.plugin_source_root.path / "broken.py"
+    path.write_text(source, encoding="utf-8")
+    revision = hashlib.sha256(path.read_bytes()).hexdigest()
+    registry = _NavigationRegistry(
+        access=profiles.navigation_profile,
+        navigator=DefinitionNavigator(
+            PythonNavigationProfile(
+                access=profiles.navigation_profile,
+                project_root_name="target_plugin",
+                source_root_names=tuple(root.name for root in profiles.navigation_profile.roots),
+            )
+        ),
+        capture=_EvidenceCapture("command:window"),
+    )
+    ref = registry._register_definition(
+        DefinitionLocation(
+            "target_plugin",
+            "broken.py",
+            400,
+            0,
+            "missing",
+            None,
+            "statement",
+            revision,
+        )
+    )
+    result = registry.open_definition(ref)
+    assert (result["start_line"], result["end_line"]) == (250, 549)
+    windows = cast(dict[str, str], result["adjacent_windows"])
+    previous = registry.open_definition(windows["previous"])
+    following = registry.open_definition(windows["next"])
+    assert previous["end_line"] == 249
+    assert following["start_line"] == 550
+    assert previous["citable"] is following["citable"] is True
+
+
 def test_initial_python_evidence_exposes_imported_annotation_navigation_handle(
     tmp_path: Path,
 ) -> None:
@@ -929,9 +1014,11 @@ def test_teaching_tools_keep_bot_project_tools_for_local_project_plugin(
     assert "bot_project_search_files" in observed_tools
 
 
+@pytest.mark.parametrize("family", [False, True])
 def test_teaching_tools_offer_version_bound_framework_rag_and_capture_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    family: bool,
 ) -> None:
     profiles = _profiles(tmp_path)
     revision = "plugin-revision-v1"
@@ -978,7 +1065,25 @@ def test_teaching_tools_offer_version_bound_framework_rag_and_capture_evidence(
         knowledge_index_path=lambda: tmp_path / "knowledge.sqlite3",
         knowledge_pack_revision=lambda: pack["revision"],
     )
-    runtime = provider.create_runtime(_request(revision))
+    request = _request(revision)
+    if family:
+        request = replace(
+            request,
+            capability=CapabilityIdentity("family:demo", "demo_plugin", "command_family"),
+            invocations=(CapabilityInvocationTarget("family", CapabilityInvocationMode.COMPLETE),),
+            family_members=(
+                CapabilityFamilyMember(
+                    "command:demo",
+                    (
+                        CapabilityInvocationTarget(
+                            "root", CapabilityInvocationMode.ANCHORED, "demo"
+                        ),
+                    ),
+                    ("evidence:runtime",),
+                ),
+            ),
+        )
+    runtime = provider.create_runtime(request)
     assert runtime is not None
     observed_tools: set[str] = set()
     calls = 0
@@ -994,6 +1099,8 @@ def test_teaching_tools_offer_version_bound_framework_rag_and_capture_evidence(
             assert "判断当前插件实际行为时，以插件源码和 Runtime 事实" in instructions
             assert "按需通过源码导航补读当前安装框架的对应定义" in instructions
             assert "不要求文档和源码各查一遍" in instructions
+            assert "检索前先确定当前教学结论尚缺的具体事实" in instructions
+            assert "已读源码（含 docstring）或文档已明确说明该事实且无冲突时" in instructions
             assert "取得足够证据或确认无法唯一判断后停止" in instructions
             return ModelResponse(
                 parts=[
@@ -1013,6 +1120,8 @@ def test_teaching_tools_offer_version_bound_framework_rag_and_capture_evidence(
     asyncio.run(agent.run("Read the framework docs."))
 
     assert "framework_search_docs" in observed_tools
+    if family:
+        assert observed_tools == {"python_open_definition", "framework_search_docs"}
     evidence = runtime.evidence_units()
     assert len(evidence) == 1
     assert evidence[0].source_kind == "knowledge_user_docs"
@@ -1025,9 +1134,9 @@ def test_teaching_tools_offer_version_bound_framework_rag_and_capture_evidence(
             revision=evidence[0].revision,
         ),
     )
-    assert provider.evidence_is_current(_request(revision), manifest) is True
+    assert provider.evidence_is_current(request, manifest) is True
     pack["revision"] = "archive-v2"
-    assert provider.evidence_is_current(_request(revision), manifest) is False
+    assert provider.evidence_is_current(request, manifest) is False
 
 
 def test_navigation_tool_timeout_does_not_wait_for_blocked_sync_navigation() -> None:
@@ -1089,3 +1198,87 @@ def test_navigation_tool_timeout_does_not_wait_for_blocked_sync_navigation() -> 
     assert output == "done"
     assert started.is_set()
     assert elapsed < 0.2
+
+
+def test_argument_constant_navigation_reads_only_assignment_on_demand(tmp_path: Path) -> None:
+    profiles = _with_target_plugin_alias(_profiles(tmp_path))
+    source = 'MESSAGE = "login again"\n\n@decorate\ndef handle():\n    finish(MESSAGE)\n'
+    path = profiles.plugin_source_root.path / "handler.py"
+    path.write_text(source, encoding="utf-8")
+    revision = hashlib.sha256(path.read_bytes()).hexdigest()
+    evidence = CapabilityEvidenceUnit(
+        "evidence:handler",
+        "python_function",
+        "\n".join(source.splitlines()[2:]),
+        f"sha256:{revision}",
+        "target_plugin/handler.py:handle:4",
+    )
+    capture = _EvidenceCapture("demo", (evidence,))
+    registry = _NavigationRegistry(
+        access=profiles.navigation_profile,
+        navigator=DefinitionNavigator(
+            PythonNavigationProfile(
+                profiles.navigation_profile,
+                "target_plugin",
+                ("target_plugin",),
+            )
+        ),
+        capture=capture,
+    )
+    sidecar = registry.initial_sidecar((evidence,))
+    targets = cast(tuple[dict[str, Any], ...], sidecar[0]["navigation_targets"])
+    target = next(t for t in targets if t["display"] == "MESSAGE")
+    assert capture.units() == ()
+    opened = registry.open_definition(target["navigation_ref"])
+    assert opened["resolved"] is True
+    assert opened["content"] == 'MESSAGE = "login again"'
+    assert opened["start_line"] == opened["end_line"] == 1
+    assert len(capture.units()) == 1
+
+
+def test_unresolved_receiver_offers_type_navigation_without_guessing(
+    tmp_path: Path,
+) -> None:
+    profiles = _with_target_plugin_alias(_profiles(tmp_path))
+    (profiles.plugin_source_root.path / "deps.py").write_text(
+        'from typing import Annotated\nclass Client:\n    def follow(self):\n        return True\nClientDep = Annotated[Client, "dependency"]\n',
+        encoding="utf-8",
+    )
+    source = "from deps import ClientDep\ndef handle(client: ClientDep):\n    client.missing()\n"
+    path = profiles.plugin_source_root.path / "handler.py"
+    path.write_text(source, encoding="utf-8")
+    evidence = CapabilityEvidenceUnit(
+        "evidence:handler",
+        "python_function",
+        "\n".join(source.splitlines()[1:]),
+        f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}",
+        "target_plugin/handler.py:handle:2",
+    )
+    capture = _EvidenceCapture("demo", (evidence,))
+    registry = _NavigationRegistry(
+        access=profiles.navigation_profile,
+        navigator=DefinitionNavigator(
+            PythonNavigationProfile(
+                profiles.navigation_profile,
+                "target_plugin",
+                ("target_plugin",),
+            )
+        ),
+        capture=capture,
+    )
+    targets = cast(
+        tuple[dict[str, Any], ...], registry.initial_sidecar((evidence,))[0]["navigation_targets"]
+    )
+    target = next(t for t in targets if t["display"] == "client.missing")
+    failed = registry.open_definition(target["navigation_ref"])
+    assert failed["resolved"] is False
+    assert failed["failure"] == "definition_not_found"
+    related = cast(list[dict[str, Any]], failed["related_definitions"])[0]
+    assert related["display"] == "ClientDep"
+    assert related["citable"] is False
+    assert capture.units() == ()
+    opened = registry.open_definition(related["navigation_ref"])
+    assert opened["resolved"] is True
+    assert opened["content"] == 'ClientDep = Annotated[Client, "dependency"]'
+    path.write_text(source + "# changed\n", encoding="utf-8")
+    assert registry.open_definition(related["navigation_ref"])["failure"] == "stale_navigation_ref"
