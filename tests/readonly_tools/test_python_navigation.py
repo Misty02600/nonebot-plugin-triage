@@ -8,6 +8,7 @@ from typing import cast
 
 import pytest
 
+import nbtriage.readonly_tools.python_navigation as navigation_module
 from nbtriage.readonly_tools import (
     DefinitionFailureReason,
     DefinitionNavigator,
@@ -57,6 +58,93 @@ def _fixture_profile(
         project,
         dependency,
     )
+
+
+def test_definition_metadata_reuses_only_matching_source_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "class Outer:\n    first = 1\n    second = 2\n"
+    changed_source = source.replace("Outer", "Changed")
+    parse = navigation_module.ast.parse
+    parsed_sources: list[str] = []
+
+    def measured_parse(value: str, *args: object, **kwargs: object) -> object:
+        parsed_sources.append(value)
+        return parse(value, *args, **kwargs)
+
+    navigation_module._definition_ranges.cache_clear()
+    monkeypatch.setattr(navigation_module.ast, "parse", measured_parse)
+
+    assert navigation_module._definition_metadata(source, 2, 4) == (
+        "first",
+        "statement",
+        "Outer.first",
+    )
+    assert navigation_module._definition_metadata(source, 3, 4) == (
+        "second",
+        "statement",
+        "Outer.second",
+    )
+    assert navigation_module._definition_metadata(changed_source, 2, 4) == (
+        "first",
+        "statement",
+        "Changed.first",
+    )
+    assert navigation_module._definition_metadata(" \ninvalid syntax !\n", 1, 0) == (
+        None,
+        None,
+        None,
+    )
+    assert parsed_sources == [source, changed_source]
+    maxsize = navigation_module._definition_ranges.cache_info().maxsize
+    assert maxsize is not None and maxsize > 0
+
+
+def test_definition_metadata_keeps_ast_names_decorator_bounds_and_failed_parses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "@decorator\nclass Ａ:\n    @wrap\n    async def café(self):\n        target = 1\n"
+    assert navigation_module._definition_metadata(source, 1, 1) == (
+        "decorator",
+        "statement",
+        "decorator",
+    )
+    assert navigation_module._definition_metadata(source, 2, 6) == (
+        "Ａ",
+        "statement",
+        "A.Ａ",
+    )
+    assert navigation_module._definition_metadata(source, 3, 5) == (
+        "wrap",
+        "statement",
+        "A.wrap",
+    )
+    assert navigation_module._definition_metadata(source, 4, 14) == (
+        "café",
+        "function",
+        "A.café",
+    )
+    assert navigation_module._definition_metadata(source, 5, 8) == (
+        "target",
+        "statement",
+        "A.café.target",
+    )
+
+    parse = navigation_module.ast.parse
+    parse_calls = 0
+
+    def measured_parse(value: str, *args: object, **kwargs: object) -> object:
+        nonlocal parse_calls
+        parse_calls += 1
+        return parse(value, *args, **kwargs)
+
+    navigation_module._definition_ranges.cache_clear()
+    monkeypatch.setattr(navigation_module.ast, "parse", measured_parse)
+    for _ in range(2):
+        with pytest.raises(SyntaxError):
+            navigation_module._definition_metadata("def broken(\n", 1, 4)
+    assert parse_calls == 2
+    assert navigation_module._definition_ranges.cache_info().currsize == 0
 
 
 def test_go_to_definition_returns_revision_bound_dependency_location(

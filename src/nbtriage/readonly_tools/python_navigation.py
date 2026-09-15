@@ -7,6 +7,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 from tokenize import detect_encoding
@@ -454,19 +455,34 @@ def _definition_metadata(
     if match is None or not match.group().isidentifier():
         return None, None, None
     name = match.group()
-    tree = ast.parse(source)
-    scopes: list[ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef] = []
+    names: list[str] = []
     kind = "statement"
-    for node in ast.walk(tree):
-        if isinstance(
-            node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
-        ) and node.lineno <= line <= (node.end_lineno or node.lineno):
-            scopes.append(node)
-            if node.lineno == line and node.name == name:
-                kind = "class" if isinstance(node, ast.ClassDef) else "function"
-    scopes.sort(key=lambda node: (node.lineno, -(node.end_lineno or node.lineno)))
-    names = [node.name for node in scopes if node.lineno != line or node.name != name]
+    for start, end, scope_name, scope_kind in _definition_ranges(source):
+        if not start <= line <= end:
+            continue
+        if start == line and scope_name == name:
+            kind = scope_kind
+        else:
+            names.append(scope_name)
     return name, kind, ".".join((*names, name))
+
+
+# 源码内容键隔离文件修订；有限容量同时约束源码字符串和轻量范围元组的驻留。
+@lru_cache(maxsize=128)
+def _definition_ranges(source: str) -> tuple[tuple[int, int, str, str], ...]:
+    """解析并缓存源码中的轻量函数与类定义范围。"""
+    definitions = [
+        (
+            node.lineno,
+            node.end_lineno or node.lineno,
+            node.name,
+            "class" if isinstance(node, ast.ClassDef) else "function",
+        )
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+    ]
+    definitions.sort(key=lambda item: (item[0], -item[1]))
+    return tuple(definitions)
 
 
 def _decode_python_source(raw: bytes) -> str:
