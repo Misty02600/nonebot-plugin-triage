@@ -82,8 +82,7 @@ ipython_config.py
 # Pipfile.lock
 
 # UV
-#   This public library resolves its supported dependency ranges from pyproject.toml.
-uv.lock
+#   Keep uv.lock files versioned so development and reproduction environments can be recreated.
 
 #   Poetry and PDM lock files may be committed according to project policy.
 # poetry.lock

@@ -1,0 +1,41 @@
+{
+  "plugin": "YetAnotherPicSearch",
+  "mock": true,
+  "annotation_source_version": "2.0.4",
+  "tested_plugin_version": "2.0.10",
+  "assumed_applicable_for_this_evaluation": true,
+  "provenance": {
+    "source_file": "retrieval-full-corpus-20260906.json",
+    "source_sha256": "f879cfe1bd1465215d58fac1dc474d1780f85c2d594bf9cf8353d86b5829ece9",
+    "unit_id": "4d3d036d7910f23d4f271633"
+  },
+  "annotation": {
+    "capability_id": "4d3d036d7910f23d4f271633",
+    "entries": [
+      {
+        "behavior_boundaries": [
+          "--purge 会忽略已缓存的结果并强制重新搜索",
+          "一条消息可附带多张图片，Bot 会逐张搜索并分别发送结果",
+          "未附带图片也未回复含图消息时，Bot 会提示在 180 秒内补发图片；超时或收到的消息不含图片都会直接结束本次搜索",
+          "附带 -h 或 --help 时直接以图片形式显示使用说明，不会发起搜索"
+        ],
+        "entry_id": "root",
+        "name": "以图搜图",
+        "requirements": [],
+        "search_terms": [
+          "以图搜图",
+          "图片搜索"
+        ],
+        "summary": "发送图片反查图片来源并返回搜索结果，可加检索来源参数，未带图时 Bot 会提示补发",
+        "usages": [
+          "搜图 [--<来源>] [--purge] [图片]...",
+          "[回复图片] 搜图 [--<来源>] [--purge]"
+        ]
+      }
+    ],
+    "evidence_manifest": [],
+    "knowledge_enabled": true,
+    "request_fingerprint": "904751986a863deb17c0064ed97c858e6cce3abbdce62ef92eac8d6a5c9032d0",
+    "schema_version": 11
+  }
+}
