@@ -17,6 +17,7 @@ from nonebot import logger
 
 from nbtriage.bug._agent import BUG_AGENT_PROMPT_ID
 from nbtriage.bug.assessment import (
+    BUG_ASSESSMENT_MAX_TOOL_CALLS,
     BUG_EVIDENCE_BODY_MAX_CHARS,
     BugAssessmentAgentClient,
     BugAssessmentCase,
@@ -26,7 +27,9 @@ from nbtriage.bug.assessment import (
     BugDecisionSource,
     BugEvidence,
     BugEvidenceKind,
+    BugInvestigationPlugin,
     BugOccurrence,
+    BugPublicPrecheck,
     BugReason,
     BugResponsibility,
     BugVerdict,
@@ -45,7 +48,7 @@ from nbtriage.bug.logs import (
     bug_log_bundle_evidence,
     redact_bug_evidence_text,
 )
-from nbtriage.bug.source import ApprovedSourceRoot, BoundedSourceReader
+from nbtriage.bug.source import ApprovedSourceRoot, BugSourceTools
 from nbtriage.bug.workflow import (
     BugOccurrenceInput,
     BugReportInput,
@@ -53,12 +56,17 @@ from nbtriage.bug.workflow import (
     ProblemDecisionSource,
     RecordBugCommand,
     build_problem_signature,
+    evidence_observed_at,
     evidence_receipts,
 )
-from nbtriage.capability.catalog.records import CapabilityRecord, CapabilitySearchHit
+from nbtriage.capability.catalog.records import CapabilityRecord, CapabilitySearchHit, ClaimBasis
 from nbtriage.capability.teaching.annotations import CapabilityTeachingAnnotation
 from nbtriage.runtime_observations import RuntimeObservationBuffer
-from nonebot_plugin_triage.capability.shadow import CapabilityShadowService
+from nonebot_plugin_triage.capability.shadow import (
+    CapabilityShadowService,
+    PublicCapabilitySearch,
+    build_public_guidance_request,
+)
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.knowledge_pack_runtime import KnowledgePackService
 from nonebot_plugin_triage.task_model_runtime import (
@@ -124,6 +132,9 @@ class BugAssessmentRuntimeRequest:
     actor_scope_hmac: str | None = None
     occurrence_key: str | None = None
     correlation_digest: str | None = None
+    selected_owners: tuple[str, ...] | None = None
+    selected_material: PublicCapabilitySearch | None = None
+    public_precheck: BugPublicPrecheck | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,28 +169,13 @@ class _PublicContractPrechecker:
 class _ResolvedPublicSubject:
     hit: CapabilitySearchHit
     annotation: CapabilityTeachingAnnotation | None
+    contracts: tuple[tuple[CapabilityRecord, CapabilityTeachingAnnotation | None], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class _PublicSubjectResolution:
     subject: _ResolvedPublicSubject | None
     unavailable: bool = False
-
-
-class _BoundedBugSourceBackend:
-    """把同步的批准根源码读取器适配成 Bug 工具使用的异步接口。"""
-
-    def __init__(self, approved_root: ApprovedSourceRoot) -> None:
-        self._reader = BoundedSourceReader(approved_root)
-
-    async def find_symbol(self, query: str) -> tuple[BugEvidence, ...]:
-        return await asyncio.to_thread(self._reader.search, query)
-
-    async def read(self, relative_path: str) -> tuple[BugEvidence, ...]:
-        return await asyncio.to_thread(self._reader.read, relative_path)
-
-    async def aclose(self) -> None:
-        return None
 
 
 class BugAssessmentRuntimeService:
@@ -193,7 +189,10 @@ class BugAssessmentRuntimeService:
         agent_client_factory: Callable[[], BugAssessmentAgentClient] | None,
         design_component_versions: Mapping[str, str],
         agent_qualification: BugTaskQualification | None,
+        max_tool_calls: int = BUG_ASSESSMENT_MAX_TOOL_CALLS,
     ) -> None:
+        if max_tool_calls < 1:
+            raise ValueError("max_tool_calls must be positive")
         self._capability_shadow = capability_shadow
         self._knowledge_pack = knowledge_pack
         self._runtime_buffer = runtime_buffer
@@ -201,6 +200,7 @@ class BugAssessmentRuntimeService:
         self._agent_client_factory = agent_client_factory
         self._design_component_versions = dict(design_component_versions)
         self._agent_qualification = agent_qualification
+        self._max_tool_calls = max_tool_calls
 
     async def assess(self, request: BugAssessmentRuntimeRequest) -> BugAssessmentDecision:
         return (await self.assess_outcome(request)).decision
@@ -209,15 +209,50 @@ class BugAssessmentRuntimeService:
         self,
         request: BugAssessmentRuntimeRequest,
     ) -> BugAssessmentRuntimeOutcome:
-        subject_query = _subject_query(request)
-        subject_resolution = await self._select_subject(subject_query, request.adapter_type)
-        if subject_resolution.unavailable:
+        selected = request.selected_owners is not None
+        if selected:
+            material = await self._selected_plugin_material(request)
+            if material is None:
+                return BugAssessmentRuntimeOutcome(
+                    unknown_bug_decision(BugReason.ANALYSIS_UNAVAILABLE)
+                )
+            annotations = _material_annotations(material)
+            contracts = tuple(
+                (record, annotations.get(record.capability_id))
+                for record in material.plugin_records
+            )
+            # 插件范围不是已确定的故障能力，不能拿首条记录登记问题。
+            subject = None
+            annotation = None
+            subject_id = (
+                "plugins:"
+                + hashlib.sha256(json.dumps(sorted(material.selected_owners)).encode()).hexdigest()
+            )
+        else:
+            subject_resolution = await self._select_subject(
+                _subject_query(request), request.adapter_type
+            )
+            if subject_resolution.unavailable:
+                return BugAssessmentRuntimeOutcome(
+                    unknown_bug_decision(BugReason.ANALYSIS_UNAVAILABLE)
+                )
+            resolved_subject = subject_resolution.subject
+            subject = resolved_subject.hit.record if resolved_subject is not None else None
+            annotation = (
+                resolved_subject.annotation
+                if resolved_subject is not None and len(resolved_subject.contracts) == 1
+                else None
+            )
+            contracts = resolved_subject.contracts if resolved_subject is not None else ()
+            subject_id = subject.capability_id if subject is not None else None
+        if (
+            request.public_precheck is not None
+            and request.public_precheck.answer is not None
+            and request.public_precheck.answer.action is not PublicGuidanceAction.INVESTIGATE
+        ):
             return BugAssessmentRuntimeOutcome(unknown_bug_decision(BugReason.ANALYSIS_UNAVAILABLE))
-        resolved_subject = subject_resolution.subject
-        subject = resolved_subject.hit.record if resolved_subject is not None else None
-        annotation = resolved_subject.annotation if resolved_subject is not None else None
         intake = evaluate_bug_intake(
-            capability_id=subject.capability_id if subject is not None else None,
+            capability_id=subject_id,
             invocation=_record_invocation(subject),
             annotation=annotation,
             reported_observation=request.reported_observation,
@@ -250,8 +285,53 @@ class BugAssessmentRuntimeService:
                     source=BugDecisionSource.PUBLIC_PRECHECK,
                 )
             )
-        source_revision = _record_source_revision(subject)
-        contract_revision = intake.contract_revision or _record_revision(subject)
+        guidance_request = (
+            request.public_precheck.request if request.public_precheck is not None else None
+        )
+        if guidance_request is None:
+            # 只复用 Answer 的资料投影；不把补建资料写回实际初检历史。
+            public_material = PublicCapabilitySearch(
+                hits=tuple(CapabilitySearchHit(record, 0.0) for record, _ in contracts),
+                partial=False,
+                plugin_records=tuple(record for record, _ in contracts),
+                annotations=tuple(teaching for _, teaching in contracts if teaching is not None),
+                annotation_capability_ids=tuple(
+                    record.capability_id for record, teaching in contracts if teaching is not None
+                ),
+                selected_owners=tuple(dict.fromkeys(record.owner for record, _ in contracts)),
+            )
+            try:
+                guidance_request = build_public_guidance_request(
+                    request.request_text,
+                    public_material,
+                    conversation_context=request.conversation_context,
+                )
+            except ValueError:
+                return BugAssessmentRuntimeOutcome(
+                    unknown_bug_decision(BugReason.ANALYSIS_UNAVAILABLE)
+                )
+            if guidance_request is None:
+                return BugAssessmentRuntimeOutcome(
+                    unknown_bug_decision(BugReason.ANALYSIS_UNAVAILABLE)
+                )
+        records_by_id = {record.capability_id: (record, teaching) for record, teaching in contracts}
+        unit_members = _public_unit_members(contracts)
+        source_revision = (
+            _plugin_source_revision(contracts) if selected else _record_source_revision(subject)
+        )
+        contract_revision = (
+            hashlib.sha256(
+                "\n".join(
+                    sorted(
+                        f"{record.capability_id}:{_record_revision(record)}:"
+                        f"{teaching.request_fingerprint if teaching is not None else ''}"
+                        for record, teaching in contracts
+                    )
+                ).encode()
+            ).hexdigest()
+            if selected or len(contracts) > 1
+            else intake.contract_revision or _record_revision(subject)
+        )
         deployment_generation = (
             self._capability_shadow.status.deployment_generation
             if self._capability_shadow is not None
@@ -262,6 +342,11 @@ class BugAssessmentRuntimeService:
                 {
                     "request_text": request.request_text,
                     "conversation_context": request.conversation_context,
+                    **(
+                        {"public_precheck": request.public_precheck.model_dump(mode="json")}
+                        if request.public_precheck is not None
+                        else {}
+                    ),
                     "reply_content": (
                         request.reply_message.content if request.reply_message is not None else None
                     ),
@@ -273,20 +358,49 @@ class BugAssessmentRuntimeService:
         ).hexdigest()
         fingerprint = build_bug_case_fingerprint(
             request.request_text,
-            subject_id=subject.capability_id if subject is not None else None,
+            subject_id=subject_id,
             failure_signature=request_digest,
             adapter=request.adapter_name,
             source_revision=source_revision,
             contract_revision=contract_revision,
             deployment_generation=deployment_generation,
         )
-        case = BugAssessmentCase(request_text=request.request_text, fingerprint=fingerprint)
-        source_backend = _source_backend(subject)
+        sources = _plugin_sources(contracts) if selected else {}
+        source_backend = None if selected else _source_backend(subject)
+        approved_roots = {ref: root for ref, (_, root) in sources.items() if root is not None}
+        if source_backend is not None:
+            approved_roots["p1"] = source_backend
+        source_tools = BugSourceTools(approved_roots) if approved_roots else None
+        case = BugAssessmentCase(
+            request_text=request.request_text,
+            fingerprint=fingerprint,
+            plugins=tuple(
+                BugInvestigationPlugin(
+                    plugin_ref=ref,
+                    owner=owner,
+                    capability_ids=tuple(
+                        record.capability_id for record, _ in contracts if record.owner == owner
+                    ),
+                    source_available=backend is not None,
+                )
+                for ref, (owner, backend) in sources.items()
+            ),
+            public_precheck=request.public_precheck
+            or (
+                BugPublicPrecheck(
+                    execution_status=PublicGuidanceExecutionStatus.TRANSPORT_UNAVAILABLE
+                )
+                if selected
+                else None
+            ),
+        )
 
         async def runtime_loader() -> tuple[BugEvidence, ...]:
             if request.correlation_id is None:
                 return ()
             bundle = self._runtime_buffer.capture(request.correlation_id)
+            if not bundle.observations:
+                return ()
             body = json.dumps(bundle.to_dict(), ensure_ascii=False, separators=(",", ":"))
             evidence_id = "runtime:" + hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]
             return (
@@ -296,6 +410,7 @@ class BugAssessmentRuntimeService:
                     source="runtime:correlated",
                     body=body[:48_000],
                     revision=bundle.generated_at,
+                    observed_at=bundle.observations[0].occurred_at,
                     current=True,
                     partial=bundle.buffer_dropped_count > 0 or len(body) > 48_000,
                 ),
@@ -309,7 +424,13 @@ class BugAssessmentRuntimeService:
         async def reply_context_loader() -> tuple[BugEvidence, ...]:
             evidence: list[BugEvidence] = []
             if request.conversation_context:
-                evidence.append(_conversation_text_evidence(request.conversation_context))
+                # 两轮补充按原顺序分块，保留最后一轮，单项仍遵守证据正文上限。
+                evidence.extend(
+                    _conversation_text_evidence(
+                        request.conversation_context[start : start + 48_000]
+                    )
+                    for start in range(0, len(request.conversation_context), 48_000)
+                )
             if request.reply_message is not None:
                 evidence.append(_conversation_message_evidence(request.reply_message))
             return tuple(evidence)
@@ -319,18 +440,6 @@ class BugAssessmentRuntimeService:
                 return ()
             page = await request.conversation_reader.read_next()
             return (_conversation_page_evidence(page),)
-
-        async def source_loader(query: str) -> tuple[BugEvidence, ...]:
-            if source_backend is None:
-                return ()
-            evidence = await source_backend.find_symbol(query)
-            return _redacted_evidence(evidence)
-
-        async def source_read_loader(relative_path: str) -> tuple[BugEvidence, ...]:
-            if source_backend is None:
-                return ()
-            evidence = await source_backend.read(relative_path)
-            return _redacted_evidence(evidence)
 
         async def design_loader(query: str) -> tuple[BugEvidence, ...]:
             if self._knowledge_pack is None or not self._knowledge_pack.status.ready:
@@ -354,7 +463,7 @@ class BugAssessmentRuntimeService:
             body = json.dumps(
                 {
                     "adapter": request.adapter_name,
-                    "subject_id": subject.capability_id if subject is not None else None,
+                    "subject_id": subject_id,
                     "source_revision": source_revision,
                     "contract_revision": contract_revision,
                     "deployment_generation": status.deployment_generation,
@@ -362,6 +471,10 @@ class BugAssessmentRuntimeService:
                     "registered_plugin_count": status.registered_plugin_count,
                     "not_observed_plugin_count": status.not_observed_plugin_count,
                     "runtime_only_plugin_count": status.runtime_only_plugin_count,
+                    "effective_configuration": {
+                        "availability": "unavailable",
+                        "reason": "provider_not_connected",
+                    },
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -381,18 +494,27 @@ class BugAssessmentRuntimeService:
             )
 
         async def public_contract_loader() -> tuple[BugEvidence, ...]:
-            if subject is None:
-                return ()
-            return (_public_record_evidence(subject, annotation),)
+            return _public_unit_directory(unit_members)
+
+        async def member_directory_loader(unit_ref: str) -> tuple[BugEvidence, ...]:
+            members = unit_members.get(unit_ref)
+            return _public_member_directory(members) if members is not None else ()
+
+        async def capability_loader(capability_id: str) -> tuple[BugEvidence, ...]:
+            bound = records_by_id.get(capability_id)
+            return (_public_record_evidence(*bound),) if bound is not None else ()
 
         toolbox = BugAssessmentToolbox(
+            max_tool_calls=self._max_tool_calls,
             runtime_loader=runtime_loader,
             log_loader=log_loader,
-            source_loader=source_loader,
-            source_read_loader=source_read_loader,
+            source_tools=source_tools,
             design_loader=design_loader,
             deployment_loader=deployment_loader,
             public_contract_loader=public_contract_loader,
+            public_guidance_request=guidance_request,
+            capability_loader=capability_loader,
+            member_directory_loader=member_directory_loader,
             reply_context_loader=reply_context_loader,
             conversation_loader=(
                 conversation_loader if request.conversation_reader is not None else None
@@ -402,23 +524,49 @@ class BugAssessmentRuntimeService:
             _PublicContractPrechecker(),
             self._agent_client_factory,
         )
-        try:
-            decision = await coordinator.assess(case, toolbox)
-        finally:
-            if source_backend is not None:
-                await source_backend.aclose()
+        decision = await coordinator.assess(case, toolbox)
         command = _record_bug_command(
             request,
             decision,
             toolbox.evidence,
             subject=subject,
-            annotation=annotation,
             source_revision=source_revision,
             contract_revision=contract_revision,
             deployment_generation=deployment_generation,
             qualification=self._agent_qualification,
+            plugins=case.plugins,
         )
         return BugAssessmentRuntimeOutcome(decision, command)
+
+    async def _selected_plugin_material(
+        self, request: BugAssessmentRuntimeRequest
+    ) -> PublicCapabilitySearch | None:
+        """按可信 owner 复核初检快照，不用检索分数重新选择对象。"""
+        owners = request.selected_owners
+        snapshot = request.selected_material
+        if (
+            not owners
+            or len(owners) > 5
+            or len(set(owners)) != len(owners)
+            or snapshot is None
+            or snapshot.stale
+            or snapshot.partial is not False
+            or snapshot.selected_owners != owners
+            or self._capability_shadow is None
+        ):
+            return None
+        catalog = await self._capability_shadow.public_catalog(request.adapter_type)
+        if catalog is None:
+            return None
+        ids = {owner: plugin_id for plugin_id, owner in catalog.owner_refs}
+        if any(owner not in ids for owner in owners):
+            return None
+        current = catalog.select(tuple(ids[owner] for owner in owners), "")
+        if _material_revision(current) != _material_revision(snapshot):
+            return None
+        if {record.owner for record in current.plugin_records} != set(owners):
+            return None
+        return current
 
     async def _select_subject(
         self,
@@ -439,10 +587,71 @@ class BugAssessmentRuntimeService:
                 second.score <= 0 and first.score <= 0
             ):
                 return _PublicSubjectResolution(None)
-        annotations = {item.capability_id: item for item in result.annotations}
+        annotations = _material_annotations(result)
+        records = result.plugin_records or tuple(hit.record for hit in result.hits)
         return _PublicSubjectResolution(
-            _ResolvedPublicSubject(first, annotations.get(first.record.capability_id))
+            _ResolvedPublicSubject(
+                first,
+                annotations.get(first.record.capability_id),
+                tuple(
+                    (record, annotations.get(record.capability_id))
+                    for record in records
+                    if record.owner == first.record.owner
+                ),
+            )
         )
+
+
+def _material_annotations(
+    material: PublicCapabilitySearch,
+) -> dict[str, CapabilityTeachingAnnotation]:
+    return (
+        dict(zip(material.annotation_capability_ids, material.annotations, strict=True))
+        if len(material.annotation_capability_ids) == len(material.annotations)
+        else {item.capability_id: item for item in material.annotations}
+    )
+
+
+def _material_revision(material: PublicCapabilitySearch) -> str:
+    annotations = _material_annotations(material)
+    payload = [
+        (
+            record.to_dict(),
+            annotations[record.capability_id].to_dict()
+            if record.capability_id in annotations
+            else None,
+        )
+        for record in sorted(material.plugin_records, key=lambda item: item.capability_id)
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()
+
+
+def _plugin_source_revision(
+    contracts: tuple[tuple[CapabilityRecord, CapabilityTeachingAnnotation | None], ...],
+) -> str | None:
+    revisions = [(record.capability_id, _record_source_revision(record)) for record, _ in contracts]
+    if any(revision is None for _, revision in revisions):
+        return None
+    return hashlib.sha256(json.dumps(sorted(revisions)).encode()).hexdigest()
+
+
+def _plugin_sources(
+    contracts: tuple[tuple[CapabilityRecord, CapabilityTeachingAnnotation | None], ...],
+) -> dict[str, tuple[str, ApprovedSourceRoot | None]]:
+    sources = {}
+    for index, owner in enumerate(sorted({record.owner for record, _ in contracts}), 1):
+        records = tuple(record for record, _ in contracts if record.owner == owner)
+        modules = {_record_module_name(record) for record in records} - {None}
+        # 同插件记录共享模块元数据；冲突时不猜源码根，也不影响其他取证。
+        source_record = (
+            next((record for record in records if _record_module_name(record)), None)
+            if len(modules) == 1
+            else None
+        )
+        sources[f"p{index}"] = (owner, _source_backend(source_record))
+    return sources
 
 
 def create_bug_assessment_agent_factory(
@@ -480,6 +689,7 @@ def _create_bug_agent_runtime_binding(
         binding.api_family,
         binding.connection_revision,
         binding.settings_revision,
+        binding.context_window_tokens,
         verified=False,
     )
     qualification = next(
@@ -527,6 +737,7 @@ def create_bug_assessment_runtime_service(
             runtime_binding.client_factory if runtime_binding is not None else None
         ),
         design_component_versions=_installed_design_component_versions(),
+        max_tool_calls=config.nbtriage_bug_max_tool_calls,
         agent_qualification=(
             runtime_binding.qualification if runtime_binding is not None else None
         ),
@@ -540,9 +751,22 @@ def _bug_task_qualification(
     api_family: str,
     connection_revision: str,
     settings_revision: str,
+    context_window_tokens: int | None,
     *,
     verified: bool,
 ) -> BugTaskQualification:
+    budget = {
+        "timeout_seconds": config.nbtriage_bug_timeout_seconds,
+        "max_output_tokens": config.nbtriage_bug_max_output_tokens,
+        "total_tokens_limit": config.nbtriage_bug_total_tokens_limit,
+        "max_tool_calls": config.nbtriage_bug_max_tool_calls,
+    }
+    if context_window_tokens is not None:
+        budget["context_window_tokens"] = context_window_tokens
+    budget_profile = (
+        "bug-budget-v2:"
+        + hashlib.sha256(json.dumps(budget, sort_keys=True).encode()).hexdigest()[:16]
+    )
     return BugTaskQualification(
         provider=provider,
         api_family=api_family,
@@ -624,7 +848,7 @@ def _search_design_knowledge(
 
 def _source_backend(
     record: CapabilityRecord | None,
-) -> _BoundedBugSourceBackend | None:
+) -> ApprovedSourceRoot | None:
     if record is None:
         return None
     module_name = _record_module_name(record)
@@ -637,7 +861,13 @@ def _source_backend(
     if root is None:
         return None
     try:
-        return _BoundedBugSourceBackend(ApprovedSourceRoot(module_name, root))
+        file_name = None
+        if getattr(module, "__path__", None) is None:
+            source_file = getattr(module, "__file__", None)
+            if not isinstance(source_file, str) or Path(source_file).suffix != ".py":
+                return None
+            file_name = Path(source_file).name
+        return ApprovedSourceRoot(module_name, root, file_name=file_name)
     except (OSError, ValueError):
         return None
 
@@ -713,27 +943,128 @@ def _record_revision(record: CapabilityRecord | None) -> str | None:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _public_unit_members(
+    contracts: tuple[tuple[CapabilityRecord, CapabilityTeachingAnnotation | None], ...],
+) -> dict[str, tuple[tuple[CapabilityRecord, CapabilityTeachingAnnotation | None], ...]]:
+    """按现有教学归属绑定本轮单元；没有注释的能力独立成单元。"""
+    grouped: dict[
+        tuple[str, str], list[tuple[CapabilityRecord, CapabilityTeachingAnnotation | None]]
+    ] = {}
+    for record, annotation in contracts:
+        key = (
+            record.owner,
+            annotation.capability_id if annotation is not None else record.capability_id,
+        )
+        grouped.setdefault(key, []).append((record, annotation))
+    return {f"u{i}": tuple(members) for i, (_, members) in enumerate(sorted(grouped.items()), 1)}
+
+
+def _public_unit_directory(
+    units: dict[str, tuple[tuple[CapabilityRecord, CapabilityTeachingAnnotation | None], ...]],
+) -> tuple[BugEvidence, ...]:
+    evidence = []
+    for unit_ref, members in units.items():
+        record, annotation = members[0]
+        names = (
+            [entry.name for entry in annotation.entries]
+            if annotation is not None
+            else [_record_invocation(record) or record.capability_id]
+        )
+        evidence.append(
+            _public_payload_evidence(
+                "unit",
+                {
+                    "unit_ref": unit_ref,
+                    "owner": record.owner,
+                    "names": names,
+                    "member_count": len(members),
+                },
+            )
+        )
+    return tuple(evidence)
+
+
+def _public_member_directory(
+    contracts: tuple[tuple[CapabilityRecord, CapabilityTeachingAnnotation | None], ...],
+) -> tuple[BugEvidence, ...]:
+    """成员入口目录完整分块；教学与具体记录留待按 ID 读取。
+
+    Note:
+        分块仅满足单份证据的长度约束，不裁掉成员或绕过 Toolbox 的总预算。
+        目录只保留 observed 入口事实，不能据此推断完整参数或业务限制。
+    """
+    evidence: dict[str, BugEvidence] = {}
+    groups: dict[tuple[str, str | None], list[dict[str, object]]] = {}
+    entry_fields = {
+        "invocation.header",
+        "command.header",
+        "command.aliases",
+        "command.prefixes",
+        "trigger.factory",
+        "trigger.entries",
+        "trigger.regex_flags",
+    }
+    for record, annotation in contracts:
+        unit_id = annotation.capability_id if annotation is not None else None
+        entries: dict[str, list[object]] = {}
+        for claim in record.claims:
+            if claim.field in entry_fields and claim.basis is ClaimBasis.OBSERVED:
+                entries.setdefault(claim.field, []).append(claim.value)
+        member = {
+            "capability_id": record.capability_id,
+            "kind": record.kind,
+            "observed_entry_points": entries,
+        }
+        groups.setdefault((record.owner, unit_id), []).append(member)
+
+    for (owner, unit_id), members in groups.items():
+        payload: dict[str, object] = {"owner": owner, "analysis_unit_id": unit_id}
+        chunk: list[dict[str, object]] = []
+        for member in members:
+            proposed = {**payload, "members": [*chunk, member]}
+            if (
+                chunk
+                and len(json.dumps(proposed, ensure_ascii=False, separators=(",", ":")))
+                > BUG_EVIDENCE_BODY_MAX_CHARS
+            ):
+                item = _public_payload_evidence("directory", {**payload, "members": chunk})
+                evidence[item.evidence_id] = item
+                chunk = []
+            chunk.append(member)
+        if chunk:
+            item = _public_payload_evidence("directory", {**payload, "members": chunk})
+            evidence[item.evidence_id] = item
+    return tuple(evidence.values())
+
+
+def _public_payload_evidence(label: str, payload: dict[str, object]) -> BugEvidence:
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    revision = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return BugEvidence(
+        evidence_id=f"public-{label}:{revision}",
+        kind=BugEvidenceKind.PUBLIC_CONTRACT,
+        source=f"public-capability-{label}",
+        body=body,
+        revision=revision,
+        current=True,
+        partial=False,
+    )
+
+
+def _teaching_payload(annotation: CapabilityTeachingAnnotation) -> dict[str, object]:
+    return {
+        "revision": annotation.request_fingerprint,
+        "entries": [entry.to_dict() for entry in annotation.entries],
+    }
+
+
 def _public_record_evidence(
     record: CapabilityRecord,
     annotation: CapabilityTeachingAnnotation | None = None,
 ) -> BugEvidence:
     teaching_contract = None
     if annotation is not None:
-        teaching_contract = {
-            "revision": annotation.request_fingerprint,
-            "entries": [
-                {
-                    "entry_id": entry.entry_id,
-                    "name": entry.name,
-                    "summary": entry.summary,
-                    "usages": list(entry.usages),
-                    "search_terms": list(entry.search_terms),
-                    "behavior_boundaries": list(entry.behavior_boundaries),
-                    "requirements": [item.to_dict() for item in entry.requirements],
-                }
-                for entry in annotation.entries
-            ],
-        }
+        teaching_contract = _teaching_payload(annotation)
     body = json.dumps(
         {
             "capability_id": record.capability_id,
@@ -788,10 +1119,10 @@ def _teaching_contract_evidence_id(
 
 
 def _subject_query(request: BugAssessmentRuntimeRequest) -> str:
-    parts = [request.conversation_context or ""]
+    parts = [request.request_text]
     if request.reply_message is not None:
         parts.append(request.reply_message.content)
-    parts.append(request.request_text)
+    parts.append(request.conversation_context or "")
     return "\n".join(part for part in parts if part)[:16_000]
 
 
@@ -943,44 +1274,50 @@ def _record_bug_command(
     evidence: tuple[BugEvidence, ...],
     *,
     subject: CapabilityRecord | None,
-    annotation: CapabilityTeachingAnnotation | None,
     source_revision: str | None,
     contract_revision: str | None,
     deployment_generation: str | None,
     qualification: BugTaskQualification | None,
+    plugins: tuple[BugInvestigationPlugin, ...] = (),
 ) -> RecordBugCommand | None:
     if (
         decision.verdict is not BugVerdict.BUG
         or decision.source is not BugDecisionSource.AGENT
-        or subject is None
+        or decision.report is None
         or qualification is None
         or request.report_key is None
     ):
+        return None
+    report = decision.report
+    try:
+        report.validate_scope(plugins)
+    except ValueError:
+        return None
+    if plugins:
+        owners = tuple(
+            sorted(item.owner for item in plugins if item.plugin_ref in report.affected_plugin_refs)
+        )
+        subject_id = report.capability_id or (
+            "plugins:" + hashlib.sha256(json.dumps(owners).encode()).hexdigest()
+        )
+    elif subject is not None:
+        if report.capability_id not in (None, subject.capability_id):
+            return None
+        owners = (subject.owner,)
+        subject_id = report.capability_id or (
+            "plugins:" + hashlib.sha256(json.dumps(owners).encode()).hexdigest()
+        )
+    else:
         return None
     now = datetime.now(UTC).isoformat()
     receipts = evidence_receipts(decision, evidence)
     signature = build_problem_signature(
         decision,
         evidence,
-        subject_id=subject.capability_id,
+        plugin_owners=owners,
+        adapter_name=request.adapter_name,
     )
-    failure_signature = next(
-        (
-            item.revision
-            for item in receipts
-            if item.kind is BugEvidenceKind.CORRELATED_LOG and item.revision is not None
-        ),
-        signature.digest if signature is not None else None,
-    )
-    invocation = _record_invocation(subject)
-    title_subject = invocation or subject.capability_id
-    annotation_summary = (
-        annotation.entries[0].summary if annotation is not None and annotation.entries else None
-    )
-    if annotation_summary is not None and annotation_summary.strip():
-        title = f"{title_subject}：{annotation_summary.strip()}"
-    else:
-        title = f"{title_subject} 功能异常"
+    failure_signature = signature.digest if signature is not None else None
     decision_key = hashlib.sha256(f"agent-decision:{request.report_key}".encode()).hexdigest()
     occurrence_key = request.occurrence_key or request.report_key
     return RecordBugCommand(
@@ -991,8 +1328,8 @@ def _record_bug_command(
         ),
         occurrence=BugOccurrenceInput(
             occurrence_key=occurrence_key,
-            observed_at=now,
-            subject_id=subject.capability_id,
+            observed_at=evidence_observed_at(decision, evidence),
+            subject_id=subject_id,
             adapter_name=request.adapter_name,
             correlation_digest=request.correlation_digest,
             failure_signature=failure_signature,
@@ -1000,9 +1337,10 @@ def _record_bug_command(
             contract_revision=contract_revision,
             deployment_generation=deployment_generation,
             evidence_receipts=receipts,
+            plugin_owners=owners,
         ),
         signature=signature,
-        title=title[:256],
+        title=redact_bug_evidence_text(report.title),
         responsibility_candidates=tuple(item.value for item in decision.responsibility_candidates),
         decision=ProblemDecisionInput(
             occurred_at=now,
@@ -1015,6 +1353,7 @@ def _record_bug_command(
             model=qualification.model,
             task=qualification.task,
             evaluation=qualification.evaluation,
+            investigation_summary=redact_bug_evidence_text(report.summary),
         ),
     )
 

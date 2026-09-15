@@ -28,6 +28,7 @@ from nonebot_plugin_alconna import (
 
 from nbtriage.bug.assessment import (
     BugDecisionSource,
+    BugPublicPrecheck,
     BugReason,
     BugVerdict,
     format_bug_assessment_reply,
@@ -41,7 +42,12 @@ from nbtriage.bug.workflow import (
     format_problem_list,
 )
 from nbtriage.capability.catalog.records import CapabilitySearchHit
-from nbtriage.public_guidance import PublicGuidanceExecutionStatus
+from nbtriage.public_guidance import (
+    PublicGuidanceAction,
+    PublicGuidanceExecutionStatus,
+    PublicGuidanceMaterialBudgetError,
+)
+from nbtriage.support.catalog import CatalogPlugin
 from nbtriage.support.routing import (
     SupportRoutingAction,
     SupportRoutingDecision,
@@ -51,6 +57,8 @@ from nbtriage.support.routing import (
 from nbtriage.support.semantics import (
     SUPPORT_SEMANTIC_SCHEMA_VERSION,
     SupportAssessmentRequest,
+    SupportSupplementContext,
+    SupportSupplementExchange,
 )
 from nbtriage.support.threads import (
     SupportThreadInitialContext,
@@ -80,12 +88,11 @@ from nonebot_plugin_triage.capability.discovery.registry import (
 )
 from nonebot_plugin_triage.capability.guidance import (
     build_explicit_public_guidance_request,
-    format_capability_guidance,
     matching_public_capabilities,
 )
 from nonebot_plugin_triage.capability.shadow import (
+    PublicCapabilitySearch,
     build_public_guidance_request,
-    format_public_capability_guidance,
 )
 from nonebot_plugin_triage.product_contract import (
     MAINTAINER_MATCHER_PRIORITY,
@@ -114,8 +121,16 @@ plugin_runtime = create_plugin_runtime(plugin_config)
 
 class _GuidanceStatus(StrEnum):
     ANSWERED = "answered"
-    NEEDS_SUBJECT = "needs_subject"
     UNAVAILABLE = "unavailable"
+    NEEDS_CONTEXT = "needs_context"
+    INVESTIGATE = "investigate"
+
+
+_GUIDANCE_ACTION_STATUS = {
+    PublicGuidanceAction.HANDLED: _GuidanceStatus.ANSWERED,
+    PublicGuidanceAction.NEEDS_CONTEXT: _GuidanceStatus.NEEDS_CONTEXT,
+    PublicGuidanceAction.INVESTIGATE: _GuidanceStatus.INVESTIGATE,
+}
 
 
 @dataclass(frozen=True)
@@ -123,6 +138,7 @@ class _GuidanceResult:
     message: str
     matched_headers: tuple[str, ...]
     status: _GuidanceStatus = _GuidanceStatus.ANSWERED
+    public_precheck: BugPublicPrecheck | None = None
 
 
 with namespace(
@@ -357,7 +373,7 @@ with namespace(
         TRIAGE_COMMAND,
         Subcommand(
             QUERY_COMMAND,
-            Args["problem_id?", str]["action?", str],
+            Args["problem_id?", str]["action?", str]["occurrence_key?", str],
             help_text="列出、查询或维护已记录的 Bug 问题",
         ),
     )
@@ -402,7 +418,7 @@ def _empty_support_prompt() -> str:
 
 def _join_conversation_context(*parts: str | None) -> str | None:
     joined = "\n\n".join(part for part in parts if part)
-    return joined[:_REPLY_CONTEXT_MAX_CHARS] or None
+    return joined or None
 
 
 def _supplement_context(lease: SupportTurnLease) -> str | None:
@@ -412,6 +428,12 @@ def _supplement_context(lease: SupportTurnLease) -> str | None:
     return _join_conversation_context(
         f"首轮 triage：\n{initial.request_text}" if initial.request_text else None,
         f"首轮 Reply：\n{initial.reply_text}" if initial.reply_text else None,
+        *(
+            f"第{index}次追问：\n{item.question}\n\n第{index}次补充：\n{item.request_text}"
+            + (f"\n\n第{index}次补充 Reply：\n{item.reply_text}" if item.reply_text else "")
+            for index, item in enumerate(initial.supplements, 1)
+        ),
+        f"上一轮追问：\n{initial.supplement_question}" if initial.supplement_question else None,
     )
 
 
@@ -423,6 +445,19 @@ def _guidance_conversation_context(
         _supplement_context(lease),
         f"本轮 Reply：\n{reply_visible_text}" if reply_visible_text else None,
     )
+
+
+def _asked_support_questions(lease: SupportTurnLease) -> tuple[str, ...]:
+    initial = lease.initial_context
+    if initial is None:
+        return ()
+    return tuple(item.question for item in initial.supplements) + (
+        (initial.supplement_question,) if initial.supplement_question else ()
+    )
+
+
+def _can_ask_support_question(lease: SupportTurnLease, question: str) -> bool:
+    return lease.can_ask and question not in _asked_support_questions(lease)
 
 
 def _claim_support_scope(
@@ -443,7 +478,7 @@ def _claim_support_scope(
             create_kind=ThreadKind.CLARIFICATION,
             initial_context=SupportThreadInitialContext(
                 request_text=request_text[:8_000],
-                reply_text=(reply_visible_text[:8_000] if reply_visible_text is not None else None),
+                reply_text=reply_visible_text,
                 correlation_id=correlation_id,
             ),
         )
@@ -486,6 +521,9 @@ async def _bug_assessment_decision(
     reply_visible_text: str | None = None,
     inherited_correlation_id: str | None = None,
     reported_observation: bool = True,
+    selected_owners: tuple[str, ...] | None = None,
+    selected_material: PublicCapabilitySearch | None = None,
+    public_precheck: BugPublicPrecheck | None = None,
 ) -> BugAssessmentRuntimeOutcome:
     reply_message = None
     conversation_reader = None
@@ -568,6 +606,9 @@ async def _bug_assessment_decision(
         adapter_type=type(bot.adapter),
         correlation_id=correlation_id,
         reported_observation=reported_observation,
+        selected_owners=selected_owners,
+        selected_material=selected_material,
+        public_precheck=public_precheck,
         conversation_context=conversation_context,
         reply_message=reply_message,
         conversation_reader=conversation_reader,
@@ -584,10 +625,36 @@ async def _bug_assessment_decision(
 
 async def _route_support_text(
     content: str,
+    *,
+    lease: SupportTurnLease | None = None,
+    catalog: tuple[CatalogPlugin, ...] | None = None,
+    reply_text: str | None = None,
 ) -> SupportRoutingDecision:
+    supplement_context = None
+    if lease is not None and lease.is_supplement and lease.initial_context is not None:
+        initial = lease.initial_context
+        if initial.supplement_question:
+            supplement_context = SupportSupplementContext(
+                request_text=initial.request_text
+                if initial.request_text.strip()
+                else "（首轮未提供问题）",
+                question=initial.supplement_question,
+                reply_text=initial.reply_text,
+                supplements=tuple(
+                    SupportSupplementExchange(
+                        question=item.question,
+                        request_text=item.request_text,
+                        reply_text=item.reply_text,
+                    )
+                    for item in initial.supplements
+                ),
+            )
     request = SupportAssessmentRequest(
         schema_version=SUPPORT_SEMANTIC_SCHEMA_VERSION,
         request_text=content,
+        supplement_context=supplement_context,
+        catalog=catalog,
+        reply_text=reply_text,
     )
     outcome = await plugin_runtime.semantic_assessment_service.assess(request)
     return route_support_assessment(outcome)
@@ -599,70 +666,82 @@ async def _capability_guidance_result(
     content: str,
     *,
     conversation_context: str | None = None,
+    precheck: bool = False,
+    can_ask: bool = True,
+    public_result: PublicCapabilitySearch | None = None,
 ) -> _GuidanceResult:
     lookup_text = f"{conversation_context}\n{content}" if conversation_context else content
-    capabilities = await collect_visible_alconna_capabilities(
-        bot,
-        event,
-        visibility_timeout_seconds=(plugin_config.nbtriage_capability_visibility_timeout_seconds),
+    unconfirmed = _GuidanceResult(
+        "暂时无法确认哪个功能适合这个需求，请稍后重试。",
+        (),
+        _GuidanceStatus.UNAVAILABLE,
+        BugPublicPrecheck(execution_status=PublicGuidanceExecutionStatus.TRANSPORT_UNAVAILABLE)
+        if precheck
+        else None,
     )
-    public_matches = matching_public_capabilities(lookup_text, capabilities)
-    if public_matches:
-        fallback = format_capability_guidance(lookup_text, capabilities)
-        answer_request = build_explicit_public_guidance_request(
-            content,
-            public_matches,
-            conversation_context=conversation_context,
-        )
-        if answer_request is not None:
-            outcome = await plugin_runtime.public_guidance_service.answer(answer_request)
-            if (
-                outcome.execution_status is PublicGuidanceExecutionStatus.COMPLETED
-                and outcome.answer is not None
-            ):
-                return _GuidanceResult(
-                    outcome.answer.answer,
-                    tuple(item.header for item in public_matches[:8]),
-                )
-        return _GuidanceResult(
-            fallback,
-            tuple(item.header for item in public_matches[:8]),
-        )
-
-    shadow = plugin_runtime.capability_shadow
-    if shadow is not None:
-        public_result = await shadow.search_public(lookup_text, type(bot.adapter))
-        if public_result is not None and public_result.hits:
-            fallback = format_public_capability_guidance(public_result)
+    public_matches = ()
+    if public_result is not None and (public_result.hits or public_result.plugin_records):
+        indexed = True
+        try:
             answer_request = build_public_guidance_request(
                 content,
                 public_result,
                 conversation_context=conversation_context,
             )
-            if answer_request is not None:
-                outcome = await plugin_runtime.public_guidance_service.answer(answer_request)
-                if (
-                    outcome.execution_status is PublicGuidanceExecutionStatus.COMPLETED
-                    and outcome.answer is not None
-                ):
-                    return _GuidanceResult(
-                        outcome.answer.answer,
-                        _shadow_topic_labels(public_result.hits[:8]),
-                    )
+        except PublicGuidanceMaterialBudgetError:
             return _GuidanceResult(
-                fallback,
-                _shadow_topic_labels(public_result.hits[:8]),
+                "相关插件的公开教学资料过长，暂时无法完整提供教学，请先查看插件帮助。",
+                (),
+                _GuidanceStatus.UNAVAILABLE,
+                BugPublicPrecheck(execution_status=PublicGuidanceExecutionStatus.BUDGET_EXCEEDED)
+                if precheck
+                else None,
             )
+    else:
+        indexed = False
+        capabilities = await collect_visible_alconna_capabilities(
+            bot,
+            event,
+            visibility_timeout_seconds=plugin_config.nbtriage_capability_visibility_timeout_seconds,
+        )
+        public_matches = matching_public_capabilities(lookup_text, capabilities)
+        if not public_matches:
+            return unconfirmed
+        answer_request = build_explicit_public_guidance_request(
+            content,
+            public_matches,
+            conversation_context=conversation_context,
+        )
+    if answer_request is None:
+        return unconfirmed
 
-    return _GuidanceResult(
-        format_capability_guidance(lookup_text, capabilities),
-        (),
-        (_GuidanceStatus.NEEDS_SUBJECT if capabilities else _GuidanceStatus.UNAVAILABLE),
+    answer_request = answer_request.model_copy(update={"precheck": precheck, "can_ask": can_ask})
+    outcome = await plugin_runtime.public_guidance_service.answer(answer_request)
+    public_precheck = (
+        BugPublicPrecheck(
+            execution_status=outcome.execution_status,
+            request=answer_request,
+            answer=outcome.answer,
+        )
+        if precheck
+        else None
     )
-
-
-async def _capability_guidance(bot: Bot, event: Event, content: str) -> str:
-    return (await _capability_guidance_result(bot, event, content)).message
+    if (
+        outcome.execution_status is PublicGuidanceExecutionStatus.COMPLETED
+        and outcome.answer is not None
+    ):
+        matched_headers = (
+            tuple(dict.fromkeys(fact.capability for fact in answer_request.facts))[:8]
+            if indexed
+            else tuple(item.header for item in public_matches[:8])
+        )
+        return _GuidanceResult(
+            outcome.answer.answer,
+            matched_headers,
+            _GUIDANCE_ACTION_STATUS[outcome.answer.action],
+            public_precheck,
+        )
+    return _GuidanceResult(unconfirmed.message, (), _GuidanceStatus.UNAVAILABLE, public_precheck)
 
 
 async def _behavior_authorized(bot: Bot, event: Event) -> bool:
@@ -882,32 +961,82 @@ async def handle_support(
         )
     request = normalize_support_request(content)
     if request.is_empty:
-        if lease.is_supplement:
+        if not _can_ask_support_question(lease, _empty_support_prompt()):
             _close_scope_turn(matcher, lease)
             await support_matcher.finish(
-                UniMessage.text("本次补充已结束；请重新发送 triage 和完整问题。")
+                UniMessage.text("目前仍没有具体问题，无法提供用法说明或判断异常原因。")
             )
         _prepare_scope_supplement(matcher, lease)
         await _finish_thread_response(matcher, bot, target, _empty_support_prompt())
 
-    routing = await _route_support_text(request.content)
+    shadow = plugin_runtime.capability_shadow
+    catalog = await shadow.public_catalog(type(bot.adapter)) if shadow is not None else None
+    routing = await _route_support_text(
+        request.content,
+        lease=lease,
+        catalog=catalog.entries if catalog is not None else None,
+        reply_text=reply_visible_text,
+    )
+    if routing.reason is SupportRoutingReason.ASSESSMENT_EXECUTION_FAILED:
+        _close_scope_turn(matcher, lease)
+        await support_matcher.finish(UniMessage.text("本次请求理解暂时不可用，请稍后重试。"))
+    public_result = None
+    if catalog is not None and routing.action in (
+        SupportRoutingAction.SHOW_GUIDANCE,
+        SupportRoutingAction.BUG_ASSESSMENT_CANDIDATE,
+    ):
+        selection = routing.selection
+        if selection is None or not set(selection.plugin_ids) <= dict(catalog.owner_refs).keys():
+            _close_scope_turn(matcher, lease)
+            await support_matcher.finish(UniMessage.text("本次功能识别暂时不可用，请稍后重试。"))
+        if selection.status == "ambiguous":
+            question = "你指的是哪个功能？请补充功能名称或实际发送的指令。"
+            if not _can_ask_support_question(lease, question):
+                _close_scope_turn(matcher, lease)
+                await support_matcher.finish(
+                    UniMessage.text("目前仍无法确定涉及哪个功能，因此无法核对用法或调查这次问题。")
+                )
+            _prepare_scope_supplement(matcher, lease)
+            await _finish_thread_response(matcher, bot, target, question)
+        if selection.status == "none":
+            _close_scope_turn(matcher, lease)
+            await support_matcher.finish(
+                UniMessage.text("当前公开资料中没有找到与这个需求相符的功能。")
+            )
+        # 模型等待期间资料可能已刷新；重新校验当前可见性，不固定旧资料的有效性。
+        current_catalog = (
+            await shadow.public_catalog(type(bot.adapter)) if shadow is not None else None
+        )
+        if current_catalog is None or any(
+            dict(current_catalog.owner_refs).get(plugin_id) != dict(catalog.owner_refs)[plugin_id]
+            for plugin_id in selection.plugin_ids
+        ):
+            _close_scope_turn(matcher, lease)
+            await support_matcher.finish(
+                UniMessage.text("相关公开资料已变化或暂不可用，请重新发起求助。")
+            )
+        lookup = _guidance_conversation_context(lease, reply_visible_text)
+        public_result = current_catalog.select(
+            selection.plugin_ids, f"{lookup or ''}\n{request.content}"
+        )
+
     if routing.action is SupportRoutingAction.SHOW_GUIDANCE:
         guidance = await _capability_guidance_result(
             bot,
             event,
             request.content,
+            public_result=public_result,
+            can_ask=lease.can_ask,
             conversation_context=_guidance_conversation_context(
                 lease,
                 reply_visible_text,
             ),
         )
-        if guidance.status is _GuidanceStatus.NEEDS_SUBJECT:
-            if lease.is_supplement:
+        if guidance.status is _GuidanceStatus.NEEDS_CONTEXT:
+            if not _can_ask_support_question(lease, guidance.message):
                 _close_scope_turn(matcher, lease)
                 await support_matcher.finish(
-                    UniMessage.text(
-                        f"{guidance.message}\n本次补充已结束；请重新发送 triage 和完整问题。"
-                    )
+                    UniMessage.text("现有信息还不足以给出适用于这次需求的具体操作。")
                 )
             _prepare_scope_supplement(
                 matcher,
@@ -928,6 +1057,24 @@ async def handle_support(
         await _run_behavior_exploration(bot, event, target, request.content)
         return
     if routing.action is SupportRoutingAction.BUG_ASSESSMENT_CANDIDATE:
+        precheck = await _capability_guidance_result(
+            bot,
+            event,
+            request.content,
+            public_result=public_result,
+            conversation_context=_guidance_conversation_context(lease, reply_visible_text),
+            precheck=True,
+            can_ask=lease.can_ask,
+        )
+        if precheck.status is _GuidanceStatus.ANSWERED:
+            _close_scope_turn(matcher, lease)
+            await support_matcher.finish(UniMessage.text(precheck.message))
+        if (
+            _can_ask_support_question(lease, precheck.message)
+            and precheck.status is _GuidanceStatus.NEEDS_CONTEXT
+        ):
+            _prepare_scope_supplement(matcher, lease)
+            await _finish_thread_response(matcher, bot, target, precheck.message)
         assessment = await _bug_assessment_decision(
             bot,
             event,
@@ -942,10 +1089,17 @@ async def handle_support(
                 else None
             ),
             reported_observation=routing.reported_observation,
+            selected_owners=public_result.selected_owners if public_result is not None else None,
+            selected_material=public_result,
+            public_precheck=precheck.public_precheck,
         )
         decision = assessment.decision
-        supplement_prompt = format_bug_supplement_request(decision)
-        if supplement_prompt is not None and not lease.is_supplement:
+        supplement_prompt = format_bug_supplement_request(
+            decision,
+            can_ask=lease.can_ask,
+            asked_questions=_asked_support_questions(lease),
+        )
+        if supplement_prompt is not None:
             _prepare_scope_supplement(matcher, lease)
             await _finish_thread_response(
                 matcher,
@@ -963,6 +1117,8 @@ async def handle_support(
                 bot,
                 event,
                 "请根据公开说明纠正这次操作，并给出正确用法。",
+                public_result=public_result,
+                can_ask=False,
                 conversation_context=_join_conversation_context(
                     _supplement_context(lease),
                     f"本轮 triage：\n{request.content}",
@@ -977,7 +1133,7 @@ async def handle_support(
         if decision.verdict is BugVerdict.BUG:
             if assessment.record_command is None:
                 await support_matcher.finish(
-                    UniMessage.text("已经完成判断，但问题记录暂时失败，请等待主人处理。")
+                    UniMessage.text(f"{format_bug_assessment_reply(decision)}本次未建立问题记录。")
                 )
             try:
                 receipt = await plugin_runtime.bug_workflow_repository.record_bug(
@@ -989,8 +1145,6 @@ async def handle_support(
                     UniMessage.text("已经完成判断，但问题记录暂时失败，请等待主人处理。")
                 )
             await support_matcher.finish(UniMessage.text(format_new_bug_receipt(receipt)))
-        if decision.verdict is BugVerdict.UNKNOWN:
-            await support_matcher.finish(UniMessage.text("暂时无法判断是不是 Bug。"))
         await support_matcher.finish(UniMessage.text(format_bug_assessment_reply(decision)))
     if routing.action is SupportRoutingAction.FEATURE_FEEDBACK_CANDIDATE:
         _close_scope_turn(matcher, lease)
@@ -1016,11 +1170,12 @@ async def handle_support(
         await _run_behavior_exploration(bot, event, target, request.content)
         return
 
-    if lease.is_supplement:
+    question = "我还不能确定你想获得什么结果，请再明确一次：了解用法、判断 Bug，还是提出功能建议。"
+    if not _can_ask_support_question(lease, question):
         _close_scope_turn(matcher, lease)
         await support_matcher.finish(
             UniMessage.text(
-                "我仍无法确定你想获得什么结果，本次补充已结束；请重新发送 triage 和完整问题。"
+                "目前仍无法确定你需要用法说明、异常排查还是功能建议，因此这次无法继续处理。"
             )
         )
     _prepare_scope_supplement(matcher, lease)
@@ -1028,7 +1183,7 @@ async def handle_support(
         matcher,
         bot,
         target,
-        "我还不能确定你想获得什么结果，请再明确一次：了解用法、判断 Bug，还是提出功能建议。",
+        question,
     )
 
 
@@ -1039,6 +1194,7 @@ async def handle_query(
     target: MsgTarget,
     problem_id: Match[str],
     action: Match[str],
+    occurrence_key: Match[str],
 ) -> None:
     try:
         allowed = _support_request_allowed(bot, event, target)
@@ -1076,11 +1232,67 @@ async def handle_query(
                 await query_matcher.finish(UniMessage.text("没有找到这个问题编号。"))
             await query_matcher.finish(UniMessage.text(format_problem_details(problem)))
 
+        action_text = action.result.strip()
+        if action_text == "发生记录" and not occurrence_key.available:
+            records = await repository.list_occurrences(selected_id)
+            if not records:
+                await query_matcher.finish(UniMessage.text("没有找到可查看的发生记录。"))
+            await _finish_bounded_query_messages(
+                "最近至多 100 条发生记录；拆分用法：triage 报错查询 <问题编号> 拆分 <发生标识>\n"
+                + "\n\n".join(
+                    f"{item.occurrence_key}｜{item.observed_at}\n"
+                    f"{item.investigation_summary or '没有可关联的历史调查摘要'}"
+                    for item in records
+                )
+            )
+        if action_text == "拆分":
+            if not occurrence_key.available:
+                await query_matcher.finish(
+                    UniMessage.text(
+                        "用法：triage 报错查询 <问题编号> 拆分 <发生标识>；先用“发生记录”查看标识。"
+                    )
+                )
+            selected_occurrence = occurrence_key.result.strip()
+            if len(selected_occurrence) != 64 or any(
+                char not in "0123456789abcdef" for char in selected_occurrence
+            ):
+                await query_matcher.finish(
+                    UniMessage.text("发生标识格式不正确，请从发生记录中复制完整标识。")
+                )
+            problem = await repository.split_occurrence(
+                selected_id,
+                selected_occurrence,
+                actor_scope_hmac=plugin_runtime.local_identity.digest(
+                    "maintainer-actor", adapter_name(bot), str(bot.self_id), event.get_user_id()
+                ),
+                idempotency_key=plugin_runtime.local_identity.digest(
+                    "maintainer-split",
+                    adapter_name(bot),
+                    str(bot.self_id),
+                    _event_identity(event),
+                    selected_id,
+                    selected_occurrence,
+                ),
+                occurred_at=datetime.now(UTC).isoformat(),
+            )
+            if problem is None:
+                await query_matcher.finish(UniMessage.text("没有找到这个问题编号。"))
+            await query_matcher.finish(
+                UniMessage.text(
+                    "已拆分为独立问题，保留原调查并停用原指纹的自动合并；新问题等待复核。\n"
+                    + format_problem_details(problem)
+                )
+            )
+        if occurrence_key.available:
+            await query_matcher.finish(UniMessage.text("只有拆分动作接受发生标识。"))
+
         try:
             selected_action = ProblemMaintenanceAction(action.result.strip())
         except ValueError:
             await query_matcher.finish(
-                UniMessage.text("不支持这个动作；可用动作：确认Bug、确认非Bug、解决。")
+                UniMessage.text(
+                    "不支持这个动作；可用动作：确认Bug、确认非Bug、解决、发生记录、拆分。"
+                )
             )
         actor_scope_hmac = plugin_runtime.local_identity.digest(
             "maintainer-actor",
@@ -1116,7 +1328,11 @@ async def handle_query(
     except FinishedException:
         raise
     except ProblemActionError:
-        await query_matcher.finish(UniMessage.text("当前问题状态不允许执行这个动作。"))
+        await query_matcher.finish(
+            UniMessage.text(
+                "当前状态不允许此动作；拆分需要至少两次发生，且所选发生的调查关联完整。"
+            )
+        )
     except BugWorkflowStoreError:
         logger.exception("NoneBot Triage problem workflow transaction failed")
         await query_matcher.finish(UniMessage.text("问题记录暂时不可用，请稍后再试。"))

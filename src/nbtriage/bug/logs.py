@@ -6,7 +6,8 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from nbtriage.bug.assessment import BugEvidence, BugEvidenceKind
+from nbtriage.bug.assessment import BUG_EVIDENCE_BODY_MAX_CHARS, BugEvidence, BugEvidenceKind
+from nbtriage.bug.fingerprints import FailureFingerprint
 
 BUG_LOG_SCHEMA_VERSION = 1
 _MAX_TRACEBACK_CHARS = 64_000
@@ -42,6 +43,7 @@ class CorrelatedBugLog:
     exception_type: str
     traceback_text: str
     failure_signature: str
+    failure_fingerprint: FailureFingerprint | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +139,7 @@ def build_correlated_bug_log(
     source_name: str,
     exception_type: str,
     traceback_text: str,
+    failure_fingerprint: FailureFingerprint | None = None,
 ) -> CorrelatedBugLog:
     normalized_traceback = traceback_text[-_MAX_TRACEBACK_CHARS:]
     signature_payload = "\n".join(
@@ -144,7 +147,11 @@ def build_correlated_bug_log(
             source_kind,
             source_name,
             exception_type,
-            _normalize_traceback_for_signature(normalized_traceback),
+            (
+                failure_fingerprint.model_dump_json()
+                if failure_fingerprint is not None
+                else normalized_traceback
+            ),
         )
     )
     return parse_correlated_bug_log(
@@ -158,6 +165,9 @@ def build_correlated_bug_log(
             exception_type=exception_type,
             traceback_text=normalized_traceback,
             failure_signature=hashlib.sha256(signature_payload.encode("utf-8")).hexdigest(),
+            failure_fingerprint=(
+                failure_fingerprint if len(traceback_text) <= _MAX_TRACEBACK_CHARS else None
+            ),
         )
     )
 
@@ -202,10 +212,14 @@ def bug_log_bundle_evidence(bundle: CorrelatedBugLogBundle) -> tuple[BugEvidence
                 evidence_id=f"log:{log.log_id}",
                 kind=BugEvidenceKind.CORRELATED_LOG,
                 source=f"{log.source_kind}:{log.source_name}",
-                body=body[:48_000],
-                revision=log.failure_signature,
+                body=body[:BUG_EVIDENCE_BODY_MAX_CHARS],
+                revision=hashlib.sha256(body.encode()).hexdigest(),
+                observed_at=log.occurred_at,
+                failure_fingerprint=log.failure_fingerprint,
                 current=True,
-                partial=bundle.buffer_dropped_count > 0,
+                partial=(
+                    bundle.buffer_dropped_count > 0 or len(body) > BUG_EVIDENCE_BODY_MAX_CHARS
+                ),
             )
         )
     return tuple(evidence)
@@ -217,18 +231,6 @@ def redact_bug_evidence_text(value: str) -> str:
     redacted = _BEARER.sub("Bearer [REDACTED]", redacted)
     redacted = _JWT.sub("[REDACTED_JWT]", redacted)
     return _ASSIGNMENT_SECRET.sub(r"\1\2[REDACTED]", redacted)
-
-
-def _normalize_traceback_for_signature(value: str) -> str:
-    lines = []
-    for line in value.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        stripped = re.sub(r'File "[^"]+"', 'File "<path>"', stripped)
-        stripped = re.sub(r"\bline \d+\b", "line <n>", stripped)
-        lines.append(stripped)
-    return "\n".join(lines[-64:])
 
 
 def _aware_datetime(value: datetime | None) -> datetime:

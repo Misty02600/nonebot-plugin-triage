@@ -7,13 +7,22 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-PUBLIC_GUIDANCE_SCHEMA_VERSION = 2
+PUBLIC_GUIDANCE_SCHEMA_VERSION = 3
 PUBLIC_GUIDANCE_QUESTION_MAX_CHARS = 2_000
-PUBLIC_GUIDANCE_REPLY_CONTEXT_MAX_CHARS = 16_000
-PUBLIC_GUIDANCE_PROMPT_ID = "public-guidance-answer-v2-prompt-v2-zh"
+PUBLIC_GUIDANCE_REPLY_CONTEXT_MAX_CHARS = 82_000
+PUBLIC_GUIDANCE_FACTS_MAX_CHARS = 24_000
+PUBLIC_GUIDANCE_PROMPT_ID = "public-guidance-answer-v3-prompt-v23-zh"
 
 
 class PublicGuidanceContractError(ValueError):
+    pass
+
+
+class PublicGuidanceMaterialBudgetError(ValueError):
+    pass
+
+
+class PublicGuidanceBudgetExceededError(RuntimeError):
     pass
 
 
@@ -34,7 +43,14 @@ class PublicGuidanceExecutionStatus(StrEnum):
     POLICY_BLOCKED = "policy_blocked"
     TRANSPORT_UNAVAILABLE = "transport_unavailable"
     TRANSPORT_FAILURE = "transport_failure"
+    BUDGET_EXCEEDED = "budget_exceeded"
     INVALID_OUTPUT = "invalid_output"
+
+
+class PublicGuidanceAction(StrEnum):
+    HANDLED = "handled"
+    NEEDS_CONTEXT = "needs_context"
+    INVESTIGATE = "investigate"
 
 
 class _StrictModel(BaseModel):
@@ -42,7 +58,7 @@ class _StrictModel(BaseModel):
 
 
 class PublicGuidanceFact(_StrictModel):
-    fact_id: Annotated[str, Field(pattern=r"^f[1-9][0-9]{0,2}$")]
+    fact_id: Annotated[str, Field(pattern=r"^f[1-9][0-9]*$")]
     capability: Annotated[str, Field(min_length=1, max_length=96)]
     field: PublicGuidanceFactField
     text: Annotated[str, Field(min_length=1, max_length=400)]
@@ -57,7 +73,9 @@ class PublicGuidanceFact(_StrictModel):
 
 
 class PublicGuidanceRequest(_StrictModel):
-    schema_version: Literal[2]
+    schema_version: Literal[3]
+    precheck: bool = False
+    can_ask: bool = True
     question: Annotated[
         str,
         Field(min_length=1, max_length=PUBLIC_GUIDANCE_QUESTION_MAX_CHARS, repr=False),
@@ -71,7 +89,8 @@ class PublicGuidanceRequest(_StrictModel):
             repr=False,
         ),
     ]
-    facts: Annotated[tuple[PublicGuidanceFact, ...], Field(min_length=1, max_length=32)]
+    facts: Annotated[tuple[PublicGuidanceFact, ...], Field(min_length=1)]
+    candidate_materials_omitted: bool = False
 
     @field_validator("question")
     @classmethod
@@ -97,13 +116,28 @@ class PublicGuidanceRequest(_StrictModel):
     ) -> tuple[PublicGuidanceFact, ...]:
         if len({fact.fact_id for fact in value}) != len(value):
             raise ValueError("public guidance fact IDs must be unique")
+        if (
+            sum(len(fact.capability) + len(fact.text) for fact in value)
+            > PUBLIC_GUIDANCE_FACTS_MAX_CHARS
+        ):
+            raise ValueError("public guidance facts exceed the text budget")
         return value
 
 
-class PublicGuidanceAnswer(_StrictModel):
-    schema_version: Literal[2]
+class PublicGuidanceModelOutput(_StrictModel):
+    """模型生成的回答内容；格式版本由适配器附加。"""
+
+    action: PublicGuidanceAction
     answer: Annotated[str, Field(min_length=1, max_length=1_000)]
-    cited_fact_ids: Annotated[tuple[str, ...], Field(min_length=1, max_length=16)]
+    cited_fact_ids: Annotated[tuple[str, ...], Field(min_length=1)]
+
+    @field_validator("answer", mode="before")
+    @classmethod
+    def normalize_answer_text(cls, value: object) -> object:
+        """在长度校验前清理首尾空白，保留非法控制字符供后续拒绝。"""
+        if isinstance(value, str) and not _contains_forbidden_control(value, allow_newline=True):
+            return value.strip()
+        return value
 
     @field_validator("answer")
     @classmethod
@@ -120,6 +154,10 @@ class PublicGuidanceAnswer(_StrictModel):
         ):
             raise ValueError("public guidance citations must be unique fact IDs")
         return value
+
+
+class PublicGuidanceAnswer(PublicGuidanceModelOutput):
+    schema_version: Literal[3]
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,16 +201,21 @@ def _contains_forbidden_control(value: str, *, allow_newline: bool = False) -> b
 
 
 __all__ = (
+    "PUBLIC_GUIDANCE_FACTS_MAX_CHARS",
     "PUBLIC_GUIDANCE_PROMPT_ID",
     "PUBLIC_GUIDANCE_QUESTION_MAX_CHARS",
     "PUBLIC_GUIDANCE_REPLY_CONTEXT_MAX_CHARS",
     "PUBLIC_GUIDANCE_SCHEMA_VERSION",
+    "PublicGuidanceAction",
     "PublicGuidanceAnswer",
+    "PublicGuidanceBudgetExceededError",
     "PublicGuidanceContractError",
     "PublicGuidanceExecutionStatus",
     "PublicGuidanceFact",
     "PublicGuidanceFactBasis",
     "PublicGuidanceFactField",
+    "PublicGuidanceMaterialBudgetError",
+    "PublicGuidanceModelOutput",
     "PublicGuidanceOutcome",
     "PublicGuidanceRequest",
     "parse_public_guidance_answer",

@@ -12,6 +12,7 @@ from nbtriage.support.semantics import (
     SupportAssessmentStatus,
     SupportGoal,
     SupportSemanticAssessment,
+    SupportSupplementContext,
 )
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.support.semantic import (
@@ -95,7 +96,7 @@ def test_service_calls_one_client_once_with_only_the_closed_request_projection()
     assert outcome.execution_status is SupportAssessmentExecutionStatus.COMPLETED
     assert outcome.assessment == _assessed()
     assert len(client.requests) == 1
-    assert client.requests[0].model_dump(mode="json") == {
+    assert client.requests[0].model_dump(mode="json", exclude_none=True) == {
         "schema_version": SUPPORT_SEMANTIC_SCHEMA_VERSION,
         "request_text": "提醒怎么用？",
     }
@@ -118,6 +119,22 @@ def test_pre_model_secret_guard_blocks_before_client_creation() -> None:
     assert outcome.execution_status is SupportAssessmentExecutionStatus.POLICY_BLOCKED
     assert outcome.assessment is None
     assert created == 0
+
+
+@pytest.mark.parametrize("field", ["request_text", "question"])
+def test_secret_guard_checks_supplement_before_client_creation(field: str) -> None:
+    def unexpected_client() -> _Client:
+        raise AssertionError("credential-containing context must not create a client")
+
+    context = {"request_text": "搜图为什么没反应？", "question": "请说明当时的输入。"}
+    context[field] = "api_key=abcdefghijklmnopqrstuvwxyz123456"
+    request = _request("十秒内").model_copy(
+        update={"supplement_context": SupportSupplementContext(**context)}
+    )
+    outcome = asyncio.run(
+        SemanticAssessmentService(unexpected_client, timeout_seconds=1).assess(request)
+    )
+    assert outcome.execution_status is SupportAssessmentExecutionStatus.POLICY_BLOCKED
 
 
 def test_secret_field_identifier_without_value_is_not_blocked() -> None:

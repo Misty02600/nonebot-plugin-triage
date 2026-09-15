@@ -131,7 +131,7 @@ async def finish_support_response(
         receipt = await matcher.send(message)
         if binding is not None:
             if is_scope_supplement_binding(binding):
-                settled = thread_bridge.await_scope_supplement(binding)
+                settled = thread_bridge.await_scope_supplement(binding, question=str(message))
                 binding_finalized = True
                 if not settled:
                     thread_bridge.fail_outgoing_binding(binding)

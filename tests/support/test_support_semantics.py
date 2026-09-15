@@ -38,7 +38,10 @@ def test_request_projection_contains_only_current_normalized_text() -> None:
         schema_version=SUPPORT_SEMANTIC_SCHEMA_VERSION,
         request_text="提醒没有响应，为什么？",
     )
-    assert set(request.model_dump(mode="json")) == {"schema_version", "request_text"}
+    assert set(request.model_dump(mode="json", exclude_none=True)) == {
+        "schema_version",
+        "request_text",
+    }
     assert "提醒没有响应" not in repr(request)
 
 
@@ -58,6 +61,40 @@ def test_request_rejects_extra_metadata_and_unnormalized_text() -> None:
                 "request_text": " 提醒怎么用",
             }
         )
+
+
+@pytest.mark.parametrize("field", ["request_text", "question"])
+@pytest.mark.parametrize("value", ["", "  ", "x" * 8_001, 123])
+def test_supplement_context_requires_bounded_nonblank_text(field: str, value: object) -> None:
+    context = {"request_text": "下一页怎么不翻了？", "question": "间隔多久？"}
+    with pytest.raises(SupportSemanticContractError):
+        parse_support_assessment_request(
+            {
+                "schema_version": SUPPORT_SEMANTIC_SCHEMA_VERSION,
+                "request_text": "十秒",
+                "supplement_context": {**context, field: value},
+            }
+        )
+
+
+def test_supplement_projection_does_not_admit_identity_or_history() -> None:
+    context = {"request_text": "下一页怎么不翻了？", "question": "间隔多久？"}
+    payload = {
+        "schema_version": SUPPORT_SEMANTIC_SCHEMA_VERSION,
+        "request_text": "十秒",
+        "supplement_context": context,
+    }
+    request = parse_support_assessment_request(payload)
+    assert request.model_dump(mode="json", exclude_none=True) == {
+        **payload,
+        "supplement_context": {**context, "supplements": []},
+    }
+    assert "下一页" not in repr(request)
+    for name in ("actor_id", "correlation_id", "permission", "history"):
+        with pytest.raises(SupportSemanticContractError):
+            parse_support_assessment_request(
+                {**payload, "supplement_context": {**context, name: "not-allowed"}}
+            )
 
 
 def test_assessment_preserves_orthogonal_axes() -> None:

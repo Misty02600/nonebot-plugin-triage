@@ -367,6 +367,64 @@ def test_internal_config_and_handler_references_are_not_search_terms(tmp_path: P
     ] == ["command:image"]
 
 
+@pytest.mark.parametrize("query", ["bili sub", "bili add", "B站动态订阅"])
+def test_command_paths_aliases_and_plugin_name_are_searchable(tmp_path: Path, query: str) -> None:
+    record = CapabilityRecord(
+        capability_id="bili:sub",
+        owner="bili-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim("command.header", "bili", ClaimBasis.OBSERVED),
+            Claim(
+                "command.components",
+                [{"kind": "subcommand", "name": "sub", "aliases": ["sub", "add"]}],
+                ClaimBasis.OBSERVED,
+            ),
+            Claim(
+                "plugin.metadata",
+                {
+                    "name": "B站动态订阅",
+                    "supported_adapters": ["qq"],
+                    "usage": "秘密管理指令",
+                },
+                ClaimBasis.DECLARED,
+            ),
+        ),
+    )
+    path = tmp_path / "capabilities.sqlite3"
+    build_capability_index(path, CapabilitySnapshot.create([record]))
+
+    hits = search_capability_index(path, query)
+    assert hits[0].record.capability_id == record.capability_id
+    assert hits[0].score == 100.0
+    assert search_capability_index(path, "秘密管理指令") == []
+    assert search_capability_index(path, "qq") == []
+    with sqlite3.connect(path) as connection:
+        terms = {row[0] for row in connection.execute("SELECT term FROM capability_terms")}
+    assert {"bili sub", "bili add"} <= terms
+    assert "bilisub" not in terms
+
+
+def test_arguments_do_not_match_internal_capability_id_fragments(tmp_path: Path) -> None:
+    record = CapabilityRecord(
+        capability_id="2a37a1a572bd9bf8b12360da",
+        owner="image-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(Claim("command.header", "画图", ClaimBasis.OBSERVED),),
+    )
+    path = tmp_path / "capabilities.sqlite3"
+    build_capability_index(path, CapabilitySnapshot.create([record]))
+
+    assert search_capability_index(path, "bilisub 123 为什么没反应") == []
+    assert search_capability_index(path, record.capability_id)[0].record == record
+
+
 def test_plugin_level_usage_does_not_contaminate_command_search(tmp_path: Path) -> None:
     public = CapabilityRecord(
         capability_id="command:triage",

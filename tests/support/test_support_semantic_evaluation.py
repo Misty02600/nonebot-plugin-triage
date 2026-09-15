@@ -84,7 +84,7 @@ def _expected_outputs(payload: dict[str, Any]) -> list[dict[str, object]]:
     assert isinstance(cases, list)
     return [
         {
-            "schema_version": 7,
+            "schema_version": 8,
             "status": case["expected_status"],
             "goals": case["expected_goals"],
             "reported_observation": case["expected_reported_observation"],
@@ -107,7 +107,7 @@ def _evaluate(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def test_chinese_fixture_binds_prompt_and_runtime_revisions() -> None:
+def test_old_chinese_fixture_cannot_qualify_the_updated_prompt() -> None:
     payload = json.loads(_OFFICIAL_FIXTURE.read_text(encoding="utf-8"))
 
     report = _evaluate(_OFFICIAL_FIXTURE, payload)
@@ -117,12 +117,13 @@ def test_chinese_fixture_binds_prompt_and_runtime_revisions() -> None:
     assert report["prompt_id"] == SUPPORT_SEMANTIC_PROMPT_ID
     assert report["prompt_sha256"] == hashlib.sha256(SYSTEM_INSTRUCTION.encode("utf-8")).hexdigest()
     assert report["summary"]["exact_match_rate"] == 1.0
-    assert report["quality_gate"]["qualification_eligible"] is True
-    assert all(report["quality_gate"]["qualification_checks"].values())
-    assert report["quality_gate"]["status"] == "passed"
+    assert report["quality_gate"]["qualification_eligible"] is False
+    assert report["quality_gate"]["qualification_checks"]["prompt_id"] is False
+    assert report["quality_gate"]["qualification_checks"]["prompt_sha256"] is False
+    assert report["quality_gate"]["status"] == "failed"
 
 
-def test_official_cases_can_qualify_an_independent_provider_target() -> None:
+def test_independent_provider_identity_does_not_bypass_stale_prompt_contract() -> None:
     payload = json.loads(_OFFICIAL_FIXTURE.read_text(encoding="utf-8"))
     provider = "alibaba"
     model = "qwen3.6-flash"
@@ -158,8 +159,11 @@ def test_official_cases_can_qualify_an_independent_provider_target() -> None:
     assert report["provider"] == provider
     assert report["model"] == model
     assert report["pricing_profile"] == pricing.to_report()
-    assert report["quality_gate"]["qualification_eligible"] is True
-    assert report["quality_gate"]["status"] == "passed"
+    assert report["quality_gate"]["qualification_eligible"] is False
+    assert report["quality_gate"]["qualification_checks"]["target_provider"] is True
+    assert report["quality_gate"]["qualification_checks"]["target_model"] is True
+    assert report["quality_gate"]["qualification_checks"]["prompt_id"] is False
+    assert report["quality_gate"]["status"] == "failed"
 
 
 def test_byte_modified_official_fixture_is_not_qualification_eligible(tmp_path: Path) -> None:

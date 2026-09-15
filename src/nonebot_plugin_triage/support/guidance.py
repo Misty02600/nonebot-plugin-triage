@@ -4,8 +4,11 @@ import asyncio
 from collections.abc import Callable
 from typing import Protocol
 
+from nbtriage.capability.teaching.public_projection import contains_private_role
 from nbtriage.public_guidance import (
+    PublicGuidanceAction,
     PublicGuidanceAnswer,
+    PublicGuidanceBudgetExceededError,
     PublicGuidanceContractError,
     PublicGuidanceExecutionStatus,
     PublicGuidanceOutcome,
@@ -49,7 +52,10 @@ class PublicGuidanceService:
         # 显式 Reply 是用户主动选中的聊天上下文，不执行凭据或 PII 扫描；
         # 当前 triage 文字与能力事实继续沿用原有网络前政策。
         if contains_credential(canonical.question) or any(
-            contains_credential(fact.text) for fact in canonical.facts
+            contains_credential(fact.text)
+            or contains_private_role(fact.text)
+            or contains_private_role(fact.capability)
+            for fact in canonical.facts
         ):
             return _failed(PublicGuidanceExecutionStatus.POLICY_BLOCKED)
         if self._client_factory is None:
@@ -60,10 +66,18 @@ class PublicGuidanceService:
             async with asyncio.timeout(self._timeout_seconds):
                 result = await client.answer(canonical)
             answer = parse_public_guidance_answer(result.model_dump(mode="json"))
+            if contains_private_role(answer.answer):
+                return _failed(PublicGuidanceExecutionStatus.INVALID_OUTPUT)
             allowed_fact_ids = {fact.fact_id for fact in canonical.facts}
             if not set(answer.cited_fact_ids).issubset(allowed_fact_ids):
                 return _failed(PublicGuidanceExecutionStatus.INVALID_OUTPUT)
+            if answer.action is PublicGuidanceAction.INVESTIGATE and not canonical.precheck:
+                return _failed(PublicGuidanceExecutionStatus.INVALID_OUTPUT)
+            if answer.action is PublicGuidanceAction.NEEDS_CONTEXT and not canonical.can_ask:
+                return _failed(PublicGuidanceExecutionStatus.INVALID_OUTPUT)
             return PublicGuidanceOutcome(PublicGuidanceExecutionStatus.COMPLETED, answer)
+        except PublicGuidanceBudgetExceededError:
+            return _failed(PublicGuidanceExecutionStatus.BUDGET_EXCEEDED)
         except PublicGuidanceContractError:
             return _failed(PublicGuidanceExecutionStatus.INVALID_OUTPUT)
         except Exception:

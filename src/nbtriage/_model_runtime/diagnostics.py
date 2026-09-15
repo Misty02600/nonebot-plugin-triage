@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
+from hashlib import sha256
 from time import monotonic_ns
 from typing import Any
 
@@ -83,6 +84,7 @@ class MaintenanceResponseCaptureModel(WrapperModel):
                 "phase": "provider_request_started",
                 "recorded_at": _diagnostic_utc_now(),
                 "request_index": request_index,
+                **_diagnostic_toolset_identity(model_request_parameters),
             }
         )
         with (
@@ -369,6 +371,38 @@ def _diagnostic_utc_now() -> str:
 
 def _diagnostic_elapsed_ms(started_ns: int) -> int:
     return max(0, round((monotonic_ns() - started_ns) / 1_000_000))
+
+
+def _diagnostic_toolset_identity(
+    parameters: ModelRequestParameters,
+) -> dict[str, object]:
+    function_tools = sorted(parameters.function_tools, key=lambda item: item.name)
+    output_tools = sorted(parameters.output_tools, key=lambda item: item.name)
+    definitions = [
+        {
+            "kind": kind,
+            "name": tool.name,
+            "description": tool.description,
+            "parameters_json_schema": tool.parameters_json_schema,
+            "strict": tool.strict,
+            "return_schema": tool.return_schema,
+            "include_return_schema": tool.include_return_schema,
+        }
+        for kind, tools in (("function", function_tools), ("output", output_tools))
+        for tool in tools
+    ]
+    canonical = json.dumps(
+        definitions,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return {
+        "function_tool_names": [tool.name for tool in function_tools],
+        "output_tool_names": [tool.name for tool in output_tools],
+        "tool_definitions_sha256": sha256(canonical).hexdigest(),
+    }
 
 
 def _redact_diagnostic_http_value(value: Any) -> Any:

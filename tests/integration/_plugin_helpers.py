@@ -26,10 +26,15 @@ def _triage_reply_event(
     reply_id: int,
     content: str,
     reply_content: str = "BOT_ANSWER_MUST_NOT_BE_READ",
+    reply_sender_id: int | None = None,
     self_id: int = 1,
     group_id: int = 87_654_321,
 ) -> GroupMessageEvent:
     sender = Sender(user_id=user_id, nickname="tester")
+    reply_sender = Sender(
+        user_id=reply_sender_id if reply_sender_id is not None else user_id,
+        nickname="replied-user",
+    )
     text = f"triage {content}" if content else "triage"
     return fake_group_message_event_v11(
         self_id=self_id,
@@ -45,7 +50,7 @@ def _triage_reply_event(
             message_type="group",
             message_id=reply_id,
             real_id=reply_id,
-            sender=sender,
+            sender=reply_sender,
             message=Message(reply_content),
         ),
         to_me=False,
@@ -100,7 +105,9 @@ def _inject_semantic_assessment(
 
     class FakeAssessor:
         async def assess(self, request: Any) -> SupportAssessmentOutcome:
-            assert request.model_dump(mode="json") == {
+            assert request.model_dump(
+                mode="json", exclude={"supplement_context", "reply_text", "catalog"}
+            ) == {
                 "schema_version": SUPPORT_SEMANTIC_SCHEMA_VERSION,
                 "request_text": request.request_text,
             }

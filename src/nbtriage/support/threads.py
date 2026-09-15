@@ -18,6 +18,7 @@ from nbtriage.runtime_observations import OPAQUE_ID_PATTERN
 _MAX_TOPIC_REFS = 16
 _MAX_TOPIC_REFS_BYTES = 1_024
 _MAX_INITIAL_CONTEXT_CHARS = 8_000
+MAX_SUPPORT_SUPPLEMENTS = 2
 
 
 class SupportThreadError(ValueError):
@@ -46,19 +47,38 @@ class TurnClaimStatus(StrEnum):
 
 
 @dataclass(frozen=True)
+class SupportSupplementExchange:
+    question: str
+    request_text: str
+    reply_text: str | None = None
+
+    def __post_init__(self) -> None:
+        _bounded_context_text(self.question, field_name="question")
+        _bounded_context_text(self.request_text, field_name="request_text")
+        if self.reply_text is not None and len(self.reply_text) > 16_000:
+            raise SupportThreadError("reply_text must contain at most 16000 characters")
+
+
+@dataclass(frozen=True)
 class SupportThreadInitialContext:
-    """首轮求助留给唯一一次补充轮使用的有界正文上下文。"""
+    """首轮求助、已完成补充及实际发出的待答问题。"""
 
     request_text: str
     reply_text: str | None = None
     correlation_id: str | None = None
+    supplement_question: str | None = None
+    supplements: tuple[SupportSupplementExchange, ...] = ()
 
     def __post_init__(self) -> None:
         _bounded_context_text(self.request_text, field_name="request_text")
-        if self.reply_text is not None:
-            _bounded_context_text(self.reply_text, field_name="reply_text")
+        if self.reply_text is not None and len(self.reply_text) > 16_000:
+            raise SupportThreadError("reply_text must contain at most 16000 characters")
         if self.correlation_id is not None:
             _opaque_id(self.correlation_id, field_name="correlation_id")
+        if self.supplement_question is not None:
+            _bounded_context_text(self.supplement_question, field_name="supplement_question")
+        if len(self.supplements) >= MAX_SUPPORT_SUPPLEMENTS:
+            raise SupportThreadError("too many completed supplements")
 
 
 @dataclass(frozen=True)
@@ -71,6 +91,7 @@ class SupportThreadRecord:
     topic_refs: tuple[str, ...]
     created_at: datetime
     last_active_at: datetime
+    supplements_used: int = 0
 
 
 @dataclass(frozen=True)
@@ -83,6 +104,10 @@ class SupportTurnLease:
     expires_at: datetime
     is_supplement: bool = True
     initial_context: SupportThreadInitialContext | None = None
+
+    @property
+    def can_ask(self) -> bool:
+        return self.thread.supplements_used < MAX_SUPPORT_SUPPLEMENTS
 
 
 @dataclass(frozen=True)
@@ -216,6 +241,7 @@ class InMemorySupportThreadStore:
         kind: ThreadKind,
         topic_refs: Iterable[str],
         *,
+        reserve_supplement: bool = False,
         now: datetime | None = None,
     ) -> SupportThreadRecord | None:
         """原子更新可续接线程的结构化上下文，并把该操作计为活动。"""
@@ -229,10 +255,13 @@ class InMemorySupportThreadStore:
             current = self._entries.get(normalized_id)
             if current is None or current.status is ThreadStatus.CLOSED:
                 return None
+            if reserve_supplement and current.supplements_used >= MAX_SUPPORT_SUPPLEMENTS:
+                return None
             updated = replace(
                 current,
                 kind=kind,
                 topic_refs=normalized_topic_refs,
+                supplements_used=current.supplements_used + int(reserve_supplement),
                 last_active_at=max(current.last_active_at, current_time),
             )
             self._entries[normalized_id] = updated
@@ -550,6 +579,7 @@ class _ActiveTurnLease:
     acquired_at: datetime
     expires_at: datetime
     is_supplement: bool
+    current_context: SupportThreadInitialContext | None = None
 
 
 class SupportThreadTurnCoordinator:
@@ -691,7 +721,7 @@ class SupportThreadTurnCoordinator:
         """取得同一作用域的处理轮；没有活动 Thread 时可原子创建首轮。
 
         首轮调用方在需要用户补充时调用 :meth:`await_supplement`。同一作用域随后
-        只能再取得一次补充轮；补充轮只能关闭，不能重新进入等待状态。
+        最多再取得两次补充轮，额度由成功发送的追问统一预留。
         """
         if create_kind is not None and not isinstance(create_kind, ThreadKind):
             raise SupportThreadError("thread kind is invalid")
@@ -739,6 +769,7 @@ class SupportThreadTurnCoordinator:
                     reply_digest=None,
                     is_supplement=is_supplement,
                     now=current_time,
+                    current_context=initial_context,
                 )
             except Exception:
                 with suppress(Exception):
@@ -823,9 +854,12 @@ class SupportThreadTurnCoordinator:
         *,
         kind: ThreadKind,
         topic_refs: Iterable[str] = (),
+        question: str | None = None,
         now: datetime | None = None,
     ) -> SupportThreadRecord | None:
-        """提交首轮上下文并开放唯一一次同作用域补充。"""
+        """成功发送追问后预留一次补充，并提交本轮问答供下一轮使用。"""
+        if question is not None:
+            _bounded_context_text(question, field_name="supplement_question")
         current_time = _reference_time(now or self._clock())
         with self._atomic_state():
             self._expire_pending_initials(current_time)
@@ -837,7 +871,7 @@ class SupportThreadTurnCoordinator:
             thread_id = active.thread.thread_id
             if (
                 active.reply_digest is not None
-                or active.is_supplement
+                or active.thread.supplements_used >= MAX_SUPPORT_SUPPLEMENTS
                 or self._thread_by_scope.get(active.scope_digest) != thread_id
             ):
                 self._fail_active(active, current_time)
@@ -846,11 +880,28 @@ class SupportThreadTurnCoordinator:
                 thread_id,
                 kind,
                 topic_refs,
+                reserve_supplement=True,
                 now=current_time,
             )
             if updated is None:
                 self._fail_active(active, current_time)
                 return None
+            initial = self._initial_context_by_thread.get(thread_id)
+            if initial is not None and question is not None:
+                supplements = initial.supplements
+                if active.is_supplement and active.current_context is not None:
+                    supplements += (
+                        SupportSupplementExchange(
+                            question=initial.supplement_question or "",
+                            request_text=active.current_context.request_text,
+                            reply_text=active.current_context.reply_text,
+                        ),
+                    )
+                self._initial_context_by_thread[thread_id] = replace(
+                    initial,
+                    supplement_question=question,
+                    supplements=supplements,
+                )
             self._drop_active(active)
             return updated
 
@@ -976,6 +1027,7 @@ class SupportThreadTurnCoordinator:
         reply_digest: str | None,
         is_supplement: bool,
         now: datetime,
+        current_context: SupportThreadInitialContext | None = None,
     ) -> SupportTurnLease:
         if thread.thread_id in self._leases_by_thread:
             raise SupportThreadError("support thread already has an active turn")
@@ -1003,6 +1055,7 @@ class SupportThreadTurnCoordinator:
             lease.acquired_at,
             lease.expires_at,
             is_supplement,
+            current_context,
         )
         self._leases_by_thread[thread.thread_id] = active
         self._thread_by_token[token_digest] = thread.thread_id
@@ -1163,9 +1216,10 @@ def _topic_refs(values: Iterable[str]) -> tuple[str, ...]:
 
 
 def _bounded_context_text(value: Any, *, field_name: str) -> str:
-    if type(value) is not str or len(value) > _MAX_INITIAL_CONTEXT_CHARS:
+    max_chars = 16_000 if field_name == "reply_text" else _MAX_INITIAL_CONTEXT_CHARS
+    if type(value) is not str or len(value) > max_chars:
         raise SupportThreadError(
-            f"{field_name} must be a string with at most {_MAX_INITIAL_CONTEXT_CHARS} characters"
+            f"{field_name} must be a string with at most {max_chars} characters"
         )
     return value
 

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
 from genai_prices import Usage as PriceUsage
 from genai_prices import calc_price
+from pydantic_ai import UsageLimits
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import ModelResponse
+from pydantic_ai.usage import RunUsage
 
 _MAX_IDENTITY_LENGTH = 512
 
@@ -19,20 +22,32 @@ class ProviderResponseIdentity:
     response_id: str | None
 
 
-def response_model_matches(
-    response: ModelResponse,
-    *,
-    expected_provider: str | None,
-    expected_model: str | None,
-) -> bool:
-    """校验返回模型名，仅兼容已观察到的官方单向改名；不授予评测资格。"""
-    if expected_model is None or response.model_name == expected_model:
-        return True
-    return (
-        expected_provider == response.provider_name == "deepseek"
-        and expected_model == "deepseek-v4-flash"
-        and response.model_name == "deepseek-flash"
-    )
+class NextRequestInputTokenLimits(UsageLimits):
+    """允许当前响应完成处理，在下一次请求前阻止继续扩大上下文。"""
+
+    _received_oversized_input = False
+
+    def check_per_request_input_tokens(self, request_input_tokens: int) -> None:
+        limit = self.per_request_input_tokens_limit
+        if limit is not None and request_input_tokens > limit:
+            self._received_oversized_input = True
+
+    def check_before_request(self, usage: RunUsage) -> None:
+        if self._received_oversized_input:
+            limit = self.per_request_input_tokens_limit
+            raise UsageLimitExceeded(
+                "The next request would follow a response whose input exceeded "
+                f"the per_request_input_tokens_limit of {limit}"
+            )
+        UsageLimits.check_before_request(self, usage)
+
+
+class NextRequestTokenLimits(NextRequestInputTokenLimits):
+    """同时把累计 token 超限延迟到下一次请求前。"""
+
+    def check_tokens(self, usage: RunUsage) -> None:
+        response_limits = replace(self, total_tokens_limit=None)
+        UsageLimits.check_tokens(response_limits, usage)
 
 
 def provider_response_identity(response: ModelResponse | None) -> ProviderResponseIdentity:

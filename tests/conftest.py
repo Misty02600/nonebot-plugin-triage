@@ -66,6 +66,7 @@ def isolate_live_semantic_transport(
         "plugin_runtime",
         replace(
             handlers.plugin_runtime,
+            capability_shadow=None,
             semantic_assessment_service=SemanticAssessmentService(None, timeout_seconds=1),
             public_guidance_service=PublicGuidanceService(None, timeout_seconds=1),
             bug_assessment_service=UnavailableBugAssessmentService(),

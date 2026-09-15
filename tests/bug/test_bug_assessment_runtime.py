@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
 from nbtriage.bug._agent import BUG_AGENT_PROMPT_ID
 from nbtriage.bug.assessment import (
+    BugAssessmentCandidate,
     BugAssessmentDecision,
     BugDecisionSource,
     BugEvidence,
     BugEvidenceKind,
+    BugInvestigationReport,
     BugOccurrence,
     BugReason,
     BugResponsibility,
@@ -32,7 +37,12 @@ from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
 )
-from nbtriage.runtime_observations import RuntimeObservationBuffer
+from nbtriage.runtime_observations import (
+    ObservationKind,
+    ObservationOutcome,
+    RuntimeObservation,
+    RuntimeObservationBuffer,
+)
 from nonebot_plugin_triage.bug import assessment as bug_assessment_runtime
 from nonebot_plugin_triage.bug.assessment import (
     QUALIFIED_BUG_TASKS,
@@ -126,7 +136,7 @@ def test_bug_agent_factory_allows_unverified_model_and_defers_credentials(
     assert create_bug_assessment_agent_factory(_config()) is not None
 
 
-def test_conclusive_agent_result_builds_versioned_record_command() -> None:
+def test_conclusive_agent_result_records_without_mistaking_log_revision_for_fingerprint() -> None:
     qualification = BugTaskQualification(
         provider="openai",
         api_family="chat-completions",
@@ -167,6 +177,7 @@ def test_conclusive_agent_result_builds_versioned_record_command() -> None:
             source="plugin:search",
             body="exception_type=RuntimeError",
             revision="f" * 64,
+            observed_at="2026-08-16T00:01:02+00:00",
             current=True,
             partial=False,
         ),
@@ -176,6 +187,7 @@ def test_conclusive_agent_result_builds_versioned_record_command() -> None:
         occurrence=BugOccurrence.SINGLE_OBSERVED,
         responsibility_candidates=(BugResponsibility.TARGET_PLUGIN,),
         reason=BugReason.RUNTIME_CONTRADICTS_CONTRACT,
+        report=BugInvestigationReport(title="搜图请求失败", summary="运行异常与公开用法不一致。"),
         evidence_ids=("public:search", "log:search"),
         missing_evidence=(),
         source=BugDecisionSource.AGENT,
@@ -186,7 +198,6 @@ def test_conclusive_agent_result_builds_versioned_record_command() -> None:
         decision,
         evidence,
         subject=_public_record(),
-        annotation=_teaching_annotation(),
         source_revision="source-v1",
         contract_revision="contract-v1",
         deployment_generation="deployment-v1",
@@ -194,8 +205,9 @@ def test_conclusive_agent_result_builds_versioned_record_command() -> None:
     )
 
     assert command is not None
-    assert command.signature is not None
-    assert command.occurrence.failure_signature == "f" * 64
+    assert command.signature is None
+    assert command.occurrence.failure_signature is None
+    assert command.occurrence.observed_at == "2026-08-16T00:01:02+00:00"
     assert command.occurrence.source_revision == "source-v1"
     assert command.decision.evaluation == qualification.evaluation
     assert request.request_text not in repr(command)
@@ -228,6 +240,7 @@ def test_unverified_agent_bug_creates_formal_record_with_quality_label() -> None
         occurrence=BugOccurrence.SINGLE_OBSERVED,
         responsibility_candidates=(BugResponsibility.TARGET_PLUGIN,),
         reason=BugReason.RUNTIME_CONTRADICTS_CONTRACT,
+        report=BugInvestigationReport(title="搜图请求失败", summary="当前实现与公开用法不一致。"),
         evidence_ids=("public:search",),
         missing_evidence=(),
         source=BugDecisionSource.AGENT,
@@ -251,7 +264,6 @@ def test_unverified_agent_bug_creates_formal_record_with_quality_label() -> None
         decision,
         evidence,
         subject=_public_record(),
-        annotation=_teaching_annotation(),
         source_revision="source-v1",
         contract_revision="contract-v1",
         deployment_generation="deployment-v1",
@@ -259,6 +271,7 @@ def test_unverified_agent_bug_creates_formal_record_with_quality_label() -> None
     )
 
     assert command is not None
+    assert command.occurrence.observed_at is None
     assert command.decision.provider == "google-gla"
     assert command.decision.model == "gemini-2.5-flash"
     assert command.decision.evaluation == qualification.evaluation
@@ -408,6 +421,67 @@ async def test_runtime_stops_before_agent_when_observation_is_missing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_loads_all_plugin_contracts_without_prejudging_sibling_misuse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _public_record()
+    second = replace(first, capability_id="plugin.image:other")
+    annotation = _teaching_annotation()
+    other_annotation = replace(annotation, capability_id=second.capability_id)
+    shadow = _NoToolShadow(
+        PublicCapabilitySearch(
+            (CapabilitySearchHit(first, 100.0),),
+            partial=False,
+            plugin_records=(first, second),
+            annotations=(annotation, other_annotation),
+            annotation_capability_ids=(first.capability_id, second.capability_id),
+        )
+    )
+    shadow.status = SimpleNamespace(deployment_generation=None)
+    captured = []
+
+    class Coordinator:
+        def __init__(self, *_args):
+            pass
+
+        async def assess(self, _case, toolbox):
+            captured.extend(await toolbox.preload_public_contract())
+            units = [json.loads(e.body) for e in captured if e.source == "public-capability-unit"]
+            for unit in units:
+                captured.extend(await toolbox.capability_members(unit["unit_ref"]))
+            return bug_assessment_runtime.unknown_bug_decision(BugReason.ANALYSIS_UNAVAILABLE)
+
+    monkeypatch.setattr(bug_assessment_runtime, "BugAssessmentCoordinator", Coordinator)
+    decision = await _runtime_service(shadow).assess(
+        BugAssessmentRuntimeRequest(
+            request_text="为什么没反应？",
+            adapter_name="OneBot V11",
+            adapter_type=object,
+            correlation_id=None,
+            reported_observation=True,
+            reply_message=BugConversationMessage(
+                message_id="1",
+                content="搜图",
+                is_bot=False,
+                is_request_actor=True,
+            ),
+        )
+    )
+
+    assert decision.reason is BugReason.ANALYSIS_UNAVAILABLE
+    assert {
+        member["capability_id"]
+        for item in captured
+        for member in json.loads(item.body).get("members", [])
+    } == {
+        first.capability_id,
+        second.capability_id,
+    }
+    assert not any("active_teaching_contract" in json.loads(item.body) for item in captured)
+    assert any(json.loads(item.body).get("text") == "<回复图片> 搜图" for item in captured)
+
+
+@pytest.mark.asyncio
 async def test_runtime_short_circuits_exact_misuse_to_public_precheck() -> None:
     record = _public_record()
     annotation = _teaching_annotation()
@@ -476,3 +550,195 @@ def test_large_conversation_page_remains_valid_bounded_json() -> None:
     assert payload["has_more"] is False
     assert payload["partial"] is True
     assert evidence.partial is True
+
+
+@pytest.mark.asyncio
+async def test_selected_plugin_without_snapshot_does_not_fall_back_to_search() -> None:
+    calls = []
+
+    class Shadow:
+        async def search_public(self, query, adapter_type, *, limit, owners):
+            calls.append((query, owners))
+            return PublicCapabilitySearch((), partial=False)
+
+    service = _runtime_service(Shadow())
+    decision = await service.assess(
+        BugAssessmentRuntimeRequest(
+            request_text="下一页没反应",
+            adapter_name="fixture",
+            adapter_type=object,
+            correlation_id=None,
+            reported_observation=True,
+            selected_owners=("plugin.memes",),
+        )
+    )
+    assert calls == []
+    assert decision.reason is BugReason.ANALYSIS_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_runtime_keeps_last_supplement_beyond_single_evidence_limit(monkeypatch):
+    record = _public_record()
+    shadow = _NoToolShadow(
+        PublicCapabilitySearch((CapabilitySearchHit(record, 100.0),), partial=False)
+    )
+    shadow.status = SimpleNamespace(deployment_generation=None)
+    captured = []
+
+    class Coordinator:
+        def __init__(self, *_args):
+            pass
+
+        async def assess(self, _case, toolbox):
+            captured.extend(await toolbox.preload_reply_context())
+            return bug_assessment_runtime.unknown_bug_decision(BugReason.INSUFFICIENT_EVIDENCE)
+
+    monkeypatch.setattr(bug_assessment_runtime, "BugAssessmentCoordinator", Coordinator)
+    context = (
+        "首轮 Reply："
+        + "资料" * 25000
+        + "\n第二次追问：中间有其他消息吗？\n第一次补充：十秒内发的。"
+    )
+    await _runtime_service(shadow).assess(
+        BugAssessmentRuntimeRequest(
+            request_text="不知道有没有其他消息",
+            adapter_name="OneBot V11",
+            adapter_type=object,
+            correlation_id=None,
+            reported_observation=True,
+            conversation_context=context,
+        )
+    )
+    assert "".join(item.body for item in captured) == context
+    assert len(captured) == 2
+    assert all(len(item.body) <= 48000 and not item.partial for item in captured)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("record_state", ["empty", "unrelated", "expired", "matching"])
+async def test_runtime_only_exposes_existing_correlated_observations(record_state: str) -> None:
+    now = datetime.now(UTC)
+    buffer = RuntimeObservationBuffer(max_entries=8, retention_seconds=60)
+    if record_state != "empty":
+        occurred_at = now - timedelta(seconds=120) if record_state == "expired" else now
+        buffer.add(
+            RuntimeObservation(
+                schema_version=1,
+                observation_id="observation-1",
+                correlation_id="other-call" if record_state == "unrelated" else "reported-call",
+                occurred_at=occurred_at.isoformat(),
+                kind=ObservationKind.MATCHER_COMPLETED,
+                adapter_name="fixture",
+                event_name=None,
+                plugin_name="plugin.image",
+                matcher_name="search",
+                api_name=None,
+                outcome=ObservationOutcome.FAILED,
+                exception_type="ValueError",
+                stack_modules=(),
+            ),
+            now=occurred_at,
+        )
+    shadow = _NoToolShadow(
+        PublicCapabilitySearch((CapabilitySearchHit(_public_record(), 100.0),), partial=False)
+    )
+    shadow.status = SimpleNamespace(deployment_generation=None)
+    captured = []
+
+    class Agent:
+        async def assess(self, case, toolbox):
+            captured.extend(await toolbox.runtime())
+            return BugAssessmentCandidate(
+                occurrence="unknown",
+                responsibility_candidates=("target_plugin",),
+                reason="runtime_contradicts_contract",
+                evidence_ids=tuple(item.evidence_id for item in toolbox.evidence),
+                missing_evidence=(),
+            )
+
+    service = BugAssessmentRuntimeService(
+        capability_shadow=cast(CapabilityShadowService, shadow),
+        knowledge_pack=None,
+        runtime_buffer=buffer,
+        log_buffer=CorrelatedBugLogBuffer(max_entries=8, retention_seconds=60),
+        agent_client_factory=Agent,
+        design_component_versions={},
+        agent_qualification=None,
+    )
+    decision = await service.assess(
+        BugAssessmentRuntimeRequest(
+            request_text="搜图没反应",
+            adapter_name="fixture",
+            adapter_type=object,
+            correlation_id="reported-call",
+            reported_observation=True,
+        )
+    )
+    if record_state == "matching":
+        assert len(captured) == 1
+        assert json.loads(captured[0].body)["observations"][0]["observation_id"] == "observation-1"
+        assert decision.verdict is BugVerdict.BUG
+    else:
+        assert captured == []
+        assert decision.verdict is BugVerdict.UNKNOWN
+        assert decision.occurrence is BugOccurrence.UNKNOWN
+        assert decision.reason is BugReason.INSUFFICIENT_EVIDENCE
+
+
+@pytest.mark.asyncio
+async def test_deployment_inventory_explicitly_marks_effective_configuration_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Shadow(_NoToolShadow):
+        status: SimpleNamespace
+
+    record = _public_record()
+    shadow = Shadow(
+        PublicCapabilitySearch(
+            (CapabilitySearchHit(record, 100.0),),
+            partial=False,
+            plugin_records=(record,),
+            annotations=(_teaching_annotation(),),
+            annotation_capability_ids=(record.capability_id,),
+        )
+    )
+    shadow.status = SimpleNamespace(
+        deployment_generation="inventory-v1",
+        declared_plugin_count=1,
+        registered_plugin_count=1,
+        not_observed_plugin_count=0,
+        runtime_only_plugin_count=0,
+        stale=False,
+        deployment_partial=False,
+    )
+    captured = []
+
+    class Coordinator:
+        def __init__(self, *_args):
+            pass
+
+        async def assess(self, _case, toolbox):
+            captured.extend(await toolbox.deployment())
+            return bug_assessment_runtime.unknown_bug_decision(BugReason.ANALYSIS_UNAVAILABLE)
+
+    monkeypatch.setattr(bug_assessment_runtime, "BugAssessmentCoordinator", Coordinator)
+    await _runtime_service(shadow).assess(
+        BugAssessmentRuntimeRequest(
+            request_text="搜图和图片发了，为什么没有回复？",
+            adapter_name="OneBot V11",
+            adapter_type=object,
+            correlation_id=None,
+            reported_observation=True,
+        )
+    )
+
+    assert len(captured) == 1
+    payload = json.loads(captured[0].body)
+    assert payload["registered_plugin_count"] == 1
+    assert payload["effective_configuration"] == {
+        "availability": "unavailable",
+        "reason": "provider_not_connected",
+    }
+    assert captured[0].kind is BugEvidenceKind.DEPLOYMENT_CONTEXT
+    assert captured[0].current is True
+    assert captured[0].partial is False  # 部署清单完整，不代表配置已知。

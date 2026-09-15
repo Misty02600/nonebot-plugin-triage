@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 import unicodedata
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,7 +32,7 @@ from nbtriage.capability.catalog.records import (
     PlatformScopeKind,
     RecordState,
     build_capability_index,
-    capability_index_public_records,
+    capability_index_projection_records,
     search_capability_index,
 )
 from nbtriage.capability.teaching.analysis import (
@@ -43,13 +44,17 @@ from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingEntry,
     validate_capability_public_statement,
 )
+from nbtriage.capability.teaching.public_projection import project_public_capabilities
 from nbtriage.public_guidance import (
+    PUBLIC_GUIDANCE_FACTS_MAX_CHARS,
     PUBLIC_GUIDANCE_SCHEMA_VERSION,
     PublicGuidanceFact,
     PublicGuidanceFactBasis,
     PublicGuidanceFactField,
+    PublicGuidanceMaterialBudgetError,
     PublicGuidanceRequest,
 )
+from nbtriage.support.catalog import CatalogFunction, CatalogPlugin
 from nonebot_plugin_triage.capability.discovery.registry import (
     registered_public_alconna_capability_paths,
 )
@@ -150,6 +155,30 @@ class PublicCapabilitySearch:
     annotations: tuple[CapabilityTeachingAnnotation, ...] = ()
     annotation_capability_ids: tuple[str, ...] = ()
     exact_member_capability_ids: tuple[str, ...] = ()
+    plugin_records: tuple[CapabilityRecord, ...] = ()
+    selected_owners: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PublicPluginCatalog:
+    entries: tuple[CatalogPlugin, ...]
+    owner_refs: tuple[tuple[str, str], ...]
+    material: PublicCapabilitySearch
+
+    def select(self, plugin_ids: tuple[str, ...], query: str) -> PublicCapabilitySearch:
+        owners_by_id = dict(self.owner_refs)
+        owners = tuple(owners_by_id[plugin_id] for plugin_id in plugin_ids)
+        records = tuple(record for record in self.material.plugin_records if record.owner in owners)
+        return replace(
+            self.material,
+            plugin_records=records,
+            selected_owners=owners,
+            exact_member_capability_ids=tuple(
+                record.capability_id
+                for record in records
+                if _query_exactly_selects_member(query, record)
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -268,6 +297,7 @@ class CapabilityShadowService:
         adapter_type: type[object],
         *,
         limit: int = 5,
+        owners: tuple[str, ...] | None = None,
     ) -> PublicCapabilitySearch | None:
         """只检索当前 adapter 可说明的公开能力。"""
         if (
@@ -279,14 +309,22 @@ class CapabilityShadowService:
             return None
         try:
             public_records = await asyncio.to_thread(
-                capability_index_public_records,
+                capability_index_projection_records,
                 self._resolved_path(),
             )
-            annotation_lookup = (
-                self._annotation_service.get if self._annotation_service is not None else None
+            public_records, projected_annotations = project_public_capabilities(
+                public_records,
+                {
+                    record.capability_id: annotation
+                    for record in public_records
+                    if self._annotation_service is not None
+                    and (annotation := self._annotation_service.get(record.capability_id))
+                    is not None
+                },
             )
-            capability_ids = frozenset(
-                record.capability_id
+            annotation_lookup = projected_annotations.get
+            servable_records = tuple(
+                record
                 for record in public_records
                 if _record_is_publicly_servable(
                     record,
@@ -296,38 +334,39 @@ class CapabilityShadowService:
                     ),
                 )
             )
-            if not capability_ids:
+            if owners is not None:
+                servable_records = tuple(
+                    record for record in servable_records if record.owner in owners
+                )
+            if not servable_records:
                 return PublicCapabilitySearch((), partial=self._status.partial)
             hits = await asyncio.to_thread(
                 search_capability_index,
                 self._resolved_path(),
                 query,
-                capability_ids=capability_ids,
-                limit=limit,
+                capability_ids=tuple(record.capability_id for record in servable_records),
+                limit=len(servable_records),
             )
+            projected_records = {record.capability_id: record for record in servable_records}
+            hits = [
+                replace(hit, record=projected_records[hit.record.capability_id]) for hit in hits
+            ]
             if self._annotation_service is not None:
                 hits = _augment_hits_with_annotation_terms(
                     hits,
-                    tuple(
-                        record
-                        for record in public_records
-                        if record.capability_id in capability_ids
-                    ),
+                    servable_records,
                     query,
-                    self._annotation_service.get,
-                    limit=limit,
+                    projected_annotations.get,
+                    limit=len(servable_records),
                 )
-                hits = _collapse_annotation_families(
-                    hits,
-                    self._annotation_service.get,
-                )
-                hits = _expand_small_annotation_family(
-                    hits,
-                    public_records,
-                    self._annotation_service.get,
-                    adapter_type=adapter_type,
-                    limit=limit,
-                )
+            plugin_hits: dict[str, CapabilitySearchHit] = {}
+            for hit in hits:
+                current = plugin_hits.get(hit.record.owner)
+                if current is None or hit.score > current.score:
+                    plugin_hits[hit.record.owner] = hit
+            hits = sorted(
+                plugin_hits.values(), key=lambda hit: (-hit.score, hit.record.capability_id)
+            )[:limit]
         except CapabilityIndexError as error:
             logger.warning(
                 "NoneBot Triage public capability search failed ({})",
@@ -341,7 +380,7 @@ class CapabilityShadowService:
                 hit.record,
                 adapter_type,
                 annotation=(
-                    self._annotation_service.get(hit.record.capability_id)
+                    projected_annotations.get(hit.record.capability_id)
                     if self._annotation_service is not None
                     else None
                 ),
@@ -349,12 +388,17 @@ class CapabilityShadowService:
         )
         annotations = ()
         annotation_capability_ids = ()
+        plugin_records = tuple(
+            record
+            for hit in safe_hits
+            for record in servable_records
+            if record.owner == hit.record.owner
+        )
         if self._annotation_service is not None:
             bound_annotations = tuple(
-                (hit.record.capability_id, replace(annotation, entries=annotation.public_entries))
-                for hit in safe_hits
-                if (annotation := self._annotation_service.get(hit.record.capability_id))
-                is not None
+                (record.capability_id, projected_annotations[record.capability_id])
+                for record in plugin_records
+                if record.capability_id in projected_annotations
             )
             annotation_capability_ids = tuple(item[0] for item in bound_annotations)
             annotations = tuple(item[1] for item in bound_annotations)
@@ -363,6 +407,7 @@ class CapabilityShadowService:
             partial=self._status.partial,
             annotations=annotations,
             annotation_capability_ids=annotation_capability_ids,
+            plugin_records=plugin_records,
             exact_member_capability_ids=tuple(
                 hit.record.capability_id
                 for hit in safe_hits
@@ -372,6 +417,96 @@ class CapabilityShadowService:
                     or (annotation := annotation_lookup(hit.record.capability_id)) is None
                     or annotation.entries == annotation.public_entries
                 )
+            ),
+        )
+
+    async def public_catalog(self, adapter_type: type[object]) -> PublicPluginCatalog | None:
+        """读取当前完整公开目录；不可用返回 None，不把失败伪装为空目录。"""
+        status = self._status
+        if (
+            not status.ready
+            or status.stale
+            or status.partial is not False
+            or not _deployment_inventory_is_ready(status)
+        ):
+            return None
+        try:
+            public_records = await asyncio.to_thread(
+                capability_index_projection_records, self._resolved_path()
+            )
+        except CapabilityIndexError:
+            return None
+        if status != self._status:
+            return None
+        public_records, projected_annotations = project_public_capabilities(
+            public_records,
+            {
+                record.capability_id: annotation
+                for record in public_records
+                if self._annotation_service is not None
+                and (annotation := self._annotation_service.get(record.capability_id)) is not None
+            },
+        )
+        annotations = {}
+        records = []
+        for record in sorted(public_records, key=lambda item: item.capability_id):
+            annotation = projected_annotations.get(record.capability_id)
+            if not _record_is_publicly_servable(record, adapter_type, annotation=annotation):
+                continue
+            records.append(record)
+            if annotation is not None:
+                annotations[record.capability_id] = annotation
+        plugins = []
+        owner_refs = []
+        for index, owner in enumerate(sorted({record.owner for record in records}), 1):
+            functions = {}
+            for record in records:
+                if record.owner != owner:
+                    continue
+                annotation = annotations.get(record.capability_id)
+                if annotation is not None and annotation.knowledge_enabled:
+                    for entry in annotation.entries:
+                        function = CatalogFunction(
+                            name=entry.name,
+                            summary=entry.summary,
+                            usages=entry.usages,
+                            search_terms=entry.search_terms,
+                            behavior_boundaries=tuple(
+                                dict.fromkeys(
+                                    (
+                                        *entry.behavior_boundaries,
+                                        *(item.text for item in entry.requirements),
+                                    )
+                                )
+                            ),
+                        )
+                        functions[function.model_dump_json()] = function
+                else:
+                    label = _public_capability_label(record, annotation=annotation)
+                    if label:
+                        description = _public_claim_text(record.claims, "description", limit=2000)
+                        usage = _public_claim_text(record.claims, "usage", limit=2000)
+                        function = CatalogFunction(
+                            name=label,
+                            summary=description or label,
+                            usages=(usage,) if usage else (),
+                            behavior_boundaries=tuple(_public_invocation_rules(record)),
+                        )
+                        functions[function.model_dump_json()] = function
+            if not functions:
+                return None
+            plugin_id = f"p{index:02d}"
+            owner_refs.append((plugin_id, owner))
+            plugins.append(CatalogPlugin(plugin_id=plugin_id, functions=tuple(functions.values())))
+        return PublicPluginCatalog(
+            tuple(plugins),
+            tuple(owner_refs),
+            PublicCapabilitySearch(
+                (),
+                partial=False,
+                plugin_records=tuple(records),
+                annotations=tuple(annotations.values()),
+                annotation_capability_ids=tuple(annotations),
             ),
         )
 
@@ -925,6 +1060,7 @@ def format_public_capability_guidance(result: PublicCapabilitySearch) -> str:
     """只用公开字段把当前 adapter 的能力候选格式化为用户帮助。"""
     if result.partial is not False or result.stale:
         return ""
+    result = _project_public_result(result)
     annotations = _annotations_by_capability(result)
     safe_hits = tuple(
         hit
@@ -997,6 +1133,7 @@ def build_public_guidance_request(
     """把当前公开 ServingView 投影成无路径、无配置、无受限记录的回答事实。"""
     if result.partial is not False or result.stale:
         return None
+    result = _project_public_result(result)
     annotations = _annotations_by_capability(result)
     safe_hits = tuple(
         hit
@@ -1007,12 +1144,62 @@ def build_public_guidance_request(
         )
     )
     facts: list[PublicGuidanceFact] = []
-    for hit in safe_hits[:5]:
-        record = hit.record
-        label = _public_capability_label(
-            record,
-            annotation=annotations.get(record.capability_id),
+    records = result.plugin_records or tuple(hit.record for hit in safe_hits[:5])
+    omitted = False
+    used_chars = 0
+    for owner in result.selected_owners or tuple(
+        dict.fromkeys(hit.record.owner for hit in safe_hits[:5])
+    ):
+        plugin_records = tuple(
+            record
+            for record in records
+            if record.owner == owner
+            and _record_is_publicly_servable_without_adapter(
+                record, annotation=annotations.get(record.capability_id)
+            )
         )
+        plugin_facts = _plugin_guidance_facts(
+            plugin_records, annotations, result.exact_member_capability_ids
+        )
+        size = sum(len(fact.capability) + len(fact.text) for fact in plugin_facts)
+        # 按检索顺序整插件装入，不能截掉同一插件后面的用法或限制。
+        if used_chars + size > PUBLIC_GUIDANCE_FACTS_MAX_CHARS:
+            omitted = True
+            break
+        facts.extend(plugin_facts)
+        used_chars += size
+    if omitted and not facts:
+        raise PublicGuidanceMaterialBudgetError("selected plugin teaching exceeds the text budget")
+    normalized_question = _safe_text(question, limit=2_000)
+    if not normalized_question or not facts:
+        return None
+    return PublicGuidanceRequest(
+        schema_version=PUBLIC_GUIDANCE_SCHEMA_VERSION,
+        question=normalized_question,
+        conversation_context=conversation_context,
+        facts=tuple(
+            fact.model_copy(update={"fact_id": f"f{index}"}) for index, fact in enumerate(facts, 1)
+        ),
+        candidate_materials_omitted=omitted,
+    )
+
+
+def _plugin_guidance_facts(
+    records: tuple[CapabilityRecord, ...],
+    annotations: Mapping[str, CapabilityTeachingAnnotation],
+    exact_member_ids: tuple[str, ...],
+) -> list[PublicGuidanceFact]:
+    facts: list[PublicGuidanceFact] = []
+    seen_annotations: set[str] = set()
+    seen_metadata: set[tuple[PublicGuidanceFactField, str]] = set()
+    # 共享教学的实际命中成员优先，避免用任意成员充当入口。
+    for record in sorted(records, key=lambda item: item.capability_id not in exact_member_ids):
+        annotation = annotations.get(record.capability_id)
+        exact_member = record.capability_id in exact_member_ids
+        shared_seen = annotation is not None and annotation.capability_id in seen_annotations
+        if shared_seen and not exact_member:
+            continue
+        label = _public_capability_label(record, annotation=annotation)
         if label is None:
             continue
         _append_public_guidance_fact(
@@ -1022,6 +1209,14 @@ def build_public_guidance_request(
             text=label,
             basis=PublicGuidanceFactBasis.OBSERVED,
         )
+        for rule in _public_invocation_rules(record):
+            _append_public_guidance_fact(
+                facts,
+                capability=label,
+                field=PublicGuidanceFactField.DESCRIPTION,
+                text=rule,
+                basis=PublicGuidanceFactBasis.OBSERVED,
+            )
         for field in (
             PublicGuidanceFactField.DESCRIPTION,
             PublicGuidanceFactField.USAGE,
@@ -1037,16 +1232,23 @@ def build_public_guidance_request(
                     basis=PublicGuidanceFactBasis.DECLARED,
                 )
         metadata = _public_plugin_metadata(record.claims)
-        for field in (
-            PublicGuidanceFactField.DESCRIPTION,
-            PublicGuidanceFactField.USAGE,
-        ):
+        for field in (PublicGuidanceFactField.DESCRIPTION, PublicGuidanceFactField.USAGE):
+            if (
+                field is PublicGuidanceFactField.USAGE
+                and annotation is not None
+                and annotation.entries
+            ):
+                continue
             value = metadata.get(field.value)
             if not isinstance(value, str):
                 continue
             cleaned = _safe_text(value, limit=400)
             if not cleaned or (field is PublicGuidanceFactField.USAGE and label not in cleaned):
                 continue
+            key = (field, cleaned)
+            if key in seen_metadata:
+                continue
+            seen_metadata.add(key)
             _append_public_guidance_fact(
                 facts,
                 capability=label,
@@ -1054,56 +1256,84 @@ def build_public_guidance_request(
                 text=cleaned,
                 basis=PublicGuidanceFactBasis.DECLARED,
             )
-        annotation = annotations.get(record.capability_id)
-        exact_member = record.capability_id in result.exact_member_capability_ids and (
-            annotation is None or annotation.entries == annotation.public_entries
-        )
-        _append_annotation_guidance_facts(
-            facts,
-            capability=label,
-            invocations=(
-                deterministic_record_usages(
-                    record,
-                    requires_mention=_annotation_requires_mention(annotation),
+        # 仅有运行时入口不构成完整语法；已观察到的参数结构只作为补充。
+        if exact_member and any(
+            claim.basis is ClaimBasis.OBSERVED
+            and claim.field in {"command.arguments", "command.components"}
+            and isinstance(claim.value, list)
+            for claim in record.claims
+        ):
+            for invocation in deterministic_record_usages(
+                record, requires_mention=_annotation_requires_mention(annotation)
+            ):
+                _append_public_guidance_fact(
+                    facts,
+                    capability=label,
+                    field=PublicGuidanceFactField.USAGE,
+                    text=invocation,
+                    basis=PublicGuidanceFactBasis.OBSERVED,
                 )
-                if exact_member
-                else ()
-            ),
-            annotation=annotation,
-            exact_member=exact_member,
-        )
-    normalized_question = _safe_text(question, limit=2_000)
-    if not normalized_question or not facts:
-        return None
-    return PublicGuidanceRequest(
-        schema_version=PUBLIC_GUIDANCE_SCHEMA_VERSION,
-        question=normalized_question,
-        conversation_context=conversation_context,
-        facts=tuple(facts),
-    )
+        if annotation is not None and not shared_seen:
+            _append_annotation_guidance_facts(facts, capability=label, annotation=annotation)
+            seen_annotations.add(annotation.capability_id)
+    return facts
+
+
+def _public_invocation_rules(record: CapabilityRecord) -> tuple[str, ...]:
+    """只投影 Runtime 已观察到的分隔和别名规则，缺失字段不作为否定证据。"""
+    header = _observed_command_header(record.claims)
+    if header is None:
+        return ()
+    compact = {
+        claim.value
+        for claim in record.claims
+        if claim.field == "command.compact"
+        and claim.basis is ClaimBasis.OBSERVED
+        and isinstance(claim.value, bool)
+    }
+    if compact != {False}:
+        return ()
+    rules = [f"根指令“{header}”不支持与后面的子命令或参数紧连。"]
+
+    def append_aliases(parent: str, components: object) -> None:
+        if not isinstance(components, list):
+            return
+        for component in components:
+            if not isinstance(component, dict) or component.get("kind") != "subcommand":
+                continue
+            name = component.get("name")
+            if not isinstance(name, str) or _safe_trigger_text(name) is None:
+                continue
+            path = f"{parent} {name}"
+            aliases = component.get("aliases", [])
+            if isinstance(aliases, list):
+                for alias in aliases:
+                    if (
+                        isinstance(alias, str)
+                        and alias != name
+                        and _safe_trigger_text(alias) is not None
+                    ):
+                        rule = f"“{parent} {alias}”是“{path}”的别名调用形式，参数要求相同。"
+                        if len(rule) <= 400:
+                            rules.append(rule)
+            append_aliases(path, component.get("components", []))
+
+    for claim in record.claims:
+        if claim.field == "command.components" and claim.basis is ClaimBasis.OBSERVED:
+            append_aliases(header, claim.value)
+    return tuple(dict.fromkeys(rules))
 
 
 def _append_annotation_guidance_facts(
     facts: list[PublicGuidanceFact],
     *,
     capability: str,
-    invocations: tuple[str, ...],
     annotation: CapabilityTeachingAnnotation | None,
-    exact_member: bool,
 ) -> None:
     """把公开教学注释收窄为当前 Answer Agent 已支持的事实字段。"""
     if annotation is None:
         return
-    if exact_member:
-        for invocation in invocations:
-            _append_public_guidance_fact(
-                facts,
-                capability=capability,
-                field=PublicGuidanceFactField.USAGE,
-                text=invocation,
-                basis=PublicGuidanceFactBasis.OBSERVED,
-            )
-    for entry in annotation.public_entries:
+    for entry in annotation.entries:
         entry_capability = entry.name or capability
         if entry.summary:
             _append_public_guidance_fact(
@@ -1113,17 +1343,15 @@ def _append_annotation_guidance_facts(
                 text=entry.summary,
                 basis=PublicGuidanceFactBasis.DECLARED,
             )
-        if not exact_member:
-            for usage in entry.usages:
-                _append_public_guidance_fact(
-                    facts,
-                    capability=entry_capability,
-                    field=PublicGuidanceFactField.USAGE,
-                    text=usage,
-                    basis=PublicGuidanceFactBasis.DECLARED,
-                )
+        for usage in entry.usages:
+            _append_public_guidance_fact(
+                facts,
+                capability=entry_capability,
+                field=PublicGuidanceFactField.USAGE,
+                text=usage,
+                basis=PublicGuidanceFactBasis.DECLARED,
+            )
         for text in (
-            *entry.search_terms,
             *entry.behavior_boundaries,
             *(item.text for item in entry.requirements),
         ):
@@ -1144,8 +1372,6 @@ def _append_public_guidance_fact(
     text: str,
     basis: PublicGuidanceFactBasis,
 ) -> None:
-    if len(facts) >= 32:
-        return
     if any(
         fact.capability == capability and fact.field is field and fact.text == text
         for fact in facts
@@ -1245,8 +1471,16 @@ def _annotation_retrieval_score(
     normalized_query: str,
     entry: CapabilityTeachingEntry,
 ) -> float:
+    normalized_query = (
+        re.sub(r"(?:功能)?(?:怎么用|如何使用|怎么使用)[?？。！!]*$", "", normalized_query).rstrip()
+        or normalized_query
+    )
     scores = [
         _text_retrieval_score(normalized_query, entry.name, exact=80.0, partial=40.0),
+        *(
+            _text_retrieval_score(normalized_query, usage, exact=80.0, partial=40.0)
+            for usage in entry.usages
+        ),
         *(
             _text_retrieval_score(normalized_query, term, exact=70.0, partial=35.0)
             for term in entry.search_terms
@@ -1271,6 +1505,10 @@ def _text_retrieval_score(
     if normalized_value == normalized_query:
         return exact
     if normalized_value in normalized_query or normalized_query in normalized_value:
+        return partial
+    compact_query = "".join(normalized_query.split())
+    compact_value = "".join(normalized_value.split())
+    if compact_value in compact_query or compact_query in compact_value:
         return partial
     return 0.0
 
@@ -1327,6 +1565,25 @@ def _expand_small_annotation_family(
         if record.capability_id not in accepted
     )
     return expanded[:limit]
+
+
+def _project_public_result(result: PublicCapabilitySearch) -> PublicCapabilitySearch:
+    records, annotations = project_public_capabilities(
+        result.plugin_records or tuple(hit.record for hit in result.hits),
+        _annotations_by_capability(result),
+    )
+    by_id = {record.capability_id: record for record in records}
+    return replace(
+        result,
+        hits=tuple(
+            replace(hit, record=by_id[hit.record.capability_id])
+            for hit in result.hits
+            if hit.record.capability_id in by_id
+        ),
+        plugin_records=records,
+        annotations=tuple(annotations.values()),
+        annotation_capability_ids=tuple(annotations),
+    )
 
 
 def _annotations_by_capability(

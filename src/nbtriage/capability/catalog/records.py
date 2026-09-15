@@ -16,7 +16,7 @@ from typing import Any, Self
 
 CAPABILITY_SCHEMA_VERSION = 2
 SNAPSHOT_SCHEMA_VERSION = 2
-CAPABILITY_INDEX_SCHEMA_VERSION = 2
+CAPABILITY_INDEX_SCHEMA_VERSION = 3
 
 DEFAULT_SOURCE_EXTENSIONS = frozenset({".py", ".toml", ".yaml", ".yml", ".json", ".md"})
 DEFAULT_EXCLUDED_DIRECTORIES = frozenset(
@@ -1032,7 +1032,7 @@ def search_capability_index(
         include_unresolved: 是否显式允许返回仍带分析问题的记录。
         include_restricted: 调用方已在索引之外完成授权时，是否返回 `restricted`。
         capability_ids: 可选的调用方预先批准能力 ID；过滤会在 FTS 排名和 limit 之前完成。
-        limit: 最大结果数，范围为 1 到 100。
+        limit: 最大结果数，默认上限为 100；提供能力 ID 范围时可取到该范围的大小，供聚合后截断。
 
     Returns:
         按 FTS 相关性排序的能力卡片、证据引用和分数。
@@ -1046,9 +1046,10 @@ def search_capability_index(
         raise CapabilityIndexError("include_unresolved must be a boolean")
     if not isinstance(include_restricted, bool):
         raise CapabilityIndexError("include_restricted must be a boolean")
-    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
-        raise CapabilityIndexError("limit must be an integer between 1 and 100")
     allowed_capability_ids = _search_capability_ids(capability_ids)
+    max_limit = max(100, len(allowed_capability_ids or ()))
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= max_limit:
+        raise CapabilityIndexError(f"limit must be an integer between 1 and {max_limit}")
     if allowed_capability_ids == ():
         return []
     normalized_query = unicodedata.normalize("NFKC", query).strip()
@@ -1119,8 +1120,10 @@ def search_capability_index(
                               ON records.capability_id = terms.capability_id
                             WHERE (
                                 terms.term = ?
-                                OR instr(terms.term, ?) > 0
-                                OR instr(?, terms.term) > 0
+                                OR (terms.term != records.capability_id AND (
+                                    instr(terms.term, ?) > 0
+                                    OR instr(?, terms.term) > 0
+                                ))
                             )
                               AND records.disclosure IN ({disclosure_placeholders})
                               {issue_predicate}
@@ -1171,6 +1174,17 @@ def search_capability_index(
 
 def capability_index_public_records(path: Path) -> tuple[CapabilityRecord, ...]:
     """只读加载可参与普通用户检索的 public 记录，用于检索前构造受众域。"""
+    return _capability_index_projection_records(path, include_restricted=False)
+
+
+def capability_index_projection_records(path: Path) -> tuple[CapabilityRecord, ...]:
+    """加载公开投影所需的内部记录；受限记录仅用于排除交叉引用，不可直接外发。"""
+    return _capability_index_projection_records(path, include_restricted=True)
+
+
+def _capability_index_projection_records(
+    path: Path, *, include_restricted: bool
+) -> tuple[CapabilityRecord, ...]:
     path = Path(path)
     if not path.is_file():
         raise CapabilityIndexError(f"capability index does not exist: {path}")
@@ -1183,10 +1197,11 @@ def capability_index_public_records(path: Path) -> tuple[CapabilityRecord, ...]:
         rows = connection.execute(
             """SELECT capability_id AS indexed_capability_id, record_json
                FROM capability_records
-               WHERE disclosure = ?
+               WHERE (disclosure = ?
                  AND analysis_issue_count = 0
                  AND platform_scope_kind IN (?, ?)
-                 AND state IN (?, ?)
+                 AND state IN (?, ?))
+                 OR (? = 1 AND disclosure = ?)
                ORDER BY capability_id ASC""",
             (
                 Disclosure.PUBLIC.value,
@@ -1194,12 +1209,16 @@ def capability_index_public_records(path: Path) -> tuple[CapabilityRecord, ...]:
                 PlatformScopeKind.EXPLICIT.value,
                 RecordState.VERIFIED.value,
                 RecordState.CANDIDATE.value,
+                int(include_restricted),
+                Disclosure.RESTRICTED.value,
             ),
         ).fetchall()
         records: list[CapabilityRecord] = []
         for row in rows:
             record = _record_from_index_row(row)
-            if _record_is_public_index_candidate(record):
+            if _record_is_public_index_candidate(record) or (
+                include_restricted and record.disclosure is Disclosure.RESTRICTED
+            ):
                 records.append(record)
         return tuple(records)
     except (sqlite3.Error, CapabilityError, json.JSONDecodeError) as error:
@@ -1268,7 +1287,7 @@ def _hash_file(path: Path, *, max_bytes: int) -> tuple[str, int]:
 
 
 def _record_search_text(record: CapabilityRecord) -> str:
-    parts = [record.capability_id, record.owner, record.kind]
+    parts = [record.owner, record.kind, *_record_command_terms(record)]
     for claim in _searchable_claims(record):
         parts.append(claim.field)
         parts.extend(_text_values(claim.value))
@@ -1298,7 +1317,7 @@ def _query_candidates(query: str) -> tuple[str, ...]:
 
 
 def _record_lookup_terms(record: CapabilityRecord) -> tuple[str, ...]:
-    values: list[str] = [record.capability_id, record.owner]
+    values: list[str] = [record.capability_id, record.owner, *_record_command_terms(record)]
     for claim in _searchable_claims(record):
         values.extend(_text_values(claim.value))
     normalized = {
@@ -1309,6 +1328,38 @@ def _record_lookup_terms(record: CapabilityRecord) -> tuple[str, ...]:
     return tuple(sorted(normalized))
 
 
+def _record_command_terms(record: CapabilityRecord) -> tuple[str, ...]:
+    """组合根指令与子命令别名供检索，不把近似输入视为合法调用。"""
+    claims = {claim.field: claim.value for claim in record.claims}
+    roots = {
+        value
+        for field in ("command.header", "invocation.header")
+        if isinstance(value := claims.get(field), str) and value
+    }
+    for field_name in ("command.literals", "command.aliases"):
+        values = claims.get(field_name, [])
+        if isinstance(values, list):
+            roots.update(value for value in values if isinstance(value, str) and value)
+    terms = set(roots)
+
+    def append_components(parents: set[str], components: Any) -> None:
+        if not isinstance(components, list):
+            return
+        for component in components:
+            if not isinstance(component, dict) or component.get("kind") != "subcommand":
+                continue
+            names = {component["name"]} if isinstance(component.get("name"), str) else set()
+            aliases = component.get("aliases", [])
+            if isinstance(aliases, list):
+                names.update(alias for alias in aliases if isinstance(alias, str) and alias)
+            paths = {f"{parent} {name}" for parent in parents for name in names if name}
+            terms.update(paths)
+            append_components(paths, component.get("components", []))
+
+    append_components(roots, claims.get("command.components", []))
+    return tuple(sorted(terms))
+
+
 def _searchable_claims(record: CapabilityRecord) -> tuple[Claim, ...]:
     internal_fields = {
         "handler.references",
@@ -1317,15 +1368,17 @@ def _searchable_claims(record: CapabilityRecord) -> tuple[Claim, ...]:
         "plugin.distribution",
         "plugin.module_name",
     }
-    command_specific = any(
-        claim.field in {"command.header", "command.literals", "command.path"}
-        for claim in record.claims
-    )
     return tuple(
-        claim
+        Claim(
+            claim.field,
+            {key: claim.value[key] for key in ("name", "description") if key in claim.value},
+            claim.basis,
+            claim.evidence_ids,
+        )
+        if claim.field == "plugin.metadata" and isinstance(claim.value, dict)
+        else claim
         for claim in record.claims
         if claim.field not in internal_fields
-        and not (command_specific and claim.field == "plugin.metadata")
     )
 
 

@@ -1,0 +1,295 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "answer-observable-configuration-v23-development",
+  "split": "development",
+  "synthetic_only": true,
+  "scope": "独立 Answer 与正式服务校验；两个明确虚构的最小公开教学合同。非真实插件完整注释评测，不覆盖路由、Bug调查或多轮对话。",
+  "selection_boundary": "前序已明确对应功能；所有题是独立单轮，没有编造助理历史。",
+  "grading": "程序检查输出与 action；人工审阅 required_behavior 和 forbidden_behavior。不是仅凭 action 宣称语义通过。",
+  "cases": [
+    {
+      "case_id": "unknown-group-setting",
+      "request": {
+        "schema_version": 3,
+        "precheck": true,
+        "can_ask": true,
+        "question": "我在群里回复了一张图片，发了「搜图」，没有收到结果。",
+        "conversation_context": null,
+        "facts": [
+          {
+            "fact_id": "f1",
+            "capability": "搜图",
+            "field": "header",
+            "text": "搜图",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f2",
+            "capability": "搜图",
+            "field": "usage",
+            "text": "回复一张图片并发送「搜图」。",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f3",
+            "capability": "搜图",
+            "field": "description",
+            "text": "查询所回复图片的来源并返回结果。",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f4",
+            "capability": "搜图",
+            "field": "description",
+            "text": "群聊使用可能受外部启用配置控制，公开资料不能确认当前群的实际启用状态。",
+            "basis": "declared"
+          }
+        ],
+        "candidate_materials_omitted": false
+      },
+      "allowed_actions": [
+        "investigate"
+      ],
+      "required_behavior": "保留实际启用状态未知，结束公开初检。",
+      "forbidden_behavior": "不得问本群是否已开启、让用户找人确认配置，或断言因未开启而无回复。",
+      "acceptable_variation": "不要求固定句式、解释顺序或引用所有无关事实；以实质追问对象和推断边界判定。"
+    },
+    {
+      "case_id": "user-cannot-know-setting",
+      "request": {
+        "schema_version": 3,
+        "precheck": true,
+        "can_ask": true,
+        "question": "我回复图片发了「搜图」，没结果。我不知道这个群有没有开这个功能，也没法查看。",
+        "conversation_context": null,
+        "facts": [
+          {
+            "fact_id": "f1",
+            "capability": "搜图",
+            "field": "header",
+            "text": "搜图",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f2",
+            "capability": "搜图",
+            "field": "usage",
+            "text": "回复一张图片并发送「搜图」。",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f3",
+            "capability": "搜图",
+            "field": "description",
+            "text": "查询所回复图片的来源并返回结果。",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f4",
+            "capability": "搜图",
+            "field": "description",
+            "text": "群聊使用可能受外部启用配置控制，公开资料不能确认当前群的实际启用状态。",
+            "basis": "declared"
+          }
+        ],
+        "candidate_materials_omitted": false
+      },
+      "allowed_actions": [
+        "investigate"
+      ],
+      "required_behavior": "尊重用户无法提供状态信息，结束公开初检。",
+      "forbidden_behavior": "不得继续确认群开关、要求检查后台或索取配置；不得把不知道当成未开启。",
+      "acceptable_variation": "不要求固定句式、解释顺序或引用所有无关事实；以实质追问对象和推断边界判定。"
+    },
+    {
+      "case_id": "observable-image-operation",
+      "request": {
+        "schema_version": 3,
+        "precheck": true,
+        "can_ask": true,
+        "question": "我在群里发了「搜图」，怎么一直没反应？",
+        "conversation_context": null,
+        "facts": [
+          {
+            "fact_id": "f1",
+            "capability": "搜图",
+            "field": "header",
+            "text": "搜图",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f2",
+            "capability": "搜图",
+            "field": "usage",
+            "text": "回复一张图片并发送「搜图」。",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f3",
+            "capability": "搜图",
+            "field": "description",
+            "text": "查询所回复图片的来源并返回结果。",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f4",
+            "capability": "搜图",
+            "field": "description",
+            "text": "群聊使用可能受外部启用配置控制，公开资料不能确认当前群的实际启用状态。",
+            "basis": "declared"
+          }
+        ],
+        "candidate_materials_omitted": false
+      },
+      "allowed_actions": [
+        "needs_context"
+      ],
+      "required_behavior": "询问是否回复图片或请求用户补充实际发送方式，核对公开用法。",
+      "forbidden_behavior": "不得确认后台群开关，不得因配置未知就跳过必要的调用核对；不能断言没回复图片。",
+      "acceptable_variation": "不要求固定句式、解释顺序或引用所有无关事实；以实质追问对象和推断边界判定。"
+    },
+    {
+      "case_id": "observable-enabling-reply",
+      "request": {
+        "schema_version": 3,
+        "precheck": true,
+        "can_ask": true,
+        "question": "我发了「开启问候」，但好像没开上。",
+        "conversation_context": null,
+        "facts": [
+          {
+            "fact_id": "f1",
+            "capability": "群问候",
+            "field": "header",
+            "text": "群问候",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f2",
+            "capability": "群问候",
+            "field": "usage",
+            "text": "发送「开启问候」，受理后回复「已开启」。",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f3",
+            "capability": "群问候",
+            "field": "usage",
+            "text": "发送「问候」请求一条问候消息。",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f4",
+            "capability": "群问候",
+            "field": "description",
+            "text": "在有效启用的群里，「问候」回复「你好」；是否有效启用可能受外部设置控制，公开资料不能确认当前群的实际状态。",
+            "basis": "declared"
+          }
+        ],
+        "candidate_materials_omitted": false
+      },
+      "allowed_actions": [
+        "needs_context"
+      ],
+      "required_behavior": "询问这次操作收到的机器人回复或具体可见现象。",
+      "forbidden_behavior": "不得把询问有效配置代替询问操作反馈，不应要求证明后台开关。",
+      "acceptable_variation": "不要求固定句式、解释顺序或引用所有无关事实；以实质追问对象和推断边界判定。"
+    },
+    {
+      "case_id": "successful-reply-is-not-effective-state",
+      "request": {
+        "schema_version": 3,
+        "precheck": true,
+        "can_ask": true,
+        "question": "我先发了「开启问候」，机器人回「已开启」。随后发「问候」却没回应，怎么回事？",
+        "conversation_context": null,
+        "facts": [
+          {
+            "fact_id": "f1",
+            "capability": "群问候",
+            "field": "header",
+            "text": "群问候",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f2",
+            "capability": "群问候",
+            "field": "usage",
+            "text": "发送「开启问候」，受理后回复「已开启」。",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f3",
+            "capability": "群问候",
+            "field": "usage",
+            "text": "发送「问候」请求一条问候消息。",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f4",
+            "capability": "群问候",
+            "field": "description",
+            "text": "在有效启用的群里，「问候」回复「你好」；是否有效启用可能受外部设置控制，公开资料不能确认当前群的实际状态。",
+            "basis": "declared"
+          }
+        ],
+        "candidate_materials_omitted": false
+      },
+      "allowed_actions": [
+        "investigate",
+        "needs_context"
+      ],
+      "required_behavior": "承认已收到成功提示这一经过，但不据此确认当前有效状态或故障原因；也允许核对两次操作是否在同一群等尚未说明的可见操作事实。",
+      "forbidden_behavior": "不得断言功能已有效开启或必定有 Bug；不得重复问是否开启、收到什么回复，或让用户核对后台。",
+      "acceptable_variation": "可保留未知后交接，也可追问命令是否在同一群；不能询问后台配置，或重复已明确的操作和反馈。"
+    },
+    {
+      "case_id": "ordinary-teaching-no-config-gate",
+      "request": {
+        "schema_version": 3,
+        "precheck": false,
+        "can_ask": true,
+        "question": "群里搜图怎么用？",
+        "conversation_context": null,
+        "facts": [
+          {
+            "fact_id": "f1",
+            "capability": "搜图",
+            "field": "header",
+            "text": "搜图",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f2",
+            "capability": "搜图",
+            "field": "usage",
+            "text": "回复一张图片并发送「搜图」。",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f3",
+            "capability": "搜图",
+            "field": "description",
+            "text": "查询所回复图片的来源并返回结果。",
+            "basis": "declared"
+          },
+          {
+            "fact_id": "f4",
+            "capability": "搜图",
+            "field": "description",
+            "text": "群聊使用可能受外部启用配置控制，公开资料不能确认当前群的实际启用状态。",
+            "basis": "declared"
+          }
+        ],
+        "candidate_materials_omitted": false
+      },
+      "allowed_actions": [
+        "handled"
+      ],
+      "required_behavior": "直接给出公开的回复图片使用方式。",
+      "forbidden_behavior": "不得把确认群开关作为教学前置问题，也不得承诺本群一定可用。",
+      "acceptable_variation": "不要求固定句式、解释顺序或引用所有无关事实；以实质追问对象和推断边界判定。"
+    }
+  ],
+  "review_revision": "2026-09-14：首轮之后放宽 successful-reply-is-not-effective-state 的 action 判据，允许核对是否同群；首轮输入、结果与原判据保留。未重新调用模型。"
+}

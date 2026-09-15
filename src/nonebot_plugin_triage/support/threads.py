@@ -220,8 +220,10 @@ class SupportThreadReferenceBridge:
     def await_scope_supplement(
         self,
         binding: PreparedScopeSupplementBinding,
+        *,
+        question: str | None = None,
     ) -> bool:
-        """在提示消息发送成功后，开放唯一一次同作用域补充轮。"""
+        """在提示消息发送成功后，在剩余额度内开放下一次同作用域补充轮。"""
         coordinator = self.coordinator
         if coordinator is None:
             return False
@@ -231,6 +233,7 @@ class SupportThreadReferenceBridge:
                     binding.lease_token,
                     kind=binding.kind,
                     topic_refs=binding.topic_refs,
+                    question=question,
                 )
                 is not None
             )

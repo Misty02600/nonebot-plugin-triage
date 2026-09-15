@@ -6,8 +6,12 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-SUPPORT_SEMANTIC_SCHEMA_VERSION = 7
+from nbtriage.support.catalog import CatalogPlugin, PluginSelection
+
+SUPPORT_SEMANTIC_SCHEMA_VERSION = 8
 SUPPORT_REQUEST_TEXT_MAX_CHARS = 8_000
+SUPPORT_REPLY_TEXT_MAX_CHARS = 16_000
+SUPPORT_SEMANTIC_PRIVACY_POLICY = "public-catalog-and-scoped-request-v1"
 
 
 class SupportSemanticContractError(ValueError):
@@ -54,18 +58,50 @@ class _StrictContractModel(BaseModel):
         return value
 
 
+class SupportSupplementExchange(_StrictContractModel):
+    """一次已完成的补充问答；各字段沿用单轮输入的边界。"""
+
+    request_text: Annotated[
+        str, Field(strict=True, min_length=1, max_length=SUPPORT_REQUEST_TEXT_MAX_CHARS, repr=False)
+    ]
+    reply_text: (
+        Annotated[str, Field(strict=True, max_length=SUPPORT_REPLY_TEXT_MAX_CHARS)] | None
+    ) = None
+    question: Annotated[
+        str, Field(strict=True, min_length=1, max_length=SUPPORT_REQUEST_TEXT_MAX_CHARS, repr=False)
+    ]
+
+    @field_validator("request_text", "question")
+    @classmethod
+    def require_nonblank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("supplement context must not be blank")
+        return value
+
+
+class SupportSupplementContext(SupportSupplementExchange):
+    """同作用域首轮问题、已完成问答和本轮待答问题。"""
+
+    supplements: Annotated[tuple[SupportSupplementExchange, ...], Field(max_length=1)] = ()
+
+
 class SupportAssessmentRequest(_StrictContractModel):
     """允许送入语义 assessment 的完整数据投影。
 
-    该合同只携带一条已经规范化的当前请求文字。平台身份、Reply、Thread 类型、权限、配置、
-    历史消息及运行证据都不属于此请求，也不能借由新增字段混入传输负载。
+    公开目录与直接相关 Reply 用于识别对象；同作用域原问题和实际追问用于理解补充。
+    平台身份、权限、配置、任意历史及内部运行证据不进入此请求。
     """
 
-    schema_version: Literal[7]
+    schema_version: Literal[8]
     request_text: Annotated[
         str,
         Field(min_length=1, max_length=SUPPORT_REQUEST_TEXT_MAX_CHARS, repr=False),
     ]
+    supplement_context: SupportSupplementContext | None = Field(default=None, repr=False)
+    catalog: tuple[CatalogPlugin, ...] | None = Field(default=None, repr=False)
+    reply_text: (
+        Annotated[str, Field(strict=True, max_length=SUPPORT_REPLY_TEXT_MAX_CHARS)] | None
+    ) = Field(default=None, repr=False)
 
     @field_validator("request_text", mode="before")
     @classmethod
@@ -83,12 +119,13 @@ class SupportAssessmentRequest(_StrictContractModel):
 
 
 class SupportSemanticAssessment(_StrictContractModel):
-    """语义理解结果，只表达多目标需求和是否报告了实际现象。"""
+    """当前任务的目标与观察；有效补充可结合首轮问题理解，明确的新任务独立判断。"""
 
-    schema_version: Literal[7]
+    schema_version: Literal[8]
     status: SupportAssessmentStatus
     goals: Annotated[tuple[SupportGoal, ...], Field(max_length=len(SupportGoal))]
     reported_observation: bool
+    selection: PluginSelection | None = None
 
     @field_validator("reported_observation", mode="before")
     @classmethod
@@ -152,6 +189,7 @@ def parse_support_semantic_assessment(payload: object) -> SupportSemanticAssessm
 
 __all__ = (
     "SUPPORT_REQUEST_TEXT_MAX_CHARS",
+    "SUPPORT_SEMANTIC_PRIVACY_POLICY",
     "SUPPORT_SEMANTIC_SCHEMA_VERSION",
     "SupportAssessmentExecutionStatus",
     "SupportAssessmentOutcome",
@@ -160,6 +198,8 @@ __all__ = (
     "SupportGoal",
     "SupportSemanticAssessment",
     "SupportSemanticContractError",
+    "SupportSupplementContext",
+    "SupportSupplementExchange",
     "parse_support_assessment_request",
     "parse_support_semantic_assessment",
 )

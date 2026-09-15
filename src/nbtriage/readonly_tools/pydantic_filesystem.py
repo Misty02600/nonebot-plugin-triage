@@ -151,6 +151,12 @@ def _bounded_read_file_toolset(
     )
 
 
+def _prefixed_file_toolset(toolset: object, *, prefix: str) -> object:
+    from ._pydantic_file_limits import prefixed_file_toolset
+
+    return prefixed_file_toolset(toolset, prefix=prefix)
+
+
 __all__ = (
     "READ_ONLY_FILE_TOOL_NAMES",
     "FileSystemFactory",

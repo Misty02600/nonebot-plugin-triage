@@ -1,0 +1,609 @@
+{
+  "schema_version": 1,
+  "bug_schema_version": 1,
+  "synthetic_only": true,
+  "contains_real_user_data": false,
+  "fixture_set_id": "bug-assessment-v20-scope-development",
+  "split": "development",
+  "cases": [
+    {
+      "case_id": "caught-generic",
+      "coverage": [],
+      "request_text": "搜图只回了一句搜索失败，是什么问题？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-boundary-fixture",
+            "body": "发出搜图和图片后查询来源。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-boundary-fixture",
+            "body": "本次收到指令和一张图片，Bot 回复“搜索失败，请稍后重试”。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "logs": [],
+        "source": [
+          {
+            "evidence_id": "source:fixture",
+            "kind": "source_code",
+            "source": "synthetic-boundary-fixture",
+            "body": "async def handler():\n    try:\n        await search()\n    except Exception:\n        await send(\"搜索失败，请稍后重试\")\n# 此片段未包含 search 的实现；捕获的异常没有留下日志。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "design": [],
+        "deployment": []
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "unknown",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "timeout-no-cause",
+      "coverage": [],
+      "request_text": "这次搜图超时了，重试又好了，是不是坏了？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-boundary-fixture",
+            "body": "发出搜图和图片后查询来源；请求超过配置的 10 秒会提示失败。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-boundary-fixture",
+            "body": "关联请求一次失败、一次成功，没有足够保留窗口证明总发生次数。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "logs": [
+          {
+            "evidence_id": "logs:fixture",
+            "kind": "correlated_log",
+            "source": "synthetic-boundary-fixture",
+            "body": "本次一次请求出现 TimeoutError。无 DNS、网络路径或服务端耗时信息。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "source": [],
+        "design": [],
+        "deployment": []
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "unknown",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "external-handled",
+      "coverage": [],
+      "request_text": "搜图说服务暂时不可用，是插件坏了？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-boundary-fixture",
+            "body": "上游返回 503 时本插件提示服务暂时不可用并结束，不保证上游始终可用。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-boundary-fixture",
+            "body": "关联请求收到上游 503；随后发送“服务暂时不可用”，任务完成，无遗留重试或等待任务。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "logs": [],
+        "source": [
+          {
+            "evidence_id": "source:fixture",
+            "kind": "source_code",
+            "source": "synthetic-boundary-fixture",
+            "body": "async def handle(response):\n    if response.status_code == 503:\n        await send(\"服务暂时不可用\")\n        return\n    await send(parse(response))",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "design": [],
+        "deployment": [
+          {
+            "evidence_id": "deployment:fixture",
+            "kind": "deployment_context",
+            "source": "synthetic-boundary-fixture",
+            "body": "维护者绑定的上游状态记录：本次请求所在时间窗口发生短时服务不可用，随后恢复。记录直接来自该请求所用服务；本次插件没有执行其他错误路径。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ]
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "not_bug",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "oom-no-cause",
+      "coverage": [],
+      "request_text": "搜图之后 Bot 进程就没了，是不是内存泄漏？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-boundary-fixture",
+            "body": "发出搜图和图片后查询来源。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-boundary-fixture",
+            "body": "进程在该请求期间被终止。系统记录为内存不足。没有堆分析、进程内存趋势、当时并发量或请求资源规模。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "logs": [],
+        "source": [],
+        "design": [],
+        "deployment": [
+          {
+            "evidence_id": "deployment:fixture",
+            "kind": "deployment_context",
+            "source": "synthetic-boundary-fixture",
+            "body": "容器内存上限为 512 MiB。无法确认本次负载是否超过可支持容量。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ]
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "unknown",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "annotation-conflict",
+      "coverage": [],
+      "request_text": "帮助写搜图能用链接，发了链接却说要图片。",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-boundary-fixture",
+            "body": "现有生成注释：搜图支持图片或图片链接。注释没有源版本记录。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-boundary-fixture",
+            "body": "用户发送链接后 Bot 提示请发送图片。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "logs": [],
+        "source": [
+          {
+            "evidence_id": "source:fixture",
+            "kind": "source_code",
+            "source": "synthetic-boundary-fixture",
+            "body": "async def handler(message):\n    if not message.images:\n        await send(\"请发送图片\")\n        return\n    await search(message.images[0])",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "design": [],
+        "deployment": [
+          {
+            "evidence_id": "deployment:fixture",
+            "kind": "deployment_context",
+            "source": "synthetic-boundary-fixture",
+            "body": "当前代码为 2.0.10，无法确认教学注释针对的版本，也没有其他当前公开用法来源。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ]
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "unknown",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "wrong-result-no-exception",
+      "coverage": [],
+      "request_text": "查今天的积分排行，为什么第一名比第二名分数低？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-boundary-fixture",
+            "body": "本版本积分排行按积分从高到低排序；同分次序不作保证。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-boundary-fixture",
+            "body": "隔离复现：查询数据只有甲 10 分、乙 20 分，两条数据在查询期间不变；实际返回甲第 1、乙第 2。未抛异常，复现使用公开排行命令。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "logs": [],
+        "source": [],
+        "design": [],
+        "deployment": []
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "bug",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "invalid-input-handled",
+      "coverage": [],
+      "request_text": "搜图 abc 提示请发送图片，是不是不能用了？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-boundary-fixture",
+            "body": "本版本搜图需要发送图片或回复一条含图片的消息，不接受普通文字作为图片。未提供图片时提示请发送图片。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-boundary-fixture",
+            "body": "本次消息只有“搜图 abc”，没有图片，也没有回复消息。Bot 返回“请发送图片”，任务按设计结束。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "logs": [],
+        "source": [],
+        "design": [],
+        "deployment": []
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "not_bug",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "normal-pagination",
+      "coverage": [],
+      "request_text": "搜图说有八条结果，却只显示五条，是漏了三条吗？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-scope-fixture",
+            "body": "搜索结果每页显示五条，超过五条时显示翻页入口；后续结果通过翻页查看。",
+            "revision": "fixture-v1",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-scope-fixture",
+            "body": "本次搜索得到八条结果；首次回复显示前五条及下一页入口。针对同一结果集的隔离复现确认下一页显示其余三条，顺序和内容均完整。",
+            "revision": "fixture-v1",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "logs": [],
+        "source": [],
+        "design": [],
+        "deployment": []
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "not_bug",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "timeout-handling-only",
+      "coverage": [],
+      "request_text": "搜图超时了，为什么机器人不继续等，而是直接提示失败？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-scope-fixture",
+            "body": "搜图请求超过配置的十秒时结束等待，提示“搜索超时，请稍后重试”。此规则说明超时后的处理方式，不提供本次超时来源信息。",
+            "revision": "fixture-v1",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-scope-fixture",
+            "body": "本次用户发出搜图和一张图片，请求等待十秒后超时，Bot 发送“搜索超时，请稍后重试”，任务结束。随后重新搜索成功。没有本次 DNS、网络、上游耗时、内部等待或连接池状态信息。",
+            "revision": "fixture-v1",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "logs": [],
+        "source": [
+          {
+            "evidence_id": "source:fixture",
+            "kind": "source_code",
+            "source": "synthetic-scope-fixture",
+            "body": "async def handle(image):\n    try:\n        async with asyncio.timeout(10):\n            result = await search(image)\n    except TimeoutError:\n        await send(\"搜索超时，请稍后重试\")\n        return\n    await send(result)\n# 未提供 search 的实现。",
+            "revision": "fixture-v1",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "design": [],
+        "deployment": []
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "not_bug",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "timeout-cause-with-normal-handling",
+      "coverage": [],
+      "request_text": "搜图平时很快，这次却超时了，为什么？是不是插件出了问题？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-scope-fixture",
+            "body": "搜图请求超过配置的十秒时结束等待，提示“搜索超时，请稍后重试”。此规则说明超时后的处理方式，不提供本次超时来源信息。",
+            "revision": "fixture-v1",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-scope-fixture",
+            "body": "本次用户发出搜图和一张图片，请求等待十秒后超时，Bot 发送“搜索超时，请稍后重试”，任务结束。随后重新搜索成功。没有本次 DNS、网络、上游耗时、内部等待或连接池状态信息。",
+            "revision": "fixture-v1",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "logs": [],
+        "source": [
+          {
+            "evidence_id": "source:fixture",
+            "kind": "source_code",
+            "source": "synthetic-scope-fixture",
+            "body": "async def handle(image):\n    try:\n        async with asyncio.timeout(10):\n            result = await search(image)\n    except TimeoutError:\n        await send(\"搜索超时，请稍后重试\")\n        return\n    await send(result)\n# 未提供 search 的实现。",
+            "revision": "fixture-v1",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "design": [],
+        "deployment": []
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "unknown",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "timeout-hang-contradicts-contract",
+      "coverage": [],
+      "request_text": "搜图等了一分钟还没结果，也没有超时提示，是不是卡住了？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-scope-fixture",
+            "body": "本版本搜图在收到合法图片后开始搜索；十秒内没有结果时应结束等待并提示搜索超时。",
+            "revision": "fixture-v1",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-scope-fixture",
+            "body": "隔离复现使用合法图片；已等待六十秒，Bot 只有开始搜索的提示，没有结果或超时提示。等待现场显示外层操作持有同一把锁，内层递归调用等待该锁，外层在等待内层完成，任务未结束。",
+            "revision": "fixture-v1",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "logs": [],
+        "source": [
+          {
+            "evidence_id": "source:fixture",
+            "kind": "source_code",
+            "source": "synthetic-scope-fixture",
+            "body": "async def search():\n    async with lock:\n        result = await request()\n        if result.status == 429:\n            return await search()\n        return result\n# 当前 handler 直接等待 search()，没有超时包装或取消分支。",
+            "revision": "fixture-v1",
+            "current": true,
+            "partial": false
+          }
+        ],
+        "design": [],
+        "deployment": []
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "bug",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    }
+  ],
+  "reason_expectations": {
+    "normal-pagination": "behavior_matches_contract",
+    "timeout-handling-only": "behavior_matches_contract"
+  }
+}

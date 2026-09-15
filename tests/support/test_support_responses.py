@@ -16,6 +16,7 @@ from nonebot_plugin_alconna.uniseg.adapters.onebot11.exporter import Onebot11Mes
 from nbtriage.support.threads import (
     InMemorySupportThreadStore,
     OutboundThreadReferenceIndex,
+    SupportThreadInitialContext,
     SupportThreadTurnCoordinator,
     ThreadKind,
     ThreadStatus,
@@ -306,6 +307,7 @@ async def test_scope_supplement_settles_after_send_without_receipt() -> None:
         conversation_scope=conversation_scope(target),
         actor_scope="actor-200",
         create_kind=ThreadKind.CLARIFICATION,
+        initial_context=SupportThreadInitialContext(request_text="原始求助"),
     )
     assert claim.status is TurnClaimStatus.ACQUIRED
     assert claim.lease is not None and not claim.lease.is_supplement
@@ -351,6 +353,9 @@ async def test_scope_supplement_settles_after_send_without_receipt() -> None:
     assert supplement.lease is not None and supplement.lease.is_supplement
     assert supplement.lease.thread.topic_refs == ("capability:search-image",)
     assert supplement.lease.thread.thread_id == claim.lease.thread.thread_id
+    assert supplement.lease.initial_context == SupportThreadInitialContext(
+        request_text="原始求助", supplement_question="请再补充一次"
+    )
     assert bridge.dropped_count == 0
     assert "_nbtriage_thread_binding" not in current_matcher.state
     assert coordinator.close_turn(supplement.lease.token)

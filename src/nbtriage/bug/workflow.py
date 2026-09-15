@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
@@ -16,11 +17,13 @@ from nbtriage.bug.assessment import (
 )
 
 BUG_PROBLEM_ID_PATTERN = re.compile(r"^P-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$")
-PROBLEM_SIGNATURE_ALGORITHM_REVISION = "bug-problem-signature-v1"
+PROBLEM_SIGNATURE_ALGORITHM_REVISION = "bug-problem-signature-v2"
 
 
 class ProblemSignatureKind(StrEnum):
     EXCEPTION_PATH = "exception_path"
+    WAIT_PATH = "wait_path"
+    CUSTOM = "custom"
     API_FAILURE = "api_failure"
     CONTRACT_OUTCOME = "contract_outcome"
     IMPLEMENTATION_INVARIANT = "implementation_invariant"
@@ -73,7 +76,7 @@ class BugReportInput:
 @dataclass(frozen=True, slots=True)
 class BugOccurrenceInput:
     occurrence_key: str
-    observed_at: str
+    observed_at: str | None
     subject_id: str
     adapter_name: str
     correlation_digest: str | None
@@ -82,6 +85,7 @@ class BugOccurrenceInput:
     contract_revision: str | None
     deployment_generation: str | None
     evidence_receipts: tuple[EvidenceReceipt, ...]
+    plugin_owners: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +101,7 @@ class ProblemDecisionInput:
     task: str | None = None
     evaluation: str | None = None
     human_actor_hmac: str | None = None
+    investigation_summary: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,14 +133,24 @@ class ProblemSummary:
     lifecycle: ProblemLifecycle
     report_count: int
     occurrence_count: int
-    last_observed_at: str
+    last_observed_at: str | None
     latest_decision_at: str
+    plugin_owners: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class ProblemDetails:
     summary: ProblemSummary
     responsibility_candidates: tuple[str, ...]
+    investigation_summary: str | None = None
+    investigation_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProblemOccurrenceSummary:
+    occurrence_key: str
+    observed_at: str | None
+    investigation_summary: str | None
 
 
 class BugWorkflowRepository(Protocol):
@@ -144,6 +159,20 @@ class BugWorkflowRepository(Protocol):
     async def list_pending(self, *, limit: int = 100) -> tuple[ProblemSummary, ...]: ...
 
     async def get_problem(self, problem_id: str) -> ProblemDetails | None: ...
+
+    async def list_occurrences(
+        self, problem_id: str, *, limit: int = 100
+    ) -> tuple[ProblemOccurrenceSummary, ...]: ...
+
+    async def split_occurrence(
+        self,
+        problem_id: str,
+        occurrence_key: str,
+        *,
+        actor_scope_hmac: str,
+        idempotency_key: str,
+        occurred_at: str,
+    ) -> ProblemDetails | None: ...
 
     async def apply_action(
         self,
@@ -160,53 +189,42 @@ def build_problem_signature(
     decision: BugAssessmentDecision,
     evidence: tuple[BugEvidence, ...],
     *,
-    subject_id: str,
+    plugin_owners: tuple[str, ...],
+    adapter_name: str,
 ) -> ProblemSignature | None:
-    """从最终引用的当前证据复算可自动聚合的技术身份。"""
-    if decision.verdict is not BugVerdict.BUG or decision.source is not BugDecisionSource.AGENT:
+    """仅以被引用的当前完整现场聚合；多个不同故障身份不猜测主次。"""
+    if (
+        decision.verdict is not BugVerdict.BUG
+        or decision.source is not BugDecisionSource.AGENT
+        or not plugin_owners
+        or not adapter_name
+    ):
         return None
-    available = {item.evidence_id: item for item in evidence}
-    cited = tuple(available.get(evidence_id) for evidence_id in decision.evidence_ids)
-    concrete = tuple(
-        item for item in cited if item is not None and item.current and not item.partial
-    )
-    log_signatures = sorted(
+    cited_ids = set(decision.evidence_ids)
+    identities = {
+        (
+            item.failure_fingerprint.kind,
+            item.failure_fingerprint.algorithm_revision,
+            item.failure_fingerprint.digest,
+        ): item.failure_fingerprint
+        for item in evidence
+        if item.evidence_id in cited_ids
+        and item.current
+        and not item.partial
+        and item.kind in (BugEvidenceKind.CORRELATED_LOG, BugEvidenceKind.RUNTIME_OBSERVATION)
+        and item.failure_fingerprint is not None
+    }
+    if len(identities) != 1:
+        return None
+    identity = next(iter(identities.values()))
+    return _signature(
+        ProblemSignatureKind(identity.kind),
         {
-            item.revision
-            for item in concrete
-            if item.kind is BugEvidenceKind.CORRELATED_LOG
-            and item.revision is not None
-            and re.fullmatch(r"[0-9a-f]{64}", item.revision)
-        }
+            "plugin_owners": sorted(set(plugin_owners)),
+            "adapter_name": adapter_name,
+            "failure_fingerprint": identity.model_dump(mode="json"),
+        },
     )
-    if log_signatures:
-        return _signature(
-            ProblemSignatureKind.EXCEPTION_PATH,
-            {"subject_id": subject_id, "failure_signatures": log_signatures},
-        )
-
-    runtime_failures: list[dict[str, object]] = []
-    for item in concrete:
-        if item.kind is not BugEvidenceKind.RUNTIME_OBSERVATION:
-            continue
-        runtime_failures.extend(_runtime_failure_facts(item.body))
-    if runtime_failures:
-        kind = (
-            ProblemSignatureKind.API_FAILURE
-            if any(item.get("api_name") for item in runtime_failures)
-            else ProblemSignatureKind.CONTRACT_OUTCOME
-        )
-        return _signature(
-            kind,
-            {
-                "subject_id": subject_id,
-                "failures": sorted(
-                    runtime_failures,
-                    key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
-                ),
-            },
-        )
-    return None
 
 
 def evidence_receipts(
@@ -219,6 +237,22 @@ def evidence_receipts(
         for evidence_id in decision.evidence_ids
         if (item := available.get(evidence_id)) is not None
     )
+
+
+def evidence_observed_at(
+    decision: BugAssessmentDecision,
+    evidence: tuple[BugEvidence, ...],
+) -> str | None:
+    """返回本次判断实际引用的运行现场中最早的可信观察时间。"""
+    cited_ids = set(decision.evidence_ids)
+    timestamps = (
+        item.observed_at
+        for item in evidence
+        if item.evidence_id in cited_ids
+        and item.kind in (BugEvidenceKind.RUNTIME_OBSERVATION, BugEvidenceKind.CORRELATED_LOG)
+        and item.observed_at is not None
+    )
+    return min(timestamps, key=datetime.fromisoformat, default=None)
 
 
 def format_new_bug_receipt(receipt: BugRecordReceipt) -> str:
@@ -236,8 +270,8 @@ def format_problem_list(problems: tuple[ProblemSummary, ...]) -> str:
     for item in problems:
         review = "已复核" if item.review_status is ProblemReviewStatus.REVIEWED else "未复核"
         lines.append(
-            f"- {item.problem_id}｜{item.title}｜报告 {item.report_count} 次｜"
-            f"发生 {item.occurrence_count} 次｜{review}｜{_lifecycle_label(item.lifecycle)}"
+            f"- {item.problem_id}｜{item.title}｜{review}｜{_lifecycle_label(item.lifecycle)}｜"
+            f"最近观察：{item.last_observed_at or '未知'}"
         )
     return "\n".join(lines)
 
@@ -247,12 +281,18 @@ def format_problem_details(problem: ProblemDetails) -> str:
     review = "已复核" if item.review_status is ProblemReviewStatus.REVIEWED else "未复核"
     return (
         f"{item.problem_id}｜{item.title}\n"
-        f"能力：{item.subject_id}\n"
-        f"判断：{_verdict_label(item.verdict)}"
+        + (f"涉及插件：{'、'.join(item.plugin_owners)}\n" if item.plugin_owners else "")
+        + (f"能力：{item.subject_id}\n" if not item.subject_id.startswith("plugins:") else "")
+        + f"判断：{_verdict_label(item.verdict)}"
         f"（{_decision_source_label(item.decision_source)}，{review}）\n"
         f"状态：{_lifecycle_label(item.lifecycle)}\n"
-        f"报告 {item.report_count} 次，发生 {item.occurrence_count} 次\n"
-        f"最近发生：{item.last_observed_at}"
+        f"最近发生：{item.last_observed_at or '未知'}\n"
+        + (
+            f"最近一次 Agent 调查（{problem.investigation_at}，不代表人工复核意见）：\n"
+            f"{problem.investigation_summary}"
+            if problem.investigation_summary is not None
+            else "该历史判断未保存调查摘要。"
+        )
     )
 
 
@@ -298,37 +338,6 @@ def _signature(kind: ProblemSignatureKind, payload: dict[str, object]) -> Proble
     )
 
 
-def _runtime_failure_facts(body: str) -> list[dict[str, object]]:
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        return []
-    observations = payload.get("observations") if isinstance(payload, dict) else None
-    if not isinstance(observations, list):
-        return []
-    failures: list[dict[str, object]] = []
-    for observation in observations:
-        if not isinstance(observation, dict) or observation.get("outcome") != "failed":
-            continue
-        failures.append(
-            {
-                key: observation.get(key)
-                for key in (
-                    "kind",
-                    "adapter_name",
-                    "event_name",
-                    "plugin_name",
-                    "matcher_name",
-                    "api_name",
-                    "outcome",
-                    "exception_type",
-                    "stack_modules",
-                )
-            }
-        )
-    return failures
-
-
 __all__ = (
     "BUG_PROBLEM_ID_PATTERN",
     "BugOccurrenceInput",
@@ -347,6 +356,7 @@ __all__ = (
     "ProblemSummary",
     "RecordBugCommand",
     "build_problem_signature",
+    "evidence_observed_at",
     "evidence_receipts",
     "format_new_bug_receipt",
     "format_problem_details",

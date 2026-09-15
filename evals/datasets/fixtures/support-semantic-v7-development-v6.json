@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "support-semantic-v7-development-v6-20260907",
+  "split": "development",
+  "semantic_schema_version": 7,
+  "synthetic_only": true,
+  "contains_real_user_data": false,
+  "cases": [
+    {"case_id":"usage-command","text":"bili sub 后面要填什么？","expected_status":"assessed","expected_goals":["guidance"],"expected_reported_observation":false},
+    {"case_id":"usage-feature","text":"怎么让机器人把 UP 主的新动态发到这个群？","expected_status":"assessed","expected_goals":["guidance"],"expected_reported_observation":false},
+    {"case_id":"usage-reference","text":"这个功能怎么用？","expected_status":"assessed","expected_goals":["guidance"],"expected_reported_observation":false},
+    {"case_id":"usage-syntax","text":"bili 和 sub 之间需要空格吗？","expected_status":"assessed","expected_goals":["guidance"],"expected_reported_observation":false},
+    {"case_id":"usage-after-failure","text":"我发送 bilisub 没有回复，告诉我订阅指令的正确格式就行。","expected_status":"assessed","expected_goals":["guidance"],"expected_reported_observation":true},
+    {"case_id":"troubleshoot-invocation","text":"我发送 bilisub 123 后机器人没回复，帮我查一下。","expected_status":"assessed","expected_goals":["bug_assessment"],"expected_reported_observation":true},
+    {"case_id":"troubleshoot-reference","text":"这条发出去怎么一点反应都没有？","expected_status":"assessed","expected_goals":["bug_assessment"],"expected_reported_observation":true},
+    {"case_id":"troubleshoot-documented-usage","text":"我是按帮助里的格式订阅的，但机器人一直不回复，怎么解决？","expected_status":"assessed","expected_goals":["bug_assessment"],"expected_reported_observation":true},
+    {"case_id":"troubleshoot-wrong-result","text":"我订阅的是这个 UP，收到的却是别人的动态，帮我看看原因。","expected_status":"assessed","expected_goals":["bug_assessment"],"expected_reported_observation":true},
+    {"case_id":"usage-and-troubleshoot","text":"列一下订阅指令的用法，再查查我刚才那条为什么失败。","expected_status":"assessed","expected_goals":["guidance","bug_assessment"],"expected_reported_observation":true},
+    {"case_id":"observation-only","text":"刚才订阅的时候机器人没有回复。","expected_status":"assessed","expected_goals":[],"expected_reported_observation":true},
+    {"case_id":"public-condition","text":"帮助说订阅需要管理员权限，这个要求是什么意思？","expected_status":"assessed","expected_goals":["guidance"],"expected_reported_observation":false},
+    {"case_id":"implementation","text":"解释源码里 bili 的子命令分发过程。","expected_status":"assessed","expected_goals":["behavior_exploration"],"expected_reported_observation":false},
+    {"case_id":"existing-support","text":"现在可以用 bilisub 这个写法订阅吗？","expected_status":"assessed","expected_goals":["guidance"],"expected_reported_observation":false},
+    {"case_id":"feature-change","text":"建议给订阅功能加一个 bilisub 别名。","expected_status":"assessed","expected_goals":["feature_feedback"],"expected_reported_observation":false},
+    {"case_id":"hypothetical-error","text":"如果参数填错，公开帮助说会提示什么？","expected_status":"assessed","expected_goals":["guidance"],"expected_reported_observation":false},
+    {"case_id":"unclear-reference","text":"看看这个。","expected_status":"needs_clarification","expected_goals":[],"expected_reported_observation":false}
+  ]
+}

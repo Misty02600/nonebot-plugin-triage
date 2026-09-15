@@ -350,12 +350,17 @@ def test_refresh_forwards_current_public_declarations_and_indexes_snapshot(
     assert search_capability_index(path, "搜图")[0].record.capability_id == "command:image"
 
 
-def test_v1_index_is_rejected_on_startup_and_rebuilt_by_refresh(tmp_path: Path) -> None:
+@pytest.mark.parametrize("old_version", ["1", "2"])
+def test_old_index_is_rejected_on_startup_and_rebuilt_by_refresh(
+    tmp_path: Path, old_version: str
+) -> None:
     path = tmp_path / "capabilities.sqlite3"
     _service(path, snapshot_builder=lambda **_: _snapshot("command:old")).refresh()
     connection = sqlite3.connect(path)
     try:
-        connection.execute("UPDATE metadata SET value = '1' WHERE key = 'schema_version'")
+        connection.execute(
+            "UPDATE metadata SET value = ? WHERE key = 'schema_version'", (old_version,)
+        )
         connection.commit()
     finally:
         connection.close()
@@ -374,7 +379,7 @@ def test_v1_index_is_rejected_on_startup_and_rebuilt_by_refresh(tmp_path: Path) 
         schema_version = connection.execute(
             "SELECT value FROM metadata WHERE key = 'schema_version'"
         ).fetchone()[0]
-    assert schema_version == "2"
+    assert schema_version == "3"
 
 
 def test_refresh_reconciles_standard_pyproject_with_runtime_modules(tmp_path: Path) -> None:
@@ -646,6 +651,168 @@ async def test_public_search_filters_adapter_before_returning_hits(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("annotation_only", [False, True])
+async def test_ineligible_annotation_cannot_displace_public_hit_before_limit(
+    tmp_path: Path,
+    annotation_only: bool,
+) -> None:
+    from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
+
+    query = "图片出处"
+    eligible = CapabilityRecord(
+        capability_id="command:onebot",
+        owner="image-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim(
+                "command.header", "lookup-image" if annotation_only else "出处", ClaimBasis.OBSERVED
+            ),
+        ),
+    )
+    ineligible = replace(
+        eligible,
+        capability_id="command:discord",
+        platform_scope=PlatformScope.explicit(("nonebot.adapters.discord",)),
+        claims=(Claim("command.header", "discord-image", ClaimBasis.OBSERVED),),
+    )
+    annotations = {
+        ineligible.capability_id: CapabilityTeachingAnnotation(
+            capability_id=ineligible.capability_id,
+            request_fingerprint="a" * 64,
+            entries=(
+                CapabilityTeachingEntry("root", query, "查找原始作品", usages=("discord-image",)),
+            ),
+        ),
+    }
+    if annotation_only:
+        annotations[eligible.capability_id] = CapabilityTeachingAnnotation(
+            capability_id=eligible.capability_id,
+            request_fingerprint="b" * 64,
+            entries=(
+                CapabilityTeachingEntry(
+                    "root",
+                    "以图搜图",
+                    "查找原始作品",
+                    usages=("lookup-image",),
+                    search_terms=(query,),
+                ),
+            ),
+        )
+
+    class AnnotationView:
+        def get(self, capability_id: str) -> CapabilityTeachingAnnotation | None:
+            return annotations.get(capability_id)
+
+    service = _service(
+        tmp_path / "capabilities.sqlite3",
+        snapshot_builder=lambda **_: _aligned_snapshot((eligible, ineligible)),
+        annotation_service=cast(CapabilityAnnotationService, AnnotationView()),
+    )
+    service.refresh()
+
+    result = await service.search_public(query, OneBotV11Adapter, limit=1)
+
+    assert result is not None
+    assert [hit.record.capability_id for hit in result.hits] == [eligible.capability_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duplicate_count", [0, 101])
+async def test_public_search_groups_plugins_before_limit_and_loads_safe_sibling_teaching(
+    tmp_path: Path,
+    duplicate_count: int,
+) -> None:
+    records = tuple(
+        CapabilityRecord(
+            capability_id=f"command:{index}",
+            owner=owner,
+            kind="command",
+            disclosure=disclosure,
+            state=RecordState.VERIFIED,
+            platform_scope=PlatformScope.all(),
+            claims=(Claim("command.header", header, ClaimBasis.OBSERVED),),
+        )
+        for index, (owner, header, disclosure) in enumerate(
+            (
+                ("bili-plugin", "bili", Disclosure.PUBLIC),
+                ("bili-plugin", "bili", Disclosure.PUBLIC),
+                ("bili-plugin", "other", Disclosure.PUBLIC),
+                ("bili-plugin", "private", Disclosure.RESTRICTED),
+                ("other-plugin", "bili", Disclosure.PUBLIC),
+            )
+        )
+    )
+    records = (
+        *records,
+        *(replace(records[0], capability_id=f"duplicate:{i}") for i in range(duplicate_count)),
+    )
+    annotations = {
+        record.capability_id: CapabilityTeachingAnnotation(
+            capability_id=record.capability_id,
+            request_fingerprint="b" * 64,
+            entries=(
+                CapabilityTeachingEntry(
+                    entry_id=f"entry-{index}",
+                    name=f"功能{index}",
+                    summary=f"功能说明{index}",
+                    usages=(f"用法{index}",),
+                    behavior_boundaries=(f"限制{index}",),
+                ),
+            ),
+        )
+        for index, record in enumerate(records)
+    }
+
+    class AnnotationView:
+        get = staticmethod(annotations.get)
+
+    service = _service(
+        tmp_path / "capabilities.sqlite3",
+        snapshot_builder=lambda **_: _aligned_snapshot(records),
+        annotation_service=cast(CapabilityAnnotationService, AnnotationView()),
+    )
+    service.refresh()
+    result = await service.search_public("bili", object, limit=2)
+
+    assert result is not None
+    assert [hit.record.owner for hit in result.hits] == ["bili-plugin", "other-plugin"]
+    assert {record.capability_id for record in result.plugin_records} == {
+        record.capability_id for record in records if record.disclosure is Disclosure.PUBLIC
+    }
+    assert "command:3" not in result.annotation_capability_ids
+    request = build_public_guidance_request("怎么用", result)
+    assert request is not None
+    texts = {fact.text for fact in request.facts}
+    assert {"用法2", "限制2", "用法4", "限制4"} <= texts
+    assert not {"用法3", "限制3"} & texts
+    catalog = await service.public_catalog(object)
+    assert catalog is not None and len(catalog.entries) == 2
+    refs = dict(catalog.owner_refs)
+    bili_id = next(key for key, owner in refs.items() if owner == "bili-plugin")
+    selected = catalog.select((bili_id,), "功能怎么用")
+    assert selected.hits == ()  # 插件选择不能伪造词面分数或具体 Matcher 命中。
+    assert {record.owner for record in selected.plugin_records} == {"bili-plugin"}
+    teaching = build_public_guidance_request("功能怎么用", selected)
+    assert teaching is not None
+    selected_texts = {fact.text for fact in teaching.facts}
+    assert {"用法2", "限制2"} <= selected_texts
+    assert not {"用法3", "限制3", "用法4", "限制4"} & selected_texts
+    assert all(
+        "限制3" not in function.behavior_boundaries
+        for plugin in catalog.entries
+        for function in plugin.functions
+    )
+    assert any("限制2" in plugin.model_dump_json() for plugin in catalog.entries)
+    scoped = await service.search_public("bili", object, owners=("bili-plugin",))
+    assert scoped is not None and {hit.record.owner for hit in scoped.hits} == {"bili-plugin"}
+    if duplicate_count:
+        assert {"用法105", "限制105"} <= texts
+
+
+@pytest.mark.asyncio
 async def test_public_search_rechecks_parsed_record_against_tampered_index_columns(
     tmp_path: Path,
 ) -> None:
@@ -802,6 +969,211 @@ def test_public_guidance_does_not_invent_usage_when_only_header_is_known() -> No
     assert message == "搜图\n当前索引还没有可靠的完整用法。"
 
 
+@pytest.mark.parametrize("has_teaching", [False, True])
+def test_function_teaching_takes_precedence_over_plugin_usage(has_teaching: bool) -> None:
+    overview = "发送链接自动解析；bm <BV号> 下载音频。"
+    record = CapabilityRecord(
+        capability_id="command:audio",
+        owner="parser-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim("command.header", "bm", ClaimBasis.OBSERVED),
+            Claim("plugin.metadata", {"usage": overview}, ClaimBasis.DECLARED),
+        ),
+    )
+    annotation = CapabilityTeachingAnnotation(
+        capability_id=record.capability_id,
+        request_fingerprint="a" * 64,
+        entries=(
+            CapabilityTeachingEntry(
+                "root",
+                name="视频音频下载",
+                summary="下载音频并发送语音消息",
+                usages=("bm <BV号> [分P序号]",),
+                behavior_boundaries=("省略序号时使用第 1P",),
+            ),
+        ),
+    )
+    request = build_public_guidance_request(
+        "视频音频下载",
+        PublicCapabilitySearch(
+            hits=(CapabilitySearchHit(record, 80.0),),
+            partial=False,
+            annotations=(annotation,) if has_teaching else (),
+            annotation_capability_ids=(record.capability_id,) if has_teaching else (),
+        ),
+    )
+    assert request is not None
+    texts = {fact.text for fact in request.facts}
+    assert (overview in texts) is not has_teaching
+    if has_teaching:
+        assert {"bm <BV号> [分P序号]", "省略序号时使用第 1P"} <= texts
+
+
+def test_public_guidance_excludes_search_terms_but_preserves_teaching_facts() -> None:
+    record = _snapshot("command:image").records[0]
+    entry = CapabilityTeachingEntry(
+        "root",
+        name="以图搜图",
+        summary="查找原始作品",
+        usages=("搜图 <图片>",),
+        search_terms=("图片出处",),
+        behavior_boundaries=("只处理图片",),
+        requirements=(CapabilityTeachingRequirement(SemanticConstraintKind.ACCESS, "需授权"),),
+    )
+    annotation = CapabilityTeachingAnnotation(
+        capability_id=record.capability_id,
+        request_fingerprint="a" * 64,
+        entries=(entry,),
+    )
+
+    request = build_public_guidance_request(
+        "图片出处",
+        PublicCapabilitySearch(
+            hits=(CapabilitySearchHit(record, 70.0),),
+            partial=False,
+            annotations=(annotation,),
+            annotation_capability_ids=(record.capability_id,),
+        ),
+    )
+
+    assert request is not None
+    texts = {fact.text for fact in request.facts}
+    assert "图片出处" not in texts
+    assert {"查找原始作品", "搜图 <图片>", "只处理图片", "需授权"} <= texts
+
+
+@pytest.mark.parametrize("preceding_candidate", [False, True])
+def test_public_guidance_preserves_teaching_beyond_32_facts(
+    preceding_candidate: bool,
+) -> None:
+    record = _snapshot("command:image").records[0]
+    annotation = CapabilityTeachingAnnotation(
+        capability_id=record.capability_id,
+        request_fingerprint="a" * 64,
+        entries=(
+            CapabilityTeachingEntry(
+                "root",
+                name="以图搜图",
+                summary="查找原始作品",
+                usages=("搜图 <图片>",),
+                behavior_boundaries=tuple(f"图片处理边界 {index:02d}" for index in range(16)),
+                requirements=tuple(
+                    CapabilityTeachingRequirement(
+                        SemanticConstraintKind.ACCESS, f"使用条件 {index:02d}"
+                    )
+                    for index in range(14)
+                ),
+            ),
+        ),
+    )
+    hits = [CapabilitySearchHit(record, 70.0)]
+    if preceding_candidate:
+        hits.insert(
+            0,
+            CapabilitySearchHit(
+                replace(
+                    record,
+                    capability_id="command:help",
+                    claims=(Claim("command.header", "帮助", ClaimBasis.OBSERVED),),
+                ),
+                80.0,
+            ),
+        )
+
+    request = build_public_guidance_request(
+        "搜图怎么用",
+        PublicCapabilitySearch(
+            hits=tuple(hits),
+            partial=False,
+            annotations=(annotation,),
+            annotation_capability_ids=(record.capability_id,),
+        ),
+    )
+
+    assert request is not None
+    assert len(request.facts) > 32
+    assert {"搜图 <图片>", "图片处理边界 15", "使用条件 13"} <= {
+        fact.text for fact in request.facts
+    }
+    assert not request.candidate_materials_omitted
+
+
+def test_guidance_budget_admits_whole_plugins_in_hit_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nonebot_plugin_triage.capability.shadow as shadow_module
+    from nbtriage.public_guidance import PublicGuidanceMaterialBudgetError
+
+    record = _snapshot("command:image").records[0]
+    records = tuple(
+        replace(
+            record,
+            capability_id=f"command:{index}",
+            owner=owner,
+            claims=(Claim("command.header", header, ClaimBasis.OBSERVED),),
+        )
+        for index, (owner, header) in enumerate(
+            (("plugin-first", "甲"), ("plugin-second", "乙"), ("plugin-second", "丙"))
+        )
+    )
+    result = PublicCapabilitySearch(
+        hits=(CapabilitySearchHit(records[0], 100), CapabilitySearchHit(records[1], 50)),
+        partial=False,
+        plugin_records=tuple(reversed(records)),
+    )
+    monkeypatch.setattr(shadow_module, "PUBLIC_GUIDANCE_FACTS_MAX_CHARS", 4)
+    request = build_public_guidance_request("怎么用", result)
+    assert request is not None
+    assert [fact.text for fact in request.facts] == ["甲"]
+    assert request.candidate_materials_omitted
+
+    monkeypatch.setattr(shadow_module, "PUBLIC_GUIDANCE_FACTS_MAX_CHARS", 6)
+    request = build_public_guidance_request("怎么用", result)
+    assert request is not None
+    assert {fact.text for fact in request.facts} == {"甲", "乙", "丙"}
+    assert [fact.fact_id for fact in request.facts] == ["f1", "f2", "f3"]
+    assert not request.candidate_materials_omitted
+
+    monkeypatch.setattr(shadow_module, "PUBLIC_GUIDANCE_FACTS_MAX_CHARS", 1)
+    with pytest.raises(PublicGuidanceMaterialBudgetError):
+        build_public_guidance_request("怎么用", result)
+
+
+@pytest.mark.parametrize("basis", [ClaimBasis.OBSERVED, ClaimBasis.DECLARED])
+def test_guidance_only_projects_observed_alias_and_separator_rules(basis: ClaimBasis) -> None:
+    record = CapabilityRecord(
+        capability_id="bili:sub",
+        owner="bili-plugin",
+        kind="command",
+        disclosure=Disclosure.PUBLIC,
+        state=RecordState.VERIFIED,
+        platform_scope=PlatformScope.all(),
+        claims=(
+            Claim("command.header", "bili", ClaimBasis.OBSERVED),
+            Claim("command.compact", False, basis),
+            Claim(
+                "command.components",
+                [{"kind": "subcommand", "name": "sub", "aliases": ["add", "sub"]}],
+                basis,
+            ),
+        ),
+    )
+    request = build_public_guidance_request(
+        "为什么没反应？",
+        PublicCapabilitySearch((CapabilitySearchHit(record, 100),), partial=False),
+    )
+    assert request is not None
+    text = "\n".join(fact.text for fact in request.facts)
+    if basis is ClaimBasis.OBSERVED:
+        assert "不支持与后面的子命令或参数紧连" in text
+        assert "“bili add”是“bili sub”的别名调用形式" in text
+    else:
+        assert "紧连" not in text
+        assert "别名" not in text
+
+
 def test_public_guidance_combines_exact_matcher_with_shared_family_knowledge() -> None:
     records = tuple(
         CapabilityRecord(
@@ -863,7 +1235,7 @@ def test_public_guidance_combines_exact_matcher_with_shared_family_knowledge() -
 
     assert request is not None
     usages = [fact.text for fact in request.facts if fact.field.value == "usage"]
-    assert usages == ["摸摸 <图片>", "亲亲 <图片>"]
+    assert usages == ["摸摸 <图片>", "(摸摸|亲亲) [<图片>]", "亲亲 <图片>"]
 
 
 @pytest.mark.parametrize(("member_count", "expected_count"), [(3, 3), (4, 1)])
@@ -970,6 +1342,35 @@ def test_family_search_candidates_are_deduplicated_without_merging_plugins() -> 
     ]
     assert capability_shadow_module._query_exactly_selects_member("摸摸怎么用", records[0])
     assert not capability_shadow_module._query_exactly_selects_member("有哪些表情", records[0])
+
+
+@pytest.mark.parametrize(
+    ("query", "term", "matches"),
+    [
+        ("B站订阅功能怎么用", "B 站订阅", True),
+        ("B站订阅功能怎么用", "B站订阅UP主", True),
+        ("B 站订阅如何使用？", "B站订阅UP主", True),
+        ("B站视频下载功能怎么用", "B站订阅UP主", False),
+        ("修改群名称功能怎么用", "修改 Steam 播报昵称", False),
+        ("怎么用", "B站订阅UP主", False),
+        ("B 站订阅功能怎么用", "B站订阅", True),
+        ("Steam播报昵称怎么设置", "Steam 播报昵称", True),
+        ("修改群名称", "修改 Steam 播报昵称", False),
+        ("修改群昵称", "修改 Steam 播报昵称", False),
+        ("B站视频音频下载", "B 站订阅", False),
+    ],
+)
+def test_annotation_phrase_search_ignores_spacing_without_dropping_scope(
+    query: str, term: str, matches: bool
+) -> None:
+    import nonebot_plugin_triage.capability.shadow as capability_shadow_module
+
+    entry = CapabilityTeachingEntry(
+        "root", name="示例", summary="示例说明", usages=("demo",), search_terms=(term,)
+    )
+    score = capability_shadow_module._annotation_retrieval_score(query.casefold(), entry)
+
+    assert (score > 0) is matches
 
 
 def test_annotation_terms_join_runtime_hits_in_weighted_order() -> None:
@@ -1146,8 +1547,8 @@ async def test_teaching_superuser_requirement_only_tightens_public_disclosure(
         "root",
         name="维护说明",
         summary="查看管理状态。",
-        usages=("管理",),
-        behavior_boundaries=("部分维护动作仅超级用户可执行。",),
+        usages=("管理 维护",),
+        behavior_boundaries=("部分维护动作仅超级用户可执行。",) if alternatives else (),
         requirements=(
             CapabilityTeachingRequirement(
                 kind=SemanticConstraintKind.CONDITION_GROUP,
@@ -1216,7 +1617,14 @@ async def test_teaching_superuser_requirement_only_tightens_public_disclosure(
     assert bool(build_capability_help_displays(snapshot, AnnotationView().get)) is not hidden
 
     if hidden:
-        public_entry = replace(entry, entry_id="public", name="普通说明", requirements=())
+        public_entry = replace(
+            entry,
+            entry_id="public",
+            name="普通说明",
+            usages=("管理 帮助",),
+            behavior_boundaries=(),
+            requirements=(),
+        )
         annotation = replace(annotation, entries=(entry, public_entry))
         result = await service.search_public("普通说明", object)
         assert result is not None and result.hits
@@ -1226,8 +1634,7 @@ async def test_teaching_superuser_requirement_only_tightens_public_disclosure(
         assert all(fact.capability != "维护说明" for fact in request.facts)
         displays = build_capability_help_displays(snapshot, AnnotationView().get)
         assert [item.name for item in displays[0].commands] == ["普通说明"]
-        exact_result = await service.search_public("管理", object)
-        assert exact_result is not None and exact_result.exact_member_capability_ids == ()
+        assert all("超级用户" not in fact.text for fact in request.facts)
 
 
 @pytest.mark.asyncio
@@ -1522,3 +1929,71 @@ def test_failed_index_publish_reports_observed_and_served_generations(
     assert failing.status.observed_generation == observed.generation
     assert failing.status.served_generation == ready.served_generation
     assert failing.status.observed_generation != failing.status.served_generation
+
+
+def test_full_plugin_teaching_deduplicates_family_and_keeps_late_usage() -> None:
+    record = _snapshot("command:image").records[0]
+    metadata = Claim("plugin.metadata", {"description": "插件总说明"}, ClaimBasis.DECLARED)
+    members = tuple(
+        replace(
+            record,
+            capability_id=f"member:{index}",
+            claims=(Claim("command.header", f"图片{index}", ClaimBasis.OBSERVED), metadata),
+        )
+        for index in range(424)
+    )
+    reminder = replace(
+        record,
+        capability_id="remind:late",
+        claims=(
+            Claim("invocation.header", "提醒", ClaimBasis.OBSERVED),
+            Claim("trigger.factory", "on_keyword", ClaimBasis.OBSERVED),
+            Claim("trigger.entries", ["提醒"], ClaimBasis.OBSERVED),
+            metadata,
+        ),
+    )
+    family = CapabilityTeachingAnnotation(
+        capability_id="family:images",
+        request_fingerprint="a" * 64,
+        entries=(
+            CapabilityTeachingEntry(
+                "family",
+                name="图片操作",
+                summary="处理图片",
+                usages=("<图片操作> [图片]",),
+            ),
+        ),
+    )
+    reminder_annotation = CapabilityTeachingAnnotation(
+        capability_id=reminder.capability_id,
+        request_fingerprint="b" * 64,
+        entries=(
+            CapabilityTeachingEntry(
+                "root",
+                name="定时提醒",
+                summary="设定提醒",
+                usages=("@bot 提醒 <对象> <时间> <内容>",),
+                behavior_boundaries=("提醒不会自动重复",),
+            ),
+        ),
+    )
+    request = build_public_guidance_request(
+        "提醒怎么用",
+        PublicCapabilitySearch(
+            hits=(CapabilitySearchHit(reminder, 100),),
+            partial=False,
+            plugin_records=(*members, reminder),
+            annotations=(*(family for _ in members), reminder_annotation),
+            annotation_capability_ids=(*(m.capability_id for m in members), reminder.capability_id),
+            exact_member_capability_ids=(reminder.capability_id,),
+        ),
+    )
+    assert request is not None
+    texts = [fact.text for fact in request.facts]
+    assert texts.count("插件总说明") == 1
+    assert texts.count("处理图片") == 1
+    assert texts.count("<图片操作> [图片]") == 1
+    assert {"@bot 提醒 <对象> <时间> <内容>", "提醒不会自动重复"} <= set(texts)
+    assert "@bot 提醒" not in texts
+    assert len(request.facts) < 15
+    assert not request.candidate_materials_omitted

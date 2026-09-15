@@ -1,0 +1,412 @@
+{
+  "schema_version": 1,
+  "bug_schema_version": 1,
+  "synthetic_only": true,
+  "contains_real_user_data": false,
+  "fixture_set_id": "bug-assessment-v21-deployment-development",
+  "split": "development",
+  "cases": [
+    {
+      "case_id": "config-unavailable",
+      "coverage": [],
+      "request_text": "群里发搜图和图片没反应，怎么回事？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-boundary-fixture",
+            "body": "群聊使用可能受外部启用配置控制。部署的管理规则明确规定：若该群被有意关闭此功能，则不响应指令；在允许使用的群，发送搜图并附上一张图片可查询来源。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-boundary-fixture",
+            "body": "事发时收到该用户在本群发送的搜图指令和一张图片，之后未观察到 Bot 回复；未采集启用检查的返回值或后续执行。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "logs": [],
+        "source": [
+          {
+            "evidence_id": "source:fixture",
+            "kind": "source_code",
+            "source": "synthetic-boundary-fixture",
+            "body": "DEFAULT_GROUP_ENABLED = True\nasync def handler(event):\n    if not await group_enabled(event.group_id):\n        return\n    await search_and_reply(event)\n# group_enabled 和 search_and_reply 的实现未提供。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "design": [],
+        "deployment": [
+          {
+            "evidence_id": "deployment:fixture",
+            "kind": "deployment_context",
+            "source": "synthetic-boundary-fixture",
+            "body": "{\"registered_plugin_count\": 1, \"effective_configuration\": {\"availability\": \"unavailable\", \"reason\": \"provider_not_connected\"}}",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ]
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "unknown",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "intentionally-disabled",
+      "coverage": [],
+      "request_text": "群里发搜图和图片没反应，怎么回事？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-boundary-fixture",
+            "body": "群聊使用可能受外部启用配置控制。部署的管理规则明确规定：若该群被有意关闭此功能，则不响应指令；在允许使用的群，发送搜图并附上一张图片可查询来源。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-boundary-fixture",
+            "body": "事发时收到该用户在本群发送的搜图指令和一张图片，之后未观察到 Bot 回复；未采集启用检查的返回值或后续执行。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "logs": [],
+        "source": [
+          {
+            "evidence_id": "source:fixture",
+            "kind": "source_code",
+            "source": "synthetic-boundary-fixture",
+            "body": "async def handler(event):\n    if not await group_enabled(event.group_id):\n        return\n    await search_and_reply(event)\n# group_enabled 和 search_and_reply 的实现未提供。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "design": [],
+        "deployment": [
+          {
+            "evidence_id": "deployment:fixture",
+            "kind": "deployment_context",
+            "source": "synthetic-boundary-fixture",
+            "body": "绑定本次报告的 Bot、本群及事发时间。管理审计记录表明维护者在事发前有意关闭本群搜图，直至事发后未修改。有效配置 group_enabled=false；调用记录确认本次因该配置跳过执行。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ]
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "not_bug",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "enabled-no-execution-evidence",
+      "coverage": [],
+      "request_text": "群里发搜图和图片没反应，怎么回事？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-boundary-fixture",
+            "body": "群聊使用可能受外部启用配置控制。部署的管理规则明确规定：若该群被有意关闭此功能，则不响应指令；在允许使用的群，发送搜图并附上一张图片可查询来源。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-boundary-fixture",
+            "body": "仅捕获本次群消息到达，含搜图指令和一张图片，之后采集立即中止；未追踪启用检查、后续执行或最终回复。用户报告没反应，但这份采集无法核实实际响应情况。",
+            "current": true,
+            "partial": true,
+            "revision": "fixture-v1"
+          }
+        ],
+        "logs": [],
+        "source": [
+          {
+            "evidence_id": "source:fixture",
+            "kind": "source_code",
+            "source": "synthetic-boundary-fixture",
+            "body": "async def handler(event):\n    if not await group_enabled(event.group_id):\n        return\n    await search_and_reply(event)\n# group_enabled 和 search_and_reply 的实现未提供。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "design": [],
+        "deployment": [
+          {
+            "evidence_id": "deployment:fixture",
+            "kind": "deployment_context",
+            "source": "synthetic-boundary-fixture",
+            "body": "绑定本次报告的 Bot、本群及事发时间。配置快照确认事发时有效配置 group_enabled=true；没有后续执行记录。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ]
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "unknown",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "current-disabled-history-unknown",
+      "coverage": [],
+      "request_text": "昨天在这个群发搜图没反应，为什么？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-boundary-fixture",
+            "body": "群聊使用可能受外部启用配置控制。部署的管理规则明确规定：若该群被有意关闭此功能，则不响应指令；在允许使用的群，发送搜图并附上一张图片可查询来源。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-boundary-fixture",
+            "body": "事发时收到该用户在本群发送的搜图指令和一张图片，之后未观察到 Bot 回复；未采集启用检查的返回值或后续执行。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "logs": [],
+        "source": [
+          {
+            "evidence_id": "source:fixture",
+            "kind": "source_code",
+            "source": "synthetic-boundary-fixture",
+            "body": "async def handler(event):\n    if not await group_enabled(event.group_id):\n        return\n    await search_and_reply(event)\n# group_enabled 和 search_and_reply 的实现未提供。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "design": [],
+        "deployment": [
+          {
+            "evidence_id": "deployment:fixture",
+            "kind": "deployment_context",
+            "source": "synthetic-boundary-fixture",
+            "body": "绑定本次报告的 Bot 和本群。只有今天的配置快照 group_enabled=false；没有昨天的快照、配置变更记录或昨天执行开关检查的返回值。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ]
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "unknown",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "disabled-without-intent",
+      "coverage": [],
+      "request_text": "群里发搜图和图片没反应，怎么回事？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-boundary-fixture",
+            "body": "群聊使用可能受外部启用配置控制。部署的管理规则明确规定：若该群被有意关闭此功能，则不响应指令；在允许使用的群，发送搜图并附上一张图片可查询来源。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-boundary-fixture",
+            "body": "事发时收到该用户在本群发送的搜图指令和一张图片，之后未观察到 Bot 回复；未采集启用检查的返回值或后续执行。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "logs": [],
+        "source": [
+          {
+            "evidence_id": "source:fixture",
+            "kind": "source_code",
+            "source": "synthetic-boundary-fixture",
+            "body": "async def handler(event):\n    if not await group_enabled(event.group_id):\n        return\n    await search_and_reply(event)\n# group_enabled 和 search_and_reply 的实现未提供。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "design": [],
+        "deployment": [
+          {
+            "evidence_id": "deployment:fixture",
+            "kind": "deployment_context",
+            "source": "synthetic-boundary-fixture",
+            "body": "绑定本次报告的 Bot、本群及事发时间。实际 group_enabled 返回 false，调用因此跳过；未取得任何保存的配置、管理者变更或查询实现，无法确定该返回值如何产生。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ]
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "unknown",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    },
+    {
+      "case_id": "independent-defect-config-unavailable",
+      "coverage": [],
+      "request_text": "刚才搜图报错了，是不是程序有问题？",
+      "adapter": "OneBot V11",
+      "subject_id": "fixture.search",
+      "source_revision": "fixture-v1",
+      "contract_revision": "fixture-v1",
+      "deployment_generation": "fixture",
+      "reply": [],
+      "conversation_pages": null,
+      "evidence": {
+        "public": [
+          {
+            "evidence_id": "public:fixture",
+            "kind": "public_contract",
+            "source": "synthetic-boundary-fixture",
+            "body": "群聊使用可能受外部启用配置控制。部署的管理规则明确规定：若该群被有意关闭此功能，则不响应指令；在允许使用的群，发送搜图并附上一张图片可查询来源。 搜索只返回一条结果也是正常成功，应向用户返回这条结果。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "runtime": [
+          {
+            "evidence_id": "runtime:fixture",
+            "kind": "runtime_observation",
+            "source": "synthetic-boundary-fixture",
+            "body": "绑定本次报告的执行追踪：group_enabled 返回 true，已进入搜索处理。search 返回一条有效结果，但随后执行 result[1] 抛出 IndexError；未返回搜索结果。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "logs": [],
+        "source": [
+          {
+            "evidence_id": "source:fixture",
+            "kind": "source_code",
+            "source": "synthetic-boundary-fixture",
+            "body": "async def handler(event):\n    if not await group_enabled(event.group_id):\n        return\n    result = await search(event.image)\n    await send(result[1])\n# search 按返回协议提供列表，单条结果也是合法返回。",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ],
+        "design": [],
+        "deployment": [
+          {
+            "evidence_id": "deployment:fixture",
+            "kind": "deployment_context",
+            "source": "synthetic-boundary-fixture",
+            "body": "{\"effective_configuration\": {\"availability\": \"unavailable\", \"reason\": \"provider_not_connected\"}}",
+            "current": true,
+            "partial": false,
+            "revision": "fixture-v1"
+          }
+        ]
+      },
+      "expected_conversation_tool_calls": 0,
+      "expected_total_tool_calls": null,
+      "expected_verdict": "bug",
+      "expected_occurrence": "unknown",
+      "expected_responsibility_candidates": []
+    }
+  ],
+  "reason_expectations": {
+    "intentionally-disabled": "intentional_configuration"
+  },
+  "missing_evidence_expectations": {
+    "config-unavailable": [
+      "deployment_context"
+    ],
+    "current-disabled-history-unknown": [
+      "deployment_context"
+    ]
+  },
+  "fixture_revision": 2
+}

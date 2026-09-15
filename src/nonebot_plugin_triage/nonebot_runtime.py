@@ -17,6 +17,7 @@ from nonebot.message import run_postprocessor as register_run_postprocessor
 from nonebot.message import run_preprocessor as register_run_preprocessor
 from nonebot.typing import T_State
 
+from nbtriage.bug.fingerprints import fingerprint_exception
 from nbtriage.bug.logs import CorrelatedBugLogBuffer, build_correlated_bug_log
 from nbtriage.runtime_observations import (
     RUNTIME_OBSERVATION_SCHEMA_VERSION,
@@ -264,6 +265,7 @@ class NoneBotRuntimeObserver:
                 source_kind=kind.value,
                 source_name=source_name,
                 exception_type=_qualified_type_name(exception),
+                failure_fingerprint=fingerprint_exception(exception),
                 traceback_text="".join(
                     format_exception(type(exception), exception, exception.__traceback__)
                 ),

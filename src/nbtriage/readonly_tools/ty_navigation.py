@@ -361,7 +361,7 @@ class TyDefinitionBackend:
 async def navigation_session(
     source_paths: tuple[Path, ...] = (),
 ) -> AsyncIterator[TyDefinitionBackend]:
-    """同一刷新内共享解析进程，包含 to_thread/工具线程；退出时等待回收。"""
+    """同一任务内共享解析进程，包含 to_thread/工具线程；退出时等待回收。"""
     backend = TyDefinitionBackend(Path.cwd(), source_paths)
     token = _CURRENT.set(backend)
     try:

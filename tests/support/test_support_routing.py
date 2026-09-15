@@ -101,6 +101,29 @@ def test_observation_without_explicit_goal_enters_bug_assessment() -> None:
     assert decision.reported_observation is True
 
 
+def test_usage_question_with_failure_observation_stays_guidance() -> None:
+    decision = route_support_assessment(_outcome(SupportGoal.GUIDANCE, reported_observation=True))
+
+    assert decision.action is SupportRoutingAction.SHOW_GUIDANCE
+    assert decision.reported_observation is True
+    assert decision.incident_authorization is None
+
+
+def test_usage_and_troubleshooting_request_enters_assessment_without_authorizing_incident() -> None:
+    decision = route_support_assessment(
+        _outcome(
+            SupportGoal.GUIDANCE,
+            SupportGoal.BUG_ASSESSMENT,
+            reported_observation=True,
+        )
+    )
+
+    assert decision.action is SupportRoutingAction.BUG_ASSESSMENT_CANDIDATE
+    assert decision.goals == (SupportGoal.GUIDANCE, SupportGoal.BUG_ASSESSMENT)
+    assert decision.reported_observation is True
+    assert decision.incident_authorization is None
+
+
 def test_multi_goal_request_preserves_all_signals_but_executes_one_action() -> None:
     decision = route_support_assessment(
         _outcome(

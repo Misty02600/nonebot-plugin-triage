@@ -29,6 +29,7 @@ from nbtriage.capability.teaching.annotations import (
     CapabilityTeachingAnnotation,
     CapabilityTeachingEntry,
 )
+from nbtriage.capability.teaching.public_projection import project_public_capabilities
 
 _DISPLAY_DIRECTORY_NAME = "help-display"
 _GENERATED_HEADER = "# generated-by: nonebot-plugin-triage/capability-help-display-v1"
@@ -196,12 +197,20 @@ def build_capability_help_displays(
     snapshot: CapabilitySnapshot,
     annotation_lookup: CapabilityAnnotationLookup,
 ) -> tuple[CapabilityHelpDisplayPlugin, ...]:
+    public_records, public_annotations = project_public_capabilities(
+        snapshot.records,
+        {
+            record.capability_id: annotation
+            for record in snapshot.records
+            if (annotation := annotation_lookup(record.capability_id)) is not None
+        },
+    )
     grouped: dict[str, list[tuple[CapabilityRecord, CapabilityTeachingAnnotation]]] = {}
     seen_units: set[tuple[str, str]] = set()
-    for record in sorted(snapshot.records, key=lambda item: item.capability_id):
+    for record in sorted(public_records, key=lambda item: item.capability_id):
         if not _record_is_displayable(record):
             continue
-        annotation = annotation_lookup(record.capability_id)
+        annotation = public_annotations.get(record.capability_id)
         if annotation is None:
             continue
         module_name = _observed_text(record, "plugin.module_name")

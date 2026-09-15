@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from nonebot_plugin_orm import Model, get_session
-from sqlalchemy import JSON, ForeignKey, Index, String, UniqueConstraint, func, select
+from sqlalchemy import JSON, ForeignKey, Index, String, Text, UniqueConstraint, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -19,6 +19,7 @@ from nbtriage.bug.workflow import (
     ProblemDetails,
     ProblemLifecycle,
     ProblemMaintenanceAction,
+    ProblemOccurrenceSummary,
     ProblemReviewStatus,
     ProblemSummary,
     RecordBugCommand,
@@ -59,17 +60,19 @@ class BugProblemModel(Model):
     public_id: Mapped[str] = mapped_column(String(10), unique=True, nullable=False)
     title: Mapped[str] = mapped_column(String(256), nullable=False)
     subject_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    plugin_owners: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     adapter_name: Mapped[str] = mapped_column(String(128), nullable=False)
     signature_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     signature_revision: Mapped[str | None] = mapped_column(String(64), nullable=True)
     signature_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    signature_enabled: Mapped[bool] = mapped_column(nullable=False, default=True)
     current_verdict: Mapped[str] = mapped_column(String(16), nullable=False)
     decision_source: Mapped[str] = mapped_column(String(32), nullable=False)
     review_status: Mapped[str] = mapped_column(String(16), nullable=False)
     lifecycle: Mapped[str] = mapped_column(String(16), nullable=False)
     responsibility_candidates: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-    first_observed_at: Mapped[str] = mapped_column(String(40), nullable=False)
-    last_observed_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    first_observed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_observed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     current_decision_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), nullable=False)
     updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
@@ -91,8 +94,9 @@ class BugOccurrenceModel(Model):
         String(32), ForeignKey(f"{_TABLE_PREFIX}bug_problem.id"), nullable=False
     )
     occurrence_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    observed_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    observed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     subject_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    plugin_owners: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     adapter_name: Mapped[str] = mapped_column(String(128), nullable=False)
     correlation_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_signature: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -144,6 +148,27 @@ class ProblemDecisionModel(Model):
     evidence_receipts: Mapped[list[dict[str, str | None]]] = mapped_column(JSON, nullable=False)
     assessment_revision: Mapped[str] = mapped_column(String(256), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    investigation_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    occurrence_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class ProblemSplitModel(Model):
+    __tablename__ = f"{_TABLE_PREFIX}problem_split"
+    __bind_key__ = "nonebot_plugin_triage"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    source_problem_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey(f"{_TABLE_PREFIX}bug_problem.id"), nullable=False
+    )
+    destination_problem_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey(f"{_TABLE_PREFIX}bug_problem.id"), nullable=False
+    )
+    occurrence_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_scope_hmac: Mapped[str] = mapped_column(String(64), nullable=False)
+    occurred_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    report_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    decision_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
 
 
 SessionFactory = Callable[[], AsyncSession]
@@ -186,7 +211,10 @@ class NoneBotORMBugWorkflowRepository:
                         BugProblemModel.current_verdict == BugVerdict.BUG.value,
                         BugProblemModel.lifecycle != ProblemLifecycle.RESOLVED.value,
                     )
-                    .order_by(BugProblemModel.last_observed_at.desc())
+                    .order_by(
+                        BugProblemModel.last_observed_at.is_(None),
+                        BugProblemModel.last_observed_at.desc(),
+                    )
                     .limit(limit)
                 )
             )
@@ -204,10 +232,211 @@ class NoneBotORMBugWorkflowRepository:
             )
             if problem is None:
                 return None
-            return ProblemDetails(
-                summary=await self._summary(session, problem),
-                responsibility_candidates=tuple(problem.responsibility_candidates),
+            return await self._details(session, problem)
+
+    async def list_occurrences(
+        self, problem_id: str, *, limit: int = 100
+    ) -> tuple[ProblemOccurrenceSummary, ...]:
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        async with self._session_factory() as session:
+            occurrences = await session.scalars(
+                select(BugOccurrenceModel)
+                .join(BugProblemModel, BugOccurrenceModel.problem_id == BugProblemModel.id)
+                .where(BugProblemModel.public_id == problem_id)
+                .order_by(
+                    BugOccurrenceModel.observed_at.is_(None),
+                    BugOccurrenceModel.observed_at.desc(),
+                    BugOccurrenceModel.id.desc(),
+                )
+                .limit(limit)
             )
+            result = []
+            for occurrence in occurrences:
+                summary = await session.scalar(
+                    select(ProblemDecisionModel.investigation_summary)
+                    .where(
+                        ProblemDecisionModel.problem_id == occurrence.problem_id,
+                        ProblemDecisionModel.occurrence_key == occurrence.occurrence_key,
+                        ProblemDecisionModel.source == ProblemDecisionSource.AGENT.value,
+                    )
+                    .order_by(
+                        ProblemDecisionModel.occurred_at.desc(), ProblemDecisionModel.id.desc()
+                    )
+                    .limit(1)
+                )
+                result.append(
+                    ProblemOccurrenceSummary(
+                        occurrence.occurrence_key, occurrence.observed_at, summary
+                    )
+                )
+            return tuple(result)
+
+    async def split_occurrence(
+        self,
+        problem_id: str,
+        occurrence_key: str,
+        *,
+        actor_scope_hmac: str,
+        idempotency_key: str,
+        occurred_at: str,
+    ) -> ProblemDetails | None:
+        """原子拆分一次发生及其报告和调查，停用原指纹并保存关联审计。
+
+        Note:
+            人工判断留在原问题。旧数据若不能完整关联调查与发生记录，拒绝猜测搬迁；
+            previous_decision_id 保留原调查当时的判断依据，允许跨拆分后的问题引用。
+        """
+        for _ in range(_TRANSACTION_RETRIES):
+            try:
+                async with self._session_factory() as session:
+                    async with session.begin():
+                        source = await session.scalar(
+                            select(BugProblemModel)
+                            .where(BugProblemModel.public_id == problem_id)
+                            .with_for_update()
+                        )
+                        if source is None:
+                            return None
+                        previous = await session.scalar(
+                            select(ProblemSplitModel).where(
+                                ProblemSplitModel.idempotency_key == idempotency_key
+                            )
+                        )
+                        if previous is not None:
+                            if (
+                                previous.source_problem_id != source.id
+                                or previous.occurrence_key != occurrence_key
+                                or previous.actor_scope_hmac != actor_scope_hmac
+                            ):
+                                raise ProblemActionError("split idempotency key reused")
+                            destination = await session.get(
+                                BugProblemModel, previous.destination_problem_id
+                            )
+                            if destination is None:
+                                raise BugWorkflowStoreError("split destination missing")
+                        else:
+                            destination = await self._split_occurrence(
+                                session,
+                                source,
+                                occurrence_key,
+                                actor_scope_hmac=actor_scope_hmac,
+                                idempotency_key=idempotency_key,
+                                occurred_at=occurred_at,
+                            )
+                    return await self._details(session, destination)
+            except IntegrityError:
+                continue
+        raise BugWorkflowStoreError("split transaction conflicted repeatedly")
+
+    async def _split_occurrence(
+        self,
+        session: AsyncSession,
+        source: BugProblemModel,
+        occurrence_key: str,
+        *,
+        actor_scope_hmac: str,
+        idempotency_key: str,
+        occurred_at: str,
+    ) -> BugProblemModel:
+        occurrence = await session.scalar(
+            select(BugOccurrenceModel).where(
+                BugOccurrenceModel.problem_id == source.id,
+                BugOccurrenceModel.occurrence_key == occurrence_key,
+            )
+        )
+        if occurrence is None or await self._occurrence_count(session, source.id) < 2:
+            raise ProblemActionError("split requires an occurrence in a multi-occurrence problem")
+        reports = list(
+            await session.scalars(
+                select(BugReportModel).where(
+                    BugReportModel.occurrence_id == occurrence.id,
+                )
+            )
+        )
+        decisions = list(
+            await session.scalars(
+                select(ProblemDecisionModel)
+                .where(
+                    ProblemDecisionModel.problem_id == source.id,
+                    ProblemDecisionModel.occurrence_key == occurrence_key,
+                    ProblemDecisionModel.source == ProblemDecisionSource.AGENT.value,
+                )
+                .order_by(ProblemDecisionModel.occurred_at, ProblemDecisionModel.id)
+            )
+        )
+        if not reports or len(decisions) != len(reports):
+            raise ProblemActionError("legacy investigation associations are incomplete")
+        latest = decisions[-1]
+        destination = BugProblemModel(
+            id=secrets.token_hex(16),
+            public_id=_new_public_id(),
+            title=source.title,
+            subject_id=occurrence.subject_id,
+            plugin_owners=list(occurrence.plugin_owners),
+            adapter_name=occurrence.adapter_name,
+            signature_enabled=False,
+            current_verdict=latest.verdict,
+            decision_source=latest.source,
+            review_status=ProblemReviewStatus.UNREVIEWED.value,
+            lifecycle=ProblemLifecycle.OPEN.value,
+            responsibility_candidates=[],
+            first_observed_at=occurrence.observed_at,
+            last_observed_at=occurrence.observed_at,
+            current_decision_id=latest.id,
+            created_at=occurred_at,
+            updated_at=occurred_at,
+        )
+        session.add(destination)
+        await session.flush()
+        source.signature_enabled = False
+        occurrence.problem_id = destination.id
+        for report in reports:
+            report.problem_id = destination.id
+            report.linked_existing = False
+        for decision in decisions:
+            decision.problem_id = destination.id
+        session.add(
+            ProblemSplitModel(
+                id=secrets.token_hex(16),
+                idempotency_key=idempotency_key,
+                source_problem_id=source.id,
+                destination_problem_id=destination.id,
+                occurrence_key=occurrence_key,
+                actor_scope_hmac=actor_scope_hmac,
+                occurred_at=occurred_at,
+                report_ids=[report.id for report in reports],
+                decision_ids=[decision.id for decision in decisions],
+            )
+        )
+        await session.flush()
+        source.first_observed_at, source.last_observed_at = (
+            await session.execute(
+                select(
+                    func.min(BugOccurrenceModel.observed_at),
+                    func.max(BugOccurrenceModel.observed_at),
+                ).where(BugOccurrenceModel.problem_id == source.id)
+            )
+        ).one()
+        if source.current_decision_id in {decision.id for decision in decisions}:
+            remaining = await session.scalar(
+                select(ProblemDecisionModel)
+                .where(ProblemDecisionModel.problem_id == source.id)
+                .order_by(ProblemDecisionModel.occurred_at.desc(), ProblemDecisionModel.id.desc())
+                .limit(1)
+            )
+            if remaining is None:
+                raise BugWorkflowStoreError("split left a problem without a decision")
+            source.current_decision_id = remaining.id
+            source.current_verdict = remaining.verdict
+            source.decision_source = remaining.source
+            source.review_status = (
+                ProblemReviewStatus.UNREVIEWED.value
+                if remaining.source == ProblemDecisionSource.AGENT.value
+                else ProblemReviewStatus.REVIEWED.value
+            )
+        source.updated_at = occurred_at
+        return destination
 
     async def apply_action(
         self,
@@ -244,10 +473,7 @@ class NoneBotORMBugWorkflowRepository:
                                 idempotency_key=idempotency_key,
                                 occurred_at=occurred_at,
                             )
-                    return ProblemDetails(
-                        summary=await self._summary(session, problem),
-                        responsibility_candidates=tuple(problem.responsibility_candidates),
-                    )
+                    return await self._details(session, problem)
             except IntegrityError:
                 continue
         raise BugWorkflowStoreError("problem maintenance transaction conflicted repeatedly")
@@ -274,17 +500,31 @@ class NoneBotORMBugWorkflowRepository:
         linked_existing = occurrence is not None
         problem: BugProblemModel | None = None
         if occurrence is not None:
-            problem = await session.get(BugProblemModel, occurrence.problem_id)
-            if problem is None:
-                raise BugWorkflowStoreError("occurrence points to a missing problem")
+            # 与拆分使用同一 Problem 行锁；等待期间发生迁移时重新读取关联。
+            while True:
+                problem = await session.scalar(
+                    select(BugProblemModel)
+                    .where(BugProblemModel.id == occurrence.problem_id)
+                    .with_for_update()
+                )
+                if problem is None:
+                    raise BugWorkflowStoreError("occurrence points to a missing problem")
+                await session.refresh(occurrence)
+                if occurrence.problem_id == problem.id:
+                    break
         elif command.signature is not None:
             problem = await session.scalar(
-                select(BugProblemModel).where(
+                select(BugProblemModel)
+                .where(
                     BugProblemModel.signature_kind == command.signature.kind.value,
                     BugProblemModel.signature_revision == command.signature.algorithm_revision,
                     BugProblemModel.signature_digest == command.signature.digest,
                 )
+                .with_for_update()
             )
+            if problem is not None and not problem.signature_enabled:
+                problem = None
+                command = replace(command, signature=None)
             linked_existing = problem is not None
 
         if problem is None:
@@ -295,15 +535,30 @@ class NoneBotORMBugWorkflowRepository:
             session.add(decision)
             await session.flush()
             problem.current_decision_id = decision.id
-        elif occurrence is None:
-            self._reopen_problem_for_new_occurrence(session, problem, command)
+        else:
+            decision = self._new_decision(problem, command)
+            session.add(decision)
+            await session.flush()
+            if occurrence is None and (
+                problem.current_verdict != BugVerdict.BUG.value
+                or problem.lifecycle == ProblemLifecycle.RESOLVED.value
+            ):
+                problem.current_verdict = BugVerdict.BUG.value
+                problem.decision_source = command.decision.source.value
+                problem.review_status = ProblemReviewStatus.UNREVIEWED.value
+                problem.lifecycle = ProblemLifecycle.REGRESSION.value
+                problem.current_decision_id = decision.id
+            elif problem.decision_source == ProblemDecisionSource.AGENT.value:
+                problem.current_decision_id = decision.id
 
         if occurrence is None:
             occurrence = self._new_occurrence(problem, command)
             session.add(occurrence)
-            problem.last_observed_at = max(
-                problem.last_observed_at,
-                command.occurrence.observed_at,
+            problem.first_observed_at = _earliest_known(
+                problem.first_observed_at, command.occurrence.observed_at
+            )
+            problem.last_observed_at = _latest_known(
+                problem.last_observed_at, command.occurrence.observed_at
             )
             problem.updated_at = command.report.received_at
             await session.flush()
@@ -330,6 +585,7 @@ class NoneBotORMBugWorkflowRepository:
             public_id=_new_public_id(),
             title=command.title[:256],
             subject_id=command.occurrence.subject_id,
+            plugin_owners=list(command.occurrence.plugin_owners),
             adapter_name=command.occurrence.adapter_name,
             signature_kind=signature.kind.value if signature is not None else None,
             signature_revision=(signature.algorithm_revision if signature is not None else None),
@@ -358,6 +614,7 @@ class NoneBotORMBugWorkflowRepository:
             occurrence_key=item.occurrence_key,
             observed_at=item.observed_at,
             subject_id=item.subject_id,
+            plugin_owners=list(item.plugin_owners),
             adapter_name=item.adapter_name,
             correlation_digest=item.correlation_digest,
             failure_signature=item.failure_signature,
@@ -388,27 +645,9 @@ class NoneBotORMBugWorkflowRepository:
             evidence_receipts=_receipt_payload(item.evidence_receipts),
             assessment_revision=item.assessment_revision,
             idempotency_key=item.idempotency_key,
+            investigation_summary=item.investigation_summary,
+            occurrence_key=command.occurrence.occurrence_key,
         )
-
-    def _reopen_problem_for_new_occurrence(
-        self,
-        session: AsyncSession,
-        problem: BugProblemModel,
-        command: RecordBugCommand,
-    ) -> None:
-        needs_decision = (
-            problem.current_verdict != BugVerdict.BUG.value
-            or problem.lifecycle == ProblemLifecycle.RESOLVED.value
-        )
-        if not needs_decision:
-            return
-        decision = self._new_decision(problem, command)
-        session.add(decision)
-        problem.current_verdict = BugVerdict.BUG.value
-        problem.decision_source = command.decision.source.value
-        problem.review_status = ProblemReviewStatus.UNREVIEWED.value
-        problem.lifecycle = ProblemLifecycle.REGRESSION.value
-        problem.current_decision_id = decision.id
 
     def _apply_action(
         self,
@@ -486,6 +725,7 @@ class NoneBotORMBugWorkflowRepository:
             problem_id=problem.public_id,
             title=problem.title,
             subject_id=problem.subject_id,
+            plugin_owners=tuple(problem.plugin_owners),
             verdict=BugVerdict(problem.current_verdict),
             decision_source=ProblemDecisionSource(problem.decision_source),
             review_status=ProblemReviewStatus(problem.review_status),
@@ -494,6 +734,25 @@ class NoneBotORMBugWorkflowRepository:
             occurrence_count=await self._occurrence_count(session, problem.id),
             last_observed_at=problem.last_observed_at,
             latest_decision_at=decision_time or problem.updated_at,
+        )
+
+    async def _details(self, session: AsyncSession, problem: BugProblemModel) -> ProblemDetails:
+        investigation = await session.scalar(
+            select(ProblemDecisionModel)
+            .where(
+                ProblemDecisionModel.problem_id == problem.id,
+                ProblemDecisionModel.source == ProblemDecisionSource.AGENT.value,
+            )
+            .order_by(ProblemDecisionModel.occurred_at.desc(), ProblemDecisionModel.id.desc())
+            .limit(1)
+        )
+        return ProblemDetails(
+            summary=await self._summary(session, problem),
+            responsibility_candidates=tuple(problem.responsibility_candidates),
+            investigation_summary=(
+                investigation.investigation_summary if investigation is not None else None
+            ),
+            investigation_at=investigation.occurred_at if investigation is not None else None,
         )
 
     async def _report_count(self, session: AsyncSession, problem_id: str) -> int:
@@ -528,6 +787,22 @@ def _receipt_payload(
         }
         for item in receipts
     ]
+
+
+def _earliest_known(first: str | None, second: str | None) -> str | None:
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return min(first, second)
+
+
+def _latest_known(first: str | None, second: str | None) -> str | None:
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return max(first, second)
 
 
 __all__ = (

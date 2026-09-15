@@ -149,39 +149,32 @@ async def test_explicit_short_routes_are_not_hijacked_by_active_behavior_inquiry
         monkeypatch.setattr(handlers, "_capability_guidance_result", fixed_guidance)
         expected = "公开教学"
     else:
-        from nbtriage.bug.assessment import (
-            BugAssessmentDecision,
-            BugDecisionSource,
-            BugOccurrence,
-            BugReason,
-            BugResponsibility,
-            BugVerdict,
-            format_bug_assessment_reply,
-        )
-        from nonebot_plugin_triage.bug.assessment import (
-            BugAssessmentRuntimeOutcome,
-        )
+        from nbtriage.bug.assessment import BugReason, unknown_bug_decision
+        from nonebot_plugin_triage.bug.assessment import BugAssessmentRuntimeOutcome
 
         _inject_semantic_assessment(
             monkeypatch,
             goals=("bug_assessment",),
             reported_observation=True,
         )
-        decision = BugAssessmentDecision(
-            verdict=BugVerdict.NOT_BUG,
-            occurrence=BugOccurrence.SINGLE_OBSERVED,
-            responsibility_candidates=(BugResponsibility.INTENTIONAL_CONFIGURATION,),
-            reason=BugReason.INTENTIONAL_CONFIGURATION,
-            evidence_ids=("test-evidence",),
-            missing_evidence=(),
-            source=BugDecisionSource.AGENT,
+
+        async def prechecked(*_: object, **kwargs: object) -> object:
+            assert kwargs["precheck"] is True
+            return handlers._GuidanceResult(
+                "公开资料不足以确定原因。", (), handlers._GuidanceStatus.INVESTIGATE
+            )
+
+        async def investigated(*_: object, **__: object) -> object:
+            return BugAssessmentRuntimeOutcome(
+                unknown_bug_decision(BugReason.INSUFFICIENT_EVIDENCE)
+            )
+
+        monkeypatch.setattr(handlers, "_capability_guidance_result", prechecked)
+        monkeypatch.setattr(handlers, "_bug_assessment_decision", investigated)
+        expected = (
+            "目前只确认了公开用法，尚未取得能核对这次实际执行过程的现场信息，"
+            "因此还不能判断是不是 Bug。"
         )
-
-        async def assessed(*_: object, **__: object) -> BugAssessmentRuntimeOutcome:
-            return BugAssessmentRuntimeOutcome(decision)
-
-        monkeypatch.setattr(handlers, "_bug_assessment_decision", assessed)
-        expected = format_bug_assessment_reply(decision)
 
     async def forbidden_behavior_permission(*_: object, **__: object) -> bool:
         raise AssertionError("explicit short routes must not inspect Behavior authorization")

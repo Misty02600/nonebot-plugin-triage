@@ -19,6 +19,7 @@ from nbtriage.capability.teaching.annotations import (
     CAPABILITY_ANNOTATION_SCHEMA_VERSION,
     CapabilityTeachingEntry,
 )
+from nbtriage.capability.teaching.public_projection import project_public_capabilities
 from nonebot_plugin_triage.capability.teaching.annotations import (
     CapabilityAnnotationRefreshStatus,
     CapabilityTeachingUnitState,
@@ -130,10 +131,33 @@ class CapabilityTeachingOutputWriter:
         previous = self._read_current_generation() if selected_plugins is not None else None
         if manual_edit is not None and (previous is None or annotation_caches is None):
             raise CapabilityTeachingOutputError("manual edit requires a published generation")
-        coverage = _plugin_coverage(refresh_status)
+        public_records, _ = project_public_capabilities(
+            snapshot.records,
+            {
+                record.capability_id: annotation
+                for record in snapshot.records
+                if (annotation := annotation_lookup(record.capability_id)) is not None
+            },
+        )
+        public_modules = {
+            module
+            for record in public_records
+            if (module := _observed_module_name(record)) is not None
+        }
+        coverage = {
+            module: item
+            for module, item in _plugin_coverage(refresh_status).items()
+            if module in public_modules
+        }
         if manual_edit is not None:
             assert previous is not None
             for module, item in previous[3].items():
+                if (
+                    selected_plugins is not None
+                    and module in selected_plugins
+                    and module not in public_modules
+                ):
+                    continue
                 active, eligible = item["active_count"], item["eligible_count"]
                 if type(active) is not int or type(eligible) is not int:
                     raise CapabilityTeachingOutputError("invalid published coverage")
@@ -183,7 +207,12 @@ class CapabilityTeachingOutputWriter:
             answer_documents,
             protected_names=active_answer_filenames,
         )
-        if not help_documents and not answer_documents and refresh_status is None:
+        if (
+            not help_documents
+            and not answer_documents
+            and refresh_status is None
+            and (public_records or not snapshot.records)
+        ):
             raise CapabilityTeachingOutputError("teaching output contains no documents")
         unit_manifest = (
             [item.to_dict() for item in refresh_status.units] if refresh_status is not None else []
@@ -478,11 +507,19 @@ def _build_answer_documents(
     help_plugins: tuple[CapabilityHelpDisplayPlugin, ...],
     coverage: dict[str, CapabilityTeachingPluginCoverage],
 ) -> dict[str, str]:
+    public_records, public_annotations = project_public_capabilities(
+        snapshot.records,
+        {
+            record.capability_id: annotation
+            for record in snapshot.records
+            if (annotation := annotation_lookup(record.capability_id)) is not None
+        },
+    )
     plugin_names = {item.module_name: item.name for item in help_plugins}
     grouped: dict[str, list[CapabilityTeachingEntry]] = {}
     seen: set[tuple[str, str]] = set()
-    for record in sorted(snapshot.records, key=lambda item: item.capability_id):
-        annotation = annotation_lookup(record.capability_id)
+    for record in sorted(public_records, key=lambda item: item.capability_id):
+        annotation = public_annotations.get(record.capability_id)
         if annotation is None or not annotation.knowledge_enabled:
             continue
         module_name = _observed_module_name(record)

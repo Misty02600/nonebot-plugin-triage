@@ -21,6 +21,7 @@ from nbtriage.support.semantics import (
     SupportAssessmentRequest,
     SupportAssessmentStatus,
     SupportGoal,
+    SupportSupplementContext,
 )
 
 models.ALLOW_MODEL_REQUESTS = False
@@ -85,7 +86,10 @@ def _tool_response(
     )
 
 
-def test_agent_output_type_uses_profile_selected_native_schema_without_tools() -> None:
+@pytest.mark.parametrize("requested_model", [None, "fixture-model", "configured-alias"])
+def test_agent_output_type_uses_profile_selected_native_schema_without_tools(
+    requested_model: str | None,
+) -> None:
     observed: dict[str, Any] = {}
 
     def respond(_messages, info: AgentInfo) -> ModelResponse:
@@ -96,10 +100,14 @@ def test_agent_output_type_uses_profile_selected_native_schema_without_tools() -
         FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
         timeout_seconds=12,
         max_output_tokens=240,
+        expected_model=requested_model,
     )
 
     output = asyncio.run(client.assess(_request()))
 
+    assert client.requested_model_name == (requested_model or "fixture-model")
+    assert client.last_response is not None
+    assert client.last_response.model_name == "fixture-model"
     assert output.status is SupportAssessmentStatus.ASSESSED
     assert output.goals == (SupportGoal.BEHAVIOR_EXPLORATION,)
     assert output.reported_observation is True
@@ -114,7 +122,10 @@ def test_agent_output_type_uses_profile_selected_native_schema_without_tools() -
     assert output_object is not None
     assert output_object.name == "SupportSemanticAssessment"
     assert output_object.json_schema["additionalProperties"] is False
-    assert output_object.json_schema["properties"]["schema_version"]["const"] == 7
+    assert (
+        output_object.json_schema["properties"]["schema_version"]["const"]
+        == SUPPORT_SEMANTIC_SCHEMA_VERSION
+    )
     assert info.model_settings == {"max_tokens": 240, "timeout": 12}
 
 
@@ -193,6 +204,27 @@ def test_agent_output_type_uses_profile_selected_output_tool() -> None:
     schema = parameters.output_tools[0].parameters_json_schema
     assert schema["additionalProperties"] is False
     assert "reason" not in schema["properties"]
+
+
+def test_supplement_survives_client_validation_and_reaches_provider_once() -> None:
+    observed: list[dict[str, Any]] = []
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        observed.append(json.loads(cast(str, messages[0].parts[0].content)))
+        return _tool_response(info)
+
+    request = _request("十秒内发的，中间没发别的。").model_copy(
+        update={
+            "supplement_context": SupportSupplementContext(
+                request_text="表情搜索下一页怎么不翻了？", question="间隔多久，是否发过其他内容？"
+            )
+        }
+    )
+    client = PydanticAISupportSemanticClient(
+        FunctionModel(respond, profile=_TOOL_PROFILE), max_output_tokens=240
+    )
+    asyncio.run(client.assess(request))
+    assert observed == [request.model_dump(mode="json", exclude_none=True)]
 
 
 def test_prompted_output_mode_is_rejected_by_task_qualification_before_call() -> None:

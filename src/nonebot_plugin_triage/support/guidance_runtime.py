@@ -21,7 +21,7 @@ from nonebot_plugin_triage.task_model_runtime import (
 )
 
 PUBLIC_GUIDANCE_MAX_OUTPUT_TOKENS = 2_048
-PUBLIC_GUIDANCE_TASK = "public-guidance-answer-v2"
+PUBLIC_GUIDANCE_TASK = "public-guidance-answer-v3"
 PUBLIC_GUIDANCE_PRIVACY_POLICY = "current-text-explicit-reply-and-public-facts-v1"
 PUBLIC_GUIDANCE_BUDGET_PROFILE = "single-call-60s-2048-v2"
 

@@ -2,8 +2,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
+from nbtriage.bug.assessment import (
+    BUG_EVIDENCE_BODY_MAX_CHARS,
+    BugAssessmentCandidate,
+    BugEvidence,
+    BugReason,
+    BugVerdict,
+    reconcile_bug_candidate,
+)
 from nbtriage.bug.logs import (
     CorrelatedBugLogBuffer,
+    CorrelatedBugLogBundle,
     bug_log_bundle_evidence,
     build_correlated_bug_log,
 )
@@ -65,6 +76,7 @@ def test_outbound_log_evidence_keeps_traceback_but_redacts_credentials() -> None
     evidence = bug_log_bundle_evidence(buffer.capture("corr-secret", generated_at=NOW))
 
     assert len(evidence) == 1
+    assert evidence[0].observed_at == NOW.isoformat()
     assert "File reminder.py" in evidence[0].body
     assert "sk-secret-value" not in evidence[0].body
     assert "plain-secret" not in evidence[0].body
@@ -72,3 +84,50 @@ def test_outbound_log_evidence_keeps_traceback_but_redacts_credentials() -> None
     assert "eyJabcdefgh" not in evidence[0].body
     assert "alice:password" not in evidence[0].body
     assert "[REDACTED]" in evidence[0].body
+
+
+@pytest.mark.parametrize("extra_chars", [-1, 0, 1])
+@pytest.mark.parametrize("dropped", [0, 1])
+def test_truncated_log_evidence_cannot_support_a_conclusive_verdict(extra_chars, dropped) -> None:
+    header = (
+        "exception_type=builtins.ValueError\n"
+        "same_signature_count=1\n"
+        f"buffer_dropped_count={dropped}\n"
+        "traceback:\n"
+    )
+    log = build_correlated_bug_log(
+        log_id="log-bounded",
+        correlation_id="corr-bounded",
+        occurred_at=NOW,
+        source_kind="matcher_completed",
+        source_name="search",
+        exception_type="builtins.ValueError",
+        traceback_text="x" * (BUG_EVIDENCE_BODY_MAX_CHARS + extra_chars - len(header)),
+    )
+    (evidence,) = bug_log_bundle_evidence(CorrelatedBugLogBundle((log,), 1, dropped))
+    partial = extra_chars > 0 or dropped > 0
+    assert len(evidence.body) == min(
+        BUG_EVIDENCE_BODY_MAX_CHARS + extra_chars, BUG_EVIDENCE_BODY_MAX_CHARS
+    )
+    assert evidence.partial is partial
+    contract = BugEvidence(
+        evidence_id="public:search",
+        kind="public_contract",
+        source="fixture",
+        body="搜图返回搜索结果。",
+        current=True,
+        partial=False,
+    )
+    decision = reconcile_bug_candidate(
+        BugAssessmentCandidate(
+            occurrence="unknown",
+            responsibility_candidates=("target_plugin",),
+            reason="runtime_contradicts_contract",
+            evidence_ids=(contract.evidence_id, evidence.evidence_id),
+            missing_evidence=(),
+        ),
+        (contract, evidence),
+    )
+    assert decision.verdict is (BugVerdict.UNKNOWN if partial else BugVerdict.BUG)
+    if partial:
+        assert decision.reason is BugReason.STALE_OR_PARTIAL_EVIDENCE

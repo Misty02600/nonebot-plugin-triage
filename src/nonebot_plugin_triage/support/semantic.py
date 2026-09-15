@@ -6,6 +6,8 @@ from collections.abc import Callable
 from typing import Protocol
 
 from nbtriage.baselines import SECRET_PATTERNS
+from nbtriage.capability.teaching.public_projection import contains_private_role
+from nbtriage.support.routing import SupportRoutingAction, route_support_assessment
 from nbtriage.support.semantics import (
     SupportAssessmentExecutionStatus,
     SupportAssessmentOutcome,
@@ -58,7 +60,30 @@ class SemanticAssessmentService:
             canonical_request = parse_support_assessment_request(request.model_dump(mode="json"))
         except (AttributeError, SupportSemanticContractError):
             return _failed(SupportAssessmentExecutionStatus.INVALID_OUTPUT)
-        if contains_credential(canonical_request.request_text):
+        checked_texts = [canonical_request.request_text]
+        if canonical_request.supplement_context is not None:
+            checked_texts.extend(
+                (
+                    canonical_request.supplement_context.request_text,
+                    canonical_request.supplement_context.question,
+                )
+            )
+        if canonical_request.reply_text:
+            checked_texts.append(canonical_request.reply_text)
+        if canonical_request.supplement_context and canonical_request.supplement_context.reply_text:
+            checked_texts.append(canonical_request.supplement_context.reply_text)
+        if canonical_request.supplement_context:
+            for exchange in canonical_request.supplement_context.supplements:
+                checked_texts.extend((exchange.request_text, exchange.question))
+                if exchange.reply_text:
+                    checked_texts.append(exchange.reply_text)
+        if canonical_request.catalog is not None:
+            if any(
+                contains_private_role(item.model_dump_json()) for item in canonical_request.catalog
+            ):
+                return _failed(SupportAssessmentExecutionStatus.POLICY_BLOCKED)
+            checked_texts.extend(item.model_dump_json() for item in canonical_request.catalog)
+        if any(contains_credential(text) for text in checked_texts):
             return _failed(SupportAssessmentExecutionStatus.POLICY_BLOCKED)
         if self._client_factory is None:
             return _failed(SupportAssessmentExecutionStatus.TRANSPORT_UNAVAILABLE)
@@ -71,9 +96,28 @@ class SemanticAssessmentService:
                 payload = result.model_dump(mode="json")
             except (AttributeError, TypeError, ValueError):
                 return _failed(SupportAssessmentExecutionStatus.INVALID_OUTPUT)
+            assessment = parse_support_semantic_assessment(payload)
+            if canonical_request.catalog is not None:
+                valid_ids = {item.plugin_id for item in canonical_request.catalog}
+                decision = route_support_assessment(
+                    SupportAssessmentOutcome(
+                        SupportAssessmentExecutionStatus.COMPLETED,
+                        assessment,
+                    )
+                )
+                if assessment.selection is None:
+                    if decision.action in (
+                        SupportRoutingAction.SHOW_GUIDANCE,
+                        SupportRoutingAction.BUG_ASSESSMENT_CANDIDATE,
+                    ):
+                        return _failed(SupportAssessmentExecutionStatus.INVALID_OUTPUT)
+                elif not set(assessment.selection.plugin_ids) <= valid_ids:
+                    return _failed(SupportAssessmentExecutionStatus.INVALID_OUTPUT)
+            elif assessment.selection is not None and assessment.selection.plugin_ids:
+                return _failed(SupportAssessmentExecutionStatus.INVALID_OUTPUT)
             return SupportAssessmentOutcome(
                 SupportAssessmentExecutionStatus.COMPLETED,
-                parse_support_semantic_assessment(payload),
+                assessment,
             )
         except SupportSemanticContractError:
             return _failed(SupportAssessmentExecutionStatus.INVALID_OUTPUT)

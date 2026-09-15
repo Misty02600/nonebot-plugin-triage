@@ -111,6 +111,7 @@ def test_writer_activates_help_and_answer_files_with_one_generation_pointer(
         annotation.entries[0],
         entry_id="maintenance",
         name="受限维护说明",
+        usages=("搜图维护",),
         requirements=(
             CapabilityTeachingRequirement(
                 kind=SemanticConstraintKind.CONDITION_GROUP,
@@ -636,3 +637,34 @@ def test_active_casefold_collision_rejects_generation(tmp_path: Path) -> None:
         )
 
     assert not (root / "current.json").exists()
+
+
+def test_writer_filters_answer_markdown_and_clears_hidden_only_generation(tmp_path):
+    from nbtriage.capability.teaching.analysis import SemanticConstraintKind, TeachingRole
+    from nbtriage.capability.teaching.annotations import CapabilityTeachingRequirement
+
+    record = _record()
+    original = _annotation("公开搜索")
+    secret = replace(
+        original.entries[0],
+        entry_id="secret",
+        name="内部诊断",
+        usages=("内部诊断",),
+        requirements=(
+            CapabilityTeachingRequirement(
+                SemanticConstraintKind.ROLE, "仅超级用户", role=TeachingRole.SUPERUSER
+            ),
+        ),
+    )
+    mixed = replace(original, entries=(*original.entries, secret))
+    writer = CapabilityTeachingOutputWriter(tmp_path / "teaching")
+    publication = writer.publish(CapabilitySnapshot.create((record,)), lambda _: mixed)
+    assert publication.paths
+    for path in publication.paths:
+        content = path.read_text(encoding="utf-8")
+        assert "内部诊断" not in content and "超级用户" not in content
+    private_only = replace(original, entries=(secret,))
+    empty = writer.publish(CapabilitySnapshot.create((record,)), lambda _: private_only)
+    assert empty.paths == ()
+    pointer = json.loads((tmp_path / "teaching" / "current.json").read_text(encoding="utf-8"))
+    assert pointer["generation"] == empty.generation
