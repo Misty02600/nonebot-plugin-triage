@@ -6,6 +6,8 @@
 > 本 ADR 的 Pydantic AI 控制层默认安装、Provider SDK 按需安装边界不变。
 > 具体导航依赖已由 [ADR-0123](0123-use-refresh-scoped-ty-definition-navigation.md) 部分替代为 ty；
 > 控制层默认安装、Provider SDK 与 Adapter 按需安装的边界保持不变。
+> 2026-09-15：当前实现将控制层升级到 `pydantic-ai-slim==2.43.0`、
+> `pydantic-ai-harness==0.31.0`；版本变化不改变本 ADR 的依赖所有权边界。
 
 | 状态 | 决策日期 |
 |---|---|

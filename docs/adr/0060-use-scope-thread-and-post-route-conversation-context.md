@@ -1,8 +1,15 @@
 # ADR-0060：用作用域 Thread 承接一次补充，并在路由后投影会话上下文
 
+> 当前联合输入、插件选择与输出修复预算局部由 [ADR-0138](0138-combine-support-intent-and-plugin-selection.md) 替代；下文保留原决定。
+
 | 状态 | 决策日期 |
 |---|---|
-| 部分被 ADR-0061 替代 | 2026-08-14 |
+| 部分被 ADR-0061、ADR-0137 替代 | 2026-08-14 |
+
+> [ADR-0137](0137-interpret-support-supplements-with-the-pending-question.md) 局部替代第 3、6、7 项：
+> 一次有效补充可结合首轮问题和实际追问产生目标与观察；显式入口、scope、预算和 Reply 边界仍有效。
+
+> 2026-09-11：一次补充及补充后结束提示的规则由 [ADR-0143](0143-share-two-supplements-across-support-and-bug-assessment.md) 局部替代；其余决定继续有效。
 
 ## 当时遇到了什么
 

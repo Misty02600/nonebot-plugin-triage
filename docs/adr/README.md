@@ -106,3 +106,16 @@
 | [ADR-0074](0074-preserve-append-only-problem-decisions.md) | 追加保存 Agent 判断、人工确认和 override，并让 Problem 当前 verdict 成为同事务更新的查询投影 |
 | [ADR-0075](0075-register-problem-maintenance-under-triage-subcommand.md) | 把问题查询、确认 Bug / 非 Bug 与解决注册为真实 `triage 报错查询` 子命令，并在 Semantic 之前确定性鉴权分流 |
 | [ADR-0078](0078-defer-persisting-unknown-bug-assessments.md) | 在可记录性合同确定前不持久化任何 unknown，缺关键知识时失败关闭且不声称已记录 |
+| [ADR-0132](0132-derive-bug-candidate-verdict-from-reason.md) | 模型选择判断原因，程序派生候选 verdict；保留最终证据检查和下游决策结构 |
+| [ADR-0133](0133-read-bug-member-evidence-from-the-bound-snapshot.md) | 按 ID 读取本轮绑定的公开成员快照，共用调查工具与证据预算 |
+| [ADR-0134](0134-share-public-guidance-facts-with-bug-investigation.md) | Bug 调查沿用公开初检事实，避免重复生成同一教学正文 |
+| [ADR-0135](0135-expand-bug-member-directories-on-demand.md) | 首轮提供教学单元目录，需要时再按 unit_ref 展开完整成员 |
+| [ADR-0136](0136-configure-bug-investigation-budgets.md) | 已替代的部署可调 Bug 预算方案；当前固定预算与收尾边界见 ADR-0130 |
+| [ADR-0137](0137-interpret-support-supplements-with-the-pending-question.md) | Semantic 结合首轮问题与实际追问理解补充；明确的新任务独立判断 |
+| [ADR-0138](0138-combine-support-intent-and-plugin-selection.md) | 一次联合判断支持意图与公开插件对象，并在选定范围内交接 Bug |
+| [ADR-0139](0139-persist-readable-bug-investigations-with-plugin-scope.md) | 保存可读 Bug 调查结论与已确认插件范围，支持插件级建档 |
+| [ADR-0140](0140-use-explicit-failure-fingerprints-and-reversible-grouping.md) | 分离故障指纹与证据版本，支持保守聚合、审计拆分和歧义停用 |
+| [ADR-0141](0141-stop-bug-investigation-without-generic-supplements.md) | 调查返回 unknown 时保留具体证据缺口并结束，不再自动追加通用追问 |
+| [ADR-0142](0142-hide-superuser-paths-from-public-capability-materials.md) | 公开目录、教学与帮助统一隐藏超级用户专属路径，同时保留真实鉴权 |
+| [ADR-0143](0143-share-two-supplements-across-support-and-bug-assessment.md) | 普通求助与调查前澄清共用最多两轮补充并保留问答 |
+| [ADR-0144](0144-resume-bug-investigation-from-public-precheck.md) | 已选插件成为调查范围，复核公开资料快照并携带初检实际输入输出 |

@@ -59,7 +59,7 @@ ADR-0064 曾决定用 Bot 进程内的最近消息窗口，为没有原生历史
 ## 当前实现状态
 
 - `BugAssessmentRuntimeRequest.conversation_reader` 为 `None` 时，Toolbox 不注册 conversation loader；
-- Pydantic AI 的动态工具准备会从本轮 Agent 工具列表移除 `read_conversation_context`；
+- Pydantic AI 的工具准备会在本轮没有历史 Provider 时移除 `read_conversation_context`；有 Provider 时该工具在本轮保持可见，窗口读完后由执行层拒绝再次读取；
 - OneBot V11 群聊继续绑定 NapCat 历史 reader，并可选择经 Uninfo 补充身份；
 - Triage runtime 不再注册跨平台消息观察器，也不保存每会话最近 30 条；
 - 当前 Bug Agent 资格集合仍为空，本决定本身不把未通过 Gate 的模型组合提升为在线资格。

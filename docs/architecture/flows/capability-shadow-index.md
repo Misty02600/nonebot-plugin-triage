@@ -63,6 +63,16 @@ Fullmatch、Keywords、Regex 与 IsType Rule 保存确定的 runtime 入口事�
 获取方式；不展开其他入口的完整教学或继承其权限。family 可选择性打开相关入口，但不遍历成员或索引；
 缺少辅助输入获取指引不关闭已能可靠说明的当前能力。调用方式与用途仍需相应 Runtime 或实现 Evidence。
 
+## 支持入口的公开目录选择
+
+普通支持入口先读取全部当前可服务记录，投影为插件级 catalog，并在同一次 Low 中判断意图和插件对象。
+功能包含 name、summary、usages、search_terms、behavior_boundaries；owner 映射只留在程序内。
+按已选择的插件直接装配完整教学，不把插件选择伪装成带分数的具体命令命中。装配前重新校验当前目录，
+无效引用或资料变化明确失败。具体边界见 [ADR-0138](../../adr/0138-combine-support-intent-and-plugin-selection.md)。
+
+FTS 仍服务维护者查询及 Bug 的具体对象解析；已选插件交接 Bug 后，owner 白名单在词面召回之前应用。
+资料不可用与完整目录没有匹配分别处理；显式公开 Alconna 回退继续保留。
+
 ## 普通查询门禁
 
 普通 ServingView 在召回前要求：
@@ -77,12 +87,18 @@ Fullmatch、Keywords、Regex 与 IsType Rule 保存确定的 runtime 入口事�
 能力 ID 白名单在 FTS 排名和 `limit` 前应用，结果反序列化后再次执行 ServingView 检查。`restricted`、平台不
 匹配和带 issue 的记录不会先进入模型再被隐藏。维护者域必须先在模型外完成 SUPERUSER 鉴权。
 
-当前有效教学注释只能进一步收紧披露：某个 entry 存在独立全局 `role=superuser`，或全局
-`condition_group.alternatives` 按结构去重后仅有 `role=superuser` 时，普通检索、Answer、确定性帮助及帮助导出
-均排除该 entry；含其他允许分支的 OR 不单独触发隐藏，但不能抵消另一条独立的超级用户角色要求。
-同单元的其他公开 entry 保留，全部排除时该记录不进入公开候选，教学补召回也遵守前述能力白名单。
-行为边界中的局部权限文字不参与此判断。原始 Runtime disclosure、保存的注释与执行鉴权不变，维护者仍可
-查看原始记录；这不是对所有自定义权限的完整静态证明。
+公开读取统一经过 `nbtriage/capability/teaching/public_projection.py`。某个 entry 存在独立全局
+`role=superuser`，或全局 `condition_group.alternatives` 按结构去重后仅有 `role=superuser` 时，普通检索、
+Answer、确定性帮助及帮助导出均排除该 entry；管理员 OR 超级用户则删除超级用户分支并保留管理员路径，
+但混合 OR 不能抵消另一条独立的超级用户角色要求。共享根指令的受限子命令按完整路径排除，不隐藏其他公开功能。
+目录、整插件公开教学、搜索结果与帮助展示使用同一投影，旧缓存不能绕过。同单元的其他公开 entry 保留，
+全部排除时该记录不进入公开候选，教学补召回也遵守前述能力白名单。
+
+索引中的内部权限、原始 Runtime disclosure、保存的注释与执行鉴权保持原样；受限记录仅在本地用于排除综合帮助
+交叉引用，不外发。行为边界中的局部权限文字不单独决定 entry 是否为超级用户专属。明确的限流豁免可从条款中
+分离，不能可靠处理的文字不原样公开。公开路径不构成完整的授权名单，未满足其中某一身份不能单独作为权限不足
+的结论；这不是对所有自定义权限的完整静态证明。详见
+[ADR-0142](../../adr/0142-hide-superuser-paths-from-public-capability-materials.md)。
 
 自动教学注释沿用同一门禁，并且必须由当前 runtime 记录反向定位已经加载的模块。它不会遍历静态制品并把
 “源码存在”解释成“Bot 当前可用”；加载失败、`not_observed`、restricted、平台未知或带 issue 的能力即使留有
@@ -178,11 +194,26 @@ family 不再完全关闭源码工具，但只获得 `python_open_definition(nav
 浏览，也不得用源码导航代替完整 manifest 复核。
 全局消息、通知、请求和没有确定公开触发形式的被动监听器仍不进入第一阶段教学分析。
 查询把 Runtime 索引结果与公开注释统一为一个候选排序：Runtime command 或 alias 精确命中最高，注释 name
-精确命中其次，独立 search term 再其次，summary 只作低权重补充；同一个 annotation capability ID 在 limit
-前收敛为一个候选，不让 family 成员或低权重主索引结果挤掉更相关的注释词命中。每个 search term 必须是一条
-可独立查询的短语，不能用标点拼成长列表。不同插件的相似 family 保持分离。精确命中成员命令或 alias 时，
-Answer 组合 family 共同知识与该成员从 Runtime record 确定性重建的完整 usage；普通 family 查询只使用聚合
-usage。一至三项固定备选在 usage 枚举，四至六项改用由 Evidence
+精确命中其次，独立 search term 再其次，summary 只作低权重补充；候选按插件收敛后取前五个，并展开其
+可公开服务的记录和教学注释。每个 search term 必须是一条可独立查询的短语，不能用标点拼成长列表。
+不同插件的相似 family 保持分离。Answer 按候选顺序整插件装入资料，共享 family 注释和相同插件说明只放
+一次；精确成员的运行时参数结构、分隔和别名规则作为补充，始终保留注释原有 usage。仅有入口名称时不把
+它重建成完整语法。资料预算为所有事实 capability 与 text 长度之和不超过 24,000 字符，不再限制为 32 条；
+预算不足时整体省略剩余候选，并设置 candidate_materials_omitted。第一插件也无法装入时不调用回答模型，
+返回资料过长、暂无法完整提供教学的状态。注释完整送达不表示它已穷尽所有合法调用形式。
+
+必要后续交互沿用 `behavior_boundaries`，不新增交互字段。当前 Evidence 表明用户需要继续发送消息才能
+完成操作或继续使用本次结果时，注释必须说明所属流程、可发送的后续输入和必要有效条件，不猜测未获证据
+支持的步骤或超时。仅在既有流程中有效的回复不进入 `usages`，也不新增 entry；独立注册的调用仍按当前
+invocations 生成 usage，其业务准备状态另由边界说明。summary 保持简短，不要求重复列出交互步骤。
+
+插件选择目录的消费约定：在完成公开可服务过滤后，保留每个条目的 `name`、`summary`、`usages`、
+`search_terms`、`behavior_boundaries`，保持边界原文及所属插件、条目关联，不另行生成一份语义摘要。
+选择器需要结合入口调用与边界中的后续输入识别功能，不能把 summary 或 usage 未列出的形式当成不支持
+的证据；选中插件不等于确认调用合法或确定异常原因。该目录选择方式当前仅在隔离实验中验证，尚未替换
+上述 Runtime 查询路径；后续接入时应遵守此约定，完整回答资料仍包含 requirements。
+
+普通 family 查询使用聚合 usage。一至三项固定备选在 usage 枚举，四至六项改用由 Evidence
 命名的概念槽并在 summary 说明，七项及以上使用概念槽，可以简单概括共同类别但不逐项解释。该规则也适用于单个 Matcher 的多固定命令头、别名、Option 和固定参数值。
 family 的异构输入槽位还必须保持可操作：模型选择 Evidence 支持的最窄共同角色；无法用一个词准确概括时
 使用由当前 Evidence 命名的概念槽位；Prompt 不提供固定成品词，“参数”与其他槽位名称使用相同的通用

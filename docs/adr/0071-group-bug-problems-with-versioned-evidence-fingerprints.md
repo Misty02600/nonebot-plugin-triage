@@ -146,3 +146,7 @@ failure signature、subject、adapter、源码 revision、教学合同 revision 
 
 - [ADR-0070：分离 Bug Report、Occurrence 与 Problem](0070-separate-bug-reports-occurrences-and-problems.md)
 - [ADR-0068：把合格 Agent 的 Bug verdict 作为正式判断并由人工事后监督](0068-treat-qualified-agent-bug-verdicts-as-operational-decisions.md)
+
+## 后续边界修订
+
+[ADR-0140](0140-use-explicit-failure-fingerprints-and-reversible-grouping.md) 局部替代旧首版聚合身份与签名来源，明确完整现场的显式指纹、独立记录及可审计拆分；本文保留原决定。

@@ -1,5 +1,7 @@
 # ADR-0037：把语义 assessment 作为 triage 的正式默认路径
 
+> 当前联合输入、插件选择与输出修复预算局部由 [ADR-0138](0138-combine-support-intent-and-plugin-selection.md) 替代；下文保留原决定。
+
 | 状态 | 决策日期 |
 |---|---|
 | 已采纳 | 2026-08-13 |

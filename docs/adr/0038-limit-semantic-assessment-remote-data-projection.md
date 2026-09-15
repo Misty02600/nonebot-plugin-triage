@@ -1,8 +1,13 @@
 # ADR-0038：限定语义 assessment 的远端数据投影
 
+> 当前联合输入、插件选择与输出修复预算局部由 [ADR-0138](0138-combine-support-intent-and-plugin-selection.md) 替代；下文保留原决定。
+
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳 | 2026-08-13 |
+| 部分被 ADR-0137 替代 | 2026-08-13 |
+
+> [ADR-0137](0137-interpret-support-supplements-with-the-pending-question.md) 允许在一次待补充轮中增加
+> 首轮问题和已经发送的追问；首轮及其他禁止投影的数据类别仍遵守本 ADR。
 
 > 本 ADR 只决定可出站的数据类别。OpenCode Go 的精确 Provider/model/profile、预算与 held-out 资格已由
 > [ADR-0041](history/0041-qualify-opencode-go-tool-output-for-support-semantics.md) 另行确认；其他组合仍不能继承。
