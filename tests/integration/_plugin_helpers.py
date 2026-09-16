@@ -154,8 +154,15 @@ def _install_isolated_support_threads(monkeypatch: pytest.MonkeyPatch) -> Any:
 class _BehaviorServiceProbe:
     available = True
 
-    def __init__(self, *, active: bool = False, delete_result: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        active: bool = False,
+        running: bool = False,
+        delete_result: bool = True,
+    ) -> None:
         self.active = active
+        self.running = running
         self.delete_result = delete_result
         self.active_checks: list[Any] = []
         self.explorations: list[Any] = []
@@ -180,7 +187,6 @@ class _BehaviorServiceProbe:
         return self.active
 
     async def explore(self, request: Any) -> Any:
-        from nbtriage.behavior.exploration import BehaviorDeliveryStatus
         from nonebot_plugin_triage.behavior.contracts import (
             BehaviorExecutionStatus,
             BehaviorExplorationOutcome,
@@ -192,9 +198,6 @@ class _BehaviorServiceProbe:
         return BehaviorExplorationOutcome(
             BehaviorExecutionStatus.COMPLETED,
             answer=f"行为解释 {sequence}",
-            turn_id=f"turn-{sequence}",
-            delivery_token=f"delivery-{sequence}",
-            delivery_status=BehaviorDeliveryStatus.PENDING,
         )
 
     async def begin_delivery(
@@ -255,6 +258,10 @@ class _BehaviorServiceProbe:
         assert await authorization_guard()
         self.delete_calls.append(scope)
         return self.delete_result
+
+    async def stop(self, authorization_guard: Any) -> bool:
+        assert await authorization_guard()
+        return self.active
 
 
 def _install_behavior_probe(

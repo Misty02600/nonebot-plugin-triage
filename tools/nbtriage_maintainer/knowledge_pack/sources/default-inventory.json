@@ -2,53 +2,6 @@
   "schema_version": 1,
   "sources": [
     {
-      "id": "napcat-user-docs",
-      "component": "napcat",
-      "kind": "user_docs",
-      "applicability": "snapshot_only",
-      "revision": "03148e9f97afc87bc7475e5f150f2a079dc1bc77",
-      "source_url": "https://github.com/NapNeko/NapCatDocs",
-      "root": "napcat-docs",
-      "include": ["src/guide/**/*.md", "src/develop/**/*.md"],
-      "distribution": "redistributable"
-    },
-    {
-      "id": "napcat-openapi-4.18.18",
-      "component": "napcat",
-      "kind": "api_spec",
-      "applicability": "exact_version",
-      "version": "4.18.18",
-      "revision": "03148e9f97afc87bc7475e5f150f2a079dc1bc77",
-      "source_url": "https://github.com/NapNeko/NapCatDocs",
-      "root": "napcat-docs",
-      "include": ["src/api/4.18.18/openapi.json"],
-      "distribution": "redistributable"
-    },
-    {
-      "id": "napcat-source-4.18.18",
-      "component": "napcat",
-      "kind": "source_code",
-      "applicability": "exact_version",
-      "version": "4.18.18",
-      "revision": "0fcd0e80e07b85deeed24d85e09e62cbfdb2dfe3",
-      "source_url": "https://github.com/NapNeko/NapCatQQ",
-      "root": "napcat-source",
-      "include": ["packages/**/*.ts", "packages/**/*.tsx"],
-      "distribution": "local_only"
-    },
-    {
-      "id": "uninfo-docs-0.11.1",
-      "component": "nonebot-plugin-uninfo",
-      "kind": "user_docs",
-      "applicability": "exact_version",
-      "version": "0.11.1",
-      "revision": "2c6ace7681e4bf6dab9bbe1f0814792aab57f3d2",
-      "source_url": "https://github.com/RF-Tar-Railt/nonebot-plugin-uninfo",
-      "root": "uninfo",
-      "include": ["README.md"],
-      "distribution": "redistributable"
-    },
-    {
       "id": "nonebot-docs-2.5.0",
       "component": "nonebot2",
       "kind": "user_docs",

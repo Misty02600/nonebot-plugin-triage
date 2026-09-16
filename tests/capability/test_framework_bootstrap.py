@@ -26,7 +26,6 @@ from nonebot_plugin_triage.capability.teaching._bootstrap_docs import (
     ALCONNA_SECTIONS,
     NONEBOT_OVERVIEW,
     NONEBOT_SECTIONS,
-    UNINFO_SECTIONS,
     add_bootstrap_docs,
 )
 from nonebot_plugin_triage.capability.teaching._tools import (
@@ -40,7 +39,7 @@ def bootstrap_index(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("bootstrap")
     snapshot = root / "snapshot"
     headings: dict[str, dict[str, None]] = {}
-    for path, heading in (NONEBOT_OVERVIEW, *NONEBOT_SECTIONS, *ALCONNA_SECTIONS, *UNINFO_SECTIONS):
+    for path, heading in (NONEBOT_OVERVIEW, *NONEBOT_SECTIONS, *ALCONNA_SECTIONS):
         selected = headings.setdefault(path, {})
         parts = heading.split(" > ")
         for depth in range(1, len(parts) + 1):
@@ -67,21 +66,17 @@ def bootstrap_index(tmp_path_factory: pytest.TempPathFactory) -> Path:
                 "schema_version": 1,
                 "sources": [
                     {
-                        "id": component,
-                        "component": component,
+                        "id": "nonebot2",
+                        "component": "nonebot2",
                         "kind": "user_docs",
                         "applicability": "exact_version",
-                        "version": version("nonebot2") if component == "nonebot2" else "0.11.1",
+                        "version": version("nonebot2"),
                         "revision": "a" * 40,
                         "source_url": "https://nonebot.dev/",
-                        "root": directory,
+                        "root": "nonebot2",
                         "include": ["**/*.md", "**/*.mdx"],
                         "distribution": "redistributable",
                     }
-                    for component, directory in (
-                        ("nonebot2", "nonebot2"),
-                        ("nonebot-plugin-uninfo", "uninfo"),
-                    )
                 ],
             }
         ),
@@ -134,13 +129,7 @@ def test_bootstrap_full_originals_stable_prefix_and_single_delivery(bootstrap_in
 
 
 @pytest.mark.parametrize("kind", ["alconna", "command_family"])
-def test_bootstrap_component_selection_and_pack_revision(
-    bootstrap_index: Path, kind: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        "nonebot_plugin_triage.capability.teaching._bootstrap_docs.version",
-        lambda component: version("nonebot2") if component == "nonebot2" else "0.11.1",
-    )
+def test_bootstrap_component_selection_and_pack_revision(bootstrap_index: Path, kind: str) -> None:
     request = _request(kind)
     request = replace(
         request,
@@ -149,20 +138,11 @@ def test_bootstrap_component_selection_and_pack_revision(
             CapabilityEvidenceUnit(
                 "shape", "runtime_family_shapes", '{"shapes":[{"parser":"alconna"}]}', "shape"
             ),
-            CapabilityEvidenceUnit(
-                "session",
-                "framework_semantics",
-                "old Session",
-                "old",
-                "framework:nonebot-plugin-uninfo/Session",
-            ),
         ),
     )
     reader = KnowledgeIndexReader(bootstrap_index)
     first = add_bootstrap_docs(request, reader, pack_revision="pack-a")
     assert any("best-practice/alconna" in (u.locator or "") for u in first.evidence_units)
-    assert any("uninfo/README.md" in (u.locator or "") for u in first.evidence_units)
-    assert not any(u.evidence_id == "session" for u in first.evidence_units)
     second = add_bootstrap_docs(request, reader, pack_revision="pack-b")
     assert stable_instruction_prefix(first) != stable_instruction_prefix(second)
 

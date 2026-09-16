@@ -1,20 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from nonebot import logger
 
-from nbtriage._model_runtime.settings import ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
-from nbtriage.opencode_go_contracts import (
-    OPENCODE_GO_SEMANTIC_API_FAMILY,
-    OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
-    OPENCODE_GO_SEMANTIC_EVALUATION,
-    OPENCODE_GO_SEMANTIC_MAX_OUTPUT_TOKENS,
-    OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
-    OPENCODE_GO_SEMANTIC_TASK,
-    OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS,
-)
 from nbtriage.support._model_adapter import SUPPORT_SEMANTIC_PROMPT_ID
 from nbtriage.support.semantics import SUPPORT_SEMANTIC_SCHEMA_VERSION
 from nonebot_plugin_triage.config import NBTriageConfig
@@ -26,9 +16,14 @@ from nonebot_plugin_triage.support.semantic import (
 from nonebot_plugin_triage.task_model_runtime import (
     TaskModelRuntimeConfigurationError,
     create_task_model_binding,
-    is_opencode_go_profile,
     unverified_evaluation_id,
 )
+
+SUPPORT_SEMANTIC_TASK = "support-semantic-v7"
+SUPPORT_SEMANTIC_PRIVACY_POLICY = "current-request-text-only-v1"
+SUPPORT_SEMANTIC_BUDGET_PROFILE = "single-call-60s-240-v1"
+SUPPORT_SEMANTIC_TIMEOUT_SECONDS = 60.0
+SUPPORT_SEMANTIC_MAX_OUTPUT_TOKENS = 240
 
 
 @dataclass(frozen=True)
@@ -44,45 +39,12 @@ class SemanticTaskQualification:
     evaluation: str | None
     connection_revision: str = "provider-default"
     settings_revision: str = "provider-default"
-    timeout_seconds: float = OPENCODE_GO_SEMANTIC_TIMEOUT_SECONDS
-    max_output_tokens: int = OPENCODE_GO_SEMANTIC_MAX_OUTPUT_TOKENS
+    timeout_seconds: float = SUPPORT_SEMANTIC_TIMEOUT_SECONDS
+    max_output_tokens: int = SUPPORT_SEMANTIC_MAX_OUTPUT_TOKENS
     verified: bool = True
 
 
-OPENCODE_GO_SEMANTIC_QUALIFICATION = SemanticTaskQualification(
-    provider="opencode-go",
-    api_family=OPENCODE_GO_SEMANTIC_API_FAMILY,
-    model="deepseek-v4-flash",
-    task=OPENCODE_GO_SEMANTIC_TASK,
-    schema_version=SUPPORT_SEMANTIC_SCHEMA_VERSION,
-    prompt_id=SUPPORT_SEMANTIC_PROMPT_ID,
-    privacy_policy=OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
-    budget_profile=OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
-    evaluation=OPENCODE_GO_SEMANTIC_EVALUATION,
-)
-ALIBABA_QWEN36_FLASH_SEMANTIC_QUALIFICATION = SemanticTaskQualification(
-    provider="alibaba",
-    api_family="pydantic-ai",
-    model="qwen3.6-flash",
-    task=OPENCODE_GO_SEMANTIC_TASK,
-    schema_version=SUPPORT_SEMANTIC_SCHEMA_VERSION,
-    prompt_id=SUPPORT_SEMANTIC_PROMPT_ID,
-    privacy_policy=OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
-    budget_profile=OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
-    evaluation=("alibaba-qwen3.6-flash-cn-forward-heldout-40-20260817-v7-prompt-v5-zh-settings-v2"),
-    connection_revision=(
-        "custom-endpoint-sha256:5891aed827c4e67b2d7c0c73ea819327ce3f2b6ef72213cd79669486a26b1ead"
-    ),
-    settings_revision=ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION,
-    timeout_seconds=300.0,
-    max_output_tokens=240,
-)
-QUALIFIED_SEMANTIC_TASKS = frozenset(
-    {
-        ALIBABA_QWEN36_FLASH_SEMANTIC_QUALIFICATION,
-        OPENCODE_GO_SEMANTIC_QUALIFICATION,
-    }
-)
+QUALIFIED_SEMANTIC_TASKS: frozenset[SemanticTaskQualification] = frozenset()
 
 
 class SemanticRuntimeConfigurationError(RuntimeError):
@@ -108,29 +70,13 @@ def create_semantic_assessment_service(
     )
 
 
-def create_opencode_go_semantic_client_factory(
-    config: NBTriageConfig,
-    *,
-    environ: Mapping[str, str] | None = None,
-    qualified_tasks: frozenset[SemanticTaskQualification] = QUALIFIED_SEMANTIC_TASKS,
-) -> Callable[[], SupportSemanticAssessmentClient]:
-    if not is_opencode_go_profile(config):
-        raise SemanticRuntimeConfigurationError("model is not the OpenCode Go profile")
-    return create_semantic_client_factory(
-        config,
-        environ=environ,
-        qualified_tasks=qualified_tasks,
-    )
-
-
 def create_semantic_client_factory(
     config: NBTriageConfig,
     *,
-    environ: Mapping[str, str] | None = None,
     qualified_tasks: frozenset[SemanticTaskQualification] = QUALIFIED_SEMANTIC_TASKS,
 ) -> Callable[[], SupportSemanticAssessmentClient]:
     try:
-        binding = create_task_model_binding(config, environ=environ)
+        binding = create_task_model_binding(config, thinking=False)
     except TaskModelRuntimeConfigurationError as error:
         raise SemanticRuntimeConfigurationError(str(error)) from error
     qualification = _semantic_qualification(
@@ -177,13 +123,13 @@ def _semantic_qualification(
         provider=provider,
         api_family=api_family,
         model=model,
-        task=OPENCODE_GO_SEMANTIC_TASK,
+        task=SUPPORT_SEMANTIC_TASK,
         schema_version=SUPPORT_SEMANTIC_SCHEMA_VERSION,
         prompt_id=SUPPORT_SEMANTIC_PROMPT_ID,
-        privacy_policy=OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
-        budget_profile=OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
+        privacy_policy=SUPPORT_SEMANTIC_PRIVACY_POLICY,
+        budget_profile=SUPPORT_SEMANTIC_BUDGET_PROFILE,
         evaluation=unverified_evaluation_id(
-            task=OPENCODE_GO_SEMANTIC_TASK,
+            task=SUPPORT_SEMANTIC_TASK,
             prompt_id=SUPPORT_SEMANTIC_PROMPT_ID,
         ),
         connection_revision=connection_revision,
@@ -217,12 +163,13 @@ def _same_semantic_target(
 
 
 __all__ = (
-    "ALIBABA_QWEN36_FLASH_SEMANTIC_QUALIFICATION",
-    "OPENCODE_GO_SEMANTIC_QUALIFICATION",
     "QUALIFIED_SEMANTIC_TASKS",
+    "SUPPORT_SEMANTIC_BUDGET_PROFILE",
+    "SUPPORT_SEMANTIC_MAX_OUTPUT_TOKENS",
+    "SUPPORT_SEMANTIC_PRIVACY_POLICY",
+    "SUPPORT_SEMANTIC_TASK",
     "SemanticRuntimeConfigurationError",
     "SemanticTaskQualification",
-    "create_opencode_go_semantic_client_factory",
     "create_semantic_assessment_service",
     "create_semantic_client_factory",
 )

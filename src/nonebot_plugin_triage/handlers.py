@@ -87,7 +87,6 @@ from nonebot_plugin_triage.capability.shadow import (
     build_public_guidance_request,
     format_public_capability_guidance,
 )
-from nonebot_plugin_triage.live_reports import LiveReportRequest
 from nonebot_plugin_triage.product_contract import (
     MAINTAINER_MATCHER_PRIORITY,
     QUERY_COMMAND,
@@ -98,10 +97,7 @@ from nonebot_plugin_triage.product_contract import (
 )
 from nonebot_plugin_triage.runtime import create_plugin_runtime
 from nonebot_plugin_triage.support.intake import normalize_support_request
-from nonebot_plugin_triage.support.responses import (
-    finish_support_response,
-    resolve_outgoing_receipt,
-)
+from nonebot_plugin_triage.support.responses import finish_support_response
 from nonebot_plugin_triage.support.threads import (
     NBTRIAGE_THREAD_BINDING_STATE_KEY,
     PendingContinuationBinding,
@@ -157,7 +153,7 @@ def _has_explicit_support_command(event: Event) -> bool:
         _is_refresh_help_command(content)
         or _is_boundary_edit_command(content)
         or _is_problem_query_command(content)
-        or _is_behavior_reset_command(content)
+        or _is_behavior_control_command(content)
     ):
         return False
     return content == command or (
@@ -220,12 +216,20 @@ def _has_explicit_behavior_reset_command(event: Event) -> bool:
         content = event.get_plaintext().lstrip()
     except (NotImplementedError, ValueError):
         return False
-    return _is_behavior_reset_command(content)
+    return _is_behavior_control_command(content)
+
+
+def _is_behavior_control_command(content: str) -> bool:
+    return _is_behavior_reset_command(content) or _is_behavior_stop_command(content)
 
 
 def _is_behavior_reset_command(content: str) -> bool:
-    command = f"{TRIAGE_COMMAND} 行为重置"
+    command = f"{TRIAGE_COMMAND} 开始新对话"
     return content.rstrip() == command
+
+
+def _is_behavior_stop_command(content: str) -> bool:
+    return content.rstrip() == f"{TRIAGE_COMMAND} 停止"
 
 
 class _SupportCommandMessageProvider(Extension):
@@ -328,9 +332,10 @@ with namespace(
     behavior_reset_command = Alconna(
         TRIAGE_COMMAND,
         Subcommand(
-            "行为重置",
-            help_text="删除当前维护者在当前会话的行为探索工作区",
+            "开始新对话",
+            help_text="结束当前运行并清空全局维护者对话",
         ),
+        Subcommand("停止", help_text="停止当前维护者 Agent 运行并保留已有会话快照"),
     )
 
 behavior_reset_matcher = on_alconna(
@@ -367,20 +372,9 @@ query_matcher = on_alconna(
 )
 
 
-def _report_request(
-    bot: Bot,
-    event: Event,
-    message: OriginalUniMsg,
-    target: MsgTarget,
-) -> LiveReportRequest:
+def _reply_reference(message: OriginalUniMsg) -> str | None:
     replies = message.get(Reply, 1)
-    return LiveReportRequest(
-        adapter_name=adapter_name(bot),
-        bot_scope=str(bot.self_id),
-        actor_scope=event.get_user_id(),
-        target=target,
-        reply_reference=bounded_message_reference(replies[0].id) if replies else None,
-    )
+    return bounded_message_reference(replies[0].id) if replies else None
 
 
 def _reply_visible_text(message: OriginalUniMsg) -> str | None:
@@ -462,16 +456,16 @@ def _claim_support_scope(
 def _resolve_runtime_correlation(
     bot: Bot,
     target: MsgTarget,
-    request: LiveReportRequest,
+    reply_reference: str | None,
 ) -> str | None:
-    if request.reply_reference is None:
+    if reply_reference is None:
         return None
     try:
         correlation_id = plugin_runtime.reference_bridge.resolve_reply(
             adapter_name=adapter_name(bot),
             bot_scope=str(bot.self_id),
             target=target,
-            message_reference=request.reply_reference,
+            message_reference=reply_reference,
         )
     except Exception:
         logger.warning("NoneBot Triage trusted runtime reference lookup failed")
@@ -485,7 +479,8 @@ async def _bug_assessment_decision(
     bot: Bot,
     event: Event,
     request_text: str,
-    report_request: LiveReportRequest,
+    target: MsgTarget,
+    reply_reference: str | None,
     *,
     conversation_context: str | None = None,
     reply_visible_text: str | None = None,
@@ -520,8 +515,8 @@ async def _bug_assessment_decision(
     )
     current_correlation_id = _resolve_runtime_correlation(
         bot,
-        report_request.target,
-        report_request,
+        target,
+        reply_reference,
     )
     correlation_id = current_correlation_id or inherited_correlation_id
     report_key: str | None = None
@@ -555,13 +550,13 @@ async def _bug_assessment_decision(
                 str(bot.self_id),
                 correlation_id,
             )
-        elif report_request.reply_reference is not None:
+        elif reply_reference is not None:
             occurrence_key = identity.digest(
                 "bug-occurrence-reply",
                 adapter_name(bot),
                 str(bot.self_id),
-                conversation_scope(report_request.target),
-                report_request.reply_reference,
+                conversation_scope(target),
+                reply_reference,
             )
         else:
             occurrence_key = report_key
@@ -678,12 +673,11 @@ async def _behavior_authorized(bot: Bot, event: Event) -> bool:
         return False
 
 
-def _behavior_scope(bot: Bot, event: Event, target: MsgTarget) -> BehaviorScope:
+def _behavior_scope(bot: Bot, target: MsgTarget) -> BehaviorScope:
     return BehaviorScope(
         adapter_name=adapter_name(bot),
         bot_scope=str(bot.self_id),
         conversation_scope=conversation_scope(target),
-        actor_scope=event.get_user_id(),
     )
 
 
@@ -700,7 +694,7 @@ async def _has_active_behavior_inquiry(
 
     try:
         return await plugin_runtime.behavior_exploration_service.has_active_inquiry(
-            _behavior_scope(bot, event, target),
+            _behavior_scope(bot, target),
             authorization_guard,
         )
     except Exception:
@@ -708,45 +702,23 @@ async def _has_active_behavior_inquiry(
         return False
 
 
+async def _maintainer_run_is_busy(bot: Bot, event: Event) -> bool:
+    service = plugin_runtime.behavior_exploration_service
+    return service.running and await _behavior_authorized(bot, event)
+
+
 def _behavior_outcome_message(status: BehaviorExecutionStatus) -> str | None:
-    if status is BehaviorExecutionStatus.DUPLICATE:
-        return None
     if status is BehaviorExecutionStatus.UNAUTHORIZED:
-        return "该请求需要部署维护者权限；本轮不会读取内部证据。"
+        return "该请求需要 SUPERUSER 权限。"
     if status is BehaviorExecutionStatus.UNAVAILABLE:
-        return (
-            "已识别为行为探索并通过维护者鉴权；证据探索还未接通，"
-            "本轮不会读取内部配置、源码、环境或运行证据。"
-        )
+        return "维护者对话暂时不可用，请检查模型配置和只读工具初始化状态。"
     if status is BehaviorExecutionStatus.BUSY:
-        return "上一轮行为探索仍在处理，请稍后重试。"
-    if status is BehaviorExecutionStatus.CAPACITY_EXHAUSTED:
-        return "长期行为工作区已达容量上限；请先发送 triage 行为重置。"
+        return "当前全局维护者对话仍在处理，请稍后重新发送 triage。"
     if status is BehaviorExecutionStatus.STATE_INCOMPATIBLE:
-        return "长期行为工作区版本不兼容；请发送 triage 行为重置后重新开始。"
-    if status is BehaviorExecutionStatus.EVENT_CONFLICT:
-        return "消息标识发生冲突；为避免覆盖长期工作区，本轮未处理。"
+        return "会话文件版本不兼容或内容损坏；请发送 triage 开始新对话。"
     if status is BehaviorExecutionStatus.INVALID_REQUEST:
-        return "当前请求无法安全写入长期行为工作区。"
-    return "行为探索暂时失败；已保存的长期工作区没有被本轮答案覆盖。"
-
-
-async def _abandon_behavior_delivery(
-    scope: BehaviorScope,
-    *,
-    turn_id: str,
-    delivery_token: str,
-    platform_call_started: bool,
-) -> None:
-    try:
-        await plugin_runtime.behavior_exploration_service.abandon_delivery(
-            scope,
-            turn_id=turn_id,
-            delivery_token=delivery_token,
-            platform_call_started=platform_call_started,
-        )
-    except Exception:
-        logger.exception("NoneBot Triage failed to abandon behavior delivery")
+        return "当前请求无法写入维护者会话。"
+    return "维护者 Agent 暂时失败；已保存的会话快照仍可继续使用。"
 
 
 async def _run_behavior_exploration(
@@ -762,24 +734,20 @@ async def _run_behavior_exploration(
             )
         )
 
-    event_reference = _stable_event_identity(event)
-    if event_reference is None:
-        await support_matcher.finish(
-            UniMessage.text("当前适配器没有提供稳定消息标识，无法安全保存长期讨论。")
-        )
-
     async def authorization_guard() -> bool:
         return await _behavior_authorized(bot, event)
 
+    async def progress_reporter(message: str) -> None:
+        await support_matcher.send(UniMessage.text(message))
+
     try:
-        scope = _behavior_scope(bot, event, target)
+        scope = _behavior_scope(bot, target)
         outcome = await plugin_runtime.behavior_exploration_service.explore(
             BehaviorExplorationRequest(
                 scope=scope,
-                event_reference=event_reference,
                 question=question,
-                requested_at=datetime.now(UTC).isoformat(),
                 authorization_guard=authorization_guard,
+                progress_reporter=progress_reporter,
             )
         )
     except Exception:
@@ -795,91 +763,13 @@ async def _run_behavior_exploration(
         await support_matcher.finish(UniMessage.text(message))
 
     answer = outcome.answer
-    if answer is not None and outcome.status is BehaviorExecutionStatus.RECOVERED_PREVIOUS:
-        answer = (
-            "已恢复上一次中断后尚未投递的行为解释；"
-            "你刚才的新问题还没有处理，请在本条发送完成后重新提问。\n\n" + answer
-        )
-    turn_id = outcome.turn_id
-    delivery_token = outcome.delivery_token
-    if answer is None or turn_id is None or delivery_token is None:
+    if answer is None:
         await support_matcher.finish(
             UniMessage.text(
-                _behavior_outcome_message(outcome.status) or "行为探索没有产生可安全投递的答案。"
+                _behavior_outcome_message(outcome.status) or "维护者 Agent 没有产生答案。"
             )
         )
-
-    platform_call_started = False
-    delivery_closed = False
-    try:
-        began = await plugin_runtime.behavior_exploration_service.begin_delivery(
-            scope,
-            turn_id=turn_id,
-            delivery_token=delivery_token,
-            authorization_guard=authorization_guard,
-        )
-        if not began:
-            await _abandon_behavior_delivery(
-                scope,
-                turn_id=turn_id,
-                delivery_token=delivery_token,
-                platform_call_started=False,
-            )
-            delivery_closed = True
-            await support_matcher.finish(
-                UniMessage.text("行为探索的权限或投递状态已变化；本轮未发送答案。")
-            )
-        if not await authorization_guard():
-            await _abandon_behavior_delivery(
-                scope,
-                turn_id=turn_id,
-                delivery_token=delivery_token,
-                platform_call_started=False,
-            )
-            delivery_closed = True
-            await support_matcher.finish()
-
-        platform_call_started = True
-        receipt = await support_matcher.send(UniMessage.text(answer))
-        try:
-            receipt_reference = resolve_outgoing_receipt(
-                receipt,
-                bot=bot,
-                expected_target=target,
-            )
-        except Exception:
-            receipt_reference = None
-        if receipt_reference is None or not await authorization_guard():
-            await _abandon_behavior_delivery(
-                scope,
-                turn_id=turn_id,
-                delivery_token=delivery_token,
-                platform_call_started=True,
-            )
-            delivery_closed = True
-            await support_matcher.finish()
-
-        finished = await plugin_runtime.behavior_exploration_service.finish_delivery(
-            scope,
-            turn_id=turn_id,
-            delivery_token=delivery_token,
-            receipt_reference=receipt_reference,
-        )
-        if not finished:
-            logger.warning(
-                "NoneBot Triage behavior answer was sent but its delivery receipt "
-                "could not be committed"
-            )
-        delivery_closed = True
-        await support_matcher.finish()
-    finally:
-        if not delivery_closed:
-            await _abandon_behavior_delivery(
-                scope,
-                turn_id=turn_id,
-                delivery_token=delivery_token,
-                platform_call_started=platform_call_started,
-            )
+    await support_matcher.finish(UniMessage.text(answer))
 
 
 def _set_pending_scope_turn(
@@ -954,6 +844,10 @@ async def handle_support(
     target: MsgTarget,
 ) -> None:
     content = " ".join(request_text.result)
+    if await _maintainer_run_is_busy(bot, event):
+        await support_matcher.finish(
+            UniMessage.text("当前全局维护者对话仍在处理，请稍后重新发送 triage。")
+        )
     try:
         allowed = _support_request_allowed(bot, event, target)
     except Exception:
@@ -963,8 +857,8 @@ async def handle_support(
         await support_matcher.finish(UniMessage.text("求助请求过于频繁，请稍后再试。"))
 
     reply_visible_text = _reply_visible_text(original)
-    report_request = _report_request(bot, event, original, target)
-    correlation_id = _resolve_runtime_correlation(bot, target, report_request)
+    reply_reference = _reply_reference(original)
+    correlation_id = _resolve_runtime_correlation(bot, target, reply_reference)
     claim_status, lease = _claim_support_scope(
         bot,
         event,
@@ -1038,7 +932,8 @@ async def handle_support(
             bot,
             event,
             request.content,
-            report_request,
+            target,
+            reply_reference,
             conversation_context=_supplement_context(lease),
             reply_visible_text=reply_visible_text,
             inherited_correlation_id=(
@@ -1257,18 +1152,6 @@ def _event_identity(event: Event) -> str:
     return f"{event.get_event_name()}:{event.get_user_id()}:{timestamp}:{id(event)}"
 
 
-def _stable_event_identity(event: Event) -> str | None:
-    """只接受平台提供的稳定事件标识，不为长期 Thread 伪造回退值。"""
-    for name in ("message_id", "id"):
-        value = bounded_message_reference(getattr(event, name, None))
-        if value is None:
-            continue
-        reference = bounded_message_reference(f"{name}:{value}")
-        if reference is not None:
-            return reference
-    return None
-
-
 @behavior_reset_matcher.handle()
 async def handle_behavior_reset(bot: Bot, event: Event, target: MsgTarget) -> None:
     if not await _behavior_authorized(bot, event):
@@ -1279,8 +1162,23 @@ async def handle_behavior_reset(bot: Bot, event: Event, target: MsgTarget) -> No
 
     service = plugin_runtime.behavior_exploration_service
     try:
+        content = event.get_plaintext().lstrip()
+    except (NotImplementedError, ValueError):
+        content = ""
+    if _is_behavior_stop_command(content):
+        try:
+            stopped = await service.stop(authorization_guard)
+        except Exception:
+            logger.exception("NoneBot Triage maintainer conversation stop failed")
+            stopped = False
+        if stopped:
+            await behavior_reset_matcher.finish(
+                UniMessage.text("已停止当前维护者 Agent；已有会话快照已保留。")
+            )
+        await behavior_reset_matcher.finish(UniMessage.text("当前没有正在运行的维护者 Agent。"))
+    try:
         deleted = await service.delete(
-            _behavior_scope(bot, event, target),
+            _behavior_scope(bot, target),
             authorization_guard,
         )
     except Exception:
@@ -1290,13 +1188,13 @@ async def handle_behavior_reset(bot: Bot, event: Event, target: MsgTarget) -> No
         await behavior_reset_matcher.finish()
     if deleted:
         await behavior_reset_matcher.finish(
-            UniMessage.text("已删除当前维护者在当前会话的长期行为工作区。")
+            UniMessage.text("已结束当前运行并开始新的全局维护者对话。")
         )
     if not service.available:
         await behavior_reset_matcher.finish(
             UniMessage.text("行为探索工作区暂时不可用；现有数据未被修改。")
         )
-    await behavior_reset_matcher.finish(UniMessage.text("当前工作区正忙或删除失败，请稍后重试。"))
+    await behavior_reset_matcher.finish(UniMessage.text("新建维护者对话失败，请稍后重试。"))
 
 
 @refresh_help_matcher.handle()

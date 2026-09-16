@@ -1,14 +1,11 @@
 # 默认知识来源边界
 
 构建命令只消费已经固定 revision 的本地 checkout 或不可变快照；本目录不保存上游正文，也不把可变的
-`main`、`latest` 写成版本。每次实际构建在本地生成 source policy，至少采用以下范围：
+`main`、`latest` 写成版本。默认库存只保留一个已验证、冻结的来源：
 
-- NapCat：固定 commit 的当前用户文档、通过版本一致性校验的 OpenAPI、当前推荐 tag 的 TypeScript
-  源码和同一支持窗口的 Release Notes。NapCatQQ 源码按当前许可仅可用于本地索引，不能进入分发包。
 - NoneBot2：插件支持范围内的官方用户/API 文档、迁移说明以及官网 Alconna/UniSeg 教学；实际运行源码由
   部署本地、绑定安装 revision 的只读 FileSystem / Jedi 证据工具按需读取，不在知识包重复维护完整副本。
-- OneBot Adapter、Uninfo、OneBot v11：各自固定 revision 的官方文档。
-  Uninfo 是独立知识组件；UniSeg 属于 Alconna 文档范围。
+NapCat、Uninfo、OneBot Adapter 和 OneBot v11 不进入默认知识来源，也不维护对应采集器或专项检索评测。
 
 source policy 里的 `distribution` 只有 `redistributable` 和 `local_only`。它是来源级发布约束，不进入每条
 检索证据。来源未完成许可复核时使用 `local_only`。
@@ -28,7 +25,7 @@ source policy 里的 `distribution` 只有 `redistributable` 和 `local_only`。
 
 ## 教学文档检索评测
 
-复用本目录 `evaluate` 入口和生产 `KnowledgeIndexReader`，不要使用旧 bot-docs PoC 代替产品知识包评测。
+复用本目录 `evaluate` 入口和生产 `KnowledgeIndexReader`，确保维护评测与产品检索使用同一实现。
 `evals/datasets/fixtures/framework-docs-v106-dev.json` 是人工复核的 36 条冷测真实查询开发集；它已参与诊断，
 不能称为 held-out。只保存公开 API 查询及定位/短事实，不含用户消息、凭据、配置或插件源码。
 
@@ -58,8 +55,8 @@ reranker 或预算。生成质量的有／无文档对照按用户要求暂缓�
 
 `revision` 只记录上游 Git commit；`snapshot_sha256` 只验证本地所选文件没有变化，二者不能互换。
 稳定 `source_id` 与片段摘要用于来源追溯，不把摘要当产品版本。Markdown 使用
-`markdown-it-py` 的 token/source map 按标题切分；OpenAPI 按 operation 切分并校验 `info.version`；
-NapCat TypeScript 使用官方 Tree-sitter Python binding 与 TypeScript grammar 按声明切分。首版不使用
+`markdown-it-py` 的 token/source map 按标题切分。构建器不再支持 OpenAPI、TypeScript、Release Notes 或
+源码快照；精确实现证据由部署环境的只读源码导航提供。首版不使用
 向量库、运行时联网或任意仓库扫描。
 
 维护入口：
@@ -75,27 +72,23 @@ uv run --group maintainer python -m tools.nbtriage_maintainer.knowledge_pack ver
 ```
 
 `package` 只接受全部来源都标为 `redistributable` 的索引，输出包含 `manifest.json` 和
-`index.sqlite3` 的 ZIP，并返回归档 SHA-256。插件只有同时配置精确 HTTPS 资产 URL 与该 SHA-256 时，
-才会在启动后后台下载；缺失或下载失败只回退到无知识库模式。
+`index.sqlite3` 的 ZIP，并返回归档 SHA-256。插件默认从冻结的 stable catalog 发现现有资产，也可以同时配置
+精确 HTTPS 资产 URL 与该 SHA-256 固定实验或镜像版本；缺失或下载失败只回退到旧包或无知识库模式。
 
-正式发布使用独立 `knowledge-vYYYY.MM.N` tag。候选 ZIP 的文件名必须是
-`nbtriage-default-YYYY.MM.N.zip`，旁边放自动生成的 `.sha256`。维护者先创建含这两个资产的 Draft Release，
-再手工触发 `Release knowledge pack` 工作流；工作流在 tag 对应提交上复核包内 `project_revision`、构建器
-摘要、来源再分发状态、归档/索引摘要和 SQLite 完整性，成功后发布 Draft，并保持插件 Release 的 Latest
-标记不变。
+现有正式资产 `knowledge-v2026.08.1` 与 `knowledge-stable/catalog.json` 保持冻结。仓库不再维护自动发布
+工作流；本节命令用于核验来源合同、构建同类 NoneBot-only 索引，或在明确重新开启知识包维护时作为最小
+构建基础。现有资产的逐字节重建仍以其不可变 tag 中的原构建代码为准。重新发布前仍须复核
+`project_revision`、构建器摘要、来源再分发状态、归档/索引摘要和 SQLite 完整性。
 
 NoneBot2 使用仓库内采集器下载固定 commit 的官方 GitHub ZIP，只保留对应版本的 `versioned_docs` 与用于
-完整性核对的 sidebar；文件数、关键 API 页面和版本不匹配时直接拒绝。NapCat 使用本目录的专用采集器；
-如果已经有位于目标 tag、`packages` 干净的官方本地 checkout，传 `--source-checkout` 可避免重新下载大仓库。
+完整性核对的 sidebar；文件数、关键 API 页面和版本不匹配时直接拒绝。
 Alconna/UniSeg 教学随 NoneBot2 的版本化文档采集，不再维护独立文档源；精确实现以部署环境安装源码为准。
-Uninfo 使用 `acquire.uninfo` 采集 0.11.1 固定提交的 README、MIT LICENSE 和版本元数据；
-2026-09-14 两次独立下载的逐文件 SHA-256 相同。README 覆盖使用和公开模型，并非完整 API 手册。
-OneBot Adapter 在采集方法完成双次可复现验证前，不用通用 clone 规则猜测文档完整性。
 
 教学基础资料由 `_bootstrap_docs.py` 中的文件/标题选择器从同一个索引读取原文，不另存摘要。
 NoneBot 固定预载事件处理、响应器组成、依赖注入基础、类型重载、权限和会话控制；Alconna 按 Runtime
-分类或 family 解析器事实加入参数、选项、解析结果、响应器和条件控制；Uninfo 按现有注解/依赖证据
-加入 README 使用和模型定义。资料完整时替换对应旧说明；缺失时保留原回退行为。AntiPattern 的旧说明
+分类或 family 解析器事实加入参数、选项、解析结果、响应器和条件控制。资料完整时替换对应旧说明；缺失时
+保留原回退行为。Uninfo 的确定性语义与部署源码导航继续存在，但不再从知识包预载或检索其 README。
+AntiPattern 的旧说明
 目前保留，因为这些上游选段没有提供等价定义。新增工具插件先接入公开文档来源和选段，不能只添加 API 解释表。
 
 预载原文置于任务动态信息之前，参与请求指纹和知识包失效校验；同区块同 revision 已提供的正文再次召回时
@@ -113,8 +106,7 @@ NoneBot 固定预载事件处理、响应器组成、依赖注入基础、类型
   较大版本的选择，暂不为压缩长度拆除这些内容。
 - Alconna 的参数、解析结果、注入及条件控制文档用于解释 handler 行为；Runtime 生成 usage 只解决当前命令
   结构的展示，不能替代这些语义资料。
-- Uninfo README 提供使用方式和模型字段，但不覆盖所有派生属性行为，例如 `Session.scene_path`；此类缺口
-  按需导航安装源码。当前加入条件依赖已有注解与依赖证据，不保证识别所有别名导入或间接依赖。
+- Uninfo 等插件语义只使用确定性 profile、当前插件源码和部署环境安装源码，不维护额外上游文档副本。
 
 已知非阻断问题包括 Evidence 分块及来源元数据较多、原文保留 MDX 标记与不同语法示例，以及核心指令和工具
 说明存在部分流程提示重复。不同语法示例不直接视为冗余；若以后确需整理，优先合并重复流程提示，暂不为此

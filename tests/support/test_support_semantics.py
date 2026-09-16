@@ -81,7 +81,7 @@ def test_assessment_preserves_orthogonal_axes() -> None:
     }
     assert result.reported_observation is True
     with pytest.raises(SupportSemanticContractError):
-        parse_support_semantic_assessment(_assessment_payload(goals=["incident_intake"]))
+        parse_support_semantic_assessment(_assessment_payload(goals=["unsupported_goal"]))
 
 
 def test_assessed_result_accepts_observation_but_rejects_empty_semantics() -> None:

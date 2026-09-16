@@ -15,7 +15,7 @@ from tests.integration._plugin_helpers import (
 )
 
 
-async def test_explicit_behavior_route_commits_delivery_state_after_send(
+async def test_explicit_behavior_route_sends_agent_answer(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -25,24 +25,12 @@ async def test_explicit_behavior_route_commits_delivery_state_after_send(
     _install_behavior_probe(monkeypatch, probe)
     _inject_semantic_assessment(monkeypatch, goals=("behavior_exploration",))
     authorization_events: list[Any] = []
-    resolved_receipts: list[object] = []
 
     async def authorized(_bot: object, event: object) -> bool:
         authorization_events.append(event)
         return True
 
-    def resolve_receipt(
-        value: object,
-        *,
-        bot: object,
-        expected_target: object,
-    ) -> str:
-        del bot, expected_target
-        resolved_receipts.append(value)
-        return "outgoing-message-2601"
-
     monkeypatch.setattr(handlers, "SUPERUSER", authorized)
-    monkeypatch.setattr(handlers, "resolve_outgoing_receipt", resolve_receipt)
     event = _group_text_event(
         "triage 为什么当前插件没有触发",
         message_id=2_601,
@@ -59,28 +47,9 @@ async def test_explicit_behavior_route_commits_delivery_state_after_send(
     assert len(probe.explorations) == 1
     request = probe.explorations[0]
     assert request.question == "为什么当前插件没有触发"
-    assert request.event_reference == "message_id:2601"
     assert request.scope.bot_scope == "1"
-    assert request.scope.actor_scope == "200"
-    assert probe.begin_calls == [
-        {
-            "scope": request.scope,
-            "turn_id": "turn-1",
-            "delivery_token": "delivery-1",
-            "authorized": True,
-        }
-    ]
-    assert probe.finish_calls == [
-        {
-            "scope": request.scope,
-            "turn_id": "turn-1",
-            "delivery_token": "delivery-1",
-            "receipt_reference": "outgoing-message-2601",
-        }
-    ]
-    assert probe.abandon_calls == []
-    assert len(resolved_receipts) == 1
-    assert len(authorization_events) >= 5
+    assert request.progress_reporter is not None
+    assert len(authorization_events) >= 2
 
 
 @pytest.mark.parametrize("semantic_status", ["needs_clarification", "unsupported"])
@@ -99,11 +68,6 @@ async def test_active_behavior_inquiry_continues_unresolved_or_out_of_scope_text
         return True
 
     monkeypatch.setattr(handlers, "SUPERUSER", authorized)
-    monkeypatch.setattr(
-        handlers,
-        "resolve_outgoing_receipt",
-        lambda *_args, **_kwargs: "outgoing-message-2602",
-    )
     event = _group_text_event(
         "triage 那配置覆盖之后呢",
         message_id=2_602,
@@ -121,8 +85,43 @@ async def test_active_behavior_inquiry_continues_unresolved_or_out_of_scope_text
     assert len(probe.explorations) == 1
     assert probe.active_checks[0] == probe.explorations[0].scope
     assert probe.explorations[0].question == "那配置覆盖之后呢"
-    assert len(probe.finish_calls) == 1
-    assert probe.abandon_calls == []
+
+
+async def test_running_maintainer_agent_rejects_new_triage_before_routing(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    probe = _BehaviorServiceProbe(active=True, running=True)
+    _install_behavior_probe(monkeypatch, probe)
+
+    async def authorized(*_: object, **__: object) -> bool:
+        return True
+
+    async def forbidden_routing(*_: object, **__: object) -> object:
+        raise AssertionError("busy maintainer run must reject before semantic routing")
+
+    monkeypatch.setattr(handlers, "SUPERUSER", authorized)
+    monkeypatch.setattr(handlers, "_route_support_text", forbidden_routing)
+    event = _group_text_event(
+        "triage 另外看看日志",
+        message_id=2_603,
+        user_id=200,
+        to_me=False,
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message("当前全局维护者对话仍在处理，请稍后重新发送 triage。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
+
+    assert probe.explorations == []
 
 
 @pytest.mark.parametrize("explicit_route", ["bug", "feature", "guidance"])
@@ -204,10 +203,9 @@ async def test_explicit_short_routes_are_not_hijacked_by_active_behavior_inquiry
 
     assert probe.active_checks == []
     assert probe.explorations == []
-    assert probe.begin_calls == []
 
 
-async def test_behavior_reset_permission_precedes_scoped_workspace_delete(
+async def test_new_conversation_permission_precedes_global_reset(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -216,13 +214,13 @@ async def test_behavior_reset_permission_precedes_scoped_workspace_delete(
     probe = _BehaviorServiceProbe(active=True)
     _install_behavior_probe(monkeypatch, probe)
     denied = _group_text_event(
-        "triage 行为重置",
+        "triage 开始新对话",
         message_id=2_620,
         user_id=201,
         to_me=False,
     )
     allowed = _group_text_event(
-        "triage 行为重置",
+        "triage 开始新对话",
         message_id=2_621,
         user_id=200,
         to_me=False,
@@ -237,7 +235,7 @@ async def test_behavior_reset_permission_precedes_scoped_workspace_delete(
         ctx.should_pass_permission(handlers.behavior_reset_matcher)
         ctx.should_call_send(
             allowed,
-            Message("已删除当前维护者在当前会话的长期行为工作区。"),
+            Message("已结束当前运行并开始新的全局维护者对话。"),
             result=None,
         )
         ctx.should_finished(handlers.behavior_reset_matcher)
@@ -245,7 +243,39 @@ async def test_behavior_reset_permission_precedes_scoped_workspace_delete(
     assert len(probe.delete_calls) == 1
     deleted_scope = probe.delete_calls[0]
     assert deleted_scope.bot_scope == "1"
-    assert deleted_scope.actor_scope == "200"
+
+
+async def test_stop_command_cancels_global_run_without_reset(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    probe = _BehaviorServiceProbe(active=True)
+    _install_behavior_probe(monkeypatch, probe)
+
+    async def authorized(*_: object, **__: object) -> bool:
+        return True
+
+    monkeypatch.setattr(handlers, "SUPERUSER", authorized)
+    event = _group_text_event(
+        "triage 停止",
+        message_id=2_622,
+        user_id=200,
+        to_me=False,
+    )
+
+    async with app.test_matcher(handlers.behavior_reset_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message("已停止当前维护者 Agent；已有会话快照已保留。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.behavior_reset_matcher)
+
+    assert probe.delete_calls == []
 
 
 @pytest.mark.parametrize(
@@ -259,7 +289,7 @@ async def test_behavior_reset_permission_precedes_scoped_workspace_delete(
         (
             ("behavior_exploration",),
             True,
-            "已识别为行为探索并通过维护者鉴权；证据探索还未接通，本轮不会读取内部配置、源码、环境或运行证据。",
+            "维护者对话暂时不可用，请检查模型配置和只读工具初始化状态。",
         ),
         (
             ("feature_feedback",),
@@ -299,7 +329,6 @@ async def test_semantic_candidate_routes_have_specific_zero_side_effect_response
 
         monkeypatch.setattr(handlers, "SUPERUSER", behavior_permission)
     monkeypatch.setattr(handlers.plugin_runtime.support_rate_limiter, "allow", lambda *_: True)
-    incident_count = len(handlers.plugin_runtime.incidents)
     event = _group_text_event(
         "triage 合成候选请求",
         message_id=2_400 + len(goals),
@@ -312,5 +341,3 @@ async def test_semantic_candidate_routes_have_specific_zero_side_effect_response
         ctx.receive_event(bot, event)
         ctx.should_call_send(event, Message(expected), result=None)
         ctx.should_finished(handlers.support_matcher)
-
-    assert len(handlers.plugin_runtime.incidents) == incident_count

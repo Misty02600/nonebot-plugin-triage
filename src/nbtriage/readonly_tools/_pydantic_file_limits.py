@@ -7,6 +7,7 @@ from typing import Any, cast
 from pydantic_ai import ModelRetry
 from pydantic_ai.tools import RunContext, ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
+from pydantic_ai.toolsets.prefixed import PrefixedToolset
 from pydantic_ai.toolsets.wrapper import WrapperToolset
 
 
@@ -32,6 +33,25 @@ class _BoundedReadFileToolset(WrapperToolset[Any]):
         if name == self._read_tool_name:
             _validate_read_arguments(tool_args, max_read_lines=self._max_read_lines)
         return await super().call_tool(name, tool_args, ctx, tool)
+
+
+class _CapabilityOwnedPrefixToolset(PrefixedToolset[Any]):
+    """保留公开工具名，让 Harness 文件事件能找到所属 capability。
+
+    原生 PrefixedToolset 会把 RunContext.tool_name 还原为无前缀名称，而 2.43 的事件
+    归属查找使用注册后的名称。仅适配调用转发，名称和定义生成沿用原生实现。
+    """
+
+    async def call_tool(
+        self, name: str, tool_args: dict[str, Any], ctx: RunContext[Any], tool: ToolsetTool[Any]
+    ) -> Any:
+        original_name = name.removeprefix(self.prefix + "_")
+        original_tool = replace(tool, tool_def=replace(tool.tool_def, name=original_name))
+        return await self.wrapped.call_tool(original_name, tool_args, ctx, original_tool)
+
+
+def prefixed_file_toolset(toolset: object, *, prefix: str) -> object:
+    return _CapabilityOwnedPrefixToolset(wrapped=cast(AbstractToolset[Any], toolset), prefix=prefix)
 
 
 def bounded_read_file_toolset(
@@ -117,4 +137,4 @@ def _validate_read_arguments(
         arguments["limit"] = max_read_lines
 
 
-__all__ = ("bounded_read_file_toolset",)
+__all__ = ("bounded_read_file_toolset", "prefixed_file_toolset")

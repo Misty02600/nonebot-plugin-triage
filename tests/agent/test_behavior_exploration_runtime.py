@@ -1,40 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
-from nbtriage.behavior._agent import (
-    BehaviorAgentRequest,
-    BehaviorEvidenceSearchResult,
-    BehaviorEvidenceToolbox,
+from nbtriage.behavior.conversation_agent import (
+    CapabilityEvidenceSearchResult,
+    MaintainerConversationResult,
 )
-from nbtriage.behavior.exploration import (
-    BehaviorAgentCandidate,
-    BehaviorAgentClaim,
-    BehaviorClaimBasis,
-    BehaviorClaimSection,
-    BehaviorDeliveryStatus,
-    BehaviorEvidenceFact,
-    BehaviorEvidenceSnapshot,
-    BehaviorWorkspace,
-)
+from nbtriage.behavior.exploration import BehaviorEvidenceSnapshot
 from nonebot_plugin_triage.behavior.contracts import (
     BehaviorExecutionStatus,
-    BehaviorExplorationOutcome,
     BehaviorExplorationRequest,
     BehaviorScope,
 )
+from nonebot_plugin_triage.behavior.conversation_store import (
+    ConversationFileStore,
+)
 from nonebot_plugin_triage.behavior.service import BehaviorExplorationService
-from nonebot_plugin_triage.local_identity import LocalWorkflowIdentity
-
-_NOW = "2026-08-21T08:00:00+00:00"
-_QUESTION_CANARY = "为什么路由未触发？RAW_QUESTION_CANARY_98F3"
-_TOOL_CANARY = "当前能力投影存在 demo 路由。TOOL_FACT_CANARY_27B1"
-_UNUSED_TOOL_CANARY = "未引用的工具事实不得持久化。UNUSED_TOOL_CANARY_7C44"
-_SCOPE_CANARY = "SCOPE_IDENTITY_CANARY_4A62"
 
 
 async def _allow() -> bool:
@@ -46,49 +33,17 @@ async def _deny() -> bool:
 
 
 class _EvidenceSource:
-    def __init__(self) -> None:
-        self.snapshot_calls = 0
-        self.search_calls: list[str] = []
-
     async def snapshot(self) -> BehaviorEvidenceSnapshot:
-        self.snapshot_calls += 1
         return BehaviorEvidenceSnapshot(
-            generation="generation-1",
+            generation="test",
             available=True,
             partial=False,
             stale=False,
         )
 
-    async def search(self, query: str) -> BehaviorEvidenceSearchResult:
-        self.search_calls.append(query)
-        return BehaviorEvidenceSearchResult(
-            snapshot=BehaviorEvidenceSnapshot(
-                generation="generation-1",
-                available=True,
-                partial=False,
-                stale=False,
-            ),
-            facts=(
-                BehaviorEvidenceFact(
-                    evidence_id="fact-demo",
-                    source_kind="capability_shadow",
-                    locator="capability/demo/registration",
-                    revision="capability-shadow:generation-1",
-                    captured_at=_NOW,
-                    text=_TOOL_CANARY,
-                    suggested_basis=BehaviorClaimBasis.OBSERVED_STRUCTURE,
-                ),
-                BehaviorEvidenceFact(
-                    evidence_id="fact-unused",
-                    source_kind="capability_shadow",
-                    locator="capability/demo/unused",
-                    revision="capability-shadow:generation-1",
-                    captured_at=_NOW,
-                    text=_UNUSED_TOOL_CANARY,
-                    suggested_basis=BehaviorClaimBasis.OBSERVED_STRUCTURE,
-                ),
-            ),
-        )
+    async def search(self, query: str) -> CapabilityEvidenceSearchResult:
+        del query
+        return CapabilityEvidenceSearchResult(snapshot=await self.snapshot())
 
 
 class _AgentProbe:
@@ -98,10 +53,9 @@ class _AgentProbe:
         entered: asyncio.Event | None = None,
         release: asyncio.Event | None = None,
     ) -> None:
-        self.calls = 0
-        self.requests: list[BehaviorAgentRequest] = []
-        self._entered = entered
-        self._release = release
+        self.calls: list[dict[str, Any]] = []
+        self.entered = entered
+        self.release = release
 
     def create(self) -> _FakeAgent:
         return _FakeAgent(self)
@@ -109,310 +63,180 @@ class _AgentProbe:
 
 class _FakeAgent:
     def __init__(self, probe: _AgentProbe) -> None:
-        self._probe = probe
+        self.probe = probe
 
-    async def investigate(
-        self,
-        request: BehaviorAgentRequest,
-        toolbox: BehaviorEvidenceToolbox,
-    ) -> BehaviorAgentCandidate:
-        self._probe.calls += 1
-        self._probe.requests.append(request)
-        if self._probe._entered is not None:
-            self._probe._entered.set()
-        if self._probe._release is not None:
-            await self._probe._release.wait()
-        await toolbox.search("demo route")
-        return BehaviorAgentCandidate(
-            claims=(
-                BehaviorAgentClaim(
-                    section=BehaviorClaimSection.CONCLUSION,
-                    statement="模型对观察事实的自由改写不会直接发布。",
-                    basis=BehaviorClaimBasis.OBSERVED_STRUCTURE,
-                    evidence_ids=("fact-demo",),
-                ),
-            ),
-            working_summary="正在追踪 demo 路由行为。",
+    async def converse(self, question: str, **kwargs: Any) -> MaintainerConversationResult:
+        history = tuple(kwargs["message_history"])
+        scene = kwargs["scene"]
+        self.probe.calls.append({"question": question, "history": history, "scene": scene})
+        messages = (
+            *history,
+            ModelRequest(parts=[UserPromptPart(question)]),
         )
+        await kwargs["snapshot_writer"](messages)
+        if self.probe.entered is not None:
+            self.probe.entered.set()
+        if self.probe.release is not None:
+            await self.probe.release.wait()
+        final = (
+            *messages,
+            ModelResponse(
+                parts=[TextPart(f"answer:{question}")],
+                model_name="test-model",
+                provider_name="test-provider",
+                provider_details={"signature": "provider-signature"},
+            ),
+        )
+        await kwargs["snapshot_writer"](final)
+        return MaintainerConversationResult(f"answer:{question}", final)
 
 
-def _scope(suffix: str = "a") -> BehaviorScope:
+def _scope(suffix: str) -> BehaviorScope:
     return BehaviorScope(
-        adapter_name=f"OneBot-{_SCOPE_CANARY}",
-        bot_scope=f"bot-{suffix}-{_SCOPE_CANARY}",
-        conversation_scope=f"conversation-{suffix}-{_SCOPE_CANARY}",
-        actor_scope=f"actor-{suffix}-{_SCOPE_CANARY}",
+        adapter_name=f"adapter-{suffix}",
+        bot_scope=f"bot-{suffix}",
+        conversation_scope=f"conversation-{suffix}",
     )
 
 
 def _request(
-    scope: BehaviorScope,
+    suffix: str,
+    question: str,
     *,
-    event_reference: str = "event-1",
-    question: str = _QUESTION_CANARY,
     authorized=_allow,
 ) -> BehaviorExplorationRequest:
     return BehaviorExplorationRequest(
-        scope=scope,
-        event_reference=event_reference,
+        scope=_scope(suffix),
         question=question,
-        requested_at=_NOW,
         authorization_guard=authorized,
     )
 
 
-def _service(
-    tmp_path: Path,
-    source: _EvidenceSource,
-    probe: _AgentProbe,
-    *,
-    identity_path: Path | None = None,
-    checkpoint_limit: int = 2_048,
-    max_concurrency: int = 2,
-) -> BehaviorExplorationService:
+def _service(tmp_path: Path, probe: _AgentProbe) -> BehaviorExplorationService:
     return BehaviorExplorationService(
-        path=tmp_path / "behavior-checkpoints.sqlite3",
-        identity=LocalWorkflowIdentity(identity_path or tmp_path / "identity.key"),
-        evidence_source=source,
+        path=tmp_path / "maintainer-conversation.json",
+        evidence_source=_EvidenceSource(),
         agent_factory=probe.create,
-        max_concurrency=max_concurrency,
-        checkpoint_limit=checkpoint_limit,
-    )
-
-
-async def _finish(
-    service: BehaviorExplorationService,
-    scope: BehaviorScope,
-    outcome: BehaviorExplorationOutcome,
-) -> None:
-    assert outcome.turn_id is not None
-    assert outcome.delivery_token is not None
-    assert await service.begin_delivery(
-        scope,
-        turn_id=outcome.turn_id,
-        delivery_token=outcome.delivery_token,
-        authorization_guard=_allow,
-    )
-    assert await service.finish_delivery(
-        scope,
-        turn_id=outcome.turn_id,
-        delivery_token=outcome.delivery_token,
-        receipt_reference="platform-receipt-1",
-    )
-
-
-async def _abandon(
-    service: BehaviorExplorationService,
-    scope: BehaviorScope,
-    outcome: BehaviorExplorationOutcome,
-) -> None:
-    assert outcome.turn_id is not None
-    assert outcome.delivery_token is not None
-    await service.abandon_delivery(
-        scope,
-        turn_id=outcome.turn_id,
-        delivery_token=outcome.delivery_token,
-        platform_call_started=False,
     )
 
 
 @pytest.mark.asyncio
-async def test_encrypted_checkpoint_contains_no_raw_question_fact_or_scope_identity(
-    tmp_path: Path,
-) -> None:
-    source = _EvidenceSource()
-    probe = _AgentProbe()
-    service = _service(tmp_path, source, probe)
-    scope = _scope()
-    decoded_history = ""
+async def test_native_messages_round_trip_without_projection(tmp_path: Path) -> None:
+    path = tmp_path / "maintainer-conversation.json"
+    store = ConversationFileStore(path)
+    snapshot = await store.load_or_create()
+    messages = (
+        ModelRequest(parts=[UserPromptPart("RAW_USER_TEXT")]),
+        ModelResponse(
+            parts=[TextPart("RAW_ASSISTANT_TEXT")],
+            provider_name="provider",
+            provider_details={"signature": "RAW_PROVIDER_SIGNATURE"},
+        ),
+    )
+    assert await store.save(snapshot.session_id, messages)
+
+    restored = await ConversationFileStore(path).load()
+    assert restored.messages == messages
+    raw = path.read_text(encoding="utf-8")
+    assert "RAW_USER_TEXT" in raw
+    assert "RAW_ASSISTANT_TEXT" in raw
+    assert "RAW_PROVIDER_SIGNATURE" in raw
+    assert not tuple(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.asyncio
+async def test_all_scenes_share_one_restored_conversation(tmp_path: Path) -> None:
+    first_probe = _AgentProbe()
+    service = _service(tmp_path, first_probe)
     await service.startup()
-    try:
-        outcome = await service.explore(
-            _request(
-                scope,
-                event_reference="EVENT_REFERENCE_CANARY_6C12",
-            )
-        )
-        assert outcome.status is BehaviorExecutionStatus.COMPLETED
-        await _finish(service, scope, outcome)
-        thread_id, _scope_digest = service._scope_identity(scope)
-        checkpoints = [
-            item
-            async for item in service._require_saver().alist(
-                cast(Any, service._graph_config(thread_id))
-            )
-        ]
-        decoded_history = repr(checkpoints)
-    finally:
-        await service.shutdown()
+    first = await service.explore(_request("private", "first"))
+    await service.shutdown()
+    assert first.status is BehaviorExecutionStatus.COMPLETED
 
-    database_files = tuple(tmp_path.glob("behavior-checkpoints.sqlite3*"))
-    assert database_files
-    raw = b"".join(path.read_bytes() for path in database_files)
-    for canary in (
-        _QUESTION_CANARY,
-        _TOOL_CANARY,
-        _UNUSED_TOOL_CANARY,
-        _SCOPE_CANARY,
-        "EVENT_REFERENCE_CANARY_6C12",
-    ):
-        assert canary.encode() not in raw
-    for canary in (
-        _QUESTION_CANARY,
-        _UNUSED_TOOL_CANARY,
-        _SCOPE_CANARY,
-        "EVENT_REFERENCE_CANARY_6C12",
-    ):
-        assert canary not in decoded_history
-    assert _TOOL_CANARY in decoded_history
+    second_probe = _AgentProbe()
+    restarted = _service(tmp_path, second_probe)
+    await restarted.startup()
+    second = await restarted.explore(_request("group", "second"))
+    assert second.status is BehaviorExecutionStatus.COMPLETED
+    assert len(second_probe.calls[0]["history"]) == 2
+    assert second_probe.calls[0]["scene"].conversation == "conversation-group"
+    await restarted.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_duplicate_event_is_idempotent_and_does_not_call_agent_again(
-    tmp_path: Path,
-) -> None:
-    source = _EvidenceSource()
-    probe = _AgentProbe()
-    service = _service(tmp_path, source, probe)
-    scope = _scope()
-    await service.startup()
-    try:
-        first = await service.explore(_request(scope))
-        assert first.status is BehaviorExecutionStatus.COMPLETED
-        await _finish(service, scope, first)
-
-        duplicate = await service.explore(_request(scope))
-        assert duplicate.status is BehaviorExecutionStatus.DUPLICATE
-        assert duplicate.turn_id == first.turn_id
-        assert duplicate.should_deliver is False
-        assert duplicate.delivery_status is BehaviorDeliveryStatus.SENT
-        assert probe.calls == 1
-        assert source.search_calls == ["demo route"]
-    finally:
-        await service.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_same_scope_concurrent_turn_is_rejected_as_busy(tmp_path: Path) -> None:
+async def test_different_scene_is_rejected_while_global_run_is_busy(tmp_path: Path) -> None:
     entered = asyncio.Event()
     release = asyncio.Event()
-    source = _EvidenceSource()
     probe = _AgentProbe(entered=entered, release=release)
-    service = _service(tmp_path, source, probe)
-    scope = _scope()
+    service = _service(tmp_path, probe)
     await service.startup()
-    first_task = asyncio.create_task(service.explore(_request(scope)))
-    try:
-        await asyncio.wait_for(entered.wait(), timeout=5)
-        second = await service.explore(_request(scope, event_reference="event-concurrent"))
-        assert second.status is BehaviorExecutionStatus.BUSY
-        release.set()
-        first = await asyncio.wait_for(first_task, timeout=5)
-        assert first.status is BehaviorExecutionStatus.COMPLETED
-        assert probe.calls == 1
-        await _abandon(service, scope, first)
-    finally:
-        release.set()
-        if not first_task.done():
-            first_task.cancel()
-        await service.shutdown()
+    first_task = asyncio.create_task(service.explore(_request("private", "first")))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    second = await service.explore(_request("group", "second"))
+    assert second.status is BehaviorExecutionStatus.BUSY
+    assert len(probe.calls) == 1
+    release.set()
+    await first_task
+    await service.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_failed_sent_commit_marks_delivery_unknown_before_releasing_admission(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _EvidenceSource()
+async def test_new_conversation_cancels_run_and_replaces_session(tmp_path: Path) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    service = _service(tmp_path, _AgentProbe(entered=entered, release=release))
+    await service.startup()
+    store = service._require_store()
+    old_session = (await store.load()).session_id
+    run = asyncio.create_task(service.explore(_request("a", "unfinished")))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+
+    assert await service.delete(_scope("b"), _allow)
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    current = await store.load()
+    assert current.session_id != old_session
+    assert current.messages == ()
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_run_and_keeps_latest_snapshot(tmp_path: Path) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    service = _service(tmp_path, _AgentProbe(entered=entered, release=release))
+    await service.startup()
+    run = asyncio.create_task(service.explore(_request("a", "unfinished")))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+
+    assert await service.stop(_allow)
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    current = await service._require_store().load()
+    assert len(current.messages) == 1
+    assert current.messages[0].parts[0].content == "unfinished"
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_request_does_not_enter_agent(tmp_path: Path) -> None:
     probe = _AgentProbe()
-    service = _service(tmp_path, source, probe)
-    scope = _scope()
+    service = _service(tmp_path, probe)
     await service.startup()
-    try:
-        outcome = await service.explore(_request(scope))
-        assert outcome.status is BehaviorExecutionStatus.COMPLETED
-        assert outcome.turn_id is not None
-        assert outcome.delivery_token is not None
-        assert await service.begin_delivery(
-            scope,
-            turn_id=outcome.turn_id,
-            delivery_token=outcome.delivery_token,
-            authorization_guard=_allow,
-        )
-
-        original_update = service._update_workspace
-
-        async def fail_sent_commit(
-            thread_id: str,
-            workspace: BehaviorWorkspace,
-            reason: str,
-        ) -> None:
-            if reason == "delivery_sent":
-                raise RuntimeError("simulated sent checkpoint failure")
-            await original_update(thread_id, workspace, reason)
-
-        monkeypatch.setattr(service, "_update_workspace", fail_sent_commit)
-        assert not await service.finish_delivery(
-            scope,
-            turn_id=outcome.turn_id,
-            delivery_token=outcome.delivery_token,
-            receipt_reference="platform-receipt-uncertain",
-        )
-
-        duplicate = await service.explore(_request(scope))
-        assert duplicate.status is BehaviorExecutionStatus.DUPLICATE
-        assert duplicate.delivery_status is BehaviorDeliveryStatus.UNKNOWN
-        assert duplicate.should_deliver is False
-        assert probe.calls == 1
-    finally:
-        await service.shutdown()
+    outcome = await service.explore(_request("a", "secret", authorized=_deny))
+    assert outcome.status is BehaviorExecutionStatus.UNAUTHORIZED
+    assert probe.calls == []
+    await service.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_unauthorized_request_cannot_read_state_or_call_evidence_and_agent(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _EvidenceSource()
-    probe = _AgentProbe()
-    service = _service(tmp_path, source, probe)
+async def test_incompatible_file_is_reported_and_can_be_reset(tmp_path: Path) -> None:
+    path = tmp_path / "maintainer-conversation.json"
+    path.write_text(json.dumps({"schema_version": 99}), encoding="utf-8")
+    service = _service(tmp_path, _AgentProbe())
     await service.startup()
-
-    async def forbidden_read(*_args, **_kwargs):
-        raise AssertionError("checkpoint state must not be read before authorization")
-
-    monkeypatch.setattr(service, "_load_workspace", forbidden_read)
-    try:
-        outcome = await service.explore(_request(_scope(), authorized=_deny))
-        assert outcome.status is BehaviorExecutionStatus.UNAUTHORIZED
-        assert await service.has_active_inquiry(_scope(), _deny) is False
-        assert probe.calls == 0
-        assert source.snapshot_calls == 0
-        assert source.search_calls == []
-    finally:
-        await service.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_startup_rejects_database_created_with_different_identity_key(
-    tmp_path: Path,
-) -> None:
-    source = _EvidenceSource()
-    original = _service(
-        tmp_path,
-        source,
-        _AgentProbe(),
-        identity_path=tmp_path / "identity-a.key",
-    )
-    await original.startup()
-    await original.shutdown()
-
-    wrong_key = _service(
-        tmp_path,
-        source,
-        _AgentProbe(),
-        identity_path=tmp_path / "identity-b.key",
-    )
-    with pytest.raises(RuntimeError, match="key verifier does not match"):
-        await wrong_key.startup()
-    assert wrong_key.available is False
+    outcome = await service.explore(_request("a", "question"))
+    assert outcome.status is BehaviorExecutionStatus.STATE_INCOMPATIBLE
+    assert await service.delete(_scope("b"), _allow)
+    assert (await service._require_store().load()).messages == ()
+    await service.shutdown()

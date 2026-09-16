@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 
 import nonebot
+from pydantic_ai.models import infer_model
+
+from nbtriage.model_adapters import PydanticAIB1Client
+from nbtriage.pydantic_agent_adapter import PydanticAIAgentStepClient
 
 
 def verify(provider: str) -> None:
@@ -19,36 +24,20 @@ def verify(provider: str) -> None:
     if nonebot.load_plugin("nonebot_plugin_triage") is None:
         raise RuntimeError(f"plugin failed to load with only the {provider} model extra")
 
-    if provider == "anthropic":
-        from nbtriage.anthropic_adapter import (
-            create_anthropic_messages_agent_step_client,
-            create_anthropic_messages_b1_client,
-        )
-
-        create_anthropic_messages_b1_client(
-            api_key="model-extra-isolation-placeholder",
-            model="claude-sonnet-4-5",
-            max_calls=1,
-        )
-        create_anthropic_messages_agent_step_client(
-            api_key="model-extra-isolation-placeholder",
-            model="claude-sonnet-4-5",
-        )
-    else:
-        from nbtriage.openai_adapter import (
-            create_openai_responses_agent_step_client,
-            create_openai_responses_b1_client,
-        )
-
-        create_openai_responses_b1_client(
-            api_key="model-extra-isolation-placeholder",
-            model="gpt-4.1-mini",
-            max_calls=1,
-        )
-        create_openai_responses_agent_step_client(
-            api_key="model-extra-isolation-placeholder",
-            model="gpt-4.1-mini",
-        )
+    model_id, key_env = (
+        ("anthropic:claude-sonnet-4-5", "ANTHROPIC_API_KEY")
+        if provider == "anthropic"
+        else ("openai:gpt-4.1-mini", "OPENAI_API_KEY")
+    )
+    os.environ.setdefault(key_env, "model-extra-isolation-placeholder")
+    model = infer_model(model_id)
+    PydanticAIB1Client(model, provider=model.system, max_calls=1)
+    PydanticAIAgentStepClient(
+        model,
+        provider=model.system,
+        timeout_seconds=60.0,
+        max_calls=1,
+    )
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ class PythonStructure:
         self.source = source
         self.lines = source.splitlines(keepends=True)
         self.wrapper = MetadataWrapper(cst.parse_module(source), unsafe_skip_copy=True)
+        self.wrapper.resolve_many((PositionProvider, ParentNodeProvider, ExpressionContextProvider))
         self.positions = self.wrapper.resolve(PositionProvider)
         self.parents = self.wrapper.resolve(ParentNodeProvider)
         self.contexts = self.wrapper.resolve(ExpressionContextProvider)
@@ -336,7 +337,8 @@ class PythonStructure:
         return tuple(target for _, target in sorted(targets, key=lambda item: item[0]))
 
 
-@lru_cache(maxsize=16)
+# 源码切片准备与后续导航共用解析结果，容量需容纳跨单元交错访问的工作集。
+@lru_cache(maxsize=128)
 def python_structure(source: str) -> PythonStructure | None:
     """缓存相同源码的解析结果；文件准入和摘要验证由调用方负责。"""
     if len(source) > 1_000_000:

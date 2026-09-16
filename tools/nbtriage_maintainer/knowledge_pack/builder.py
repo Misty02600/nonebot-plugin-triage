@@ -160,7 +160,7 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             source_id TEXT NOT NULL,
             component TEXT NOT NULL,
             source_kind TEXT NOT NULL CHECK (
-                source_kind IN ('user_docs', 'api_spec', 'release_notes', 'source_code')
+                source_kind = 'user_docs'
             ),
             applicability TEXT NOT NULL CHECK (
                 applicability IN ('exact_version', 'declared_range', 'snapshot_only')

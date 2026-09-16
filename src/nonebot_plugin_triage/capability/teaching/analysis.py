@@ -53,6 +53,7 @@ from nonebot_plugin_triage.capability.teaching._source import (
     AnalysisSourcePolicy,
     ParameterizedHandlerCodeIdentity,
     _analysis_targets,
+    _append_extension_class_evidence,
     _append_framework_semantics_evidence,
     _config_references,
     _declared_teaching_evidence,
@@ -81,6 +82,7 @@ def build_capability_analysis_request(
     source_slice_cache: CapabilitySourceSliceCache | None = None,
     permission_semantic_profiles: tuple[PermissionSemanticProfile, ...] | None = None,
     preparation_timings: dict[str, int] | None = None,
+    include_source_slices: bool = True,
 ) -> CapabilityAnalysisRequest:
     """从运行时能力记录装配确定性 Evidence Pack 与工具准入上下文。
 
@@ -96,9 +98,10 @@ def build_capability_analysis_request(
         source_slice_cache: 按源码 revision 与函数定义身份复用的进程内切片缓存。
         permission_semantic_profiles: Triage 维护的稳定便捷权限语义；省略时使用内置语义表。
         preparation_timings: 可选的模型外阶段耗时收集器，仅用于维护诊断日志。
+        include_source_slices: 仅缓存资格核对可关闭递归切片；关闭后的投影不能交给模型。
 
     Returns:
-        可交给能力分析服务的一次性请求。
+        完整分析请求；关闭递归切片时仅返回用于启动复用核对的投影。
 
     Raises:
         CapabilityAnalysisAdapterError: 输入无效，或没有可安全读取的目标函数证据。
@@ -217,24 +220,33 @@ def build_capability_analysis_request(
 
     if not accepted_targets:
         raise CapabilityAnalysisAdapterError("capability has no readable bounded handler evidence")
-    _record_preparation_timing(preparation_timings, "initial_evidence", stage_started_ns)
-
-    stage_started_ns = monotonic_ns()
-    _append_bounded_source_slices(
+    _append_extension_class_evidence(
         evidence_units,
+        records=(record,),
         analysis_unit_id=record.capability_id,
         module_root=module_root,
         source_root=source_root,
         parsed_modules=parsed_modules,
-        seeds=tuple(accepted_resolved_targets),
-        gate_registrations=selected_registrations,
-        gate_names=gate_names,
-        priority_names=gate_names | _source_symbol_names(source_pack, handler_sources),
-        source_file_revisions={
-            item.source.locator: item.source.digest for item in source_pack.files
-        },
-        cache=source_slice_cache,
     )
+    _record_preparation_timing(preparation_timings, "initial_evidence", stage_started_ns)
+
+    stage_started_ns = monotonic_ns()
+    if include_source_slices:
+        _append_bounded_source_slices(
+            evidence_units,
+            analysis_unit_id=record.capability_id,
+            module_root=module_root,
+            source_root=source_root,
+            parsed_modules=parsed_modules,
+            seeds=tuple(accepted_resolved_targets),
+            gate_registrations=selected_registrations,
+            gate_names=gate_names,
+            priority_names=gate_names | _source_symbol_names(source_pack, handler_sources),
+            source_file_revisions={
+                item.source.locator: item.source.digest for item in source_pack.files
+            },
+            cache=source_slice_cache,
+        )
     _append_framework_semantics_evidence(evidence_units, parsed_modules=parsed_modules)
     _record_preparation_timing(preparation_timings, "source_slices", stage_started_ns)
 
@@ -289,8 +301,14 @@ def build_parameterized_family_analysis_request(
     source_slice_cache: CapabilitySourceSliceCache | None = None,
     permission_semantic_profiles: tuple[PermissionSemanticProfile, ...] | None = None,
     preparation_timings: dict[str, int] | None = None,
+    include_source_slices: bool = True,
 ) -> CapabilityAnalysisRequest:
-    """把执行同一段闭包 Handler 代码的公开 Runtime Matcher 合并分析。"""
+    """把执行同一段闭包 Handler 代码的公开 Runtime Matcher 合并分析。
+
+    Note:
+        ``include_source_slices=False`` 仅用于启动复用资格核对，会省略切片及共用 gate
+        定义的解析；此时结果不能交给模型，未命中复用后仍需执行完整构建。
+    """
     if not records:
         raise CapabilityAnalysisAdapterError("family records must not be empty")
     if not isinstance(policy, ConfigValuePolicy):
@@ -454,6 +472,14 @@ def build_parameterized_family_analysis_request(
             if evidence.kind == "matcher_source"
         ),
     )
+    _append_extension_class_evidence(
+        evidence_units,
+        records=records,
+        analysis_unit_id=identity.analysis_unit_id,
+        module_root=identity.module_root,
+        source_root=source_root,
+        parsed_modules=parsed_modules,
+    )
     callable_units = _family_static_callable_evidence(
         parsed,
         handler,
@@ -467,28 +493,29 @@ def build_parameterized_family_analysis_request(
     gate_names = frozenset(item.symbol.rpartition(".")[2] for item in gate_projection.gate_symbols)
     active_source_slice_cache = source_slice_cache or CapabilitySourceSliceCache()
     stage_started_ns = monotonic_ns()
-    _validate_common_family_gate_definitions(
-        module_root=identity.module_root,
-        source_root=source_root,
-        parsed_modules=parsed_modules,
-        registrations=gate_projection.registrations,
-        gate_names=gate_names,
-        source_file_revisions=source_file_revisions,
-        cache=active_source_slice_cache,
-    )
-    _append_bounded_source_slices(
-        evidence_units,
-        analysis_unit_id=identity.analysis_unit_id,
-        module_root=identity.module_root,
-        source_root=source_root,
-        parsed_modules=parsed_modules,
-        seeds=tuple(accepted_resolved_targets),
-        gate_registrations=gate_projection.registrations,
-        gate_names=gate_names,
-        priority_names=gate_names | _source_symbol_names(source_pack, (handler_source,)),
-        source_file_revisions=source_file_revisions,
-        cache=active_source_slice_cache,
-    )
+    if include_source_slices:
+        _validate_common_family_gate_definitions(
+            module_root=identity.module_root,
+            source_root=source_root,
+            parsed_modules=parsed_modules,
+            registrations=gate_projection.registrations,
+            gate_names=gate_names,
+            source_file_revisions=source_file_revisions,
+            cache=active_source_slice_cache,
+        )
+        _append_bounded_source_slices(
+            evidence_units,
+            analysis_unit_id=identity.analysis_unit_id,
+            module_root=identity.module_root,
+            source_root=source_root,
+            parsed_modules=parsed_modules,
+            seeds=tuple(accepted_resolved_targets),
+            gate_registrations=gate_projection.registrations,
+            gate_names=gate_names,
+            priority_names=gate_names | _source_symbol_names(source_pack, (handler_source,)),
+            source_file_revisions=source_file_revisions,
+            cache=active_source_slice_cache,
+        )
     _append_framework_semantics_evidence(evidence_units, parsed_modules=parsed_modules)
     _record_preparation_timing(preparation_timings, "source_slices", stage_started_ns)
     stage_started_ns = monotonic_ns()

@@ -10,7 +10,6 @@ import pytest
 
 def _clean_subprocess_environment() -> dict[str, str]:
     environment = os.environ.copy()
-    environment["NBTRIAGE_TRIAL_LOG_PATH"] = ""
     return environment
 
 
@@ -28,8 +27,7 @@ def _marketplace_subprocess_environment(*, configured_model: bool) -> dict[str, 
     if configured_model:
         environment.update(
             {
-                "NBTRIAGE_MODEL_NAME": "openai-chat:deepseek-v4-flash",
-                "NBTRIAGE_MODEL_BASE_URL": "https://opencode.ai/zen/go/v1",
+                "NBTRIAGE_MODEL_NAME": "deepseek:deepseek-v4-flash",
                 "NBTRIAGE_MODEL_TIMEOUT_SECONDS": "60",
                 "NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS": "240",
             }
@@ -146,11 +144,8 @@ assert handlers.refresh_help_matcher.block
 assert refresh_help_command.parse("triage 刷新帮助").matched
 assert refresh_help_command.parse("triage 刷新帮助 nonebot_plugin_memes").matched
 assert not refresh_help_command.parse("triage 刷新帮助 plugin extra").matched
-assert not hasattr(handlers, "feedback_matcher")
-assert not hasattr(handlers, "trial_stats_matcher")
 assert handlers.plugin_runtime.observer.registered
 assert handlers.plugin_runtime.reference_bridge.registered
-assert handlers.plugin_runtime.trials.mode.value == "off"
 assert "nonebot.adapters.onebot.v11" in module.__plugin_meta__.supported_adapters
 assert "nonebot.adapters.qq" in module.__plugin_meta__.supported_adapters
 assert module.__plugin_meta__.config is module.NBTriageConfig

@@ -7,17 +7,13 @@ import nonebot
 
 MAINTAINER_MODULES = (
     "nbtriage.__main__",
-    "nbtriage.alconna_capabilities",
     "nbtriage.agent_evaluation",
     "nbtriage.answer_quality_evaluation",
     "nbtriage.answer_review_export",
-    "nbtriage.bot_docs",
-    "nbtriage.bot_docs_evaluation",
     "nbtriage.cli",
     "nbtriage.collector",
     "nbtriage.curation",
     "nbtriage.discovery",
-    "nbtriage.deepseek_adapter",
     "nbtriage.evaluation",
     "nbtriage.evidence_policy",
     "nbtriage.evidence_policy_evaluation",
@@ -45,8 +41,6 @@ def verify() -> None:
     for module_name in ("anthropic", "mlflow", "openai", "pydantic_ai"):
         if _module_exists(module_name):
             raise RuntimeError(f"base wheel unexpectedly installed {module_name}")
-    if _module_exists("nbtriage.opencode_go_adapter"):
-        raise RuntimeError("base wheel unexpectedly includes the OpenCode Go test backend")
     if _module_exists("tools.nbtriage_maintainer"):
         raise RuntimeError("base wheel unexpectedly includes maintainer tooling")
     for module_name in MAINTAINER_MODULES:

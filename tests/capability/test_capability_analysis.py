@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import replace
 
 import pytest
+from tests.capability._fakes import FakeCapabilityAnalysisClient
 
 from nbtriage.capability.teaching.analysis import (
     BaselineChangeOperation,
@@ -25,7 +26,6 @@ from nbtriage.capability.teaching.analysis import (
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
     ConfigProjection,
-    FakeCapabilityAnalysisClient,
     RateLimitPolicy,
     RateLimitScope,
     SemanticClaim,

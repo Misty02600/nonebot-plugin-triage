@@ -5,38 +5,33 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from nbtriage.behavior.exploration import BehaviorDeliveryStatus
-
 AuthorizationGuard = Callable[[], Awaitable[bool]]
+ProgressReporter = Callable[[str], Awaitable[None]]
 
 
 class BehaviorExecutionStatus(StrEnum):
     COMPLETED = "completed"
-    RECOVERED_PREVIOUS = "recovered_previous"
-    DUPLICATE = "duplicate"
     BUSY = "busy"
     UNAVAILABLE = "unavailable"
     UNAUTHORIZED = "unauthorized"
     INVALID_REQUEST = "invalid_request"
-    EVENT_CONFLICT = "event_conflict"
-    CAPACITY_EXHAUSTED = "capacity_exhausted"
     STATE_INCOMPATIBLE = "state_incompatible"
     FAILED = "failed"
 
 
 @dataclass(frozen=True, slots=True)
 class BehaviorScope:
+    """描述本轮消息所在场景；它不会参与会话分区。"""
+
     adapter_name: str
     bot_scope: str
     conversation_scope: str
-    actor_scope: str
 
     def __post_init__(self) -> None:
         for value in (
             self.adapter_name,
             self.bot_scope,
             self.conversation_scope,
-            self.actor_scope,
         ):
             if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 512:
                 raise ValueError("behavior scope parts must be bounded non-empty strings")
@@ -47,46 +42,41 @@ class BehaviorScope:
 @dataclass(frozen=True, slots=True)
 class BehaviorExplorationRequest:
     scope: BehaviorScope
-    event_reference: str
     question: str
-    requested_at: str
     authorization_guard: AuthorizationGuard
+    progress_reporter: ProgressReporter | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.scope, BehaviorScope):
             raise TypeError("scope must be BehaviorScope")
         if (
-            not isinstance(self.event_reference, str)
-            or not self.event_reference
-            or len(self.event_reference.encode("utf-8")) > 512
-            or "\x00" in self.event_reference
+            not isinstance(self.question, str)
+            or not self.question.strip()
+            or len(self.question) > 2_000
         ):
-            raise ValueError("event_reference must be a stable bounded identifier")
+            raise ValueError("question must be a bounded non-empty string")
         if not callable(self.authorization_guard):
             raise TypeError("authorization_guard must be callable")
+        if self.progress_reporter is not None and not callable(self.progress_reporter):
+            raise TypeError("progress_reporter must be callable")
 
 
 @dataclass(frozen=True, slots=True)
 class BehaviorExplorationOutcome:
     status: BehaviorExecutionStatus
     answer: str | None = None
-    turn_id: str | None = None
-    delivery_token: str | None = None
-    delivery_status: BehaviorDeliveryStatus | None = None
 
     @property
     def should_deliver(self) -> bool:
-        return (
-            self.answer is not None
-            and self.turn_id is not None
-            and self.delivery_token is not None
-            and self.delivery_status is BehaviorDeliveryStatus.PENDING
-        )
+        return self.status is BehaviorExecutionStatus.COMPLETED and self.answer is not None
 
 
 class BehaviorExplorationServiceLike(Protocol):
     @property
     def available(self) -> bool: ...
+
+    @property
+    def running(self) -> bool: ...
 
     async def startup(self) -> None: ...
 
@@ -103,38 +93,13 @@ class BehaviorExplorationServiceLike(Protocol):
         request: BehaviorExplorationRequest,
     ) -> BehaviorExplorationOutcome: ...
 
-    async def begin_delivery(
-        self,
-        scope: BehaviorScope,
-        *,
-        turn_id: str,
-        delivery_token: str,
-        authorization_guard: AuthorizationGuard,
-    ) -> bool: ...
-
-    async def finish_delivery(
-        self,
-        scope: BehaviorScope,
-        *,
-        turn_id: str,
-        delivery_token: str,
-        receipt_reference: str,
-    ) -> bool: ...
-
-    async def abandon_delivery(
-        self,
-        scope: BehaviorScope,
-        *,
-        turn_id: str,
-        delivery_token: str,
-        platform_call_started: bool,
-    ) -> None: ...
-
     async def delete(
         self,
         scope: BehaviorScope,
         authorization_guard: AuthorizationGuard,
     ) -> bool: ...
+
+    async def stop(self, authorization_guard: AuthorizationGuard) -> bool: ...
 
 
 __all__ = (
@@ -144,4 +109,5 @@ __all__ = (
     "BehaviorExplorationRequest",
     "BehaviorExplorationServiceLike",
     "BehaviorScope",
+    "ProgressReporter",
 )

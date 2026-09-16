@@ -12,7 +12,7 @@ from typing import Any, Literal, cast
 
 from .knowledge_tokenization import knowledge_search_tokens
 
-SourceKind = Literal["user_docs", "api_spec", "release_notes", "source_code"]
+SourceKind = Literal["user_docs"]
 Applicability = Literal["exact_version", "declared_range", "snapshot_only"]
 DistributionPolicy = Literal["redistributable", "local_only"]
 
@@ -30,7 +30,7 @@ _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*")
 _HEADING_SYMBOL = re.compile(r"`([A-Za-z][A-Za-z0-9_]*)(?:\(|`)")
 
-_SOURCE_KINDS = frozenset({"user_docs", "api_spec", "release_notes", "source_code"})
+_SOURCE_KINDS = frozenset({"user_docs"})
 _ASCII_TERM = re.compile(r"[a-z0-9][a-z0-9_.:/-]{2,}", re.IGNORECASE)
 _CJK_SEQUENCE = re.compile(r"[\u3400-\u9fff]{3,}")
 

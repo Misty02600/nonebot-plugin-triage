@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from contextlib import suppress
 from ipaddress import ip_address
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import (
@@ -22,7 +22,6 @@ ModelName = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=128),
 ]
-TrialModeName = Literal["off", "observe"]
 
 
 class NBTriageConfig(BaseModel):
@@ -49,19 +48,6 @@ class NBTriageConfig(BaseModel):
     nbtriage_thread_max_entries: int = Field(default=4_096, ge=1, le=100_000)
     nbtriage_thread_idle_seconds: int = Field(default=900, ge=1, le=604_800)
     nbtriage_thread_absolute_seconds: int = Field(default=1_800, ge=1, le=604_800)
-    nbtriage_incident_max_entries: int = Field(default=256, ge=1, le=100_000)
-    nbtriage_incident_retention_seconds: int = Field(
-        default=86_400,
-        ge=1,
-        le=604_800,
-    )
-    nbtriage_trial_mode: TrialModeName = "off"
-    nbtriage_trial_log_max_bytes: int = Field(
-        default=10 * 1_024 * 1_024,
-        ge=65_536,
-        le=1_073_741_824,
-    )
-    nbtriage_trial_log_backup_count: int = Field(default=5, ge=1, le=100)
     removed_model_backend: SkipJsonSchema[None] = Field(
         default=None,
         alias="nbtriage_model_backend",
@@ -72,8 +58,8 @@ class NBTriageConfig(BaseModel):
     nbtriage_model_base_url: str | None = None
     nbtriage_model_timeout_seconds: float = Field(default=60.0, gt=0, le=400)
     nbtriage_model_max_output_tokens: int = Field(default=240, ge=1, le=8_192)
-    nbtriage_behavior_max_output_tokens: int = Field(default=1_200, ge=256, le=8_192)
-    nbtriage_behavior_max_concurrency: int = Field(default=2, ge=1, le=16)
+    nbtriage_public_guidance_max_output_tokens: int = Field(default=2_048, ge=256, le=8_192)
+    nbtriage_behavior_max_output_tokens: int = Field(default=8_192, ge=256, le=8_192)
     nbtriage_agent_trace_enabled: bool = True
     nbtriage_capability_annotation_max_concurrency: int = Field(default=50, ge=1)
     nbtriage_restricted_config: frozenset[str] = Field(default_factory=frozenset)
@@ -140,17 +126,14 @@ class NBTriageConfig(BaseModel):
             removed_settings = {
                 "nbtriage_command": "the command is fixed to triage",
                 "nbtriage_query_command": "the query command is fixed to 报错查询",
-                "nbtriage_feedback_command": "the feedback command is fixed to 报错反馈",
-                "nbtriage_trial_stats_command": "the trial stats command is fixed to 报错统计",
                 "nbtriage_priority": "the triage matcher priority is fixed to 10",
                 "nbtriage_query_priority": "the maintainer matcher priority is fixed to 10",
                 "nbtriage_request_max_chars": "the triage request limit is fixed to 2000",
+                "nbtriage_behavior_max_concurrency": (
+                    "the maintainer conversation is globally serialized"
+                ),
                 "nbtriage_support_cooldown_seconds": (
                     "use nbtriage_cooldown_seconds for the shared triage entry cooldown"
-                ),
-                "nbtriage_report_cooldown_seconds": (
-                    "incident intake no longer has a separate cooldown; use "
-                    "nbtriage_cooldown_seconds"
                 ),
                 "nbtriage_capability_shadow_path": (
                     "the capability shadow is stored in the LocalStore cache"
@@ -175,11 +158,6 @@ class NBTriageConfig(BaseModel):
                 raise ValueError(
                     "nbtriage_model_enabled was removed; semantic assessment is not "
                     "controlled by a product enable flag"
-                )
-            if data.get("nbtriage_trial_log_path") not in (None, ""):
-                raise ValueError(
-                    "nbtriage_trial_log_path was removed; configure "
-                    "LOCALSTORE_PLUGIN_DATA_DIR and pass summarize-trials --log-path instead"
                 )
             forbidden = {"nbtriage_model_api_key"}.intersection(data)
             if forbidden:

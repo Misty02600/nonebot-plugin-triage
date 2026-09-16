@@ -78,6 +78,12 @@ _TOOL_PROFILE = ModelProfile(
     supports_tools=True,
     default_structured_output_mode="tool",
 )
+_PROMPTED_PROFILE = ModelProfile(
+    supports_tools=True,
+    supports_json_object_output=True,
+    # DeepSeek 当前的 profile 默认仍是 tool；Teaching 主动选择 json_object。
+    default_structured_output_mode="tool",
+)
 
 
 def _request() -> CapabilityAnalysisRequest:
@@ -260,7 +266,9 @@ async def test_required_docs_mode_allows_final_output_after_tool_budget_exhausti
             return ModelResponse(
                 parts=[ToolCallPart("framework_search_docs", {"query": "Matcher"})]
             )
-        assert not info.function_tools
+        assert [tool.name for tool in info.function_tools] == ["framework_search_docs"]
+        assert info.model_settings is not None
+        assert info.model_settings.get("tool_choice") == "none"
         return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, _output())])
 
     runtime = CapabilityAnalysisToolRuntime(
@@ -280,6 +288,37 @@ async def test_required_docs_mode_allows_final_output_after_tool_budget_exhausti
     )
     assert output.knowledge_enabled and calls == 2
     assert records[0]["outcome"] == "generated"
+
+
+@pytest.mark.asyncio
+async def test_json_object_output_replaces_final_result_when_profile_defaults_to_tool() -> None:
+    def framework_search_docs(query: str) -> str:
+        return query
+
+    def respond(_messages, info: AgentInfo) -> ModelResponse:
+        parameters = info.model_request_parameters
+        assert parameters.output_mode == "prompted"
+        assert parameters.output_tools == []
+        assert [tool.name for tool in parameters.function_tools] == ["framework_search_docs"]
+        assert info.model_settings is not None
+        assert info.model_settings.get("tool_choice") == "none"
+        return ModelResponse(parts=[TextPart(json.dumps(_output()))])
+
+    runtime = CapabilityAnalysisToolRuntime(
+        toolsets=(FunctionToolset(tools=[framework_search_docs]),),
+        evidence_units=tuple,
+        validate_source_context=lambda: True,
+    )
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(respond, profile=_PROMPTED_PROFILE),
+        max_output_tokens=1000,
+        max_tool_calls=0,
+        tool_runtime_factory=lambda _request: runtime,
+    )
+
+    output = await client.analyze(_request())
+
+    assert output.knowledge_enabled is True
 
 
 @pytest.mark.parametrize(
@@ -341,7 +380,7 @@ def test_pattern_usage_survives_agent_projection_and_reload(structure: str, usag
         ("deepseek", "deepseek-v4-flash", "deepseek-flash", True),
         ("deepseek", "deepseek-flash", "deepseek-v4-flash", False),
         ("deepseek", "deepseek-v4-flash", "deepseek-pro", False),
-        ("opencode-go", "deepseek-v4-flash", "deepseek-flash", False),
+        ("other-provider", "deepseek-v4-flash", "deepseek-flash", False),
     ],
 )
 def test_agent_accepts_only_confirmed_provider_model_rename(
@@ -1316,13 +1355,11 @@ def test_input_estimate_counts_only_instruction_growth_after_usage_anchor(
     ]
 
 
-@pytest.mark.parametrize("early_finalization", [False, True])
-def test_navigation_budget_reserves_a_final_submission_before_the_hard_limit(
-    early_finalization: bool,
-) -> None:
+def test_request_budget_checkpoints_once_then_reserves_output_correction() -> None:
     provider_calls = 0
     observed_tools: list[tuple[str, ...]] = []
     observed_instructions: list[str] = []
+    observed_tool_choices: list[object] = []
 
     def read_dependency() -> str:
         return "bounded evidence"
@@ -1332,16 +1369,14 @@ def test_navigation_budget_reserves_a_final_submission_before_the_hard_limit(
         provider_calls += 1
         observed_tools.append(tuple(tool.name for tool in info.function_tools))
         observed_instructions.append(info.instructions or "")
+        observed_tool_choices.append((info.model_settings or {}).get("tool_choice"))
         assert "不能在普通回复正文中输出 JSON 代替调用" in (info.instructions or "")
-        if provider_calls == 1 or (provider_calls == 2 and not early_finalization):
+        if provider_calls <= 2:
             return ModelResponse(
                 parts=[ToolCallPart("read_dependency", {}, f"call-read-{provider_calls}")],
-                usage=RequestUsage(
-                    input_tokens=45 if early_finalization else 20,
-                    output_tokens=30 if provider_calls == 1 and not early_finalization else 5,
-                ),
+                usage=RequestUsage(input_tokens=20, output_tokens=5),
             )
-        if provider_calls == 2:
+        if provider_calls == 3:
             # 收尾中的短纠错响应不能重新打开源码工具。
             return ModelResponse(
                 parts=[ToolCallPart(info.output_tools[0].name, {"knowledge_enabled": "invalid"})],
@@ -1361,32 +1396,29 @@ def test_navigation_budget_reserves_a_final_submission_before_the_hard_limit(
     client = PydanticAICapabilityAnalysisClient(
         FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
         max_output_tokens=240,
-        max_requests=10,
-        max_tool_calls=7,
-        total_tokens_limit=100,
+        max_requests=4,
+        max_tool_calls=10,
         tool_runtime_factory=lambda _request: runtime,
     )
 
     result = asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
 
     assert result.entries[0].entry_id == "root"
-    assert observed_tools == [
-        ("read_dependency",),
-        () if early_finalization else ("read_dependency",),
-        (),
-    ]
-    assert (
-        "只读补证阶段已经结束" if early_finalization else "最终提交预留阶段"
-    ) in observed_instructions[1]
+    assert observed_tools == [("read_dependency",)] * 4
+    assert observed_tool_choices == [None, None, "none", "none"]
+    assert "最终提交预留阶段" in observed_instructions[1]
+    assert sum("最终提交预留阶段" in item for item in observed_instructions) == 1
     assert "只读补证阶段已经结束" in observed_instructions[2]
+    assert "只读补证阶段已经结束" in observed_instructions[3]
     assert client.last_usage is not None
-    assert client.last_usage.total_tokens == (77 if early_finalization else 100)
+    assert client.last_usage.requests == 4
 
 
 def test_parallel_navigation_batch_respects_budget_then_finalizes() -> None:
     provider_calls = 0
     executed: list[str] = []
     observed_tools: list[tuple[str, ...]] = []
+    observed_tool_choices: list[object] = []
     successful_results: list[ToolReturnPart] = []
     failed_results: list[ToolReturnPart] = []
 
@@ -1403,6 +1435,7 @@ def test_parallel_navigation_batch_respects_budget_then_finalizes() -> None:
         nonlocal provider_calls
         provider_calls += 1
         observed_tools.append(tuple(tool.name for tool in info.function_tools))
+        observed_tool_choices.append((info.model_settings or {}).get("tool_choice"))
         if provider_calls == 1:
             return ModelResponse(
                 parts=[
@@ -1455,19 +1488,15 @@ def test_parallel_navigation_batch_respects_budget_then_finalizes() -> None:
     assert result.entries[0].entry_id == "root"
     assert provider_calls == 2
     assert executed == ["primary", "secondary"]
-    assert observed_tools == [
-        ("read_primary", "read_secondary"),
-        (),
-    ]
+    assert observed_tools == [("read_primary", "read_secondary")] * 2
+    assert observed_tool_choices == [None, "none"]
     assert len(failed_results) == 1
     assert failed_results[0].tool_call_id == "call-over-budget"
     assert "tool_budget_exhausted" in str(failed_results[0].content)
-    successful_contents = [cast(dict[str, object], part.content) for part in successful_results]
-    assert [content["remaining_navigation_calls"] for content in successful_contents] == [
-        1,
-        0,
+    assert [part.content for part in successful_results] == [
+        "primary evidence",
+        "secondary evidence",
     ]
-    assert successful_contents[-1]["navigation_phase"] == "finalize"
     assert client.last_usage is not None
     assert client.last_usage.tool_calls == 2
 

@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.profiles import ModelProfile
+from tests.capability._fakes import FakeCapabilityAnalysisClient
 
 import nonebot_plugin_triage.capability.teaching._navigation as capability_analysis_navigation
 from nbtriage.capability.catalog.records import (
@@ -36,7 +37,6 @@ from nbtriage.capability.teaching.analysis import (
     CapabilityEvidenceUnit,
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
-    FakeCapabilityAnalysisClient,
     SemanticConstraintKind,
     TeachingRole,
 )
@@ -113,6 +113,7 @@ def _record(
     capability_id: str = "capability:test",
     handlers: list[dict[str, object]],
     config_references: list[dict[str, object]],
+    extension_references: list[dict[str, object]] | None = None,
     owner: str | None = None,
     plugin_module_name: str | None = None,
     disclosure: Disclosure = Disclosure.PUBLIC,
@@ -150,6 +151,15 @@ def _record(
             Claim(
                 "config.references",
                 config_references,
+                ClaimBasis.OBSERVED,
+                (matcher_evidence_id,),
+            )
+        )
+    if extension_references:
+        claims.append(
+            Claim(
+                "extension.references",
+                extension_references,
                 ClaimBasis.OBSERVED,
                 (matcher_evidence_id,),
             )
@@ -856,6 +866,89 @@ async def handle():
     )
     assert '"' + "x" * 8_100 + '"' in target.content
     assert "return [value, payload]" in target.content
+
+
+def test_runtime_extension_reference_preloads_approved_dependency_class(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_name, dependency_root = _loaded_external_dependency(
+        tmp_path,
+        monkeypatch,
+        """\
+class InputExtension:
+    async def receive_wrapper(self, bot, event, command, receive):
+        return receive
+""",
+    )
+    module = _loaded_module(
+        tmp_path,
+        monkeypatch,
+        f"""\
+from {package_name} import InputExtension
+
+async def handle():
+    return InputExtension
+""",
+    )
+    dependency_module = sys.modules[package_name]
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability.teaching._source.python_dependency_navigation_roots",
+        lambda: (dependency_root,),
+    )
+    request = build_capability_analysis_request(
+        _record(
+            module.__name__,
+            handlers=[_handler_reference(module, "handle", 3)],
+            config_references=[],
+            extension_references=[
+                {
+                    "module": package_name,
+                    "class": "InputExtension",
+                    "qualname": "InputExtension",
+                    "line": 1,
+                    "source_revision": _source_revision(dependency_module),
+                }
+            ],
+        ),
+        ConfigValuePolicy(),
+    )
+
+    extension = next(
+        item for item in request.evidence_units if item.content.startswith("class InputExtension:")
+    )
+    runtime_extensions = next(
+        item for item in request.evidence_units if item.source_kind == "runtime_extension_set"
+    )
+    assert json.loads(runtime_extensions.content)["members"] == [
+        {
+            "capability_id": "capability:test",
+            "extensions": [{"module": package_name, "qualname": "InputExtension"}],
+        }
+    ]
+    assert extension.source_kind == "python_dependency_function"
+    assert extension.locator == (
+        f"python_purelib/{package_name}/__init__.py:{package_name}.InputExtension:1"
+    )
+
+    with pytest.raises(CapabilityAnalysisAdapterError, match="runtime extension source"):
+        build_capability_analysis_request(
+            _record(
+                module.__name__,
+                handlers=[_handler_reference(module, "handle", 3)],
+                config_references=[],
+                extension_references=[
+                    {
+                        "module": package_name,
+                        "class": "InputExtension",
+                        "qualname": "InputExtension",
+                        "line": 1,
+                        "source_revision": f"sha256:{'0' * 64}",
+                    }
+                ],
+            ),
+            ConfigValuePolicy(),
+        )
 
 
 def test_parameterized_family_preloads_unique_static_member_callables(
@@ -1955,12 +2048,22 @@ matcher = on_command(
     source_hash = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
     reference = _handler_reference(module, "first", module.first.__code__.co_firstlineno)
     reference["closure_freevars"] = ["command"]
+    extension_references = [
+        {
+            "module": module.__name__,
+            "class": "InputExtension",
+            "qualname": "InputExtension",
+            "line": 1,
+            "source_revision": _source_revision(module),
+        }
+    ]
     records = (
         _record(
             module.__name__,
             capability_id="command:touch",
             handlers=[reference],
             config_references=[],
+            extension_references=extension_references,
             command_header="摸摸",
         ),
         _record(
@@ -1968,6 +2071,7 @@ matcher = on_command(
             capability_id="command:kiss",
             handlers=[reference],
             config_references=[],
+            extension_references=extension_references,
             command_header="亲亲",
         ),
     )
@@ -2010,7 +2114,21 @@ matcher = on_command(
     assert registrations[0].locator.endswith(f":registration:{registration_line}")
     assert registrations[0].revision == f"sha256:{source_hash}"
     assert request.gate_candidates == ()
-    assert not any("class InputExtension:" in item.content for item in request.evidence_units)
+    extension = next(
+        item for item in request.evidence_units if item.content.startswith("class InputExtension:")
+    )
+    runtime_extensions = next(
+        item for item in request.evidence_units if item.source_kind == "runtime_extension_set"
+    )
+    assert {
+        item["capability_id"] for item in json.loads(runtime_extensions.content)["members"]
+    } == {"command:touch", "command:kiss"}
+    assert extension.source_kind == "python_function"
+    module_file = module.__file__
+    assert isinstance(module_file, str)
+    assert extension.locator == (
+        f"target_plugin/{Path(module_file).name}:{module.__name__}.InputExtension:1"
+    )
     assert len(request.family_members) == 2
     assert any(item.source_kind == "runtime_family_members" for item in request.evidence_units)
     assert not any(item.source_kind == "runtime_family_shapes" for item in request.evidence_units)

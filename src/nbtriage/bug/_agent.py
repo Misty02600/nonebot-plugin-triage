@@ -24,6 +24,7 @@ from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RunUsage
 
 from nbtriage._model_runtime.diagnostics import last_model_response
+from nbtriage._model_runtime.run_control import RunControlCapability, RunPhase
 from nbtriage._model_runtime.telemetry import current_agent_instrumentation
 from nbtriage._model_runtime.usage import response_model_matches
 from nbtriage.bug.assessment import (
@@ -35,7 +36,7 @@ from nbtriage.bug.assessment import (
     parse_bug_assessment_case,
 )
 
-BUG_AGENT_PROMPT_ID = "bug-assessment-agent-v1-prompt-v8-zh"
+BUG_AGENT_PROMPT_ID = "bug-assessment-agent-v1-prompt-v9-zh"
 _ALLOWED_OUTPUT_MODES = frozenset({"native", "tool"})
 _PARALLEL_TOOL_CALL_LIMIT_FACTOR = 2
 
@@ -69,7 +70,7 @@ SYSTEM_INSTRUCTION = """\
 - 当结论为 unknown 时，missing_evidence 不能为空。不要虚构置信度分数或额外文字字段。
 
 工具节制：
-- 只调用本轮工具列表实际提供的工具。每个无参数工具最多调用一次；会话历史工具存在时有独立的一次调用额度，不消耗六次通用证据额度。
+- 只调用本轮工具列表实际提供的工具。每个无参数工具最多调用一次；会话历史工具存在时有独立的一次调用额度，不消耗八次通用证据额度。
 - 如果工具返回空列表，说明该证据不可用；不要换一种措辞再次调用同一工具。
 - 源码最多搜索两次，并且最多读取一个返回的相对路径文件。绝不能虚构相对路径。
 - 设计 RAG 最多搜索两次。只有第一次返回了证据但仍留下一个明确、具体的合同问题时，才允许第二次搜索。
@@ -207,7 +208,7 @@ class PydanticAIBugAssessmentAgent:
         *,
         timeout_seconds: float,
         max_output_tokens: int,
-        max_requests: int = 9,
+        max_requests: int = 12,
         max_tool_calls: int = BUG_ASSESSMENT_MAX_TOOL_CALLS,
         cost_limit_usd: Decimal = Decimal("0.50"),
         model_settings: ModelSettings | None = None,
@@ -241,6 +242,17 @@ class PydanticAIBugAssessmentAgent:
         self._last_usage: RunUsage | None = None
         self._last_messages: tuple[ModelMessage, ...] = ()
         self._last_trace_id: str | None = None
+        run_control = RunControlCapability(
+            self._run_phase,
+            checkpoint_instruction=(
+                "当前调查已进入最终提交预留阶段。停止可选探索；只在仍缺少会改变三值结论或责任层的"
+                "一组明确证据时，完成最后一次定向补证。"
+            ),
+            finalizing_instruction=(
+                "本轮取证阶段已经结束。不要再调用证据工具；使用已有 Evidence 提交最小、引用闭合的"
+                "结构化 Bug 判断，证据不足时返回 unknown。"
+            ),
+        )
         self._agent: Agent[BugAgentDeps, BugAssessmentCandidate] = Agent(
             model,
             output_type=BugAssessmentCandidate,
@@ -255,6 +267,7 @@ class PydanticAIBugAssessmentAgent:
                 Tool(search_design_rag, prepare=prepare_bounded_bug_tool),
                 Tool(read_deployment_context, prepare=prepare_bounded_bug_tool),
             ),
+            capabilities=(run_control,),
             name="bug_assessment",
             model_settings=merge_model_settings(
                 model_settings,
@@ -265,6 +278,23 @@ class PydanticAIBugAssessmentAgent:
             tool_timeout=min(timeout_seconds, 15.0),
         )
         self._agent.instrument = current_agent_instrumentation()
+
+    def _run_phase(self, ctx: RunContext[BugAgentDeps]) -> RunPhase:
+        toolbox = ctx.deps.toolbox
+        conversation_available = (
+            not toolbox.conversation_exhausted
+            and toolbox.tool_call_count("read_conversation_context")
+            < BUG_CONVERSATION_MAX_TOOL_CALLS
+        )
+        if ctx.usage.requests >= max(0, self._max_requests - 2) or (
+            toolbox.tool_budget_exhausted and not conversation_available
+        ):
+            return "finalizing"
+        if ctx.usage.requests >= max(
+            0, self._max_requests - 3
+        ) or toolbox.general_tool_calls >= max(0, self._max_tool_calls - 2):
+            return "checkpoint"
+        return "running"
 
     @property
     def last_response(self) -> ModelResponse | None:
@@ -302,10 +332,10 @@ class PydanticAIBugAssessmentAgent:
                         usage_limits=UsageLimits(
                             cost_limit=self._cost_limit_usd,
                             request_limit=self._max_requests,
-                            # 最多一次聊天窗口 + 六轮通用取证，第八轮输出，
-                            # 第九轮保留给一次输出修正。
-                            # OpenCode Go 偶尔会忽略 parallel_tool_calls=False，并在证据预算
-                            # 即将耗尽时并行请求多个工具。Toolbox 仍只执行前六次；这里仅允许
+                            # 最多一次聊天窗口 + 八次通用取证；第十一轮输出，
+                            # 第十二轮保留给一次输出修正。
+                            # Provider 仍可能忽略 parallel_tool_calls=False，并在证据预算
+                            # 即将耗尽时并行请求多个工具。Toolbox 仍只执行前八次；这里仅允许
                             # Pydantic AI 接收并反馈同一响应中未执行的空结果。
                             tool_calls_limit=(
                                 (self._max_tool_calls + BUG_CONVERSATION_MAX_TOOL_CALLS)

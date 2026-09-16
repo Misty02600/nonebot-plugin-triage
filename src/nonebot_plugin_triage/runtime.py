@@ -12,9 +12,6 @@ from nonebot import get_driver, logger
 from nbtriage._model_runtime.telemetry import AgentTelemetryRuntime
 from nbtriage.bug.logs import CorrelatedBugLogBuffer
 from nbtriage.capability.teaching.analysis import CapabilityAnalysisClient
-from nbtriage.incident_queries import IncidentQueryService
-from nbtriage.live_incidents import LiveIncidentBuffer
-from nbtriage.live_trials import LiveTrialService
 from nbtriage.message_references import PlatformMessageReferenceIndex
 from nbtriage.rate_limits import KeyedRateLimiter
 from nbtriage.runtime_observations import RuntimeObservationBuffer
@@ -47,7 +44,6 @@ from nonebot_plugin_triage.knowledge_pack_runtime import (
     KnowledgePackService,
     register_knowledge_pack,
 )
-from nonebot_plugin_triage.live_reports import LiveReportService
 from nonebot_plugin_triage.local_identity import LocalWorkflowIdentity
 from nonebot_plugin_triage.nonebot_runtime import NoneBotRuntimeObserver
 from nonebot_plugin_triage.support.guidance import PublicGuidanceServiceLike
@@ -59,10 +55,6 @@ from nonebot_plugin_triage.support.semantic_runtime import create_semantic_asses
 from nonebot_plugin_triage.support.threads import (
     SupportThreadReferenceBridge,
 )
-from nonebot_plugin_triage.task_model_runtime import (
-    is_opencode_go_profile,
-)
-from nonebot_plugin_triage.trials import create_trial_service
 from nonebot_plugin_triage.universal_references import UniversalReferenceBridge
 
 
@@ -158,8 +150,6 @@ def _capability_annotation_initialization_failure_reason(
 def _expected_provider_credential_environments(
     config: NBTriageConfig,
 ) -> tuple[str, ...]:
-    if is_opencode_go_profile(config):
-        return ("OPENAI_API_KEY",)
     if config.nbtriage_model_name is None:
         return ()
     provider, separator, _model = config.nbtriage_model_name.partition(":")
@@ -206,15 +196,11 @@ class NBTriagePluginRuntime:
     support_turns: SupportThreadTurnCoordinator
     outgoing_reference_providers: tuple[OutgoingReferenceProvider, ...]
     support_rate_limiter: KeyedRateLimiter
-    report_service: LiveReportService
     bug_log_buffer: CorrelatedBugLogBuffer
     bug_workflow_repository: NoneBotORMBugWorkflowRepository
     local_identity: LocalWorkflowIdentity
     behavior_exploration_service: BehaviorExplorationServiceLike
     bug_assessment_service: BugAssessmentServiceLike
-    query_service: IncidentQueryService
-    incidents: LiveIncidentBuffer
-    trials: LiveTrialService
     semantic_assessment_service: SemanticAssessmentServiceLike
     public_guidance_service: PublicGuidanceServiceLike
     capability_shadow: CapabilityShadowService | None
@@ -231,7 +217,6 @@ def create_plugin_runtime(
     public_guidance_service_factory: Callable[
         [NBTriageConfig], PublicGuidanceServiceLike
     ] = _create_public_guidance_service,
-    trial_service_factory: Callable[[NBTriageConfig], LiveTrialService] = (create_trial_service),
     agent_telemetry_factory: Callable[
         [NBTriageConfig], AgentTelemetryRuntime | None
     ] = create_agent_telemetry_runtime,
@@ -270,24 +255,11 @@ def create_plugin_runtime(
         secret_key=secrets.token_bytes(32),
     )
     thread_reference_bridge = SupportThreadReferenceBridge(support_turns)
-    incident_buffer = LiveIncidentBuffer(
-        max_entries=config.nbtriage_incident_max_entries,
-        retention_seconds=config.nbtriage_incident_retention_seconds,
-    )
-    trial_service = trial_service_factory(config)
     support_rate_limiter = KeyedRateLimiter(
         secret_key=secrets.token_bytes(32),
         max_scopes=config.nbtriage_rate_limit_max_scopes,
         cooldown_seconds=config.nbtriage_cooldown_seconds,
     )
-    report_service = LiveReportService(
-        reference_bridge=reference_bridge,
-        runtime_buffer=runtime_buffer,
-        incident_buffer=incident_buffer,
-        evidence_retention_seconds=config.nbtriage_observation_retention_seconds,
-        trial_service=trial_service,
-    )
-    query_service = IncidentQueryService(incident_buffer)
     semantic_assessment_service = semantic_assessment_service_factory(config)
     public_guidance_service = public_guidance_service_factory(config)
     config_value_policy = ConfigValuePolicy.from_keys(config.nbtriage_restricted_config)
@@ -321,6 +293,7 @@ def create_plugin_runtime(
         annotation_analysis_revision=capability_annotation_analysis_revision(config),
         annotation_evidence_validator=capability_teaching_tools.validate_evidence_currentness,
         annotation_request_enricher=capability_teaching_tools.prepare_request,
+        annotation_startup_revision=capability_teaching_tools.startup_revision,
         annotation_max_concurrency=config.nbtriage_capability_annotation_max_concurrency,
     )
     bug_workflow_repository = NoneBotORMBugWorkflowRepository()
@@ -347,15 +320,11 @@ def create_plugin_runtime(
         support_turns=support_turns,
         outgoing_reference_providers=outgoing_reference_providers,
         support_rate_limiter=support_rate_limiter,
-        report_service=report_service,
         bug_log_buffer=bug_log_buffer,
         bug_workflow_repository=bug_workflow_repository,
         local_identity=local_identity,
         behavior_exploration_service=behavior_exploration_service,
         bug_assessment_service=bug_assessment_service,
-        query_service=query_service,
-        incidents=incident_buffer,
-        trials=trial_service,
         semantic_assessment_service=semantic_assessment_service,
         public_guidance_service=public_guidance_service,
         capability_shadow=capability_shadow,

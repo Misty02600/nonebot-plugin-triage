@@ -7,7 +7,7 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from nbtriage.behavior._agent import BehaviorEvidenceSearchResult
+from nbtriage.behavior.conversation_agent import CapabilityEvidenceSearchResult
 from nbtriage.behavior.exploration import (
     BehaviorClaimBasis,
     BehaviorEvidenceFact,
@@ -48,7 +48,7 @@ _ALLOWED_CLAIM_FIELDS = frozenset(
 class BehaviorEvidenceSource(Protocol):
     async def snapshot(self) -> BehaviorEvidenceSnapshot: ...
 
-    async def search(self, query: str) -> BehaviorEvidenceSearchResult: ...
+    async def search(self, query: str) -> CapabilityEvidenceSearchResult: ...
 
 
 class CapabilityShadowBehaviorEvidenceSource:
@@ -66,13 +66,13 @@ class CapabilityShadowBehaviorEvidenceSource:
             stale=status.stale,
         )
 
-    async def search(self, query: str) -> BehaviorEvidenceSearchResult:
+    async def search(self, query: str) -> CapabilityEvidenceSearchResult:
         snapshot = await self.snapshot()
         if not snapshot.available:
-            return BehaviorEvidenceSearchResult(snapshot=snapshot)
+            return CapabilityEvidenceSearchResult(snapshot=snapshot)
         result = await self._shadow.search_for_maintainer(query, limit=5)
         if result is None:
-            return BehaviorEvidenceSearchResult(
+            return CapabilityEvidenceSearchResult(
                 snapshot=BehaviorEvidenceSnapshot(
                     generation=snapshot.generation,
                     available=False,
@@ -85,7 +85,7 @@ class CapabilityShadowBehaviorEvidenceSource:
             facts.extend(_project_capability_hit(hit, snapshot))
             if len(facts) >= BEHAVIOR_SHADOW_FACT_LIMIT:
                 break
-        return BehaviorEvidenceSearchResult(
+        return CapabilityEvidenceSearchResult(
             snapshot=BehaviorEvidenceSnapshot(
                 generation=snapshot.generation,
                 available=True,

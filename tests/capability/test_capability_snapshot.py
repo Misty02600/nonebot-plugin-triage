@@ -461,6 +461,58 @@ def test_compiled_custom_header_stays_opaque_without_running_converter(
     command_manager.delete(command)
 
 
+def test_alconna_snapshot_records_installed_extension_class_but_not_default(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    matcher_cleanup: list[type[object]],
+) -> None:
+    plugin = _source_plugin(
+        tmp_path,
+        monkeypatch,
+        """\
+from uuid import uuid4
+from arclet.alconna import Alconna
+from nonebot_plugin_alconna import on_alconna
+from nonebot_plugin_alconna.extension import Extension
+
+class InputExtension(Extension):
+    @property
+    def priority(self):
+        return 10
+
+    @property
+    def id(self):
+        return "input"
+
+    async def receive_wrapper(self, bot, event, command, receive):
+        return receive
+
+command = Alconna("extension-probe", namespace=uuid4().hex)
+matcher = on_alconna(command, extensions=[InputExtension()])
+
+@matcher.handle()
+async def handler():
+    return None
+""",
+    )
+    matcher = plugin.module.matcher
+    matcher_cleanup.append(matcher)
+
+    (record,) = build_capability_snapshot(plugins=[plugin]).records
+
+    (references,) = _record_values(record, "extension.references")
+    assert references == [
+        {
+            "module": plugin.module_name,
+            "class": "InputExtension",
+            "qualname": "InputExtension",
+            "line": 6,
+            "source_revision": references[0]["source_revision"],
+        }
+    ]
+    assert references[0]["source_revision"].startswith("sha256:")
+
+
 def test_alconna_shortcut_preserves_empty_command_prefix(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

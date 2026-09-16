@@ -10,8 +10,6 @@ from tools.nbtriage_maintainer.model_evaluation_target import (
     model_connection_revision,
 )
 
-from nbtriage._model_runtime.settings import ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
-
 
 def test_alibaba_evaluation_target_preserves_endpoint_identity(
     monkeypatch: pytest.MonkeyPatch,
@@ -32,11 +30,8 @@ def test_alibaba_evaluation_target_preserves_endpoint_identity(
     assert binding.api_family == "pydantic-ai"
     assert binding.connection_revision == model_connection_revision(base_url)
     assert base_url not in binding.connection_revision
-    assert binding.settings_revision == ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
-    assert binding.model_settings is not None
-    assert binding.model_settings.get("extra_body") == {"enable_thinking": False}
-    assert binding.model_settings.get("parallel_tool_calls") is False
-    assert binding.model_settings.get("temperature") == 0
+    assert binding.settings_revision == "provider-default"
+    assert binding.model_settings is None
 
 
 def test_nonlegacy_evaluation_target_requires_provider_qualified_model_id() -> None:

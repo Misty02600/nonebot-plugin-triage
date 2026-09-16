@@ -20,14 +20,16 @@ def test_model_config_uses_only_pydantic_ai_model_identity() -> None:
     assert config.nbtriage_model_base_url is None
     assert config.nbtriage_model_timeout_seconds == 60
     assert config.nbtriage_model_max_output_tokens == 240
-    assert config.nbtriage_behavior_max_output_tokens == 1_200
-    assert config.nbtriage_behavior_max_concurrency == 2
+    assert config.nbtriage_public_guidance_max_output_tokens == 2_048
+    assert config.nbtriage_behavior_max_output_tokens == 8_192
     assert config.nbtriage_capability_annotation_max_concurrency == 50
 
     with pytest.raises(ValidationError, match="was removed"):
         NBTriageConfig.model_validate({"nbtriage_model_enabled": True})
     with pytest.raises(ValidationError, match="provider:model"):
         NBTriageConfig.model_validate({"nbtriage_model_backend": "pydantic-ai"})
+    with pytest.raises(ValidationError, match="globally serialized"):
+        NBTriageConfig.model_validate({"nbtriage_behavior_max_concurrency": 2})
     for invalid_model in ("gpt-test", ":gpt-test", "openai-chat:"):
         with pytest.raises(ValidationError, match="provider:model"):
             NBTriageConfig(nbtriage_model_name=invalid_model)
@@ -40,12 +42,6 @@ def test_capability_annotation_concurrency_has_no_fixed_upper_bound() -> None:
     config = NBTriageConfig(nbtriage_capability_annotation_max_concurrency=10_000)
 
     assert config.nbtriage_capability_annotation_max_concurrency == 10_000
-
-
-@pytest.mark.parametrize("value", (0, 17))
-def test_behavior_concurrency_is_bounded(value: int) -> None:
-    with pytest.raises(ValidationError):
-        NBTriageConfig(nbtriage_behavior_max_concurrency=value)
 
 
 def test_model_config_rejects_secret_without_echoing_value() -> None:
@@ -104,8 +100,8 @@ def test_plugin_runtime_uses_model_only_configuration(
 
     runtime = create_plugin_runtime(
         NBTriageConfig(
-            nbtriage_model_name="openai-chat:deepseek-v4-flash",
-            nbtriage_model_base_url="https://opencode.ai/zen/go/v1",
+            nbtriage_model_name="openai-chat:fixture-model",
+            nbtriage_model_base_url="https://model.example/v1",
             nbtriage_model_timeout_seconds=60,
             nbtriage_model_max_output_tokens=240,
             nbtriage_restricted_config=frozenset({"DISCORD_BOTS"}),

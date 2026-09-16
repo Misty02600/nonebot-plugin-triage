@@ -1312,6 +1312,7 @@ def _record_lookup_terms(record: CapabilityRecord) -> tuple[str, ...]:
 def _searchable_claims(record: CapabilityRecord) -> tuple[Claim, ...]:
     internal_fields = {
         "handler.references",
+        "extension.references",
         "config.references",
         "plugin.distribution",
         "plugin.module_name",

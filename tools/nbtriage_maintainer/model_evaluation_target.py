@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from hashlib import sha256
@@ -9,11 +8,9 @@ from typing import Any, cast
 
 from pydantic_ai.models import Model, infer_model
 from pydantic_ai.providers import Provider, infer_provider_class
-from pydantic_ai.settings import ModelSettings
+from pydantic_ai.settings import ModelSettings, ThinkingLevel
 
-from nbtriage._model_runtime.http_diagnostics import provider_http_client
 from nbtriage._model_runtime.settings import task_model_settings
-from nbtriage.opencode_go_contracts import OPENCODE_GO_THINKING_SETTINGS_REVISION
 
 _PER_MILLION = Decimal(1_000_000)
 
@@ -39,7 +36,7 @@ def create_model_evaluation_binding(
     model_name: str,
     timeout_seconds: float,
     base_url: str | None = None,
-    environ: Mapping[str, str] | None = None,
+    thinking: ThinkingLevel | None = None,
 ) -> ModelEvaluationBinding:
     """构造不依赖 NoneBot 启动过程的维护侧模型绑定。
 
@@ -48,7 +45,7 @@ def create_model_evaluation_binding(
         model_name: 后端模型 ID；通用后端使用 ``provider:model`` 形式。
         timeout_seconds: SDK 级请求超时秒数。
         base_url: 仅用于 ``pydantic-ai`` 后端的 Provider 地址覆盖。
-        environ: 固定传输读取密钥的环境变量映射；默认读取当前进程环境。
+        thinking: 任务所需的 Pydantic AI 统一思考级别。
 
     Returns:
         可供具体 evaluator 客户端复用的 Pydantic AI Model 及实际身份。
@@ -62,106 +59,28 @@ def create_model_evaluation_binding(
         raise ModelEvaluationTargetError("model backend and name must be configured")
     if timeout_seconds <= 0:
         raise ModelEvaluationTargetError("model timeout must be positive")
-    if base_url is not None and backend != "pydantic-ai":
-        raise ModelEvaluationTargetError(
-            "model base URL override is only supported by the pydantic-ai backend"
-        )
-    environment = os.environ if environ is None else environ
+    if backend != "pydantic-ai":
+        raise ModelEvaluationTargetError("evaluation targets must use the pydantic-ai backend")
+    if ":" not in model_name:
+        raise ModelEvaluationTargetError("pydantic-ai model names must use provider:model")
 
     try:
-        if backend == "opencode-go-chat":
-            api_key = environment.get("OPENCODE_API_KEY", "")
-            if not api_key.strip():
-                raise ModelEvaluationTargetError(
-                    "OPENCODE_API_KEY is required for opencode-go-chat"
-                )
-            from nbtriage.opencode_go_semantic_adapter import (
-                create_opencode_go_chat_model,
-                opencode_go_model_settings,
-            )
-
-            model = create_opencode_go_chat_model(
-                api_key=api_key,
-                model=model_name,
-                timeout_seconds=timeout_seconds,
-            )
-            return _binding(
-                model,
-                api_family="chat-completions",
-                model_settings=opencode_go_model_settings(),
-                settings_revision=OPENCODE_GO_THINKING_SETTINGS_REVISION,
-            )
-
-        if backend == "openai-responses":
-            api_key = environment.get("OPENAI_API_KEY", "")
-            if not api_key.strip():
-                raise ModelEvaluationTargetError("OPENAI_API_KEY is required for openai-responses")
-            from openai import AsyncOpenAI
-            from pydantic_ai.models.openai import (
-                OpenAIResponsesModel,
-                OpenAIResponsesModelSettings,
-            )
-            from pydantic_ai.providers.openai import OpenAIProvider
-
-            model = OpenAIResponsesModel(
+        model = (
+            infer_model(model_name)
+            if base_url is None
+            else infer_model(
                 model_name,
-                provider=OpenAIProvider(
-                    openai_client=AsyncOpenAI(
-                        api_key=api_key,
-                        timeout=timeout_seconds,
-                        max_retries=2,
-                        http_client=provider_http_client(timeout_seconds=timeout_seconds),
-                    )
-                ),
+                provider_factory=_base_url_provider_factory(base_url),
             )
-            return _binding(
-                model,
-                api_family="responses",
-                model_settings=OpenAIResponsesModelSettings(openai_store=False),
-            )
-
-        if backend == "anthropic-messages":
-            api_key = environment.get("ANTHROPIC_API_KEY", "")
-            if not api_key.strip():
-                raise ModelEvaluationTargetError(
-                    "ANTHROPIC_API_KEY is required for anthropic-messages"
-                )
-            from anthropic import AsyncAnthropic
-            from pydantic_ai.models.anthropic import AnthropicModel
-            from pydantic_ai.providers.anthropic import AnthropicProvider
-
-            model = AnthropicModel(
-                model_name,
-                provider=AnthropicProvider(
-                    anthropic_client=AsyncAnthropic(
-                        api_key=api_key,
-                        timeout=timeout_seconds,
-                        max_retries=2,
-                        http_client=provider_http_client(timeout_seconds=timeout_seconds),
-                    )
-                ),
-            )
-            return _binding(model, api_family="messages")
-
-        if backend == "pydantic-ai":
-            if ":" not in model_name:
-                raise ModelEvaluationTargetError("pydantic-ai model names must use provider:model")
-            model = (
-                infer_model(model_name)
-                if base_url is None
-                else infer_model(
-                    model_name,
-                    provider_factory=_base_url_provider_factory(base_url),
-                )
-            )
-            model_settings, settings_revision = task_model_settings(model)
-            return _binding(
-                model,
-                api_family="pydantic-ai",
-                model_settings=model_settings,
-                connection_revision=model_connection_revision(base_url),
-                settings_revision=settings_revision,
-            )
+        )
+        model_settings, settings_revision = task_model_settings(model, thinking=thinking)
+        return _binding(
+            model,
+            api_family=_pydantic_ai_api_family(model_name),
+            model_settings=model_settings,
+            connection_revision=model_connection_revision(base_url),
+            settings_revision=settings_revision,
+        )
     except ModelEvaluationTargetError:
         raise
     except (ImportError, RuntimeError, TypeError, ValueError) as error:
@@ -169,7 +88,16 @@ def create_model_evaluation_binding(
             f"model evaluation target could not be initialized ({type(error).__name__})"
         ) from error
 
-    raise ModelEvaluationTargetError(f"unsupported model backend: {backend}")
+
+def _pydantic_ai_api_family(model_id: str) -> str:
+    provider = model_id.split(":", 1)[0]
+    if provider == "openai-chat":
+        return "chat-completions"
+    if provider in {"openai", "openai-responses"}:
+        return "responses"
+    if provider == "anthropic":
+        return "messages"
+    return "pydantic-ai"
 
 
 def model_connection_revision(base_url: str | None) -> str:

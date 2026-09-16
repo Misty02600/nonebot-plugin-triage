@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.metadata
 import inspect
@@ -187,6 +188,7 @@ class CapabilityCandidate:
     components: tuple[AlconnaComponent, ...]
     constraints: tuple[str, ...]
     handler_references: tuple[dict[str, object], ...]
+    extension_references: tuple[dict[str, object], ...]
     config_references: tuple[_ResolvedConfigReference, ...]
     evidence: tuple[SourceEvidence, ...]
     trigger_factory: str | None = None
@@ -222,6 +224,7 @@ class _CollectorState:
     file_hashes: dict[Path, tuple[str | None, tuple[str, ...]]]
     module_hashes: dict[str, tuple[str | None, tuple[str, ...]]]
     module_sources: dict[Path, tuple[str | None, str | None]]
+    class_definition_lines: dict[tuple[Path, str, str, str], int | None]
 
 
 @cache
@@ -261,7 +264,7 @@ def build_capability_snapshot(
         plugins = get_loaded_plugins()
 
     package_map = _installed_package_map()
-    state = _CollectorState(package_map, {}, {}, {})
+    state = _CollectorState(package_map, {}, {}, {}, {})
     public_paths = frozenset(
         path for path in explicit_public_alconna_paths if isinstance(path, str)
     )
@@ -487,6 +490,7 @@ def _candidate_from_matcher(
     matcher_type = _safe_text(getattr(matcher, "type", None)) or ""
     command = _alconna_command(matcher)
     if command is not None:
+        extension_references = _matcher_extension_references(matcher, state)
         return _alconna_candidate(
             plugin,
             matcher,
@@ -494,6 +498,7 @@ def _candidate_from_matcher(
             source,
             constraints,
             handler_references,
+            extension_references,
             config_references,
             superuser_only=superuser_only,
             public_paths=public_paths,
@@ -507,6 +512,7 @@ def _candidate_from_matcher(
             source,
             constraints,
             handler_references,
+            (),
             config_references,
             command_rules,
             superuser_only=superuser_only,
@@ -521,6 +527,7 @@ def _candidate_from_matcher(
         source,
         constraints,
         handler_references,
+        (),
         config_references,
         kind=kind,
         superuser_only=superuser_only,
@@ -796,6 +803,7 @@ def _alconna_candidate(
     source: SourceEvidence,
     constraints: tuple[str, ...],
     handler_references: tuple[dict[str, object], ...],
+    extension_references: tuple[dict[str, object], ...],
     config_references: tuple[_ResolvedConfigReference, ...],
     *,
     superuser_only: bool,
@@ -885,6 +893,7 @@ def _alconna_candidate(
         components=components,
         constraints=tuple(sorted(alconna_constraints)),
         handler_references=handler_references,
+        extension_references=extension_references,
         config_references=config_references,
         evidence=(source,),
         shortcuts=shortcuts,
@@ -902,6 +911,7 @@ def _command_candidate(
     source: SourceEvidence,
     constraints: tuple[str, ...],
     handler_references: tuple[dict[str, object], ...],
+    extension_references: tuple[dict[str, object], ...],
     config_references: tuple[_ResolvedConfigReference, ...],
     command_rules: tuple[object, ...],
     *,
@@ -968,6 +978,7 @@ def _command_candidate(
         components=(),
         constraints=constraints,
         handler_references=handler_references,
+        extension_references=extension_references,
         config_references=config_references,
         evidence=(source,),
     )
@@ -979,6 +990,7 @@ def _generic_candidate(
     source: SourceEvidence,
     constraints: tuple[str, ...],
     handler_references: tuple[dict[str, object], ...],
+    extension_references: tuple[dict[str, object], ...],
     config_references: tuple[_ResolvedConfigReference, ...],
     *,
     kind: CapabilityKind,
@@ -1021,6 +1033,7 @@ def _generic_candidate(
         components=(),
         constraints=constraints,
         handler_references=handler_references,
+        extension_references=extension_references,
         config_references=config_references,
         evidence=(source,),
     )
@@ -1246,6 +1259,95 @@ def _matcher_handler_references(
             wrapper_reference["role"] = "wrapper"
             result.append(wrapper_reference)
     return tuple(result)
+
+
+def _matcher_extension_references(
+    matcher: object,
+    state: _CollectorState,
+) -> tuple[dict[str, object], ...]:
+    """记录 Alconna Matcher 最终安装的非默认 Extension 类身份。"""
+    executor = getattr(matcher, "executor", None)
+    extensions = _safe_collection(getattr(executor, "extensions", ()))
+    references: dict[tuple[str, str, int, str], dict[str, object]] = {}
+    for extension in extensions:
+        extension_class = type(extension)
+        if _is_default_alconna_extension(extension_class):
+            continue
+        module_name = type.__getattribute__(extension_class, "__module__")
+        qualname = type.__getattribute__(extension_class, "__qualname__")
+        class_name = type.__getattribute__(extension_class, "__name__")
+        if not (
+            isinstance(module_name, str)
+            and module_name
+            and isinstance(qualname, str)
+            and qualname
+            and isinstance(class_name, str)
+            and class_name.isidentifier()
+        ):
+            continue
+        module = sys.modules.get(module_name)
+        if not isinstance(module, ModuleType):
+            continue
+        source_path = _module_file(module)
+        if source_path is None or source_path.suffix.casefold() != ".py":
+            continue
+        source_text, source_revision = _module_source_text(source_path, state)
+        if source_text is None or source_revision is None:
+            continue
+        line_key = (source_path, class_name, qualname, source_revision)
+        if line_key not in state.class_definition_lines:
+            state.class_definition_lines[line_key] = _unique_class_definition_line(
+                source_text,
+                class_name=class_name,
+                qualname=qualname,
+            )
+        line = state.class_definition_lines[line_key]
+        if line is None:
+            continue
+        key = (module_name, qualname, line, source_revision)
+        references[key] = {
+            "module": module_name,
+            "class": class_name,
+            "qualname": qualname,
+            "line": line,
+            "source_revision": source_revision,
+        }
+    return tuple(references[key] for key in sorted(references))
+
+
+def _is_default_alconna_extension(extension_class: type[object]) -> bool:
+    module = sys.modules.get("nonebot_plugin_alconna.extension")
+    return isinstance(module, ModuleType) and extension_class is vars(module).get(
+        "DefaultExtension"
+    )
+
+
+def _unique_class_definition_line(
+    source: str,
+    *,
+    class_name: str,
+    qualname: str,
+) -> int | None:
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    matches: list[ast.ClassDef] = []
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
+        next_scope = scope
+        if isinstance(node, ast.ClassDef):
+            node_qualname = ".".join((*scope, node.name))
+            if node.name == class_name and node_qualname == qualname:
+                matches.append(node)
+            next_scope = (*scope, node.name)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            next_scope = (*scope, node.name, "<locals>")
+        for child in ast.iter_child_nodes(node):
+            visit(child, next_scope)
+
+    visit(tree, ())
+    return matches[0].lineno if len(matches) == 1 else None
 
 
 def _matcher_handler_chains(
@@ -2089,6 +2191,16 @@ def _core_record(
             Claim(
                 "handler.references",
                 list(candidate.handler_references),
+                ClaimBasis.OBSERVED,
+                matcher_evidence,
+            )
+        )
+
+    if candidate.extension_references:
+        claims.append(
+            Claim(
+                "extension.references",
+                list(candidate.extension_references),
                 ClaimBasis.OBSERVED,
                 matcher_evidence,
             )

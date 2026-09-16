@@ -766,6 +766,8 @@ def register_capability_shadow(
     annotation_request_enricher: Callable[[CapabilityAnalysisRequest], CapabilityAnalysisRequest]
     | None = None,
     annotation_max_concurrency: int = 50,
+    annotation_startup_revision: Callable[[tuple[CapabilityAnalysisRequest, ...]], str]
+    | None = None,
 ) -> CapabilityShadowService:
     """注册后台能力快照刷新，并把 LocalStore 路径解析延后到启动阶段。"""
     if startup_registrar is None:
@@ -789,6 +791,7 @@ def register_capability_shadow(
             published_generation_resolver=teaching_output_writer.current_generation,
             published_annotations_resolver=teaching_output_writer.current_annotation_caches,
             max_analysis_concurrency=annotation_max_concurrency,
+            startup_revision=annotation_startup_revision,
         )
     service = CapabilityShadowService(
         lambda: cache_file_resolver(_CAPABILITY_SHADOW_FILENAME),

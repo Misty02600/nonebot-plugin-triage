@@ -86,10 +86,8 @@ from nbtriage.capability.teaching.source_evidence import (
     build_capability_source_evidence,
     fixed_permission_constraints,
 )
-from nbtriage.opencode_go_contracts import OPENCODE_GO_THINKING_SETTINGS_REVISION
-from nbtriage.opencode_go_semantic_adapter import normalized_opencode_go_cost_microusd
 
-CAPABILITY_TEACHING_EVALUATION_ID = "capability-teaching-opencode-go-v1"
+CAPABILITY_TEACHING_EVALUATION_ID = "capability-teaching-v1"
 CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION = (
     "capability-teaching-forward-heldout-20-20260819-v13-v39-request-v3-zh-a"
 )
@@ -108,11 +106,6 @@ CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256 = (
 CAPABILITY_TEACHING_CONSUMED_V1_FIXTURE_SHA256 = (
     "783f8daabcaf5587f942a0463ce9237726d77c875344760354ce52d08c5df76f"
 )
-_QUALIFIED_PROVIDER = "opencode-go"
-_QUALIFIED_MODEL = "deepseek-v4-flash"
-_QUALIFIED_API_FAMILY = "chat-completions"
-_QUALIFIED_CONNECTION_REVISION = "provider-default"
-_QUALIFIED_SETTINGS_REVISION = OPENCODE_GO_THINKING_SETTINGS_REVISION
 CAPABILITY_TEACHING_QUALIFIED_TIMEOUT_SECONDS = 300.0
 CAPABILITY_TEACHING_QUALIFIED_MAX_OUTPUT_TOKENS = 32_768
 _OPTION_PATTERN = re.compile(r"(?<![\w-])--?[A-Za-z][A-Za-z0-9_-]*")
@@ -268,7 +261,7 @@ async def evaluate_capability_teaching(
     declared_budget_usd: float,
     api_family: str = "chat-completions",
     connection_revision: str = "provider-default",
-    settings_revision: str = OPENCODE_GO_THINKING_SETTINGS_REVISION,
+    settings_revision: str = "provider-default",
     timeout_seconds: float = 60.0,
     max_output_tokens: int = 4_096,
     evaluation_id: str = CAPABILITY_TEACHING_EVALUATION_ID,
@@ -443,13 +436,7 @@ async def evaluate_capability_teaching(
         else:
             identity = provider_response_identity(response)
             if usage_cost_usd is None:
-                cost_microusd = normalized_opencode_go_cost_microusd(
-                    usage,
-                    provider=provider,
-                    requested_model=model,
-                    returned_provider=identity.provider_name,
-                    returned_model=identity.model_name,
-                )
+                cost_microusd = None
             else:
                 cost_usd = usage_cost_usd(usage)
                 cost_microusd = (
@@ -2750,8 +2737,6 @@ def _current_claim_kind(kind: str) -> str:
 
 def _expected_qualification_contract() -> dict[str, object]:
     return {
-        "provider": _QUALIFIED_PROVIDER,
-        "model": _QUALIFIED_MODEL,
         "task": CAPABILITY_ANNOTATION_TASK,
         "schema_version": CAPABILITY_ANNOTATION_SCHEMA_VERSION,
         "prompt_id": CAPABILITY_ANNOTATION_PROMPT_ID,
@@ -2791,11 +2776,11 @@ def _qualification_checks(
         "held_out_split": payload.get("split") == "held_out",
         "fixture_set_id": payload.get("fixture_set_id") == official_fixture_set_id,
         "fixture_sha256": fixture_sha256 == official_fixture_sha256,
-        "target_provider": provider == _QUALIFIED_PROVIDER,
-        "target_model": model == _QUALIFIED_MODEL,
-        "target_api_family": api_family == _QUALIFIED_API_FAMILY,
-        "target_connection_revision": (connection_revision == _QUALIFIED_CONNECTION_REVISION),
-        "target_settings_revision": settings_revision == _QUALIFIED_SETTINGS_REVISION,
+        "target_provider": bool(provider.strip()),
+        "target_model": bool(model.strip()),
+        "target_api_family": bool(api_family.strip()),
+        "target_connection_revision": bool(connection_revision.strip()),
+        "target_settings_revision": bool(settings_revision.strip()),
         "target_timeout_seconds": (
             timeout_seconds == CAPABILITY_TEACHING_QUALIFIED_TIMEOUT_SECONDS
         ),

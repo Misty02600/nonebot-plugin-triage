@@ -11,7 +11,15 @@ from time import monotonic_ns
 from typing import Annotated, Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from pydantic_ai import Agent, ModelRetry, ToolOutput, UsageLimits, capture_run_messages
+from pydantic_ai import (
+    Agent,
+    ModelRetry,
+    PromptedOutput,
+    ToolOutput,
+    UsageLimits,
+    capture_run_messages,
+)
+from pydantic_ai.capabilities import Toolset as ToolsetCapability
 from pydantic_ai.exceptions import (
     ModelAPIError,
     ModelHTTPError,
@@ -21,7 +29,6 @@ from pydantic_ai.exceptions import (
     UsageLimitExceeded,
 )
 from pydantic_ai.messages import (
-    InstructionPart,
     ModelMessage,
     ModelResponse,
     TextPart,
@@ -44,6 +51,7 @@ from nbtriage._model_runtime.diagnostics import (
     unexpected_behavior_reason,
     usage_limit_name,
 )
+from nbtriage._model_runtime.run_control import RunControlCapability, RunPhase
 from nbtriage._model_runtime.telemetry import (
     current_agent_instrumentation,
     record_agent_response_shape,
@@ -88,7 +96,6 @@ from nbtriage.capability.teaching.analysis import (
 from nbtriage.capability.teaching.annotations import (
     CAPABILITY_ANNOTATION_PRELOAD_TOKEN_TARGET,
     CAPABILITY_ANNOTATION_PROMPT_ID,
-    CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT,
     CapabilityAnnotationError,
     CapabilityAnnotationProjectionError,
     project_capability_annotation,
@@ -200,59 +207,50 @@ class _NavigationToolBudget:
             return True
 
 
+class _NavigationRunControl:
+    def __init__(
+        self,
+        *,
+        budget: _NavigationToolBudget,
+        max_requests: int,
+        deadline: _CapabilityRunDeadline,
+    ) -> None:
+        self._budget = budget
+        self._max_requests = max_requests
+        self._deadline = deadline
+        self._finalizing = False
+
+    def phase(self, ctx: RunContext[Any]) -> RunPhase:
+        if self._finalizing:
+            return "finalizing"
+        time_phase = self._deadline.phase()
+        if (
+            time_phase == "finalize"
+            or self._budget.claimed >= self._budget.limit
+            or ctx.usage.requests >= max(0, self._max_requests - 2)
+        ):
+            self._finalizing = True
+            return "finalizing"
+        if (
+            time_phase == "reserve"
+            or self._budget.claimed >= max(0, self._budget.limit - 2)
+            or ctx.usage.requests >= max(0, self._max_requests - 3)
+        ):
+            return "checkpoint"
+        return "running"
+
+
 class _BoundedNavigationToolset(WrapperToolset[Any]):
     def __init__(
         self,
         wrapped: AbstractToolset[Any],
         *,
         budget: _NavigationToolBudget,
-        max_requests: int,
-        total_tokens_limit: int,
-        deadline: _CapabilityRunDeadline,
-        announce_budget: bool,
+        run_control: _NavigationRunControl,
     ) -> None:
         super().__init__(wrapped=wrapped)
         self._budget = budget
-        self._max_requests = max_requests
-        self._total_tokens_limit = total_tokens_limit
-        self._deadline = deadline
-        self._announce_budget = announce_budget
-        self._finalizing = False
-
-    def _budget_phase(self, ctx: RunContext[Any]) -> Literal["normal", "reserve", "finalize"]:
-        if self._finalizing:
-            return "finalize"
-        usage = ctx.usage
-        last_input_tokens = next(
-            (
-                message.usage.input_tokens
-                for message in reversed(ctx.messages)
-                if isinstance(message, ModelResponse)
-            ),
-            0,
-        )
-        time_phase = self._deadline.phase()
-        if (
-            time_phase == "finalize"
-            or self._budget.claimed >= self._budget.limit
-            or usage.requests >= self._max_requests - 1
-            or usage.total_tokens * 4 >= self._total_tokens_limit * 3
-            or (
-                last_input_tokens > 0
-                and self._total_tokens_limit - usage.total_tokens <= 2 * last_input_tokens
-            )
-        ):
-            self._finalizing = True
-            return "finalize"
-        if time_phase == "reserve":
-            return "reserve"
-        if (
-            self._budget.claimed >= max(0, self._budget.limit - 1)
-            or usage.requests >= max(0, self._max_requests - 2)
-            or usage.total_tokens * 2 >= self._total_tokens_limit
-        ):
-            return "reserve"
-        return "normal"
+        self._run_control = run_control
 
     async def call_tool(
         self,
@@ -261,65 +259,13 @@ class _BoundedNavigationToolset(WrapperToolset[Any]):
         ctx: RunContext[Any],
         tool: ToolsetTool[Any],
     ) -> Any:
-        if self._budget_phase(ctx) == "finalize" or not await self._budget.claim():
+        if self._run_control.phase(ctx) == "finalizing" or not await self._budget.claim():
             raise ToolFailed(
-                "tool_budget_exhausted: remaining_navigation_calls=0；"
-                "源码导航或时间预算已进入收尾阶段；"
+                "tool_budget_exhausted；源码导航或时间预算已进入收尾阶段；"
                 "停止补证并使用现有 Evidence "
-                "提交 final_result。必要 gate 或可执行用法仍无法确认时应安全关闭知识。"
+                "提交最终结构化结果。必要 gate 或可执行用法仍无法确认时应安全关闭知识。"
             )
-        result = await super().call_tool(name, tool_args, ctx, tool)
-        budget_state: dict[str, object] = {
-            "remaining_navigation_calls": self._budget.remaining,
-        }
-        phase = self._budget_phase(ctx)
-        if phase != "normal":
-            budget_state["navigation_phase"] = phase
-        if phase == "finalize":
-            budget_state["navigation_instruction"] = (
-                "源码导航预算已耗尽；下一轮只使用已有 Evidence 提交 final_result，"
-                "必要事实仍无法确认时安全关闭知识。"
-            )
-        if isinstance(result, dict):
-            return {**result, **budget_state}
-        return {"result": result, **budget_state}
-
-    async def get_tools(
-        self,
-        ctx: RunContext[Any],
-    ) -> dict[str, ToolsetTool[Any]]:
-        if self._budget_phase(ctx) == "finalize":
-            return {}
-        return await super().get_tools(ctx)
-
-    async def get_instructions(
-        self,
-        ctx: RunContext[Any],
-    ) -> str | InstructionPart | Sequence[str | InstructionPart] | None:
-        instructions = await super().get_instructions(ctx)
-        if not self._announce_budget:
-            return instructions
-        phase = self._budget_phase(ctx)
-        if phase == "normal":
-            return instructions
-        if phase == "reserve":
-            budget_instruction = (
-                "当前单元已经进入最终提交预留阶段。若 name、summary、至少一条可执行 usage "
-                "以及全部执行 gate 已有充分 Evidence，请立即提交最小完整 final_result；"
-                "不得再为 search term、持久化方式、示例、返回措辞或文字润色导航源码。"
-                "只有仍缺少会影响可执行用法或必要 gate 结论的一项明确事实时，才做最后一次定向补证。"
-            )
-        else:
-            budget_instruction = (
-                "只读补证阶段已经结束，源码工具不再可用；现在必须使用已有 Evidence 提交 "
-                "final_result。已有证据充分时提交最小完整教学结果；必要 gate 或可执行用法仍无法"
-                "确认时，使用 unresolved 并安全关闭当前知识，不得猜测，也不得继续丰富可选事实。"
-            )
-        if instructions is None:
-            return budget_instruction
-        if isinstance(instructions, (str, InstructionPart)):
-            return (instructions, budget_instruction)
-        return (*instructions, budget_instruction)
+        return await super().call_tool(name, tool_args, ctx, tool)
 
 
 @dataclass(frozen=True)
@@ -783,7 +729,7 @@ class _AnalysisOutput(_StrictModel):
         return self
 
 
-_SUPPORTED_STRUCTURED_OUTPUT_MODES = frozenset({"native", "tool"})
+_SUPPORTED_STRUCTURED_OUTPUT_MODES = frozenset({"native", "prompted", "tool"})
 
 
 def _alias_literals(target: CapabilityInvocationTarget) -> tuple[str, ...]:
@@ -964,7 +910,7 @@ class PydanticAICapabilityAnalysisClient:
         tool_runtime_factory: CapabilityAnalysisToolRuntimeFactory | None = None,
         max_requests: int = 10,
         max_tool_calls: int = 10,
-        total_tokens_limit: int = CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT,
+        total_tokens_limit: int | None = None,
         cost_limit_usd: Decimal = Decimal("0.05"),
         capture_diagnostics: bool = False,
         context_window: int | None = None,
@@ -979,7 +925,11 @@ class PydanticAICapabilityAnalysisClient:
                 "max_output_tokens must be positive",
                 reason_code=CapabilityModelAdapterReason.BUDGET,
             )
-        if max_requests < 1 or max_tool_calls < 0 or total_tokens_limit < 1:
+        if (
+            max_requests < 1
+            or max_tool_calls < 0
+            or (total_tokens_limit is not None and total_tokens_limit < 1)
+        ):
             raise CapabilityModelAdapterError(
                 "capability Agent budgets are invalid",
                 reason_code=CapabilityModelAdapterReason.BUDGET,
@@ -994,6 +944,10 @@ class PydanticAICapabilityAnalysisClient:
         if tool_runtime_factory is not None and not model.profile.get("supports_tools", False):
             raise CapabilityModelAdapterError("capability navigation requires model tool support")
         output_mode = model.profile.get("default_structured_output_mode", "tool")
+        # DeepSeek 支持 response_format=json_object，但 profile 默认仍是 tool。
+        # Teaching 显式选 prompted output，避免再把 final_result 当作一个工具调用。
+        if output_mode == "tool" and model.profile.get("supports_json_object_output", False):
+            output_mode = "prompted"
         if output_mode not in _SUPPORTED_STRUCTURED_OUTPUT_MODES:
             raise CapabilityModelAdapterError(
                 "capability annotation task does not support the model profile output mode"
@@ -1023,7 +977,9 @@ class PydanticAICapabilityAnalysisClient:
         self._diagnostic_model = (
             MaintenanceResponseCaptureModel(model) if capture_diagnostics else None
         )
-        output_type: type[_AnalysisOutput] | ToolOutput[_AnalysisOutput] = (
+        output_type: (
+            type[_AnalysisOutput] | ToolOutput[_AnalysisOutput] | PromptedOutput[_AnalysisOutput]
+        ) = (
             ToolOutput(
                 _AnalysisOutput,
                 name="final_result",
@@ -1034,6 +990,8 @@ class PydanticAICapabilityAnalysisClient:
                 ),
             )
             if output_mode == "tool"
+            else PromptedOutput(_AnalysisOutput)
+            if output_mode == "prompted"
             else _AnalysisOutput
         )
         self._input_preparation = TeachingInputPreparation(
@@ -1203,22 +1161,36 @@ class PydanticAICapabilityAnalysisClient:
             self._tool_runtime_factory(request) if self._tool_runtime_factory is not None else None
         )
         self._active_tool_runtime = tool_runtime
+        run_control_capability: RunControlCapability[Any] | None = None
         if tool_runtime is None:
             analysis_toolsets = None
         elif self._max_tool_calls is None:
             analysis_toolsets = tool_runtime.toolsets
         else:
             navigation_budget = _NavigationToolBudget(self._max_tool_calls)
+            navigation_run_control = _NavigationRunControl(
+                budget=navigation_budget,
+                max_requests=cast(int, self._max_requests),
+                deadline=run_deadline,
+            )
             analysis_toolsets = tuple(
                 _BoundedNavigationToolset(
                     toolset,
                     budget=navigation_budget,
-                    max_requests=cast(int, self._max_requests),
-                    total_tokens_limit=cast(int, self._total_tokens_limit),
-                    deadline=run_deadline,
-                    announce_budget=index == 0,
+                    run_control=navigation_run_control,
                 )
-                for index, toolset in enumerate(tool_runtime.toolsets)
+                for toolset in tool_runtime.toolsets
+            )
+            run_control_capability = RunControlCapability(
+                navigation_run_control.phase,
+                checkpoint_instruction=(
+                    "当前单元已进入最终提交预留阶段。停止可选探索；只有仍缺少会影响可执行用法或"
+                    "必要 gate 结论的一项明确事实时，才做最后一次定向补证。"
+                ),
+                finalizing_instruction=(
+                    "只读补证阶段已经结束。现在必须使用已有 Evidence 提交最终结构化结果；必要事实"
+                    "仍无法确认时使用 unresolved 并安全关闭当前知识，不得猜测。"
+                ),
             )
         cancelled_run: RunCancelled | None = None
         recovered_output: _AnalysisOutput | None = None
@@ -1235,7 +1207,20 @@ class PydanticAICapabilityAnalysisClient:
                             deps=request,
                             metadata=_analysis_metadata(request),
                             retries={"tools": 1, "output": 2},
-                            toolsets=analysis_toolsets,
+                            capabilities=(
+                                (
+                                    *(
+                                        ToolsetCapability(
+                                            toolset,
+                                            id=f"capability_analysis_{index}",
+                                        )
+                                        for index, toolset in enumerate(analysis_toolsets)
+                                    ),
+                                    *((run_control_capability,) if run_control_capability else ()),
+                                )
+                                if analysis_toolsets is not None
+                                else None
+                            ),
                             usage_limits=_NextRequestTokenLimits(
                                 cost_limit=self._cost_limit_usd,
                                 request_limit=self._max_requests,

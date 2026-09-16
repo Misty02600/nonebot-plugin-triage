@@ -10,7 +10,7 @@ from importlib.metadata import PackageNotFoundError, version
 from io import BytesIO
 from pathlib import Path
 from tokenize import detect_encoding
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from pydantic_ai import ToolDefinition
 from pydantic_ai.exceptions import ToolFailed
@@ -818,6 +818,58 @@ class CapabilityTeachingToolProvider:
         except KnowledgePackError:
             return request
 
+    def startup_revision(self, requests: tuple[CapabilityAnalysisRequest, ...]) -> str:
+        """启动复用额外核对整个导航源码集合，避免漏掉新定义或同版本依赖修改。"""
+        import sys
+        from importlib.metadata import distributions
+
+        import nbtriage
+        import nonebot_plugin_triage
+
+        from .startup_cache import navigation_source_identity, startup_identity
+
+        contexts = {
+            request.source_context for request in requests if request.source_context is not None
+        }
+        # 复用核对需要重新解析根，不能使用上一轮的 profile 缓存。
+        self._profiles_by_module.clear()
+        profiles = tuple(
+            self._profiles(context).navigation_profile
+            for context in sorted(contexts, key=lambda context: context.module_name)
+        )
+        path = self._knowledge_index_path() if self._knowledge_index_path else None
+        revision = self._knowledge_pack_revision() if self._knowledge_pack_revision else None
+        return startup_identity(
+            {
+                "sources": navigation_source_identity(profiles),
+                "implementation": navigation_source_identity(
+                    (
+                        ReadOnlyTaskProfile(
+                            task_id="teaching_startup",
+                            roots=tuple(
+                                ReadOnlyRoot(
+                                    name,
+                                    Path(cast(str, package.__file__)).parent.resolve(),
+                                )
+                                for name, package in (
+                                    ("core", nbtriage),
+                                    ("adapter", nonebot_plugin_triage),
+                                )
+                            ),
+                        ),
+                    )
+                ),
+                "python": sys.version,
+                "search_path": sys.path,
+                "packages": sorted(
+                    (item.metadata["Name"], item.version) for item in distributions()
+                ),
+                "knowledge": revision,
+                "knowledge_index": hashlib.sha256(path.read_bytes()).hexdigest() if path else None,
+                "denied": self._additional_denied_patterns,
+            }
+        )
+
     def _profiles(self, source_context: CapabilitySourceContext) -> EvidenceAccessProfiles:
         cached = self._profiles_by_module.get(source_context.module_name)
         if cached is not None and cached[0] == source_context.plugin_source_revision:
@@ -1097,18 +1149,14 @@ class CapabilityTeachingToolProvider:
 
         async def search_docs(
             query: str,
-            component: Literal["nonebot2", "nonebot-plugin-uninfo"] = "nonebot2",
         ) -> list[dict[str, object]]:
             """检索当前 NoneBot 版本对应的公开框架文档片段。"""
             try:
-                component_version = (
-                    nonebot_version if component == "nonebot2" else version("nonebot-plugin-uninfo")
-                )
                 evidence = await asyncio.to_thread(
                     reader.search,
                     query,
-                    component=component,
-                    version=component_version,
+                    component="nonebot2",
+                    version=nonebot_version,
                     source_kinds=("user_docs",),
                     limit=3,
                     max_excerpt_chars=1_800,
@@ -1125,7 +1173,7 @@ class CapabilityTeachingToolProvider:
                 tools=[search_docs],
                 instructions=(
                     "framework_search_docs 只检索知识包中与当前运行环境版本匹配的公开文档。"
-                    "component 默认 nonebot2，包含其 Alconna 教学；Uninfo 文档使用 nonebot-plugin-uninfo。"
+                    "当前知识包只维护 NoneBot 文档，其中包含官网 Alconna 教学。"
                     "already_available=true 表示该命中的正文已提供，可直接引用 evidence_id；不是未找到答案。"
                     "已有 Evidence 足够时直接使用，不因出现框架 API 就检索，也不要求文档和源码各查一遍。"
                     "检索前先确定当前教学结论尚缺的具体事实；已读源码（含 docstring）或文档已明确说明该事实且无冲突时，直接引用已有 Evidence，不换来源重复确认，也不继续追踪与该结论无关的内部实现。"

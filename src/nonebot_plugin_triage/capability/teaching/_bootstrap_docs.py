@@ -32,10 +32,6 @@ ALCONNA_SECTIONS = (
     ("nonebot2/best-practice/alconna/matcher.mdx", "`on_alconna` 响应器 > 依赖注入"),
     ("nonebot2/best-practice/alconna/matcher.mdx", "`on_alconna` 响应器 > 条件控制"),
 )
-UNINFO_SECTIONS = (
-    ("uninfo/README.md", "nonebot-plugin-uninfo > 使用"),
-    ("uninfo/README.md", "nonebot-plugin-uninfo > 模型定义"),
-)
 
 
 def add_bootstrap_docs(
@@ -92,22 +88,6 @@ def add_bootstrap_docs(
         else:
             replaced.add("framework:nonebot-plugin-alconna/dispatch")
     unique = {item.evidence_id: item for item in documents}
-    if any(
-        unit.locator == "framework:nonebot-plugin-uninfo/Session"
-        or "/nonebot_plugin_uninfo/" in (unit.locator or "")
-        for unit in request.evidence_units
-    ):
-        try:
-            uninfo_docs = reader.read_sections(
-                component="nonebot-plugin-uninfo",
-                version=version("nonebot-plugin-uninfo"),
-                sections=UNINFO_SECTIONS,
-            )
-        except (KnowledgePackError, PackageNotFoundError):
-            pass
-        else:
-            unique.update((item.evidence_id, item) for item in uninfo_docs)
-            replaced.add("framework:nonebot-plugin-uninfo/Session")
     units = tuple(
         CapabilityEvidenceUnit(
             evidence_id=item.evidence_id,

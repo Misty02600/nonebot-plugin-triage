@@ -391,7 +391,7 @@ async def test_agent_preserves_usage_when_output_validation_fails() -> None:
 
 
 @pytest.mark.asyncio
-async def test_conversation_plus_six_evidence_rounds_leave_output_correction() -> None:
+async def test_conversation_plus_eight_evidence_rounds_leave_output_correction() -> None:
     provider_calls = 0
     conversation_calls = 0
 
@@ -431,6 +431,8 @@ async def test_conversation_plus_six_evidence_rounds_leave_output_correction() -
             ("search_design_rag", {"query": "reminder contract"}),
             ("read_deployment_context", {}),
             ("read_source_file", {"relative_path": "plugin.py"}),
+            ("search_source_code", {"query": "fallback"}),
+            ("search_design_rag", {"query": "fallback contract"}),
         )
         if provider_calls <= len(evidence_calls):
             tool_name, args = evidence_calls[provider_calls - 1]
@@ -445,8 +447,10 @@ async def test_conversation_plus_six_evidence_rounds_leave_output_correction() -
             )
 
         assert not info.function_tools
+        assert info.model_settings is not None
+        assert info.model_settings.get("tool_choice") == "none"
         output_tool = info.output_tools[0]
-        missing_evidence = [] if provider_calls == 8 else ["runtime_observation"]
+        missing_evidence = [] if provider_calls == 10 else ["runtime_observation"]
         return ModelResponse(
             parts=[
                 ToolCallPart(
@@ -479,13 +483,13 @@ async def test_conversation_plus_six_evidence_rounds_leave_output_correction() -
     result = await agent.assess(_case(), toolbox)
 
     assert result.verdict is BugVerdict.UNKNOWN
-    assert provider_calls == 9
+    assert provider_calls == 11
     assert conversation_calls == 1
-    assert toolbox.general_tool_calls == 6
-    assert toolbox.tool_calls == 7
+    assert toolbox.general_tool_calls == 8
+    assert toolbox.tool_calls == 9
     assert toolbox.tool_budget_exhausted is True
     assert agent.last_usage is not None
-    assert agent.last_usage.requests == 9
+    assert agent.last_usage.requests == 11
     assert agent.last_trace_id is not None
     assert agent.last_messages
 
@@ -522,6 +526,8 @@ async def test_parallel_overflow_call_does_not_exceed_evidence_budget() -> None:
         ("search_source_code", {"query": "handler"}),
         ("search_design_rag", {"query": "expected behavior"}),
         ("read_conversation_context", {}),
+        ("search_source_code", {"query": "fallback handler"}),
+        ("search_design_rag", {"query": "fallback behavior"}),
     )
 
     def respond(_messages, info: AgentInfo) -> ModelResponse:
@@ -530,23 +536,21 @@ async def test_parallel_overflow_call_does_not_exceed_evidence_budget() -> None:
         if provider_calls <= len(single_calls):
             tool_name, args = single_calls[provider_calls - 1]
             return ModelResponse(parts=[ToolCallPart(tool_name, args, f"call-{provider_calls}")])
-        if provider_calls == 6:
+        if provider_calls == 8:
             return ModelResponse(
                 parts=[
-                    ToolCallPart("read_deployment_context", {}, "call-6"),
+                    ToolCallPart("read_deployment_context", {}, "call-8"),
                     ToolCallPart(
                         "read_source_file",
                         {"relative_path": "plugin.py"},
                         "call-overflow",
                     ),
-                    ToolCallPart(
-                        "read_conversation_context",
-                        {},
-                        "call-overflow-2",
-                    ),
+                    ToolCallPart("read_runtime_evidence", {}, "call-overflow-2"),
                 ]
             )
         assert not info.function_tools
+        assert info.model_settings is not None
+        assert info.model_settings.get("tool_choice") == "none"
         output_tool = info.output_tools[0]
         return ModelResponse(
             parts=[
@@ -580,9 +584,9 @@ async def test_parallel_overflow_call_does_not_exceed_evidence_budget() -> None:
     result = await agent.assess(_case(), toolbox)
 
     assert result.verdict is BugVerdict.UNKNOWN
-    assert provider_calls == 7
-    assert toolbox.general_tool_calls == 6
-    assert toolbox.tool_calls == 7
+    assert provider_calls == 9
+    assert toolbox.general_tool_calls == 8
+    assert toolbox.tool_calls == 9
     assert toolbox.tool_budget_exhausted is True
 
 

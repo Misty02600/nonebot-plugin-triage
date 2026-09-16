@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from tests.capability._fakes import FakeCapabilityAnalysisClient
 
 from nbtriage.capability.catalog.records import (
     AnalysisIssue,
@@ -33,7 +34,6 @@ from nbtriage.capability.teaching.analysis import (
     CapabilityInvocationMode,
     CapabilityInvocationTarget,
     CapabilitySourceContext,
-    FakeCapabilityAnalysisClient,
     SemanticClaim,
     SemanticClaimKind,
     SemanticConstraint,
@@ -1134,7 +1134,7 @@ def test_runtime_rejects_missing_mandatory_annotation_transport() -> None:
         CapabilityAnnotationRuntimeConfigurationError,
         match="model name",
     ):
-        create_capability_annotation_client_factory(NBTriageConfig(), environ={})
+        create_capability_annotation_client_factory(NBTriageConfig())
 
 
 @pytest.mark.asyncio

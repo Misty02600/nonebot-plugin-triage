@@ -8,12 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from nbtriage._model_runtime.usage import provider_response_identity
-from nbtriage.opencode_go_semantic_adapter import (
-    OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
-    OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
-    OPENCODE_GO_SEMANTIC_TASK,
-    normalized_opencode_go_cost_microusd,
-)
 from nbtriage.support._model_adapter import (
     SUPPORT_SEMANTIC_PROMPT_ID,
     SYSTEM_INSTRUCTION,
@@ -25,16 +19,17 @@ from nbtriage.support.semantics import (
     SupportAssessmentRequest,
 )
 
-SUPPORT_SEMANTIC_EVALUATION_ID = "support-semantic-opencode-go-v7"
+SUPPORT_SEMANTIC_EVALUATION_ID = "support-semantic-v7"
 SUPPORT_SEMANTIC_CANDIDATE_EVALUATION_REVISION = (
-    "opencode-go-forward-heldout-40-20260815-v7-prompt-v5-zh-e"
+    "forward-heldout-40-20260916-v8-schema-v7-prompt-v5-zh-a"
 )
-SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SET_ID = "support-semantic-v7-forward-heldout-40-20260815-e-v5-zh"
+SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SET_ID = "support-semantic-v8-forward-heldout-40-20260916-a-v5-zh"
 SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SHA256 = (
-    "c3135a9414995375a3ca7da7295d30672002155126638c20f1785dd40fc27d5e"
+    "84781f1a9f1efe7a8b2ace7df5ad33c9741da099fd1b1238bd5a365f4384e0b4"
 )
-_QUALIFIED_PROVIDER = "opencode-go"
-_QUALIFIED_MODEL = "deepseek-v4-flash"
+_SEMANTIC_TASK = "support-semantic-v7"
+_SEMANTIC_PRIVACY_POLICY = "current-request-text-only-v1"
+_SEMANTIC_BUDGET_PROFILE = "single-call-60s-240-v1"
 
 
 class SupportSemanticEvaluationError(RuntimeError):
@@ -166,13 +161,7 @@ async def evaluate_support_semantics(
             identity = provider_response_identity(response)
             usage = response.usage
             if usage_cost_usd is None:
-                cost_microusd = normalized_opencode_go_cost_microusd(
-                    usage,
-                    provider=provider,
-                    requested_model=model,
-                    returned_provider=identity.provider_name,
-                    returned_model=identity.model_name,
-                )
+                cost_microusd = None
             else:
                 cost_usd = usage_cost_usd(usage)
                 cost_microusd = (
@@ -241,8 +230,6 @@ async def evaluate_support_semantics(
         "budget_profile": (
             declared_contract.get("budget_profile") == expected_contract["budget_profile"]
         ),
-        "contract_provider": (declared_contract.get("provider") == expected_contract["provider"]),
-        "contract_model": declared_contract.get("model") == expected_contract["model"],
         "contract_exact": declared_contract == expected_contract,
     }
     qualification_eligible = all(qualification_checks.values())
@@ -266,10 +253,10 @@ async def evaluate_support_semantics(
         "settings_revision": settings_revision,
         "timeout_seconds": timeout_seconds,
         "max_output_tokens": max_output_tokens,
-        "task": OPENCODE_GO_SEMANTIC_TASK,
+        "task": _SEMANTIC_TASK,
         "semantic_schema_version": SUPPORT_SEMANTIC_SCHEMA_VERSION,
-        "privacy_policy": OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
-        "budget_profile": OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
+        "privacy_policy": _SEMANTIC_PRIVACY_POLICY,
+        "budget_profile": _SEMANTIC_BUDGET_PROFILE,
         "evaluation_revision": evaluation_revision,
         "prompt_id": SUPPORT_SEMANTIC_PROMPT_ID,
         "prompt_sha256": expected_contract["prompt_sha256"],
@@ -299,14 +286,12 @@ async def evaluate_support_semantics(
 
 def _expected_qualification_contract() -> dict[str, object]:
     return {
-        "provider": _QUALIFIED_PROVIDER,
-        "model": _QUALIFIED_MODEL,
-        "task": OPENCODE_GO_SEMANTIC_TASK,
+        "task": _SEMANTIC_TASK,
         "schema_version": SUPPORT_SEMANTIC_SCHEMA_VERSION,
         "prompt_id": SUPPORT_SEMANTIC_PROMPT_ID,
         "prompt_sha256": hashlib.sha256(SYSTEM_INSTRUCTION.encode("utf-8")).hexdigest(),
-        "privacy_policy": OPENCODE_GO_SEMANTIC_PRIVACY_POLICY,
-        "budget_profile": OPENCODE_GO_SEMANTIC_BUDGET_PROFILE,
+        "privacy_policy": _SEMANTIC_PRIVACY_POLICY,
+        "budget_profile": _SEMANTIC_BUDGET_PROFILE,
     }
 
 

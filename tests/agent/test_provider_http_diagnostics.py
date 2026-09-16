@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-import httpx
+import httpx2 as httpx
 
 from nbtriage._model_runtime.http_diagnostics import (
     ProviderHTTPLifecycleEvent,

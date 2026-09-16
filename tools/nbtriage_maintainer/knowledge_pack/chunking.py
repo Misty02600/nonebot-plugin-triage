@@ -1,37 +1,18 @@
-"""把批准的 Markdown、OpenAPI 和 TypeScript 快照变成有界检索块。"""
+"""把批准的 Markdown 快照变成有界检索块。"""
 
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Iterable
 from pathlib import Path
 
-import tree_sitter_typescript
 from markdown_it import MarkdownIt
-from tree_sitter import Language, Node, Parser
 
 from .models import KnowledgeChunk, KnowledgePackError, KnowledgeSource
 
 MAX_SOURCE_BYTES = 2_000_000
 MAX_CHUNK_CHARS = 6_000
 _MARKDOWN = MarkdownIt("commonmark")
-_TYPESCRIPT_PARSERS = {
-    ".ts": Parser(Language(tree_sitter_typescript.language_typescript())),
-    ".tsx": Parser(Language(tree_sitter_typescript.language_tsx())),
-}
-_TYPESCRIPT_DECLARATIONS = frozenset(
-    {
-        "class_declaration",
-        "enum_declaration",
-        "function_declaration",
-        "generator_function_declaration",
-        "interface_declaration",
-        "lexical_declaration",
-        "type_alias_declaration",
-    }
-)
-_HTTP_METHODS = frozenset({"delete", "get", "head", "options", "patch", "post", "put"})
 
 
 def load_source_chunks(
@@ -47,14 +28,9 @@ def load_source_chunks(
         if len(raw) > MAX_SOURCE_BYTES:
             raise KnowledgePackError(f"knowledge source file is too large: {path}")
         relative_path = path.relative_to(snapshot_root).as_posix()
-        if path.suffix.lower() in {".md", ".mdx"}:
-            candidates = _markdown_chunks(raw.decode("utf-8"), path.stem)
-        elif path.name.lower().endswith("openapi.json"):
-            candidates = _openapi_chunks(raw.decode("utf-8"), relative_path, source)
-        elif path.suffix.lower() in {".ts", ".tsx"}:
-            candidates = _typescript_chunks(raw, relative_path)
-        else:
+        if path.suffix.lower() not in {".md", ".mdx"}:
             raise KnowledgePackError(f"unsupported knowledge source file: {path}")
+        candidates = _markdown_chunks(raw.decode("utf-8"), path.stem)
         chunks.extend(
             _chunk(source, relative_path, locator, title, content)
             for locator, title, content in candidates
@@ -131,99 +107,6 @@ def _markdown_chunks(text: str, fallback_title: str) -> list[tuple[str, str, str
             suffix = f"#{part_ordinal}" if part_ordinal > 1 else ""
             results.append((f"{locator}{suffix}", title, part))
     return results
-
-
-def _openapi_chunks(
-    text: str,
-    relative_path: str,
-    source: KnowledgeSource,
-) -> list[tuple[str, str, str]]:
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as error:
-        raise KnowledgePackError(f"invalid OpenAPI JSON in {relative_path}: {error}") from error
-    if not isinstance(payload, dict) or not isinstance(payload.get("paths"), dict):
-        raise KnowledgePackError(f"OpenAPI source has no paths object: {relative_path}")
-    declared_version = payload.get("info", {}).get("version")
-    if (
-        source.applicability == "exact_version"
-        and source.version is not None
-        and declared_version != source.version
-    ):
-        raise KnowledgePackError(
-            "OpenAPI version conflicts with its source policy: "
-            f"expected {source.version}, got {declared_version!r} in {relative_path}"
-        )
-    chunks: list[tuple[str, str, str]] = []
-    for api_path, path_item in sorted(payload["paths"].items()):
-        if not isinstance(api_path, str) or not isinstance(path_item, dict):
-            continue
-        for method, operation in sorted(path_item.items()):
-            if method.lower() not in _HTTP_METHODS or not isinstance(operation, dict):
-                continue
-            operation_id = operation.get("operationId")
-            title = (
-                str(operation_id)
-                if isinstance(operation_id, str)
-                else f"{method.upper()} {api_path}"
-            )
-            content = json.dumps(
-                {"method": method.upper(), "path": api_path, **operation},
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            chunks.append((f"{method.lower()} {api_path}", title, content))
-    if not chunks:
-        raise KnowledgePackError(f"OpenAPI source has no supported operations: {relative_path}")
-    return chunks
-
-
-def _typescript_chunks(raw: bytes, relative_path: str) -> list[tuple[str, str, str]]:
-    suffix = Path(relative_path).suffix.lower()
-    tree = _TYPESCRIPT_PARSERS[suffix].parse(raw)
-    if tree.root_node.has_error:
-        raise KnowledgePackError(f"TypeScript source has parse errors: {relative_path}")
-    results: list[tuple[str, str, str]] = []
-    for node in tree.root_node.named_children:
-        declaration = _typescript_declaration(node)
-        if declaration is None:
-            continue
-        name = _typescript_name(declaration, raw)
-        content = raw[node.start_byte : node.end_byte].decode("utf-8")
-        for part_ordinal, part in enumerate(_split_text(content), start=1):
-            locator = f"{declaration.type}:{name}"
-            if part_ordinal > 1:
-                locator = f"{locator}#{part_ordinal}"
-            results.append((locator, name, part))
-    if results:
-        return results
-    decoded = raw.decode("utf-8")
-    return [("module", Path(relative_path).stem, part) for part in _split_text(decoded)]
-
-
-def _typescript_declaration(node: Node) -> Node | None:
-    if node.type in _TYPESCRIPT_DECLARATIONS:
-        return node
-    if node.type == "export_statement":
-        declaration = node.child_by_field_name("declaration")
-        if declaration is not None and declaration.type in _TYPESCRIPT_DECLARATIONS:
-            return declaration
-    return None
-
-
-def _typescript_name(node: Node, raw: bytes) -> str:
-    name = node.child_by_field_name("name")
-    if name is not None:
-        return raw[name.start_byte : name.end_byte].decode("utf-8")
-    declarator = next(
-        (child for child in node.named_children if child.type == "variable_declarator"), None
-    )
-    if declarator is not None:
-        name = declarator.child_by_field_name("name")
-        if name is not None:
-            return raw[name.start_byte : name.end_byte].decode("utf-8")
-    return node.type
 
 
 def _split_text(text: str) -> Iterable[str]:

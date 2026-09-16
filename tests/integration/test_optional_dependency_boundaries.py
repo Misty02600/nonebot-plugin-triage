@@ -32,7 +32,6 @@ import nonebot
 nonebot.init(driver="~none")
 plugin = nonebot.load_plugin("nonebot_plugin_triage")
 assert plugin is not None
-assert "nbtriage.opencode_go_semantic_adapter" not in sys.modules
 """
     result = subprocess.run(
         [sys.executable, "-c", script],

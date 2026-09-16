@@ -35,7 +35,6 @@ from nbtriage.capability.teaching.annotations import (
 from nbtriage.runtime_observations import RuntimeObservationBuffer
 from nonebot_plugin_triage.bug import assessment as bug_assessment_runtime
 from nonebot_plugin_triage.bug.assessment import (
-    OPENCODE_GO_BUG_TASK_QUALIFICATION,
     QUALIFIED_BUG_TASKS,
     BugAssessmentRuntimeRequest,
     BugAssessmentRuntimeService,
@@ -52,8 +51,8 @@ from nonebot_plugin_triage.config import NBTriageConfig
 
 def _config() -> NBTriageConfig:
     return NBTriageConfig(
-        nbtriage_model_name="openai-chat:deepseek-v4-flash",
-        nbtriage_model_base_url="https://opencode.ai/zen/go/v1",
+        nbtriage_model_name="openai-chat:fixture-model",
+        nbtriage_model_base_url="https://model.example/v1",
         nbtriage_model_timeout_seconds=60,
         nbtriage_model_max_output_tokens=240,
     )
@@ -112,20 +111,36 @@ def _runtime_service(shadow: object) -> BugAssessmentRuntimeService:
     )
 
 
-def test_bug_agent_factory_allows_unverified_model_but_still_requires_key() -> None:
+def test_bug_agent_factory_allows_unverified_model_and_defers_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-key")
     assert (
         create_bug_assessment_agent_factory(
             _config(),
-            environ={"OPENAI_API_KEY": "fixture-key"},
             qualified_tasks=frozenset(),
         )
         is not None
     )
-    assert create_bug_assessment_agent_factory(_config(), environ={}) is None
+    monkeypatch.delenv("OPENAI_API_KEY")
+    assert create_bug_assessment_agent_factory(_config()) is not None
 
 
 def test_conclusive_agent_result_builds_versioned_record_command() -> None:
-    qualification = OPENCODE_GO_BUG_TASK_QUALIFICATION
+    qualification = BugTaskQualification(
+        provider="openai",
+        api_family="chat-completions",
+        model="fixture-model",
+        task="bug-assessment-agent-v1",
+        schema_version=1,
+        prompt_id=BUG_AGENT_PROMPT_ID,
+        privacy_policy="bounded-visible-conversation-source-log-design-v1",
+        budget_profile=(
+            "agent-12req-1conversation-plus-8evidence-finalize-output-correction-120k-0.50usd-v4"
+        ),
+        evaluation=f"unverified:bug-assessment-agent-v1:{BUG_AGENT_PROMPT_ID}",
+        verified=False,
+    )
     request = BugAssessmentRuntimeRequest(
         request_text="搜图没有响应，请判断是不是 Bug",
         adapter_name="OneBot V11",
@@ -182,9 +197,9 @@ def test_conclusive_agent_result_builds_versioned_record_command() -> None:
     assert command.signature is not None
     assert command.occurrence.failure_signature == "f" * 64
     assert command.occurrence.source_revision == "source-v1"
-    assert command.decision.evaluation == OPENCODE_GO_BUG_TASK_QUALIFICATION.evaluation
+    assert command.decision.evaluation == qualification.evaluation
     assert request.request_text not in repr(command)
-    assert frozenset({qualification}) == QUALIFIED_BUG_TASKS
+    assert not QUALIFIED_BUG_TASKS
 
 
 def test_unverified_agent_bug_creates_formal_record_with_quality_label() -> None:

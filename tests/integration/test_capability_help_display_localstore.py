@@ -9,7 +9,7 @@ from pathlib import Path
 def test_help_display_uses_triage_localstore_data_directory(tmp_path: Path) -> None:
     data_dir = tmp_path / "triage-data"
     environment = os.environ.copy()
-    environment["OPENAI_API_KEY"] = "fixture-secret"
+    environment["DEEPSEEK_API_KEY"] = "fixture-secret"
     script = f"""
 from pathlib import Path
 
@@ -19,8 +19,7 @@ data_dir = Path({str(data_dir)!r})
 nonebot.init(
     _env_file=(".nonebot-triage-pytest.env",),
     driver="~none",
-    nbtriage_model_name="openai-chat:deepseek-v4-flash",
-    nbtriage_model_base_url="https://opencode.ai/zen/go/v1",
+    nbtriage_model_name="deepseek:deepseek-v4-flash",
     nbtriage_model_timeout_seconds=60.0,
     nbtriage_model_max_output_tokens=240,
     localstore_plugin_data_dir={{"nonebot_plugin_triage": data_dir}},

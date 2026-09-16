@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import tools.nbtriage_maintainer.agent_evaluation as agent_evaluation
@@ -528,22 +529,30 @@ def test_real_gate_cli_enforces_whole_run_timeout_and_checkpoints_cancellation(
         async def generate(self, _request):
             await asyncio.Event().wait()
 
-    def load_symbol(_module: str, symbol: str, **_kwargs):
-        if "b1" in symbol:
-            return lambda **_factory_kwargs: HangingB1Client()
-        return lambda **_factory_kwargs: _RealGateAgentClient({})
-
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-key")
-    monkeypatch.setattr("tools.nbtriage_maintainer.cli._load_model_symbol", load_symbol)
+    monkeypatch.setattr(
+        "tools.nbtriage_maintainer.cli.create_model_evaluation_binding",
+        lambda **_kwargs: SimpleNamespace(
+            model=object(),
+            provider="fixture-provider",
+            model_name="fixture-model",
+            model_settings=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "tools.nbtriage_maintainer.cli.PydanticAIB1Client",
+        lambda *_args, **_kwargs: HangingB1Client(),
+    )
+    monkeypatch.setattr(
+        "tools.nbtriage_maintainer.cli.PydanticAIAgentStepClient",
+        lambda *_args, **_kwargs: _RealGateAgentClient({}),
+    )
     report_path = tmp_path / "deepseek-whole-run-timeout.json"
 
     result = main(
         [
             "evaluate-b4-real",
-            "--backend",
-            "deepseek-responses",
-            "--model",
-            "deepseek-v4-flash",
+            "--model-name",
+            "fixture:fixture-model",
             "--trials-per-fixture",
             "2",
             "--max-provider-requests",

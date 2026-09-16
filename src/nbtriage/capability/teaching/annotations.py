@@ -45,11 +45,11 @@ CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
 )
-CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT = 192_000
+CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT = 384_000
 CAPABILITY_ANNOTATION_PRELOAD_TOKEN_TARGET = 64_000
 CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
     "background-unit-10req-10read-navigation-tools-300line-default-32kchar-read-"
-    "64k-soft-preload-target-window90pct-192k-reserve-finalize-32768out-0.05usd-schema15"
+    "64k-soft-preload-target-window90pct-384k-reserve-finalize-32768out-0.05usd-schema15"
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SEARCH_TERM_LIST_SEPARATOR = re.compile(r"[,，、;；|]")

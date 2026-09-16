@@ -60,7 +60,6 @@ def test_failed_or_unresolved_assessment_has_no_side_effect_route() -> None:
     for outcome, expected_action in cases:
         decision = route_support_assessment(outcome)
         assert decision.action is expected_action
-        assert decision.incident_authorization is None
 
 
 def test_each_goal_routes_to_its_single_action() -> None:
@@ -92,7 +91,6 @@ def test_each_goal_routes_to_its_single_action() -> None:
         assert decision.action is action
         assert decision.reason is reason
         assert decision.goals == (goal,)
-        assert decision.incident_authorization is None
 
 
 def test_observation_without_explicit_goal_enters_bug_assessment() -> None:
@@ -101,7 +99,6 @@ def test_observation_without_explicit_goal_enters_bug_assessment() -> None:
     assert decision.action is SupportRoutingAction.BUG_ASSESSMENT_CANDIDATE
     assert decision.reason is SupportRoutingReason.REPORTED_OBSERVATION_REQUIRES_ASSESSMENT
     assert decision.reported_observation is True
-    assert decision.incident_authorization is None
 
 
 def test_multi_goal_request_preserves_all_signals_but_executes_one_action() -> None:
@@ -123,4 +120,3 @@ def test_multi_goal_request_preserves_all_signals_but_executes_one_action() -> N
         SupportGoal.FEATURE_FEEDBACK,
     )
     assert decision.reported_observation is True
-    assert decision.incident_authorization is None

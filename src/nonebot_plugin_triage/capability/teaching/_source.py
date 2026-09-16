@@ -5,11 +5,14 @@ import hashlib
 import json
 import keyword
 import re
+import sys
+import textwrap
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from time import monotonic_ns
+from types import ModuleType
 
 from nbtriage.capability.catalog.records import CapabilityRecord, ClaimBasis, Disclosure
 from nbtriage.capability.teaching.analysis import (
@@ -42,14 +45,17 @@ from nonebot_plugin_triage.capability.teaching._navigation import (
     _function_source_span,
     _FunctionReference,
     _load_parsed_module,
+    _module_belongs_to_plugin,
     _ParsedModule,
     _plugin_source_root,
+    _resolved_python_file,
     _ResolvedAnalysisTarget,
     _select_reference_function,
     _target_plugin_locator,
     _valid_source_revision,
 )
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
+from nonebot_plugin_triage.evidence_access import python_dependency_navigation_roots
 from nonebot_plugin_triage.runtime_config_evidence import (
     RuntimeConfigEvidenceReader,
     RuntimeConfigOmission,
@@ -59,6 +65,7 @@ from nonebot_plugin_triage.runtime_config_evidence import (
 )
 
 _MAX_CONFIG_REFERENCES = 64
+_MAX_EXTENSION_CLASS_CHARS = 32_000
 
 
 def _claim_values(
@@ -115,6 +122,15 @@ class _ConfigReference:
     @property
     def source_symbol(self) -> str:
         return f"{self.module}:{self.binding}.{self.field}"
+
+
+@dataclass(frozen=True)
+class _ExtensionClassReference:
+    module: str
+    class_name: str
+    qualname: str
+    line: int
+    source_revision: str
 
 
 @dataclass(frozen=True)
@@ -866,6 +882,258 @@ def _runtime_handler_references(
             ),
         )
     )
+
+
+def _extension_class_references(
+    records: tuple[CapabilityRecord, ...],
+) -> tuple[_ExtensionClassReference, ...]:
+    references: set[_ExtensionClassReference] = set()
+    for record in records:
+        for value in _claim_values(record, "extension.references", evidence_kind="matcher_source"):
+            if not isinstance(value, list):
+                continue
+            for item in value:
+                if not isinstance(item, Mapping):
+                    continue
+                module = item.get("module")
+                class_name = item.get("class")
+                qualname = item.get("qualname")
+                line = item.get("line")
+                source_revision = item.get("source_revision")
+                if not (
+                    isinstance(module, str)
+                    and _valid_module_name(module)
+                    and isinstance(class_name, str)
+                    and class_name.isidentifier()
+                    and isinstance(qualname, str)
+                    and _valid_qualname(qualname)
+                    and isinstance(line, int)
+                    and not isinstance(line, bool)
+                    and line > 0
+                    and isinstance(source_revision, str)
+                    and _valid_source_revision(source_revision)
+                ):
+                    continue
+                references.add(
+                    _ExtensionClassReference(
+                        module=module,
+                        class_name=class_name,
+                        qualname=qualname,
+                        line=line,
+                        source_revision=source_revision,
+                    )
+                )
+    return tuple(
+        sorted(
+            references,
+            key=lambda item: (
+                item.module,
+                item.qualname,
+                item.line,
+                item.source_revision,
+            ),
+        )
+    )
+
+
+def _append_extension_class_evidence(
+    evidence_units: list[CapabilityEvidenceUnit],
+    *,
+    records: tuple[CapabilityRecord, ...],
+    analysis_unit_id: str,
+    module_root: str,
+    source_root: tuple[Path, bool],
+    parsed_modules: dict[str, _ParsedModule],
+) -> None:
+    known = {item.evidence_id for item in evidence_units}
+    references = _extension_class_references(records)
+    if not references:
+        return
+    runtime_evidence = _runtime_extension_set_evidence(records, analysis_unit_id)
+    if runtime_evidence.evidence_id not in known:
+        evidence_units.append(runtime_evidence)
+        known.add(runtime_evidence.evidence_id)
+    for reference in references:
+        evidence = _extension_class_evidence(
+            reference,
+            analysis_unit_id=analysis_unit_id,
+            module_root=module_root,
+            source_root=source_root,
+            parsed_modules=parsed_modules,
+        )
+        if evidence is None:
+            raise CapabilityAnalysisAdapterError("runtime extension source is unavailable")
+        if evidence.evidence_id not in known:
+            evidence_units.append(evidence)
+            known.add(evidence.evidence_id)
+
+
+def _runtime_extension_set_evidence(
+    records: tuple[CapabilityRecord, ...],
+    analysis_unit_id: str,
+) -> CapabilityEvidenceUnit:
+    members = [
+        {
+            "capability_id": record.capability_id,
+            "extensions": [
+                {"module": item.module, "qualname": item.qualname}
+                for item in _extension_class_references((record,))
+            ],
+        }
+        for record in sorted(records, key=lambda item: item.capability_id)
+    ]
+    content = json.dumps(
+        {
+            "scope": "current_runtime_extension_set",
+            "members": members,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return CapabilityEvidenceUnit(
+        evidence_id=_evidence_id(analysis_unit_id, "runtime", "extension_set"),
+        source_kind="runtime_extension_set",
+        content=content,
+        revision=f"sha256:{digest}",
+    )
+
+
+def _extension_class_evidence(
+    reference: _ExtensionClassReference,
+    *,
+    analysis_unit_id: str,
+    module_root: str,
+    source_root: tuple[Path, bool],
+    parsed_modules: dict[str, _ParsedModule],
+) -> CapabilityEvidenceUnit | None:
+    parsed: _ParsedModule | None = None
+    root_name: str
+    relative_path: str
+    external: bool
+    evidence_revision: str
+    if _module_belongs_to_plugin(reference.module, module_root):
+        parsed = parsed_modules.get(reference.module)
+        if parsed is None:
+            parsed = _load_parsed_module(reference.module, module_root, source_root)
+            if parsed is not None:
+                parsed_modules[reference.module] = parsed
+        if parsed is None:
+            return None
+        root_name = "target_plugin"
+        relative_path = parsed.locator
+        external = False
+        path = _resolved_python_file(parsed.module)
+        if path is None:
+            return None
+        try:
+            evidence_revision = f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+        except OSError:
+            return None
+    else:
+        module = sys.modules.get(reference.module)
+        if not isinstance(module, ModuleType):
+            return None
+        path = _resolved_python_file(module)
+        if path is None:
+            return None
+        roots = tuple(
+            root for root in python_dependency_navigation_roots() if path.is_relative_to(root.path)
+        )
+        if not roots:
+            return None
+        root = max(roots, key=lambda item: len(item.path.parts))
+        try:
+            raw = path.read_bytes()
+            source = raw.decode("utf-8")
+            tree = ast.parse(source)
+        except (OSError, UnicodeError, SyntaxError, ValueError, RecursionError):
+            return None
+        if len(source) > 1_000_000 or sum(1 for _ in ast.walk(tree)) > 50_000:
+            return None
+        parsed = _ParsedModule(
+            module=module,
+            locator=path.relative_to(root.path).as_posix(),
+            source=source,
+            revision=(
+                "sha256:"
+                + hashlib.sha256(
+                    source.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+                ).hexdigest()
+            ),
+            tree=tree,
+            functions={},
+        )
+        root_name = root.name
+        relative_path = parsed.locator
+        external = True
+        evidence_revision = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+    if parsed.revision != reference.source_revision:
+        return None
+    class_definition = _exact_runtime_class(parsed.tree, reference)
+    if class_definition is None:
+        return None
+    content = _class_source(parsed.source, class_definition)
+    if content is None or len(content) > _MAX_EXTENSION_CLASS_CHARS:
+        return None
+    symbol = f"{reference.module}.{reference.qualname}"
+    locator = (
+        f"{root_name}/{relative_path}:{symbol}:{reference.line}"
+        if external
+        else _target_plugin_locator(relative_path, symbol, reference.line)
+    )
+    return CapabilityEvidenceUnit(
+        evidence_id=_evidence_id(
+            analysis_unit_id,
+            reference.module,
+            f"extension:{reference.qualname}@{reference.line}",
+        ),
+        source_kind=("python_dependency_function" if external else "python_function"),
+        content=content,
+        revision=evidence_revision,
+        locator=locator,
+    )
+
+
+def _exact_runtime_class(
+    tree: ast.Module,
+    reference: _ExtensionClassReference,
+) -> ast.ClassDef | None:
+    matches: list[ast.ClassDef] = []
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
+        next_scope = scope
+        if isinstance(node, ast.ClassDef):
+            node_qualname = ".".join((*scope, node.name))
+            if (
+                node.name == reference.class_name
+                and node_qualname == reference.qualname
+                and node.lineno == reference.line
+            ):
+                matches.append(node)
+            next_scope = (*scope, node.name)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            next_scope = (*scope, node.name, "<locals>")
+        for child in ast.iter_child_nodes(node):
+            visit(child, next_scope)
+
+    visit(tree, ())
+    return matches[0] if len(matches) == 1 else None
+
+
+def _class_source(source: str, class_definition: ast.ClassDef) -> str | None:
+    end_line = class_definition.end_lineno
+    if end_line is None or end_line < class_definition.lineno:
+        return None
+    lines = source.splitlines(keepends=True)
+    if end_line > len(lines):
+        return None
+    start_line = min(
+        (class_definition.lineno, *(item.lineno for item in class_definition.decorator_list))
+    )
+    content = textwrap.dedent("".join(lines[start_line - 1 : end_line])).rstrip()
+    return content or None
 
 
 def _config_references(record: CapabilityRecord) -> tuple[_ConfigReference, ...]:

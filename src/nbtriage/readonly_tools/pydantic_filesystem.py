@@ -93,7 +93,7 @@ def build_read_only_file_toolsets(
             filtered = capability.get_toolset().filtered(
                 lambda _context, definition, allowed=allowed_tool_names: definition.name in allowed
             )
-            prefixed = filtered.prefixed(root.name)
+            prefixed = _prefixed_file_toolset(filtered, prefix=root.name)
             bounded = _bounded_read_file_toolset(
                 prefixed,
                 root_name=root.name,
@@ -126,6 +126,12 @@ def _load_filesystem_factory() -> FileSystemFactory:
     if not callable(factory):
         raise ReadOnlyFileSystemUnavailableError("pydantic-ai-harness FileSystem is unavailable")
     return cast(FileSystemFactory, factory)
+
+
+def _prefixed_file_toolset(toolset: object, *, prefix: str) -> object:
+    from ._pydantic_file_limits import prefixed_file_toolset
+
+    return prefixed_file_toolset(toolset, prefix=prefix)
 
 
 def _bounded_read_file_toolset(

@@ -57,15 +57,6 @@ from nbtriage.bug.workflow import (
 )
 from nbtriage.capability.catalog.records import CapabilityRecord, CapabilitySearchHit
 from nbtriage.capability.teaching.annotations import CapabilityTeachingAnnotation
-from nbtriage.opencode_go_contracts import (
-    OPENCODE_GO_BUG_ASSESSMENT_BUDGET_PROFILE,
-    OPENCODE_GO_BUG_ASSESSMENT_EVALUATION,
-    OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
-    OPENCODE_GO_BUG_ASSESSMENT_PRIVACY_POLICY,
-    OPENCODE_GO_BUG_ASSESSMENT_TASK,
-    OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
-    OPENCODE_GO_SEMANTIC_API_FAMILY,
-)
 from nbtriage.runtime_observations import RuntimeObservationBuffer
 from nonebot_plugin_triage.capability.shadow import CapabilityShadowService
 from nonebot_plugin_triage.config import NBTriageConfig
@@ -85,6 +76,13 @@ _CONVERSATION_ROLE_MAX_CHARS = 64
 _CONVERSATION_SEGMENT_TYPE_MAX_ITEMS = 16
 _CONVERSATION_SEGMENT_TYPE_MAX_CHARS = 32
 _DESIGN_EVIDENCE_LIMIT = 5
+BUG_ASSESSMENT_TASK = "bug-assessment-agent-v1"
+BUG_ASSESSMENT_PRIVACY_POLICY = "bounded-visible-conversation-source-log-design-v1"
+BUG_ASSESSMENT_BUDGET_PROFILE = (
+    "agent-12req-1conversation-plus-8evidence-finalize-output-correction-120k-0.50usd-v4"
+)
+BUG_ASSESSMENT_TIMEOUT_SECONDS = 120.0
+BUG_ASSESSMENT_MAX_OUTPUT_TOKENS = 800
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,21 +101,7 @@ class BugTaskQualification:
     verified: bool = True
 
 
-OPENCODE_GO_BUG_TASK_QUALIFICATION = BugTaskQualification(
-    provider="opencode-go",
-    api_family=OPENCODE_GO_SEMANTIC_API_FAMILY,
-    model="deepseek-v4-flash",
-    task=OPENCODE_GO_BUG_ASSESSMENT_TASK,
-    schema_version=1,
-    prompt_id=BUG_AGENT_PROMPT_ID,
-    privacy_policy=OPENCODE_GO_BUG_ASSESSMENT_PRIVACY_POLICY,
-    budget_profile=OPENCODE_GO_BUG_ASSESSMENT_BUDGET_PROFILE,
-    evaluation=OPENCODE_GO_BUG_ASSESSMENT_EVALUATION,
-)
-# 中文 Prompt v8 已通过独立 forward-heldout，只准入这一精确组合。
-QUALIFIED_BUG_TASKS: frozenset[BugTaskQualification] = frozenset(
-    {OPENCODE_GO_BUG_TASK_QUALIFICATION}
-)
+QUALIFIED_BUG_TASKS: frozenset[BugTaskQualification] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -464,12 +448,10 @@ class BugAssessmentRuntimeService:
 def create_bug_assessment_agent_factory(
     config: NBTriageConfig,
     *,
-    environ: Mapping[str, str] | None = None,
     qualified_tasks: frozenset[BugTaskQualification] = QUALIFIED_BUG_TASKS,
 ) -> Callable[[], BugAssessmentAgentClient] | None:
     runtime_binding = _create_bug_agent_runtime_binding(
         config,
-        environ=environ,
         qualified_tasks=qualified_tasks,
     )
     return runtime_binding.client_factory if runtime_binding is not None else None
@@ -478,13 +460,12 @@ def create_bug_assessment_agent_factory(
 def _create_bug_agent_runtime_binding(
     config: NBTriageConfig,
     *,
-    environ: Mapping[str, str] | None = None,
     qualified_tasks: frozenset[BugTaskQualification] = QUALIFIED_BUG_TASKS,
 ) -> _BugAgentRuntimeBinding | None:
     if config.nbtriage_model_name is None:
         return None
     try:
-        binding = create_task_model_binding(config, environ=environ)
+        binding = create_task_model_binding(config, thinking=False)
     except TaskModelRuntimeConfigurationError as error:
         logger.warning(
             "NoneBot Triage Bug assessment is unavailable; deterministic handling "
@@ -518,8 +499,8 @@ def _create_bug_agent_runtime_binding(
 
         return PydanticAIBugAssessmentAgent(
             binding.model,
-            timeout_seconds=OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
-            max_output_tokens=OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
+            timeout_seconds=BUG_ASSESSMENT_TIMEOUT_SECONDS,
+            max_output_tokens=BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
             model_settings=binding.model_settings,
             expected_provider=binding.provider,
             expected_model=binding.model_name,
@@ -566,16 +547,14 @@ def _bug_task_qualification(
         provider=provider,
         api_family=api_family,
         model=model,
-        task=OPENCODE_GO_BUG_ASSESSMENT_TASK,
+        task=BUG_ASSESSMENT_TASK,
         schema_version=1,
         prompt_id=BUG_AGENT_PROMPT_ID,
-        privacy_policy=OPENCODE_GO_BUG_ASSESSMENT_PRIVACY_POLICY,
-        budget_profile=OPENCODE_GO_BUG_ASSESSMENT_BUDGET_PROFILE,
+        privacy_policy=BUG_ASSESSMENT_PRIVACY_POLICY,
+        budget_profile=BUG_ASSESSMENT_BUDGET_PROFILE,
         evaluation=(
-            OPENCODE_GO_BUG_ASSESSMENT_EVALUATION
-            if verified
-            else unverified_evaluation_id(
-                task=OPENCODE_GO_BUG_ASSESSMENT_TASK,
+            unverified_evaluation_id(
+                task=BUG_ASSESSMENT_TASK,
                 prompt_id=BUG_AGENT_PROMPT_ID,
             )
         ),
@@ -1047,7 +1026,11 @@ def _redacted_evidence(evidence: tuple[BugEvidence, ...]) -> tuple[BugEvidence, 
 
 
 __all__ = (
-    "OPENCODE_GO_BUG_TASK_QUALIFICATION",
+    "BUG_ASSESSMENT_BUDGET_PROFILE",
+    "BUG_ASSESSMENT_MAX_OUTPUT_TOKENS",
+    "BUG_ASSESSMENT_PRIVACY_POLICY",
+    "BUG_ASSESSMENT_TASK",
+    "BUG_ASSESSMENT_TIMEOUT_SECONDS",
     "QUALIFIED_BUG_TASKS",
     "BugAssessmentRuntimeOutcome",
     "BugAssessmentRuntimeRequest",

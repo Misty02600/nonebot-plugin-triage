@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib
 import json
 import os
 import sys
@@ -14,6 +13,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from pydantic_ai.settings import ThinkingLevel
+
 from nbtriage.bug._agent import PydanticAIBugAssessmentAgent
 from nbtriage.capability.catalog.records import CapabilityIndexError, search_capability_index
 from nbtriage.capability.teaching.model_adapter import (
@@ -21,12 +22,9 @@ from nbtriage.capability.teaching.model_adapter import (
     PydanticAICapabilityAnalysisClient,
 )
 from nbtriage.evidence_receipts import EvidenceReceiptError, load_evidence_receipt
-from nbtriage.live_trials import LiveTrialError, summarize_trial_logs
+from nbtriage.model_adapters import PydanticAIB1Client
 from nbtriage.model_contracts import B1ProviderError
-from nbtriage.opencode_go_contracts import (
-    OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
-    OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
-)
+from nbtriage.pydantic_agent_adapter import PydanticAIAgentStepClient
 from nbtriage.rag import B1Error
 from nbtriage.support._model_adapter import (
     PydanticAISupportSemanticClient,
@@ -46,20 +44,7 @@ from tools.nbtriage_maintainer.answer_review_export import (
     AnswerReviewExportError,
     build_b4_answer_quality_review,
 )
-from tools.nbtriage_maintainer.bot_docs import (
-    DEFAULT_BOT_DOCS_INDEX_PATH,
-    BotDocsIndex,
-    BotDocsIndexError,
-    build_bot_docs_index,
-)
-from tools.nbtriage_maintainer.bot_docs_evaluation import (
-    DEFAULT_BOT_DOCS_FIXTURE_PATH,
-    BotDocsEvaluationError,
-    evaluate_bot_docs_retrieval,
-)
 from tools.nbtriage_maintainer.bug_assessment_evaluation import (
-    BUG_ASSESSMENT_CANDIDATE_EVALUATION_REVISION,
-    BUG_ASSESSMENT_EVALUATION_ID,
     BugAssessmentEvaluationError,
     evaluate_bug_assessment,
 )
@@ -68,9 +53,6 @@ from tools.nbtriage_maintainer.capability_teaching import (
     analyze_capability_teaching,
 )
 from tools.nbtriage_maintainer.capability_teaching_evaluation import (
-    CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION,
-    CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID,
-    CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256,
     CAPABILITY_TEACHING_QUALIFIED_MAX_OUTPUT_TOKENS,
     CAPABILITY_TEACHING_QUALIFIED_TIMEOUT_SECONDS,
     CapabilityTeachingEvaluationError,
@@ -125,8 +107,6 @@ from tools.nbtriage_maintainer.sessions import (
     validate_case_id,
 )
 from tools.nbtriage_maintainer.support_semantic_evaluation import (
-    SUPPORT_SEMANTIC_CANDIDATE_EVALUATION_REVISION,
-    SUPPORT_SEMANTIC_EVALUATION_ID,
     SupportSemanticEvaluationError,
     evaluate_support_semantics,
 )
@@ -230,46 +210,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gate_parser.add_argument("--report", type=Path, default=Path("reports/data-gate.json"))
 
-    trial_summary_parser = subparsers.add_parser(
-        "summarize-trials",
-        help="Summarize bounded production trial JSONL without exposing event identifiers.",
-    )
-    trial_summary_parser.add_argument(
-        "--log-path",
-        type=Path,
-        required=True,
-        help="Explicit trial JSONL path; the CLI does not resolve Bot LocalStore settings.",
-    )
-    trial_summary_parser.add_argument(
-        "--backup-count",
-        type=_positive_int,
-        default=5,
-        help="Maximum numbered rotation backups to include.",
-    )
-
-    bot_docs_index_parser = subparsers.add_parser(
-        "build-bot-docs-index",
-        help="Build a local SQLite FTS5 index from the approved bot-docs source subset.",
-    )
-    bot_docs_index_parser.add_argument("--source-root", type=Path, required=True)
-    bot_docs_index_parser.add_argument("--index", type=Path, default=DEFAULT_BOT_DOCS_INDEX_PATH)
-    bot_docs_index_parser.add_argument(
-        "--replace",
-        action="store_true",
-        help="Atomically replace an existing derived index; source Markdown is never modified.",
-    )
-
-    bot_docs_search_parser = subparsers.add_parser(
-        "search-bot-docs",
-        help="Search the local bot-docs index without model or network calls.",
-    )
-    bot_docs_search_parser.add_argument("query")
-    bot_docs_search_parser.add_argument("--index", type=Path, default=DEFAULT_BOT_DOCS_INDEX_PATH)
-    bot_docs_search_parser.add_argument("--limit", type=_positive_int, default=5)
-    bot_docs_search_parser.add_argument(
-        "--strategy", choices=("hybrid", "metadata"), default="hybrid"
-    )
-
     capability_search_parser = subparsers.add_parser(
         "search-capabilities",
         help="Search an opt-in deployment-local capability shadow index.",
@@ -288,20 +228,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include restricted capabilities after out-of-band authorization.",
     )
 
-    bot_docs_evaluation_parser = subparsers.add_parser(
-        "evaluate-bot-docs-retrieval",
-        help="Compare metadata-only and local full-text retrieval on public synthetic fixtures.",
-    )
-    bot_docs_evaluation_parser.add_argument(
-        "--index", type=Path, default=DEFAULT_BOT_DOCS_INDEX_PATH
-    )
-    bot_docs_evaluation_parser.add_argument(
-        "--fixtures", type=Path, default=DEFAULT_BOT_DOCS_FIXTURE_PATH
-    )
-    bot_docs_evaluation_parser.add_argument(
-        "--report", type=Path, default=Path("reports/bot-docs-retrieval.json")
-    )
-
     support_semantic_parser = subparsers.add_parser(
         "evaluate-support-semantics",
         help="Run the frozen support-semantic cases against an explicit model target.",
@@ -309,7 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     support_semantic_parser.add_argument(
         "--fixtures",
         type=Path,
-        default=Path("evals/datasets/fixtures/support-semantic-v7-forward-heldout.json"),
+        default=Path("evals/datasets/fixtures/support-semantic-v8-forward-heldout.json"),
     )
     support_semantic_parser.add_argument("--report", type=Path, required=True)
     support_semantic_parser.add_argument("--max-model-calls", type=_positive_int, default=40)
@@ -323,26 +249,38 @@ def build_parser() -> argparse.ArgumentParser:
 
     bug_assessment_parser = subparsers.add_parser(
         "evaluate-bug-assessment",
-        help="Run the frozen Bug Agent cases against an explicit model target.",
+        help="Run versioned Bug Agent development or frozen held-out cases.",
     )
     bug_assessment_parser.add_argument(
         "--fixtures",
         type=Path,
-        default=Path("evals/datasets/fixtures/bug-assessment-v1-forward-heldout-v8.json"),
+        default=Path("evals/datasets/fixtures/bug-assessment-v1-development-v9.json"),
     )
     bug_assessment_parser.add_argument("--report", type=Path, required=True)
     bug_assessment_parser.add_argument("--trace-dir", type=Path)
+    bug_assessment_parser.add_argument(
+        "--case-id",
+        dest="case_ids",
+        action="append",
+        help="Run only this fixture case; repeat the option to select multiple canaries.",
+    )
+    bug_assessment_parser.add_argument(
+        "--repeat",
+        type=_positive_int,
+        default=2,
+        help="Trials per fixture case; use 1 for a frozen held-out qualification run.",
+    )
     bug_assessment_parser.add_argument("--declared-budget-usd", type=_positive_float, required=True)
     bug_assessment_parser.add_argument("--confirm-paid-run", action="store_true")
     bug_assessment_parser.add_argument(
         "--timeout-seconds",
         type=_positive_float,
-        default=OPENCODE_GO_BUG_ASSESSMENT_TIMEOUT_SECONDS,
+        default=120.0,
     )
     bug_assessment_parser.add_argument(
         "--max-output-tokens",
         type=_positive_int,
-        default=OPENCODE_GO_BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
+        default=800,
     )
     _add_model_evaluation_target_arguments(bug_assessment_parser)
 
@@ -353,7 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     capability_teaching_evaluation_parser.add_argument(
         "--fixtures",
         type=Path,
-        default=Path("evals/datasets/fixtures/capability-teaching-v13-forward-heldout.json"),
+        required=True,
     )
     capability_teaching_evaluation_parser.add_argument("--report", type=Path, required=True)
     capability_teaching_evaluation_parser.add_argument("--repeat", type=_positive_int, default=1)
@@ -378,11 +316,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capability_teaching_evaluation_parser.add_argument(
         "--official-fixture-set-id",
-        default=CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID,
+        required=True,
     )
     capability_teaching_evaluation_parser.add_argument(
         "--official-fixture-sha256",
-        default=CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256,
+        required=True,
     )
     capability_teaching_evaluation_parser.add_argument(
         "--case-id",
@@ -550,12 +488,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("evals/datasets/splits/b4-gate-v1.json"),
     )
-    b4_real_parser.add_argument(
-        "--backend",
-        choices=("openai-responses", "deepseek-responses", "anthropic-messages"),
-        required=True,
-    )
-    b4_real_parser.add_argument("--model", required=True)
+    _add_pydantic_model_target_arguments(b4_real_parser)
     b4_real_parser.add_argument("--trials-per-fixture", type=_positive_int, required=True)
     b4_real_parser.add_argument("--max-provider-requests", type=_positive_int, required=True)
     b4_real_parser.add_argument(
@@ -591,14 +524,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     b1_parser = subparsers.add_parser(
-        "evaluate-b1-openai",
-        help="Run the RAG-only baseline with an explicit OpenAI model and call budget.",
+        "evaluate-b1",
+        help="Run the RAG-only baseline with an explicit Pydantic AI model target.",
     )
     b1_parser.add_argument("--cases-dir", type=Path, default=Path("data/cases"))
     b1_parser.add_argument(
         "--split", type=Path, default=Path("evals/datasets/splits/data-gate-v1.json")
     )
-    b1_parser.add_argument("--model", required=True)
+    _add_pydantic_model_target_arguments(b1_parser)
     b1_parser.add_argument("--max-output-tokens", type=_positive_int, required=True)
     b1_parser.add_argument("--max-model-calls", type=_positive_int, required=True)
     b1_parser.add_argument("--declared-budget-usd", type=_positive_float, required=True)
@@ -609,44 +542,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run validation first; run heldout only after freezing the B1 configuration.",
     )
     b1_parser.add_argument("--timeout", type=float, default=60.0)
-    b1_parser.add_argument("--cache-dir", type=Path, default=Path("artifacts/cache/b1-openai"))
-    b1_parser.add_argument("--report", type=Path, default=Path("artifacts/eval-b1-openai.json"))
+    b1_parser.add_argument("--cache-dir", type=Path, default=Path("artifacts/cache/b1"))
+    b1_parser.add_argument("--report", type=Path, default=Path("artifacts/eval-b1.json"))
     b1_parser.add_argument(
-        "--confirm-paid-run",
-        action="store_true",
-        help="Acknowledge that uncached requests can incur API charges.",
-    )
-
-    deepseek_parser = subparsers.add_parser(
-        "evaluate-b1-deepseek",
-        help="Run the RAG-only baseline with DeepSeek V4 Flash in non-thinking mode.",
-    )
-    deepseek_parser.add_argument("--cases-dir", type=Path, default=Path("data/cases"))
-    deepseek_parser.add_argument(
-        "--split", type=Path, default=Path("evals/datasets/splits/data-gate-v1.json")
-    )
-    deepseek_parser.add_argument(
-        "--model",
-        choices=("deepseek-v4-flash",),
-        required=True,
-    )
-    deepseek_parser.add_argument("--max-output-tokens", type=_positive_int, required=True)
-    deepseek_parser.add_argument("--max-model-calls", type=_positive_int, required=True)
-    deepseek_parser.add_argument("--declared-budget-usd", type=_positive_float, required=True)
-    deepseek_parser.add_argument(
-        "--score-split",
-        choices=("validation", "heldout"),
-        required=True,
-        help="Run validation first; run heldout only after freezing the B1 configuration.",
-    )
-    deepseek_parser.add_argument("--timeout", type=float, default=60.0)
-    deepseek_parser.add_argument(
-        "--cache-dir", type=Path, default=Path("artifacts/cache/b1-deepseek")
-    )
-    deepseek_parser.add_argument(
-        "--report", type=Path, default=Path("artifacts/eval-b1-deepseek.json")
-    )
-    deepseek_parser.add_argument(
         "--confirm-paid-run",
         action="store_true",
         help="Acknowledge that uncached requests can incur API charges.",
@@ -768,16 +666,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_export_annotations(args)
     if args.command == "gate":
         return _run_gate(args)
-    if args.command == "summarize-trials":
-        return _run_summarize_trials(args)
-    if args.command == "build-bot-docs-index":
-        return _run_build_bot_docs_index(args)
-    if args.command == "search-bot-docs":
-        return _run_search_bot_docs(args)
     if args.command == "search-capabilities":
         return _run_search_capabilities(args)
-    if args.command == "evaluate-bot-docs-retrieval":
-        return _run_evaluate_bot_docs_retrieval(args)
     if args.command == "evaluate-support-semantics":
         return _run_evaluate_support_semantics(args)
     if args.command == "evaluate-bug-assessment":
@@ -802,10 +692,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_evaluate_b4_scripted(args)
     if args.command == "evaluate-b4-real":
         return _run_evaluate_b4_real(args)
-    if args.command == "evaluate-b1-openai":
-        return _run_evaluate_b1_openai(args)
-    if args.command == "evaluate-b1-deepseek":
-        return _run_evaluate_b1_deepseek(args)
+    if args.command == "evaluate-b1":
+        return _run_evaluate_b1(args)
     if args.command == "session-create":
         return _run_session_create(args)
     if args.command == "session-approve":
@@ -1086,76 +974,6 @@ def _run_evaluate_b0(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_summarize_trials(args: argparse.Namespace) -> int:
-    try:
-        summary = summarize_trial_logs(
-            args.log_path,
-            backup_count=args.backup_count,
-        )
-    except LiveTrialError as error:
-        print(f"trial summary failed: {error}", file=sys.stderr)
-        return 1
-    print(json.dumps(summary.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
-    return 0
-
-
-def _run_build_bot_docs_index(args: argparse.Namespace) -> int:
-    try:
-        summary = build_bot_docs_index(
-            args.source_root,
-            args.index,
-            replace=args.replace,
-        )
-    except (BotDocsIndexError, OSError) as error:
-        print(f"bot-docs index build failed: {error}", file=sys.stderr)
-        return 1
-    print(json.dumps(summary.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
-    return 0
-
-
-def _run_search_bot_docs(args: argparse.Namespace) -> int:
-    try:
-        index = BotDocsIndex(args.index)
-        hits = index.search(args.query, limit=args.limit, strategy=args.strategy)
-    except (BotDocsIndexError, OSError) as error:
-        print(f"bot-docs search failed: {error}", file=sys.stderr)
-        return 1
-    print(
-        json.dumps(
-            {
-                "retriever_id": index.metadata()["retriever_id"],
-                "strategy": args.strategy,
-                "query": args.query,
-                "hits": [hit.to_dict() for hit in hits],
-            },
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _run_evaluate_bot_docs_retrieval(args: argparse.Namespace) -> int:
-    try:
-        _require_new_report_target(args.report)
-        report = evaluate_bot_docs_retrieval(args.index, args.fixtures)
-        write_new_evaluation_report(args.report, report)
-    except (BotDocsEvaluationError, BotDocsIndexError, OSError) as error:
-        print(f"bot-docs retrieval evaluation failed: {error}", file=sys.stderr)
-        return 1
-    hybrid = report["metrics_by_strategy"]["hybrid"]
-    print(
-        "bot-docs retrieval evaluation: "
-        f"{report['summary']['case_count']} case(s), "
-        f"recall@5={hybrid['recall_at_5']:.3f}, "
-        f"mrr={hybrid['mrr']:.3f}, "
-        f"gate={report['quality_gate']['status']}"
-    )
-    print(f"report: {args.report}")
-    return 0 if report["quality_gate"]["status"] == "passed" else 1
-
-
 def _run_evaluate_support_semantics(args: argparse.Namespace) -> int:
     if not args.confirm_paid_run:
         print(
@@ -1169,8 +987,7 @@ def _run_evaluate_support_semantics(args: argparse.Namespace) -> int:
             args,
             timeout_seconds=args.timeout_seconds,
             max_output_tokens=args.max_output_tokens,
-            default_evaluation_id=SUPPORT_SEMANTIC_EVALUATION_ID,
-            default_evaluation_revision=(SUPPORT_SEMANTIC_CANDIDATE_EVALUATION_REVISION),
+            thinking=False,
         )
 
         def client_factory() -> PydanticAISupportSemanticClient:
@@ -1228,46 +1045,51 @@ def _run_evaluate_bug_assessment(args: argparse.Namespace) -> int:
     if not args.confirm_paid_run:
         print("bug assessment evaluation requires --confirm-paid-run", file=sys.stderr)
         return 2
+    checkpoint_dir = args.report.with_name(f".{args.report.name}.checkpoint")
     try:
-        _require_new_report_target(args.report)
-        binding, price_profile, evaluation_id, evaluation_revision = _build_model_evaluation_target(
-            args,
-            timeout_seconds=args.timeout_seconds,
-            max_output_tokens=args.max_output_tokens,
-            default_evaluation_id=BUG_ASSESSMENT_EVALUATION_ID,
-            default_evaluation_revision=BUG_ASSESSMENT_CANDIDATE_EVALUATION_REVISION,
-        )
-
-        def client_factory() -> PydanticAIBugAssessmentAgent:
-            return PydanticAIBugAssessmentAgent(
-                binding.model,
-                timeout_seconds=args.timeout_seconds,
-                max_output_tokens=args.max_output_tokens,
-                model_settings=binding.model_settings,
-                expected_provider=binding.provider,
-                expected_model=binding.model_name,
+        with reserve_new_evaluation_report(args.report) as reservation:
+            binding, price_profile, evaluation_id, evaluation_revision = (
+                _build_model_evaluation_target(
+                    args,
+                    timeout_seconds=args.timeout_seconds,
+                    max_output_tokens=args.max_output_tokens,
+                    thinking=False,
+                )
             )
 
-        report = asyncio.run(
-            evaluate_bug_assessment(
-                args.fixtures,
-                client_factory=client_factory,
-                provider=binding.provider,
-                model=binding.model_name,
-                declared_budget_usd=args.declared_budget_usd,
-                trace_dir=args.trace_dir,
-                api_family=binding.api_family,
-                connection_revision=binding.connection_revision,
-                settings_revision=binding.settings_revision,
-                timeout_seconds=args.timeout_seconds,
-                max_output_tokens=args.max_output_tokens,
-                evaluation_id=evaluation_id,
-                evaluation_revision=evaluation_revision,
-                usage_cost_usd=(price_profile.cost_usd if price_profile else None),
-                pricing_profile=(price_profile.to_report() if price_profile else None),
+            def client_factory() -> PydanticAIBugAssessmentAgent:
+                return PydanticAIBugAssessmentAgent(
+                    binding.model,
+                    timeout_seconds=args.timeout_seconds,
+                    max_output_tokens=args.max_output_tokens,
+                    model_settings=binding.model_settings,
+                    expected_provider=binding.provider,
+                    expected_model=binding.model_name,
+                )
+
+            report = asyncio.run(
+                evaluate_bug_assessment(
+                    args.fixtures,
+                    client_factory=client_factory,
+                    provider=binding.provider,
+                    model=binding.model_name,
+                    declared_budget_usd=args.declared_budget_usd,
+                    trace_dir=args.trace_dir,
+                    checkpoint_dir=checkpoint_dir,
+                    api_family=binding.api_family,
+                    connection_revision=binding.connection_revision,
+                    settings_revision=binding.settings_revision,
+                    timeout_seconds=args.timeout_seconds,
+                    max_output_tokens=args.max_output_tokens,
+                    evaluation_id=evaluation_id,
+                    evaluation_revision=evaluation_revision,
+                    usage_cost_usd=price_profile.cost_usd,
+                    pricing_profile=price_profile.to_report(),
+                    repeat=args.repeat,
+                    selected_case_ids=(frozenset(args.case_ids) if args.case_ids else None),
+                )
             )
-        )
-        write_new_evaluation_report(args.report, report)
+            publish_reserved_evaluation_report(reservation, report)
     except (
         BugAssessmentEvaluationError,
         ModelEvaluationTargetError,
@@ -1275,18 +1097,27 @@ def _run_evaluate_bug_assessment(args: argparse.Namespace) -> int:
         ValueError,
     ) as error:
         print(f"bug assessment evaluation failed: {error}", file=sys.stderr)
+        if checkpoint_dir.is_dir():
+            print(f"checkpoint: {checkpoint_dir}", file=sys.stderr)
         return 1
 
     summary = report["summary"]
+    gate_name = "development_gate" if report["split"] == "development" else "quality_gate"
     print(
         "bug assessment evaluation: "
-        f"{summary['case_count']} case(s), "
+        f"{summary['selected_fixture_case_count']} fixture case(s), "
+        f"{summary['case_count']} trial(s), "
         f"verdict={summary['verdict_accuracy']:.3f}, "
         f"occurrence={summary['occurrence_accuracy']:.3f}, "
-        f"gate={report['quality_gate']['status']}"
+        f"gate={report[gate_name]['status']}"
     )
+    if report["summary"]["resumed_trial_count"]:
+        print(
+            "resumed: "
+            f"{report['summary']['resumed_trial_count']} completed trial(s) from checkpoint"
+        )
     print(f"report: {args.report}")
-    return 0 if report["quality_gate"]["status"] == "passed" else 1
+    return 0 if report[gate_name]["status"] == "passed" else 1
 
 
 def _run_evaluate_capability_teaching(args: argparse.Namespace) -> int:
@@ -1311,8 +1142,7 @@ def _run_evaluate_capability_teaching(args: argparse.Namespace) -> int:
             args,
             timeout_seconds=args.timeout_seconds,
             max_output_tokens=args.max_output_tokens,
-            default_evaluation_id="capability-teaching-opencode-go-v1",
-            default_evaluation_revision=CAPABILITY_TEACHING_CANDIDATE_EVALUATION_REVISION,
+            thinking="high",
         )
 
         def client_factory(
@@ -1563,44 +1393,20 @@ def _run_evaluate_b4_real(args: argparse.Namespace) -> int:
     if not args.confirm_paid_run:
         print(
             "B4 real evaluation not started: pass --confirm-paid-run after confirming "
-            "the exact backend/model, synthetic data egress, request/token limits, and budget.",
+            "the exact model target, synthetic data egress, request/token limits, and budget.",
             file=sys.stderr,
         )
         return 2
-
-    provider_config = {
-        "openai-responses": {
-            "api_key_env": "OPENAI_API_KEY",
-            "module": "nbtriage.openai_adapter",
-            "b1_symbol": "create_openai_responses_b1_client",
-            "agent_symbol": "create_openai_responses_agent_step_client",
-            "install_hint": (
-                "install the 'openai' extra: pip install \"nonebot-plugin-triage[openai]\""
-            ),
-        },
-        "anthropic-messages": {
-            "api_key_env": "ANTHROPIC_API_KEY",
-            "module": "nbtriage.anthropic_adapter",
-            "b1_symbol": "create_anthropic_messages_b1_client",
-            "agent_symbol": "create_anthropic_messages_agent_step_client",
-            "install_hint": (
-                "install the 'anthropic' extra: pip install \"nonebot-plugin-triage[anthropic]\""
-            ),
-        },
-        "deepseek-responses": {
-            "api_key_env": "DEEPSEEK_API_KEY",
-            "module": "tools.nbtriage_maintainer.deepseek_adapter",
-            "b1_symbol": "create_deepseek_responses_b1_client",
-            "agent_symbol": "create_deepseek_responses_agent_step_client",
-            "install_hint": "run 'uv sync --group maintainer' from the repository",
-        },
-    }[args.backend]
-    api_key = os.environ.get(provider_config["api_key_env"])
-    if not api_key:
-        print(
-            f"B4 real evaluation failed: {provider_config['api_key_env']} is not set",
-            file=sys.stderr,
+    try:
+        binding = create_model_evaluation_binding(
+            backend="pydantic-ai",
+            model_name=args.model_name,
+            base_url=args.base_url,
+            timeout_seconds=args.timeout,
+            thinking=False,
         )
+    except ModelEvaluationTargetError as error:
+        print(f"B4 real evaluation failed: {error}", file=sys.stderr)
         return 1
 
     partial_report_path = b4_real_partial_report_path(args.report)
@@ -1621,8 +1427,8 @@ def _run_evaluate_b4_real(args: argparse.Namespace) -> int:
     try:
         partial_audit = RealGatePartialAudit.create(
             partial_report_path,
-            provider=args.backend,
-            model=args.model,
+            provider=binding.provider,
+            model=binding.model_name,
             trials_per_fixture=args.trials_per_fixture,
             max_provider_requests=args.max_provider_requests,
             max_agent_input_tokens_per_trial=args.max_agent_input_tokens_per_trial,
@@ -1642,36 +1448,28 @@ def _run_evaluate_b4_real(args: argparse.Namespace) -> int:
 
     failure_stage = "preflight"
     try:
-        create_b1_client = _load_model_symbol(
-            provider_config["module"],
-            provider_config["b1_symbol"],
-            install_hint=provider_config["install_hint"],
-        )
-        create_agent_client = _load_model_symbol(
-            provider_config["module"],
-            provider_config["agent_symbol"],
-            install_hint=provider_config["install_hint"],
-        )
         failure_stage = "audit_checkpoint"
         report = asyncio.run(
             asyncio.wait_for(
                 evaluate_b4_real_fixtures(
                     args.fixtures,
                     args.split,
-                    b1_client_factory=lambda: create_b1_client(
-                        api_key=api_key,
-                        model=args.model,
+                    b1_client_factory=lambda: PydanticAIB1Client(
+                        binding.model,
+                        provider=binding.provider,
                         timeout_seconds=args.timeout,
                         max_calls=1,
+                        model_settings=binding.model_settings,
                     ),
-                    agent_client_factory=lambda: create_agent_client(
-                        api_key=api_key,
-                        model=args.model,
+                    agent_client_factory=lambda: PydanticAIAgentStepClient(
+                        binding.model,
+                        provider=binding.provider,
                         timeout_seconds=args.timeout,
                         max_calls=1,
+                        model_settings=binding.model_settings,
                     ),
-                    provider=args.backend,
-                    model=args.model,
+                    provider=binding.provider,
+                    model=binding.model_name,
                     trials_per_fixture=args.trials_per_fixture,
                     max_provider_requests=args.max_provider_requests,
                     max_agent_input_tokens_per_trial=(args.max_agent_input_tokens_per_trial),
@@ -1761,7 +1559,7 @@ def _real_gate_failure_code(
     return "unexpected_error"
 
 
-def _run_evaluate_b1_openai(args: argparse.Namespace) -> int:
+def _run_evaluate_b1(args: argparse.Namespace) -> int:
     if not args.confirm_paid_run:
         print(
             "B1 evaluation not started: pass --confirm-paid-run after confirming "
@@ -1769,29 +1567,29 @@ def _run_evaluate_b1_openai(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print("B1 evaluation failed: OPENAI_API_KEY is not set", file=sys.stderr)
-        return 1
     try:
         with reserve_new_evaluation_report(args.report) as reservation:
-            create_client = _load_model_symbol(
-                "nbtriage.openai_adapter",
-                "create_openai_responses_b1_client",
+            binding = create_model_evaluation_binding(
+                backend="pydantic-ai",
+                model_name=args.model_name,
+                base_url=args.base_url,
+                timeout_seconds=args.timeout,
+                thinking=False,
             )
-            client = create_client(
-                api_key=api_key,
-                model=args.model,
+            client = PydanticAIB1Client(
+                binding.model,
+                provider=binding.provider,
                 timeout_seconds=args.timeout,
                 max_calls=args.max_model_calls,
+                model_settings=binding.model_settings,
             )
             report = asyncio.run(
                 evaluate_b1(
                     args.cases_dir,
                     args.split,
                     client=client,
-                    provider="openai-responses",
-                    model=args.model,
+                    provider=binding.provider,
+                    model=binding.model_name,
                     generation_config={"max_output_tokens": args.max_output_tokens},
                     cache_dir=args.cache_dir,
                     score_splits=(args.score_split,),
@@ -1799,7 +1597,13 @@ def _run_evaluate_b1_openai(args: argparse.Namespace) -> int:
                 )
             )
             publish_reserved_evaluation_report(reservation, report)
-    except (EvaluationError, B1Error, B1ProviderError, OSError) as error:
+    except (
+        EvaluationError,
+        B1Error,
+        B1ProviderError,
+        ModelEvaluationTargetError,
+        OSError,
+    ) as error:
         print(f"B1 evaluation failed: {error}", file=sys.stderr)
         return 1
 
@@ -1822,96 +1626,6 @@ def _run_evaluate_b1_openai(args: argparse.Namespace) -> int:
         )
     print(f"report: {args.report}")
     return 0
-
-
-def _run_evaluate_b1_deepseek(args: argparse.Namespace) -> int:
-    if not args.confirm_paid_run:
-        print(
-            "B1 evaluation not started: pass --confirm-paid-run after confirming "
-            "the exact model and budget.",
-            file=sys.stderr,
-        )
-        return 2
-    api_key = os.environ.get("DEEPSEEK_API_KEY")
-    if not api_key:
-        print(
-            "B1 evaluation failed: DEEPSEEK_API_KEY is not set",
-            file=sys.stderr,
-        )
-        return 1
-    try:
-        with reserve_new_evaluation_report(args.report) as reservation:
-            client_type = _load_model_symbol(
-                "tools.nbtriage_maintainer.providers",
-                "DeepSeekResponsesB1Client",
-                install_hint="run 'uv sync --group maintainer' from the repository",
-            )
-            client = client_type(
-                api_key=api_key,
-                timeout_seconds=args.timeout,
-                max_calls=args.max_model_calls,
-            )
-            report = asyncio.run(
-                evaluate_b1(
-                    args.cases_dir,
-                    args.split,
-                    client=client,
-                    provider="deepseek-responses",
-                    model=args.model,
-                    generation_config={
-                        "max_output_tokens": args.max_output_tokens,
-                        "reasoning_effort": "none",
-                        "temperature": 0,
-                    },
-                    cache_dir=args.cache_dir,
-                    score_splits=(args.score_split,),
-                    declared_budget_usd=args.declared_budget_usd,
-                )
-            )
-            publish_reserved_evaluation_report(reservation, report)
-    except (EvaluationError, B1Error, B1ProviderError, OSError) as error:
-        print(f"B1 evaluation failed: {error}", file=sys.stderr)
-        return 1
-
-    summary = report["summary"]
-    execution_observation = report["execution_observation"]
-    print(
-        "B1 evaluation: "
-        f"{summary['case_count']} case(s), "
-        f"{execution_observation['model_calls']} model call(s), "
-        f"{execution_observation['cache_hits']} cache hit(s), "
-        f"{summary['provider_response_count']} provider response(s), "
-        f"{summary['input_tokens']} input token(s), "
-        f"{summary['output_tokens']} output token(s)"
-    )
-    for split_name, metrics in report["metrics_by_split"].items():
-        print(
-            f"  {split_name}: {metrics['case_count']} case(s), "
-            f"route={metrics['route_accuracy']:.3f}, "
-            f"phase={metrics['fault_phase_accuracy']:.3f}"
-        )
-    print(f"report: {args.report}")
-    return 0
-
-
-def _load_model_symbol(
-    module_name: str,
-    symbol_name: str,
-    *,
-    install_hint: str = (
-        "install the 'openai' extra: pip install \"nonebot-plugin-triage[openai]\""
-    ),
-) -> Any:
-    try:
-        module = importlib.import_module(module_name)
-    except ModuleNotFoundError as error:
-        missing_name = error.name or ""
-        if missing_name in {"openai", "anthropic", "pydantic_ai"} or missing_name.startswith(
-            "pydantic_ai."
-        ):
-            raise B1ProviderError(f"model support is not installed; {install_hint}") from error
-        raise
-    return getattr(module, symbol_name)
 
 
 def _run_session_create(args: argparse.Namespace) -> int:
@@ -2023,11 +1737,10 @@ def _print_session_summary(session: SupportSession) -> None:
 
 
 def _add_model_evaluation_target_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--backend", default="opencode-go-chat")
-    parser.add_argument("--model-name", default="deepseek-v4-flash")
-    parser.add_argument("--base-url")
-    parser.add_argument("--evaluation-id")
-    parser.add_argument("--evaluation-revision")
+    parser.add_argument("--backend", default="pydantic-ai", choices=("pydantic-ai",))
+    _add_pydantic_model_target_arguments(parser)
+    parser.add_argument("--evaluation-id", required=True)
+    parser.add_argument("--evaluation-revision", required=True)
     parser.add_argument("--pricing-profile")
     parser.add_argument("--pricing-currency")
     parser.add_argument("--input-price-per-million", type=_nonnegative_decimal)
@@ -2035,37 +1748,29 @@ def _add_model_evaluation_target_arguments(parser: argparse.ArgumentParser) -> N
     parser.add_argument("--usd-per-currency-unit", type=_positive_decimal)
 
 
+def _add_pydantic_model_target_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model-name", required=True)
+    parser.add_argument("--base-url")
+
+
 def _build_model_evaluation_target(
     args: argparse.Namespace,
     *,
     timeout_seconds: float,
     max_output_tokens: int,
-    default_evaluation_id: str,
-    default_evaluation_revision: str,
+    thinking: ThinkingLevel,
 ):
     binding = create_model_evaluation_binding(
         backend=args.backend,
         model_name=args.model_name,
         base_url=args.base_url,
         timeout_seconds=timeout_seconds,
+        thinking=thinking,
     )
     price_profile = _price_profile_from_args(args)
-    uses_legacy_target = (
-        args.backend == "opencode-go-chat" and args.model_name == "deepseek-v4-flash"
-    )
-    if price_profile is None and not uses_legacy_target:
-        raise ValueError("non-legacy evaluation targets require an explicit token price profile")
-    if (args.evaluation_id is None) != (args.evaluation_revision is None):
-        raise ValueError("evaluation ID and revision must be configured together")
-    if args.evaluation_id is None:
-        if not uses_legacy_target:
-            raise ValueError("non-legacy evaluation targets require an evaluation ID and revision")
-        evaluation_id = default_evaluation_id
-        evaluation_revision = default_evaluation_revision
-    else:
-        evaluation_id = args.evaluation_id
-        evaluation_revision = args.evaluation_revision
-    return binding, price_profile, evaluation_id, evaluation_revision
+    if price_profile is None:
+        raise ValueError("evaluation targets require an explicit token price profile")
+    return binding, price_profile, args.evaluation_id, args.evaluation_revision
 
 
 def _price_profile_from_args(args: argparse.Namespace) -> TokenPriceProfile | None:

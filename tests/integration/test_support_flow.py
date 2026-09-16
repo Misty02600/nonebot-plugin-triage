@@ -39,7 +39,7 @@ from tests.units.fake import fake_group_message_event_v11, fake_private_message_
         ),
     ],
 )
-async def test_support_matcher_accepts_optional_at_without_creating_incident(
+async def test_support_matcher_accepts_optional_at(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
     message_id: int,
@@ -51,7 +51,6 @@ async def test_support_matcher_accepts_optional_at_without_creating_incident(
     from nonebot_plugin_triage import handlers
 
     _inject_semantic_assessment(monkeypatch, goals=("guidance",))
-    incident_count = len(handlers.plugin_runtime.incidents)
     async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = ctx.create_bot()
         event = fake_group_message_event_v11(
@@ -73,7 +72,6 @@ async def test_support_matcher_accepts_optional_at_without_creating_incident(
             result=None,
         )
         ctx.should_finished(handlers.support_matcher)
-    assert len(handlers.plugin_runtime.incidents) == incident_count
 
 
 async def test_support_matcher_rejects_fixed_2000_character_overflow_before_assessment(
@@ -1040,11 +1038,7 @@ async def test_support_matcher_rate_limits_all_support_responses(
     async def unexpected_guidance(*_: object, **__: object) -> object:
         raise AssertionError("unclassified text must not read capability sources")
 
-    def unexpected_report(*_: object, **__: object) -> object:
-        raise AssertionError("unclassified text must not enter incident intake")
-
     monkeypatch.setattr(handlers, "_capability_guidance_result", unexpected_guidance)
-    monkeypatch.setattr(handlers.plugin_runtime.report_service, "handle", unexpected_report)
     async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = ctx.create_bot()
         first = _group_text_event(
@@ -1240,7 +1234,7 @@ async def test_guidance_turns_do_not_check_superuser(
     assert checks == []
 
 
-async def test_sensitive_support_text_is_refused_before_capability_or_incident(
+async def test_sensitive_support_text_is_refused_before_capability_lookup(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1252,12 +1246,7 @@ async def test_sensitive_support_text_is_refused_before_capability_or_incident(
     async def unexpected_guidance(*_: object, **__: object) -> object:
         raise AssertionError("policy-blocked text must not read capability sources")
 
-    def unexpected_report(*_: object, **__: object) -> object:
-        raise AssertionError("policy-blocked text must not enter incident intake")
-
     monkeypatch.setattr(handlers, "_capability_guidance_result", unexpected_guidance)
-    monkeypatch.setattr(handlers.plugin_runtime.report_service, "handle", unexpected_report)
-    incident_count = len(handlers.plugin_runtime.incidents)
     event = _group_text_event(
         "triage api_key=abcdefghijklmnopqrstuvwxyz123456",
         message_id=123,
@@ -1278,7 +1267,6 @@ async def test_sensitive_support_text_is_refused_before_capability_or_incident(
     records = tuple(runtime.support_threads._entries.values())
     assert len(records) == 1
     assert records[0].status is ThreadStatus.CLOSED
-    assert len(handlers.plugin_runtime.incidents) == incident_count
 
 
 async def test_private_semantic_guidance_uses_common_routing(
@@ -1313,7 +1301,6 @@ async def test_private_semantic_guidance_uses_common_routing(
         fixed_capabilities,
     )
     _inject_semantic_assessment(monkeypatch, goals=("guidance",))
-    incident_count = len(handlers.plugin_runtime.incidents)
     text = "triage 某个功能怎么使用"
     async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = ctx.create_bot(
@@ -1340,5 +1327,3 @@ async def test_private_semantic_guidance_uses_common_routing(
             result=None,
         )
         ctx.should_finished(handlers.support_matcher)
-
-    assert len(handlers.plugin_runtime.incidents) == incident_count

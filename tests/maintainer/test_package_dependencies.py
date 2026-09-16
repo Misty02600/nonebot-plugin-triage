@@ -16,18 +16,17 @@ def test_model_control_plane_is_a_base_dependency() -> None:
     dependencies = set(project["dependencies"])
 
     assert "ty==0.0.80" in dependencies
-    assert "pydantic-ai-harness==0.22.0" in dependencies
-    assert "pydantic-ai-slim==2.28.0" in dependencies
+    assert "pydantic-ai-harness==0.31.0" in dependencies
+    assert "pydantic-ai-slim==2.43.0" in dependencies
 
 
-def test_behavior_checkpoint_runtime_is_a_base_dependency() -> None:
+def test_maintainer_conversation_uses_native_message_dependencies() -> None:
     dependencies = set(_project_metadata()["dependencies"])
 
     assert "aiosqlite==0.22.1" in dependencies
-    assert "langgraph==1.2.11" in dependencies
-    assert "langgraph-checkpoint==4.2.0" in dependencies
-    assert "langgraph-checkpoint-sqlite==3.1.1" in dependencies
-    assert "pycryptodome==3.23.0" in dependencies
+    assert "pydantic-ai-harness==0.31.0" in dependencies
+    assert not any(item.startswith("langgraph") for item in dependencies)
+    assert "pycryptodome==3.23.0" not in dependencies
 
 
 def test_provider_extras_do_not_own_nonebot_adapters() -> None:
@@ -35,8 +34,8 @@ def test_provider_extras_do_not_own_nonebot_adapters() -> None:
     optional = project["optional-dependencies"]
 
     assert set(optional) == {"anthropic", "openai"}
-    assert optional["anthropic"] == ["pydantic-ai-slim[anthropic]==2.28.0"]
-    assert optional["openai"] == ["pydantic-ai-slim[openai]==2.28.0"]
+    assert optional["anthropic"] == ["pydantic-ai-slim[anthropic]==2.43.0"]
+    assert optional["openai"] == ["pydantic-ai-slim[openai]==2.43.0"]
     assert all(
         not dependency.startswith("nonebot-adapter-") for dependency in project["dependencies"]
     )

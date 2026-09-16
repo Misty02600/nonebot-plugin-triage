@@ -55,7 +55,7 @@ def _write(path: Path, content: str) -> None:
 def _snapshot(tmp_path: Path) -> Path:
     root = tmp_path / "snapshot"
     _write(
-        root / "napcat/docs/guide.md",
+        root / "example/docs/guide.md",
         """# 配置指南
 
 ## WebSocket 地址
@@ -68,34 +68,12 @@ def _snapshot(tmp_path: Path) -> Path:
 """,
     )
     _write(
-        root / "napcat/api/4.18.18/openapi.json",
-        json.dumps(
-            {
-                "openapi": "3.0.1",
-                "info": {"title": "NapCat", "version": "4.18.18"},
-                "paths": {
-                    "/get_group_info": {
-                        "post": {
-                            "operationId": "get_group_info",
-                            "summary": "获取群信息",
-                            "description": "使用 group_id 获取群名称和成员数量。",
-                        }
-                    }
-                },
-            },
-            ensure_ascii=False,
-        ),
-    )
-    _write(
-        root / "napcat/source/group.ts",
-        """export function getGroupInfo(groupId: string) {
-  return callApi("get_group_info", { group_id: groupId })
-}
+        root / "example/versioned/api.md",
+        """# Example API
 
-export interface GroupInfo {
-  group_id: string
-  group_name: string
-}
+## get_group_info
+
+使用 `group_id` 获取群信息、群名称和成员数量。
 """,
     )
     _write(
@@ -119,33 +97,23 @@ def _policy(
     policy = tmp_path / "sources.toml"
     entries: list[_PolicyEntry] = [
         {
-            "id": "napcat-guide",
-            "component": "napcat",
+            "id": "example-guide",
+            "component": "example",
             "kind": "user_docs",
             "applicability": "snapshot_only",
-            "root": "napcat/docs",
+            "root": "example/docs",
             "include": ["**/*.md"],
-            "source_url": "https://github.com/NapNeko/NapCatDocs",
+            "source_url": "https://example.invalid/docs",
         },
         {
-            "id": "napcat-api-4.18.18",
-            "component": "napcat",
-            "kind": "api_spec",
+            "id": "example-docs-1.2.3",
+            "component": "example",
+            "kind": "user_docs",
             "applicability": "exact_version",
-            "version": "4.18.18",
-            "root": "napcat/api/4.18.18",
-            "include": ["openapi.json"],
-            "source_url": "https://github.com/NapNeko/NapCatDocs",
-        },
-        {
-            "id": "napcat-source-4.18.18",
-            "component": "napcat",
-            "kind": "source_code",
-            "applicability": "exact_version",
-            "version": "4.18.18",
-            "root": "napcat/source",
-            "include": ["**/*.ts"],
-            "source_url": "https://github.com/NapNeko/NapCatQQ",
+            "version": "1.2.3",
+            "root": "example/versioned",
+            "include": ["**/*.md"],
+            "source_url": "https://example.invalid/docs",
             "distribution": source_distribution,
         },
         {
@@ -203,16 +171,16 @@ def test_build_and_search_filters_version_before_fts_ranking(tmp_path: Path) -> 
 
     summary = build_knowledge_index(snapshot, policy, index_path)
     index = KnowledgeIndex(index_path)
-    exact = index.search("get_group_info group_id", component="napcat", version="4.18.18")
-    unsupported = index.search("get_group_info group_id", component="napcat", version="4.17.0")
-    rolling = index.search("WebSocket 地址", component="napcat", version="4.17.0")
+    exact = index.search("get_group_info group_id", component="example", version="1.2.3")
+    unsupported = index.search("get_group_info group_id", component="example", version="1.2.2")
+    rolling = index.search("WebSocket 地址", component="example", version="1.2.2")
 
-    assert summary.source_count == 4
-    assert summary.file_count == 4
-    assert summary.component_counts["napcat"] >= 4
-    assert exact[0].source_kind == "api_spec"
+    assert summary.source_count == 3
+    assert summary.file_count == 3
+    assert summary.component_counts["example"] >= 4
+    assert exact[0].source_kind == "user_docs"
     assert exact[0].applicability == "exact_version"
-    assert exact[0].version == "4.18.18"
+    assert exact[0].version == "1.2.3"
     assert unsupported == []
     assert rolling[0].applicability == "snapshot_only"
     assert rolling[0].version is None
@@ -285,7 +253,7 @@ def test_new_search_handles_short_chinese_and_dotted_api_without_changing_eviden
     assert chinese[0].evidence_id == api[0].evidence_id
     assert "等待回复后重新执行" in api[0].excerpt
     assert api[0].locator.endswith("会话控制 > reject")
-    assert index.search("Matcher.reject", component="napcat", source_kinds=("api_spec",)) == []
+    assert index.search("Matcher.reject", component="example", version="1.2.3") == []
 
 
 def test_identifier_variant_recovers_body_answer_with_original_filters(tmp_path: Path) -> None:
@@ -327,10 +295,6 @@ on_regex RegexRule 检查消息字符串。
     assert any("而非" in hit.excerpt for hit in after)
     assert len({hit.evidence_id for hit in after}) == len(after)
     assert reader.search(query, component="nonebot2", version="99.0.0") == []
-    assert (
-        reader.search(query, component="nonebot2", version="2.5.0", source_kinds=("api_spec",))
-        == []
-    )
 
 
 def test_answer_eval_checks_visible_facts_and_separates_nonretrieval_failures(
@@ -480,47 +444,36 @@ def test_legacy_index_is_read_with_its_original_tokenizer_and_rejects_mixed_iden
             UPDATE metadata SET value='knowledge-sqlite-fts5-trigram-v1' WHERE key='retriever_id';
         """)
     reader = KnowledgeIndexReader(path)
-    found = reader.search("获取群信息 group_id", component="napcat", version="4.18.18")
-    assert found and found[0].source_kind == "api_spec"
-    assert reader.search("获取群信息 group_id", component="napcat", version="4.17.0") == []
+    found = reader.search("获取群信息 group_id", component="example", version="1.2.3")
+    assert found and found[0].source_kind == "user_docs"
+    assert reader.search("获取群信息 group_id", component="example", version="1.2.2") == []
     with sqlite3.connect(path) as connection:
         connection.execute("UPDATE metadata SET value='2' WHERE key='schema_version'")
     with pytest.raises(KnowledgePackError, match="identity does not match"):
         KnowledgeIndexReader(path)
 
 
-def test_structured_chunkers_ignore_fenced_headings_and_extract_typescript(
-    tmp_path: Path,
-) -> None:
+def test_markdown_chunker_ignores_fenced_headings(tmp_path: Path) -> None:
     snapshot = _snapshot(tmp_path)
     policy = _policy(tmp_path, snapshot)
     index_path = tmp_path / "knowledge.sqlite3"
     build_knowledge_index(snapshot, policy, index_path)
     index = KnowledgeIndex(index_path)
 
-    headings = index.search("代码块中的井号", component="napcat")
-    source = index.search(
-        "getGroupInfo callApi",
-        component="napcat",
-        version="4.18.18",
-        source_kinds=("source_code",),
-    )
+    headings = index.search("代码块中的井号", component="example")
 
     assert headings[0].locator.endswith("guide.md#配置指南 > WebSocket 地址")
-    assert "function_declaration:getGroupInfo" in source[0].locator
 
 
-def test_openapi_version_conflict_keeps_previous_index(tmp_path: Path) -> None:
+def test_snapshot_mismatch_keeps_previous_index(tmp_path: Path) -> None:
     snapshot = _snapshot(tmp_path)
     policy = _policy(tmp_path, snapshot)
     index_path = tmp_path / "knowledge.sqlite3"
     original = build_knowledge_index(snapshot, policy, index_path)
-    api_path = snapshot / "napcat/api/4.18.18/openapi.json"
-    payload = json.loads(api_path.read_text(encoding="utf-8"))
-    payload["info"]["version"] = "4.18.17"
-    api_path.write_text(json.dumps(payload), encoding="utf-8")
+    document = snapshot / "example/versioned/api.md"
+    document.write_text("# changed\n", encoding="utf-8")
 
-    with pytest.raises(KnowledgePackError, match="OpenAPI version conflicts"):
+    with pytest.raises(KnowledgePackError, match="snapshot digest mismatch"):
         build_knowledge_index(snapshot, policy, index_path, replace=True)
 
     assert KnowledgeIndex(index_path).metadata()["corpus_sha256"] == original.corpus_sha256
@@ -534,15 +487,15 @@ def test_policy_rejects_placeholder_revision_and_unreviewed_distribution(
         """schema_version = 1
 [[sources]]
 id = "bad"
-component = "napcat"
-kind = "source_code"
+component = "example"
+kind = "user_docs"
 applicability = "exact_version"
-version = "4.18.18"
+version = "1.2.3"
 revision = "0000000000000000000000000000000000000000"
 snapshot_sha256 = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-source_url = "https://github.com/NapNeko/NapCatQQ"
-root = "napcat"
-include = ["**/*.ts"]
+source_url = "https://example.invalid/docs"
+root = "example/docs"
+include = ["**/*.md"]
 distribution = "local_only"
 """,
         encoding="utf-8",
@@ -564,13 +517,13 @@ def test_prepare_policy_keeps_upstream_revision_separate_from_snapshot_digest(
                 "schema_version": 1,
                 "sources": [
                     {
-                        "id": "napcat-guide",
-                        "component": "napcat",
+                        "id": "example-guide",
+                        "component": "example",
                         "kind": "user_docs",
                         "applicability": "snapshot_only",
                         "revision": upstream_revision,
-                        "source_url": "https://github.com/NapNeko/NapCatDocs",
-                        "root": "napcat/docs",
+                        "source_url": "https://example.invalid/docs",
+                        "root": "example/docs",
                         "include": ["**/*.md"],
                         "distribution": "redistributable",
                     }
@@ -598,11 +551,11 @@ def test_evaluation_and_independent_cli(tmp_path: Path, capsys: pytest.CaptureFi
                 "schema_version": 1,
                 "cases": [
                     {
-                        "case_id": "napcat-group",
+                        "case_id": "example-group",
                         "query": "获取群信息 group_id",
-                        "component": "napcat",
-                        "version": "4.18.18",
-                        "expected_locators": ["openapi.json#post /get_group_info"],
+                        "component": "example",
+                        "version": "1.2.3",
+                        "expected_locators": ["api.md#Example API > get_group_info"],
                     },
                     {
                         "case_id": "nonebot-matcher",
@@ -639,9 +592,9 @@ def test_evaluation_and_independent_cli(tmp_path: Path, capsys: pytest.CaptureFi
                 "search",
                 "获取群信息",
                 "--component",
-                "napcat",
+                "example",
                 "--version",
-                "4.18.18",
+                "1.2.3",
                 "--index",
                 str(index_path),
             ]
@@ -649,7 +602,7 @@ def test_evaluation_and_independent_cli(tmp_path: Path, capsys: pytest.CaptureFi
         == 0
     )
     output = json.loads(capsys.readouterr().out)
-    assert output["hits"][0]["source_kind"] == "api_spec"
+    assert output["hits"][0]["source_kind"] == "user_docs"
 
     report = evaluate_knowledge_retrieval(index_path, fixture_path)
     assert report["summary"] == {
@@ -663,7 +616,7 @@ def test_evaluation_and_independent_cli(tmp_path: Path, capsys: pytest.CaptureFi
 
 def test_cli_escapes_non_gbk_characters(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     snapshot = _snapshot(tmp_path)
-    _write(snapshot / "napcat/docs/emoji.md", "# 状态\n\n检索失败 ❌")
+    _write(snapshot / "example/docs/emoji.md", "# 状态\n\n检索失败 ❌")
     policy = _policy(tmp_path, snapshot)
     index_path = tmp_path / "knowledge.sqlite3"
     build_knowledge_index(snapshot, policy, index_path)
@@ -674,7 +627,7 @@ def test_cli_escapes_non_gbk_characters(tmp_path: Path, capsys: pytest.CaptureFi
                 "search",
                 "检索失败",
                 "--component",
-                "napcat",
+                "example",
                 "--index",
                 str(index_path),
             ]
@@ -719,7 +672,7 @@ def test_package_command_emits_runtime_archive_and_checksum(
     assert verified["sha256"] == result["sha256"]
     installed = _install_archive(archive, tmp_path / "installed")
     assert KnowledgeIndexReader(installed).search(
-        "获取群信息", component="napcat", version="4.18.18"
+        "获取群信息", component="example", version="1.2.3"
     )
     assert (
         main(

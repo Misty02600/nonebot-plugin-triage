@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
 
-import httpx
+import httpx2 as httpx
 import pytest
 from pydantic_ai import models
 from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart
@@ -17,10 +16,8 @@ from pytest import MonkeyPatch
 import nonebot_plugin_triage.capability.teaching.runtime as teaching_runtime
 import nonebot_plugin_triage.task_model_runtime as task_model_runtime
 from nbtriage._model_runtime.settings import (
-    ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION,
     DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION,
 )
-from nbtriage.opencode_go_contracts import OPENCODE_GO_THINKING_SETTINGS_REVISION
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.task_model_runtime import (
     TaskModelBinding,
@@ -42,10 +39,10 @@ def test_annotation_http_pool_follows_configured_concurrency(
     def bind_model(
         _config: NBTriageConfig,
         *,
-        environ: Mapping[str, str] | None,
         http_limits: httpx.Limits,
+        thinking: str,
     ) -> TaskModelBinding:
-        del environ
+        assert thinking == "high"
         observed_limits.append(http_limits)
         return TaskModelBinding(
             model=model,
@@ -96,27 +93,24 @@ def test_model_id_without_backend_uses_pydantic_ai_inference(
     assert binding.connection_revision == "provider-default"
 
 
-def test_opencode_go_url_selects_known_profile_without_backend() -> None:
+def test_custom_openai_compatible_url_uses_pydantic_ai_provider_without_project_profile(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
     config = NBTriageConfig(
         nbtriage_model_name="openai-chat:deepseek-v4-flash",
-        nbtriage_model_base_url="https://opencode.ai/zen/go/v1",
+        nbtriage_model_base_url="https://models.example/v1",
     )
 
-    binding = create_task_model_binding(
-        config,
-        environ={"OPENAI_API_KEY": "test-only"},
-    )
+    binding = create_task_model_binding(config, thinking=False)
 
-    assert binding.provider == "opencode-go"
+    assert binding.provider == "openai"
     assert binding.model_name == "deepseek-v4-flash"
     assert binding.api_family == "chat-completions"
-    assert binding.connection_revision == "provider-default"
-    assert binding.settings_revision == OPENCODE_GO_THINKING_SETTINGS_REVISION
+    assert binding.connection_revision.startswith("custom-endpoint-sha256:")
+    assert binding.settings_revision == "pydantic-ai-thinking-disabled-v1"
     assert binding.model_settings is not None
-    assert binding.model_settings.get("extra_body") == {"thinking": {"type": "enabled"}}
-    assert binding.model_settings.get("openai_reasoning_effort") == "high"
-    assert binding.model_settings.get("parallel_tool_calls") is False
-    assert binding.model_settings.get("temperature") == 0
+    assert binding.model_settings.get("thinking") is False
 
 
 def test_unknown_openai_compatible_url_uses_generic_openai_chat_model(
@@ -134,6 +128,7 @@ def test_unknown_openai_compatible_url_uses_generic_openai_chat_model(
             max_connections=50,
             max_keepalive_connections=50,
         ),
+        thinking=False,
     )
 
     assert isinstance(binding.model, OpenAIChatModel)
@@ -185,7 +180,7 @@ def test_alibaba_model_accepts_deployment_configured_mainland_endpoint(
     assert config.nbtriage_model_base_url not in binding.connection_revision
 
 
-def test_qwen36_binding_disables_thinking_for_structured_output_tools(
+def test_qwen36_binding_uses_only_pydantic_ai_unified_settings(
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-only-key")
@@ -194,21 +189,19 @@ def test_qwen36_binding_disables_thinking_for_structured_output_tools(
         NBTriageConfig(
             nbtriage_model_name="alibaba:qwen3.6-flash",
             nbtriage_model_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        )
+        ),
+        thinking=False,
     )
 
-    assert binding.settings_revision == ALIBABA_QWEN36_NON_THINKING_SETTINGS_REVISION
+    assert binding.settings_revision == "pydantic-ai-thinking-disabled-v1"
     assert binding.model_settings is not None
-    assert binding.model_settings.get("extra_body") == {"enable_thinking": False}
-    assert binding.model_settings.get("parallel_tool_calls") is False
-    assert binding.model_settings.get("temperature") == 0
+    assert binding.model_settings == {"thinking": False}
 
 
-@pytest.mark.parametrize("model_name", ["deepseek-v4-flash", "deepseek-flash"])
 def test_native_deepseek_binding_matches_high_thinking_contract(
     monkeypatch: MonkeyPatch,
-    model_name: str,
 ) -> None:
+    model_name = "deepseek-v4-flash"
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-only-key")
     observed_timeouts: list[float] = []
     observed_limits: list[httpx.Limits | None] = []
@@ -256,15 +249,17 @@ def test_native_deepseek_binding_matches_high_thinking_contract(
                 nbtriage_model_timeout_seconds=400,
             ),
             http_limits=limits,
+            thinking="high",
         )
 
         assert binding.provider == "deepseek"
         assert binding.model_name == model_name
         assert binding.model.profile.get("supports_thinking") is True
-        assert binding.model.profile.get("openai_supports_tool_choice_required") is False
+        assert binding.model.profile.get("default_structured_output_mode") == "tool"
+        assert binding.model.profile.get("openai_supports_tool_choice_required") is True
         assert binding.settings_revision == DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION
         assert binding.model_settings is not None
-        assert binding.model_settings.get("openai_reasoning_effort") == "high"
+        assert binding.model_settings.get("thinking") == "high"
         assert binding.model_settings.get("parallel_tool_calls") is False
         assert binding.model_settings.get("tool_choice") == "auto"
         assert binding.model_settings.get("temperature") == 0
@@ -276,16 +271,21 @@ def test_native_deepseek_binding_matches_high_thinking_contract(
                     [ModelRequest(parts=[UserPromptPart("Reply OK")])],
                     {**binding.model_settings, "max_tokens": 32768},
                     ModelRequestParameters(
+                        function_tools=[ToolDefinition(name="framework_search_docs")],
                         output_mode="tool",
                         output_tools=[ToolDefinition(name="final_result", kind="output")],
                         allow_text_output=False,
                     ),
                 )
             )
-        assert requests[0]["max_tokens"] == 32768
-        assert "max_completion_tokens" not in requests[0]
+        assert requests[0]["max_completion_tokens"] == 32768
+        assert "max_tokens" not in requests[0]
         assert requests[0]["reasoning_effort"] == "high"
         assert requests[0]["model"] == model_name
+        assert [tool["function"]["name"] for tool in requests[0]["tools"]] == [
+            "framework_search_docs",
+            "final_result",
+        ]
         assert requests[0]["tool_choice"] == "auto"
         assert requests[0]["parallel_tool_calls"] is False
         assert binding.model.profile.get("openai_chat_thinking_field") == "reasoning_content"
@@ -296,12 +296,15 @@ def test_native_deepseek_binding_matches_high_thinking_contract(
 
 
 @pytest.mark.parametrize("model_name", ["deepseek-chat", "deepseek-future-model"])
-def test_native_deepseek_other_names_keep_provider_defaults(model_name: str) -> None:
+def test_native_deepseek_other_names_keep_provider_defaults(
+    monkeypatch: MonkeyPatch,
+    model_name: str,
+) -> None:
     from pydantic_ai.providers.deepseek import DeepSeekProvider
 
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-only-key")
     binding = create_task_model_binding(
         NBTriageConfig(nbtriage_model_name=f"deepseek:{model_name}"),
-        environ={"DEEPSEEK_API_KEY": "test-only-key"},
     )
     try:
         native_profile = DeepSeekProvider.model_profile(model_name)

@@ -32,14 +32,14 @@ _OFFICIAL_FIXTURE = (
     / "evals"
     / "datasets"
     / "fixtures"
-    / "support-semantic-v7-forward-heldout.json"
+    / "support-semantic-v8-forward-heldout.json"
 )
 
 
 def _client_factory(
     outputs: Iterable[dict[str, object]],
     *,
-    provider: str = "opencode-go",
+    provider: str = "deepseek",
     model: str = "deepseek-v4-flash",
 ) -> Callable[[], PydanticAISupportSemanticClient]:
     remaining = iter(outputs)
@@ -98,10 +98,11 @@ def _evaluate(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
         evaluate_support_semantics(
             path,
             client_factory=_client_factory(_expected_outputs(payload)),
-            provider="opencode-go",
+            provider="deepseek",
             model="deepseek-v4-flash",
             max_model_calls=len(_expected_outputs(payload)),
             declared_budget_usd=1,
+            usage_cost_usd=lambda _usage: Decimal("0.0001"),
         )
     )
 
@@ -214,6 +215,12 @@ def test_cli_requires_explicit_paid_run_confirmation(tmp_path: Path) -> None:
             str(report_path),
             "--declared-budget-usd",
             "0.02",
+            "--model-name",
+            "deepseek:deepseek-v4-flash",
+            "--evaluation-id",
+            "test-support-semantic",
+            "--evaluation-revision",
+            "test-support-semantic-v1",
         ]
     )
 
@@ -245,7 +252,7 @@ def test_cli_persists_full_support_semantic_report(
     async def fake_evaluate(*_args: object, **_kwargs: object) -> dict[str, Any]:
         return expected_report
 
-    monkeypatch.setenv("OPENCODE_API_KEY", "test-only-not-a-secret")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-only-not-a-secret")
     monkeypatch.setattr(
         "tools.nbtriage_maintainer.cli.evaluate_support_semantics",
         fake_evaluate,
@@ -259,6 +266,22 @@ def test_cli_persists_full_support_semantic_report(
             "--declared-budget-usd",
             "0.02",
             "--confirm-paid-run",
+            "--model-name",
+            "deepseek:deepseek-v4-flash",
+            "--evaluation-id",
+            "test-support-semantic",
+            "--evaluation-revision",
+            "test-support-semantic-v1",
+            "--pricing-profile",
+            "test-upper-bound",
+            "--pricing-currency",
+            "USD",
+            "--input-price-per-million",
+            "1",
+            "--output-price-per-million",
+            "1",
+            "--usd-per-currency-unit",
+            "1",
         ]
     )
 

@@ -1119,20 +1119,6 @@ def _validate_gate_resolutions(
         raise CapabilityAnalysisError("enabled knowledge contains an unresolved gate candidate")
 
 
-@dataclass
-class FakeCapabilityAnalysisClient:
-    output: CapabilityAnalysisOutput
-    requests: list[CapabilityAnalysisRequest] = field(default_factory=list, init=False, repr=False)
-    _called: bool = field(default=False, init=False, repr=False)
-
-    async def analyze(self, request: CapabilityAnalysisRequest) -> CapabilityAnalysisOutput:
-        if self._called:
-            raise CapabilityAnalysisError("capability analysis client only permits one request")
-        self._called = True
-        self.requests.append(request)
-        return self.output
-
-
 def _bounded_text(value: object, label: str, *, max_length: int) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > max_length:
         raise CapabilityAnalysisError(
@@ -1261,7 +1247,6 @@ __all__ = (
     "CapabilitySourceContext",
     "ConditionAlternative",
     "ConfigProjection",
-    "FakeCapabilityAnalysisClient",
     "RateLimitPolicy",
     "RateLimitScope",
     "SemanticClaim",

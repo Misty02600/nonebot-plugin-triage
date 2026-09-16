@@ -12,12 +12,12 @@ from nonebot import on_command
 from nonebot.matcher import matchers
 from nonebot.plugin import PluginMetadata
 from pydantic import BaseModel
+from tests.capability._fakes import FakeCapabilityAnalysisClient
 
 from nbtriage.capability.teaching.analysis import (
     CapabilityAnalysisEntryOutput,
     CapabilityAnalysisOutput,
     CapabilityAnalysisService,
-    FakeCapabilityAnalysisClient,
     SemanticClaim,
     SemanticClaimKind,
 )

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Self, cast
 
 import pytest
+from pydantic_ai.capabilities import Toolset as ToolsetCapability
 
 from nbtriage.readonly_tools import (
     HARD_DENIED_PATTERNS,
@@ -91,7 +92,6 @@ def test_file_toolsets_merge_hard_and_task_denies_and_remove_mutations(
     assert "logs/**" in denied_patterns
     assert "private/**" in denied_patterns
     assert localstore_call["protected_patterns"] == ()
-    assert _FakeFileSystem.toolsets[0].prefix == "localstore"
     filter_func = _FakeFileSystem.toolsets[0].filter_func
     assert filter_func is not None
     assert filter_func(None, _ToolDefinition("read_file")) is True
@@ -188,7 +188,13 @@ def test_installed_harness_exposes_only_prefixed_read_tools(tmp_path: Path) -> N
     bundle = build_read_only_file_toolsets(profile)
     model = TestModel(call_tools=[], custom_output_text="done")
 
-    Agent(model, toolsets=cast(Any, list(bundle.toolsets))).run_sync("Inspect available tools.")
+    Agent(
+        model,
+        capabilities=[
+            ToolsetCapability(toolset, id=f"test_files_{i}")
+            for i, toolset in enumerate(bundle.toolsets)
+        ],
+    ).run_sync("Inspect available tools.")
 
     parameters = model.last_model_request_parameters
     assert parameters is not None
@@ -251,7 +257,14 @@ def test_read_file_rejects_out_of_range_line_arguments_before_harness(
         model_name="fixture-model",
         profile=ModelProfile(supports_tools=True),
     )
-    Agent(model, toolsets=cast(Any, list(bundle.toolsets)), retries=1).run_sync("Read sample.py")
+    Agent(
+        model,
+        capabilities=[
+            ToolsetCapability(toolset, id=f"test_files_{i}")
+            for i, toolset in enumerate(bundle.toolsets)
+        ],
+        retries=1,
+    ).run_sync("Read sample.py")
 
     assert observed_retry is True
 
@@ -300,7 +313,13 @@ def test_read_file_respects_optional_line_limit(tmp_path: Path, enforce: bool) -
         model_name="fixture-model",
         profile=ModelProfile(supports_tools=True),
     )
-    Agent(model, toolsets=cast(Any, list(bundle.toolsets))).run_sync("Read sample.py")
+    Agent(
+        model,
+        capabilities=[
+            ToolsetCapability(toolset, id=f"test_files_{i}")
+            for i, toolset in enumerate(bundle.toolsets)
+        ],
+    ).run_sync("Read sample.py")
 
     assert "   160\tline 160" in tool_result
     assert ("\tline 161" not in tool_result) is enforce

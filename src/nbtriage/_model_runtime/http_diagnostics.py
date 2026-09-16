@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic_ns
 
-import httpx
+import httpx2 as httpx
 
 _LOGGER = logging.getLogger(__name__)
 _ATTEMPT_INDEX_EXTENSION = "nbtriage.provider_attempt_index"

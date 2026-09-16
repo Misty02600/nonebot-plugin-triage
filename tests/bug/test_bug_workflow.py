@@ -93,7 +93,7 @@ def _command(
             assessment_revision="prompt-v1",
             evidence_receipts=(receipt,),
             idempotency_key=report_key,
-            provider="opencode-go",
+            provider="deepseek",
             model="deepseek-v4-flash",
             task="bug-assessment",
             evaluation="heldout-v1",

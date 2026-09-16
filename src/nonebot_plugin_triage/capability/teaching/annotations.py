@@ -69,6 +69,11 @@ from nonebot_plugin_triage.capability.teaching.cache import (
     read_capability_annotation_plugin_cache,
     write_capability_annotation_plugin_cache,
 )
+from nonebot_plugin_triage.capability.teaching.startup_cache import (
+    startup_identity,
+    startup_receipt_matches,
+    write_startup_receipt,
+)
 from nonebot_plugin_triage.config_policy import ConfigValuePolicy
 
 _SLOW_PREPARATION_LOG_MS = 1_000
@@ -353,6 +358,7 @@ class _PendingAnnotationRefresh:
     publishable: bool
     previous_active_view: _ActiveAnnotationView | None = None
     replaced_unit_ids: frozenset[str] = frozenset()
+    startup_identity: str | None = None
 
 
 def teaching_plugin_scope(
@@ -395,6 +401,7 @@ class CapabilityAnnotationService:
         published_annotations_resolver: Callable[[], tuple[CapabilityAnnotationPluginCache, ...]]
         | None = None,
         max_analysis_concurrency: int = 50,
+        startup_revision: Callable[[tuple[CapabilityAnalysisRequest, ...]], str] | None = None,
     ) -> None:
         if not callable(client_factory):
             raise TypeError("client_factory must be callable")
@@ -423,6 +430,7 @@ class CapabilityAnnotationService:
         self._published_generation_resolver = published_generation_resolver
         self._published_annotations_resolver = published_annotations_resolver
         self._max_analysis_concurrency = max_analysis_concurrency
+        self._startup_revision = startup_revision
         self._source_slice_caches: dict[str, CapabilitySourceSliceCache] = {}
         self._active_view = _ActiveAnnotationView({}, {}, {})
         self._published_generation: str | None = None
@@ -612,6 +620,7 @@ class CapabilityAnnotationService:
             ):
                 raise RuntimeError("published generation does not match the active output pointer")
             previous_generation = self._published_generation
+            reuse_identity = pending.startup_identity
             self._active_view = (
                 _merge_scoped_annotation_view(
                     pending.previous_active_view,
@@ -633,6 +642,16 @@ class CapabilityAnnotationService:
                 published_generation=published_generation,
                 updated_modules={item.module_name for item in pending.cache_updates},
             )
+            if reuse_identity is not None:
+                try:
+                    await asyncio.to_thread(
+                        write_startup_receipt,
+                        self._resolved_cache_directory(),
+                        published_generation,
+                        reuse_identity,
+                    )
+                except OSError:
+                    logger.warning("NoneBot Triage 启动复用凭据写入失败；下次启动执行完整准备")
 
     async def discard_pending(self, refresh_id: str | None) -> None:
         """丢弃尚未发布的模型候选，不改变当前 active view。"""
@@ -769,17 +788,6 @@ class CapabilityAnnotationService:
             if plugin_module is not None and plugin_module not in known_plugins:
                 raise CapabilityAnalysisAdapterError("requested plugin has no teaching unit")
 
-            source_paths: set[Path] = set()
-            for module_name in sorted(known_plugins):
-                try:
-                    path, is_package = _plugin_source_root(module_name)
-                except CapabilityAnalysisAdapterError:
-                    continue  # 仍由该单元的准备路径报告不可读取的源码。
-                source_paths.add(path if is_package else path.parent)
-            await navigation_scope.enter_async_context(
-                navigation_session(tuple(sorted(source_paths)))
-            )
-
             invalid_plugins: set[str] = set()
             filename_groups: dict[str, list[str]] = {}
             for module_name in sorted(known_plugins):
@@ -865,6 +873,41 @@ class CapabilityAnnotationService:
                 module_name: {unit.analysis_unit_id: unit for unit in cache.units}
                 for module_name, cache in cache_by_plugin.items()
             }
+            startup_projection = None
+            if (
+                self._startup_revision is not None
+                and not force
+                and selected_plugins is None
+                and not skipped
+            ):
+                startup_projection = await asyncio.to_thread(
+                    self._startup_projection, snapshot, preparation_plans
+                )
+                if (
+                    startup_projection is not None
+                    and published_generation is not None
+                    and await asyncio.to_thread(
+                        self._restore_startup,
+                        preparation_plans,
+                        startup_projection,
+                        cache_by_plugin,
+                        published_generation,
+                        refresh_id,
+                    )
+                ):
+                    return self._status
+
+            source_paths: set[Path] = set()
+            for module_name in sorted(known_plugins):
+                try:
+                    path, is_package = _plugin_source_root(module_name)
+                except CapabilityAnalysisAdapterError:
+                    continue  # 仍由该单元的准备路径报告不可读取的源码。
+                source_paths.add(path if is_package else path.parent)
+            await navigation_scope.enter_async_context(
+                navigation_session(tuple(sorted(source_paths)))
+            )
+
             planning_finished_ns = monotonic_ns()
             logger.info(
                 "NoneBot Triage 教学注释规划完成：refresh_id={}, planned={}, skipped={}, "
@@ -1481,6 +1524,24 @@ class CapabilityAnnotationService:
                     if (previous_plugin_cache := cache_by_plugin.get(module)) is not None
                     for item in previous_plugin_cache.units
                 )
+            reuse_identity = None
+            if (
+                startup_projection is not None
+                and not (
+                    self._status.failed_count
+                    or self._status.skipped_count
+                    or self._status.stale_count
+                )
+                and global_failure is None
+            ):
+                verified_projection = await asyncio.to_thread(
+                    self._startup_projection, snapshot, preparation_plans
+                )
+                if (
+                    verified_projection is not None
+                    and verified_projection[0] == startup_projection[0]
+                ):
+                    reuse_identity = startup_projection[0]
             self._pending = _PendingAnnotationRefresh(
                 refresh_id,
                 candidate_view,
@@ -1491,6 +1552,7 @@ class CapabilityAnnotationService:
                     previous_active_view if selected_plugins is not None else None
                 ),
                 replaced_unit_ids=replaced_unit_ids,
+                startup_identity=reuse_identity,
             )
             if disabled_items:
                 labels = [
@@ -1976,6 +2038,174 @@ class CapabilityAnnotationService:
             for plan in plans
         ]
         return tuple(plans), tuple(skipped_units), tuple(sorted(skip_reasons.items()))
+
+    def _startup_projection(
+        self,
+        snapshot: CapabilitySnapshot,
+        plans: tuple[_PreparationPlan, ...],
+    ) -> tuple[str, dict[str, CapabilityAnalysisRequest]] | None:
+        """复用现有配置和 Runtime 投影核对启动输入，省略递归切片与文档正文装配。"""
+        if self._startup_revision is None or not plans:
+            return None
+        started_ns = monotonic_ns()
+        try:
+            packs: dict[str, CapabilitySourceEvidencePack] = {}
+            requests = {}
+            for plan in plans:
+                request = (
+                    build_capability_analysis_request(
+                        plan.records[0],
+                        self._config_policy,
+                        source_pack_cache=packs,
+                        include_source_slices=False,
+                    )
+                    if plan.regular
+                    else build_parameterized_family_analysis_request(
+                        plan.records,
+                        self._config_policy,
+                        source_pack_cache=packs,
+                        include_source_slices=False,
+                    )
+                )
+                requests[plan.expected_unit_id] = replace(
+                    request, plugin_entries=plan.plugin_entries
+                )
+            identity = startup_identity(
+                {
+                    "snapshot": snapshot.generation,
+                    "analysis": self._analysis_revision,
+                    "policy": sorted(self._config_policy.restricted_roots),
+                    "inputs": {
+                        key: capability_analysis_fingerprint(
+                            value, analysis_revision=self._analysis_revision
+                        )
+                        for key, value in requests.items()
+                    },
+                    "environment": self._startup_revision(tuple(requests.values())),
+                    "restoration_revision": 1,
+                }
+            )
+            logger.info(
+                "NoneBot Triage 教学启动输入核对完成：units={}, elapsed_ms={}",
+                len(requests),
+                (monotonic_ns() - started_ns) // 1_000_000,
+            )
+            return identity, requests
+        except Exception as error:
+            logger.info(
+                "NoneBot Triage 启动复用不可用，执行完整准备：error_type={}", type(error).__name__
+            )
+            return None
+
+    def _restore_startup(
+        self,
+        plans: tuple[_PreparationPlan, ...],
+        projection: tuple[str, dict[str, CapabilityAnalysisRequest]],
+        local_caches: dict[str, CapabilityAnnotationPluginCache],
+        generation: str,
+        refresh_id: str,
+    ) -> bool:
+        identity, requests = projection
+        if not startup_receipt_matches(self._resolved_cache_directory(), generation, identity):
+            return False
+        try:
+            published = self._published_annotations()
+            originals = {}
+            updates = []
+            for cache in published:
+                local = local_caches.get(cache.module_name)
+                if local is None or local != cache:
+                    return False  # 保留失败重试和未发布 checkpoint 的既有路径。
+                for unit in cache.units:
+                    if (
+                        unit.pending is not None
+                        or unit.last_good is None
+                        or (unit.last_attempt is not None and unit.last_attempt.state == "failed")
+                    ):
+                        return False
+                    originals[unit.analysis_unit_id] = unit.last_good
+                updates.append(
+                    _PluginCacheUpdate(cache.module_name, cache.plugin_source_revision, cache.units)
+                )
+            if set(originals) != set(requests):
+                return False
+            if any(
+                not self._validate_evidence(requests[key], annotation.evidence_manifest).current
+                for key, annotation in originals.items()
+            ):
+                return False
+            # 从当前 Runtime 投影重建自动数量边界，原始注解仍来自唯一的已发布来源。
+            public = {
+                key: with_argument_limit_boundaries(requests[key], annotation)
+                for key, annotation in originals.items()
+            }
+            units = tuple(
+                CapabilityTeachingUnitStatus(
+                    unit_id=plan.expected_unit_id,
+                    plugin_module=plan.plugin_module,
+                    label=_records_label(plan.records),
+                    state=(
+                        CapabilityTeachingUnitState.CACHED
+                        if originals[plan.expected_unit_id].knowledge_enabled
+                        else CapabilityTeachingUnitState.DISABLED
+                    ),
+                    stage=CapabilityTeachingUnitStage.CACHE_VALIDATION,
+                    reason=(
+                        None
+                        if originals[plan.expected_unit_id].knowledge_enabled
+                        else CapabilityTeachingUnitReason.KNOWLEDGE_DISABLED
+                    ),
+                    request_fingerprint=originals[plan.expected_unit_id].request_fingerprint,
+                    member_capability_ids=tuple(
+                        sorted(record.capability_id for record in plan.records)
+                    ),
+                    evidence_manifest=originals[plan.expected_unit_id].evidence_manifest,
+                )
+                for plan in plans
+            )
+            view = _ActiveAnnotationView(
+                {key: value.request_fingerprint for key, value in originals.items()},
+                originals,
+                {
+                    record.capability_id: plan.expected_unit_id
+                    for plan in plans
+                    for record in plan.records
+                },
+                public,
+            )
+            if self._resolve_published_generation() != generation:
+                return False
+            self._pending = _PendingAnnotationRefresh(
+                refresh_id,
+                view,
+                tuple(updates),
+                (),
+                True,
+                startup_identity=identity,
+            )
+            self._status = CapabilityAnnotationRefreshStatus(
+                refresh_id=refresh_id,
+                eligible_count=len(units),
+                cached_count=sum(
+                    unit.state is CapabilityTeachingUnitState.CACHED for unit in units
+                ),
+                disabled_count=sum(
+                    unit.state is CapabilityTeachingUnitState.DISABLED for unit in units
+                ),
+                family_eligible_count=sum(not plan.regular for plan in plans),
+                family_disabled_count=sum(
+                    not plan.regular and not originals[plan.expected_unit_id].knowledge_enabled
+                    for plan in plans
+                ),
+                units=units,
+            )
+            logger.info(
+                "NoneBot Triage 教学启动复用命中：units={}, source_slices=0, model_requests=0",
+                len(units),
+            )
+            return True
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
 
     def _prepare_one(
         self,

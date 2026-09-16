@@ -13,11 +13,7 @@ from nbtriage.knowledge_index import (
 
 _BUG_EVIDENCE_SOURCE_MAX_CHARS = 256
 _BUG_EVIDENCE_BODY_MAX_CHARS = 4_000
-_DESIGN_SOURCE_KINDS: tuple[SourceKind, ...] = (
-    "user_docs",
-    "api_spec",
-    "release_notes",
-)
+_DESIGN_SOURCE_KINDS: tuple[SourceKind, ...] = ("user_docs",)
 
 
 class BugDesignEvidenceError(ValueError):

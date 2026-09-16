@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import pytest
 from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.capabilities import Toolset as ToolsetCapability
 from pydantic_ai.messages import ModelRequest, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
@@ -302,7 +303,10 @@ def test_family_teaching_runtime_exposes_only_selective_definition_navigation(
 
     agent = Agent(
         FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
-        toolsets=cast(Any, list(runtime.toolsets)),
+        capabilities=[
+            ToolsetCapability(toolset, id=f"test_tools_{i}")
+            for i, toolset in enumerate(cast(Any, list(runtime.toolsets)))
+        ],
     )
     asyncio.run(agent.run("Inspect the family selectively."))
 
@@ -416,7 +420,10 @@ def test_teaching_tools_capture_only_successful_file_reads_as_citable_evidence(
 
     agent = Agent(
         FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
-        toolsets=cast(Any, list(runtime.toolsets)),
+        capabilities=[
+            ToolsetCapability(toolset, id=f"test_tools_{i}")
+            for i, toolset in enumerate(cast(Any, list(runtime.toolsets)))
+        ],
     )
     asyncio.run(agent.run("Read the handler."))
 
@@ -567,7 +574,10 @@ def test_teaching_file_tools_return_recovery_for_repeated_directory_attempts(
 
     agent = Agent(
         FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
-        toolsets=cast(Any, list(runtime.toolsets)),
+        capabilities=[
+            ToolsetCapability(toolset, id=f"test_tools_{i}")
+            for i, toolset in enumerate(cast(Any, list(runtime.toolsets)))
+        ],
     )
     asyncio.run(agent.run("Inspect a known file."))
 
@@ -1005,7 +1015,10 @@ def test_teaching_tools_keep_bot_project_tools_for_local_project_plugin(
 
     agent = Agent(
         FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
-        toolsets=cast(Any, list(runtime.toolsets)),
+        capabilities=[
+            ToolsetCapability(toolset, id=f"test_tools_{i}")
+            for i, toolset in enumerate(cast(Any, list(runtime.toolsets)))
+        ],
     )
     asyncio.run(agent.run("Inspect available tools."))
 
@@ -1115,7 +1128,10 @@ def test_teaching_tools_offer_version_bound_framework_rag_and_capture_evidence(
 
     agent = Agent(
         FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
-        toolsets=cast(Any, list(runtime.toolsets)),
+        capabilities=[
+            ToolsetCapability(toolset, id=f"test_tools_{i}")
+            for i, toolset in enumerate(cast(Any, list(runtime.toolsets)))
+        ],
     )
     asyncio.run(agent.run("Read the framework docs."))
 
@@ -1168,16 +1184,21 @@ def test_navigation_tool_timeout_does_not_wait_for_blocked_sync_navigation() -> 
 
     agent = Agent(
         FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
-        toolsets=cast(
-            Any,
-            [
-                _navigation_toolset(
-                    cast(_NavigationRegistry, BlockingNavigation()),
-                    initial_navigation=(),
-                    timeout_seconds=0.03,
+        capabilities=[
+            ToolsetCapability(toolset, id=f"test_tools_{i}")
+            for i, toolset in enumerate(
+                cast(
+                    Any,
+                    [
+                        _navigation_toolset(
+                            cast(_NavigationRegistry, BlockingNavigation()),
+                            initial_navigation=(),
+                            timeout_seconds=0.03,
+                        )
+                    ],
                 )
-            ],
-        ),
+            )
+        ],
     )
     timer = Timer(0.3, release.set)
     timer.start()

@@ -38,12 +38,16 @@ _FIXTURE = (
 )
 
 
+def _usage_cost_usd(_usage: RunUsage) -> Decimal:
+    return Decimal("0.0001")
+
+
 class _StaticClient:
     def __init__(self, output: CapabilityAnalysisOutput) -> None:
         self._output = output
         self.last_response = ModelResponse(
             parts=[],
-            provider_name="opencode-go",
+            provider_name="deepseek",
             model_name="deepseek-v4-flash",
             provider_response_id="fixture-response",
         )
@@ -79,9 +83,10 @@ def test_fixture_tampering_is_not_qualification_eligible(tmp_path: Path) -> None
         evaluate_capability_teaching(
             modified,
             client_factory=_disabled_client_factory,
-            provider="opencode-go",
+            provider="deepseek",
             model="deepseek-v4-flash",
             declared_budget_usd=1,
+            usage_cost_usd=_usage_cost_usd,
         )
     )
 
@@ -94,10 +99,11 @@ def test_selected_case_is_always_a_nonqualifying_diagnostic() -> None:
         evaluate_capability_teaching(
             _FIXTURE,
             client_factory=_disabled_client_factory,
-            provider="opencode-go",
+            provider="deepseek",
             model="deepseek-v4-flash",
             declared_budget_usd=1,
             selected_case_ids=frozenset({"ct8-r18-parser-multiple-entries"}),
+            usage_cost_usd=_usage_cost_usd,
         )
     )
 
@@ -132,10 +138,11 @@ def test_semantic_scorer_accepts_supported_fixed_permission() -> None:
         evaluate_capability_teaching(
             _FIXTURE.with_name("capability-teaching-v10-forward-heldout.json"),
             client_factory=lambda _tools: _StaticClient(output),
-            provider="opencode-go",
+            provider="deepseek",
             model="deepseek-v4-flash",
             declared_budget_usd=1,
             selected_case_ids=frozenset({"ct8-s03-admin-ban-review-source"}),
+            usage_cost_usd=_usage_cost_usd,
         )
     )
 
@@ -180,10 +187,22 @@ def test_cli_requires_explicit_paid_run_confirmation(tmp_path: Path) -> None:
     exit_code = main(
         [
             "evaluate-capability-teaching",
+            "--fixtures",
+            str(_FIXTURE),
+            "--official-fixture-set-id",
+            CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID,
+            "--official-fixture-sha256",
+            CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256,
             "--report",
             str(report),
             "--declared-budget-usd",
             "0.10",
+            "--model-name",
+            "deepseek:deepseek-v4-flash",
+            "--evaluation-id",
+            "test-capability-teaching",
+            "--evaluation-revision",
+            "test-capability-teaching-v1",
         ]
     )
 
@@ -213,7 +232,7 @@ def test_cli_writes_report_after_confirmation(
         captured.update(kwargs)
         return expected
 
-    monkeypatch.setenv("OPENCODE_API_KEY", "test-only-not-a-secret")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-only-not-a-secret")
     monkeypatch.setattr(
         "tools.nbtriage_maintainer.cli.evaluate_capability_teaching",
         fake_evaluate,
@@ -223,6 +242,12 @@ def test_cli_writes_report_after_confirmation(
         main(
             [
                 "evaluate-capability-teaching",
+                "--fixtures",
+                str(_FIXTURE),
+                "--official-fixture-set-id",
+                CAPABILITY_TEACHING_CURRENT_FIXTURE_SET_ID,
+                "--official-fixture-sha256",
+                CAPABILITY_TEACHING_CURRENT_FIXTURE_SHA256,
                 "--report",
                 str(report_path),
                 "--declared-budget-usd",
@@ -230,6 +255,22 @@ def test_cli_writes_report_after_confirmation(
                 "--confirm-paid-run",
                 "--repeat",
                 "2",
+                "--model-name",
+                "deepseek:deepseek-v4-flash",
+                "--evaluation-id",
+                "test-capability-teaching",
+                "--evaluation-revision",
+                "test-capability-teaching-v1",
+                "--pricing-profile",
+                "test-upper-bound",
+                "--pricing-currency",
+                "USD",
+                "--input-price-per-million",
+                "1",
+                "--output-price-per-million",
+                "1",
+                "--usd-per-currency-unit",
+                "1",
             ]
         )
         == 0
@@ -242,15 +283,17 @@ def test_cli_writes_report_after_confirmation(
 
 
 def _run_repeated(**kwargs: Any) -> dict[str, Any]:
+    usage_cost_usd = kwargs.pop("usage_cost_usd", _usage_cost_usd)
     return asyncio.run(
         evaluate_capability_teaching(
             _FIXTURE,
             client_factory=kwargs.pop("client_factory", _disabled_client_factory),
-            provider="opencode-go",
+            provider="deepseek",
             model="deepseek-v4-flash",
             declared_budget_usd=kwargs.pop("declared_budget_usd", 1),
             selected_case_ids=frozenset({"ct8-r18-parser-multiple-entries"}),
             repeat=3,
+            usage_cost_usd=usage_cost_usd,
             **kwargs,
         )
     )

@@ -19,7 +19,7 @@ from .models import (
 _IDENTIFIER_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,79}")
 _REVISION_PATTERN = re.compile(r"[0-9a-f]{40}")
 _SNAPSHOT_SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
-_SOURCE_KINDS: frozenset[str] = frozenset({"user_docs", "api_spec", "release_notes", "source_code"})
+_SOURCE_KINDS: frozenset[str] = frozenset({"user_docs"})
 _APPLICABILITIES: frozenset[str] = frozenset({"exact_version", "declared_range", "snapshot_only"})
 _DISTRIBUTION_POLICIES: frozenset[str] = frozenset({"redistributable", "local_only"})
 _REQUIRED_SOURCE_FIELDS = frozenset(

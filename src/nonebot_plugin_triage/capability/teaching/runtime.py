@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 
-import httpx
+import httpx2 as httpx
 from nonebot import logger
 
 from nbtriage._model_runtime.settings import (
     PROVIDER_DEFAULT_SETTINGS_REVISION,
+    PYDANTIC_AI_THINKING_HIGH_SETTINGS_REVISION,
     task_model_settings_revision,
 )
 from nbtriage.capability.teaching.analysis import CapabilityAnalysisClient
@@ -21,15 +22,10 @@ from nbtriage.capability.teaching.annotations import (
     CAPABILITY_ANNOTATION_TASK,
 )
 from nbtriage.capability.teaching.model_adapter import CapabilityAnalysisToolRuntimeFactory
-from nbtriage.opencode_go_contracts import (
-    OPENCODE_GO_SEMANTIC_API_FAMILY,
-    OPENCODE_GO_THINKING_SETTINGS_REVISION,
-)
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.task_model_runtime import (
     TaskModelRuntimeConfigurationError,
     create_task_model_binding,
-    is_opencode_go_profile,
     model_connection_revision,
     unverified_evaluation_id,
 )
@@ -42,7 +38,7 @@ CAPABILITY_ANNOTATION_EVALUATION = unverified_evaluation_id(
 CAPABILITY_ANNOTATION_ANALYSIS_REVISION = (
     f"{CAPABILITY_ANNOTATION_TASK}:{CAPABILITY_ANNOTATION_PROMPT_ID}:"
     f"{CAPABILITY_ANNOTATION_REQUEST_REVISION}:"
-    f"{OPENCODE_GO_THINKING_SETTINGS_REVISION}:"
+    f"{PYDANTIC_AI_THINKING_HIGH_SETTINGS_REVISION}:"
     f"{CAPABILITY_ANNOTATION_BUDGET_PROFILE}:"
     f"{CAPABILITY_ANNOTATION_EVALUATION}"
 )
@@ -69,19 +65,6 @@ class CapabilityAnnotationTaskQualification:
     verified: bool = True
 
 
-OPENCODE_GO_CAPABILITY_ANNOTATION_QUALIFICATION = CapabilityAnnotationTaskQualification(
-    provider="opencode-go",
-    api_family=OPENCODE_GO_SEMANTIC_API_FAMILY,
-    model="deepseek-v4-flash",
-    task=CAPABILITY_ANNOTATION_TASK,
-    schema_version=CAPABILITY_ANNOTATION_SCHEMA_VERSION,
-    prompt_id=CAPABILITY_ANNOTATION_PROMPT_ID,
-    request_revision=CAPABILITY_ANNOTATION_REQUEST_REVISION,
-    privacy_policy=CAPABILITY_ANNOTATION_PRIVACY_POLICY,
-    budget_profile=CAPABILITY_ANNOTATION_BUDGET_PROFILE,
-    evaluation=CAPABILITY_ANNOTATION_EVALUATION,
-    verified=False,
-)
 QUALIFIED_CAPABILITY_ANNOTATION_TASKS: frozenset[CapabilityAnnotationTaskQualification] = (
     frozenset()
 )
@@ -91,31 +74,9 @@ class CapabilityAnnotationRuntimeConfigurationError(RuntimeError):
     pass
 
 
-def create_opencode_go_capability_analysis_client(
-    *,
-    api_key: str,
-    model: str,
-    timeout_seconds: float,
-    max_output_tokens: int,
-    tool_runtime_factory: CapabilityAnalysisToolRuntimeFactory | None = None,
-) -> CapabilityAnalysisClient:
-    from nbtriage.opencode_go_semantic_adapter import (
-        create_opencode_go_capability_analysis_client as create_provider_client,
-    )
-
-    return create_provider_client(
-        api_key=api_key,
-        model=model,
-        timeout_seconds=timeout_seconds,
-        max_output_tokens=max_output_tokens,
-        tool_runtime_factory=tool_runtime_factory,
-    )
-
-
 def create_capability_annotation_client_factory(
     config: NBTriageConfig,
     *,
-    environ: Mapping[str, str] | None = None,
     qualified_tasks: frozenset[CapabilityAnnotationTaskQualification] = (
         QUALIFIED_CAPABILITY_ANNOTATION_TASKS
     ),
@@ -125,11 +86,11 @@ def create_capability_annotation_client_factory(
     try:
         binding = create_task_model_binding(
             config,
-            environ=environ,
             http_limits=httpx.Limits(
                 max_connections=max_concurrency,
                 max_keepalive_connections=max_concurrency,
             ),
+            thinking="high",
         )
     except TaskModelRuntimeConfigurationError as error:
         raise CapabilityAnnotationRuntimeConfigurationError(str(error)) from error
@@ -167,17 +128,13 @@ def capability_annotation_analysis_revision(config: NBTriageConfig) -> str:
     model = config.nbtriage_model_name or "none"
     connection_revision = model_connection_revision(config)
     settings_revision = PROVIDER_DEFAULT_SETTINGS_REVISION
-    if is_opencode_go_profile(config):
-        settings_revision = OPENCODE_GO_THINKING_SETTINGS_REVISION
-    elif ":" in model:
+    if ":" in model:
         provider, provider_model = model.split(":", 1)
-        settings_revision = task_model_settings_revision(provider, provider_model)
-    if (
-        is_opencode_go_profile(config)
-        and config.nbtriage_model_timeout_seconds == 60.0
-        and connection_revision == "provider-default"
-    ):
-        return CAPABILITY_ANNOTATION_ANALYSIS_REVISION
+        settings_revision = task_model_settings_revision(
+            provider,
+            provider_model,
+            thinking="high",
+        )
     transport = model.split(":", 1)[0] if ":" in model else "none"
     runtime_identity = "\0".join(
         (
@@ -229,7 +186,6 @@ __all__ = (
     "CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS",
     "CAPABILITY_ANNOTATION_PRIVACY_POLICY",
     "CAPABILITY_ANNOTATION_TASK",
-    "OPENCODE_GO_CAPABILITY_ANNOTATION_QUALIFICATION",
     "QUALIFIED_CAPABILITY_ANNOTATION_TASKS",
     "CapabilityAnnotationRuntimeConfigurationError",
     "CapabilityAnnotationTaskQualification",
