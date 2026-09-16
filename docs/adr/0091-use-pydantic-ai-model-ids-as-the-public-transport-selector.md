@@ -2,11 +2,12 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；兼容迁移部分由 ADR-0092 替代 | 2026-08-18 |
+| 已采纳；兼容迁移部分由 ADR-0092、连接预设部分由 ADR-0129 替代 | 2026-08-18 |
 
 > [ADR-0092](0092-remove-legacy-model-backend-configuration.md) 已删除本 ADR 保留的旧 backend
 > 迁移输入与 `OPENCODE_API_KEY` 回退。`provider:model`、可选 Base URL、ModelProfile 和连接预设的
-> 其余决定继续有效。
+> 其余决定继续有效。[ADR-0129](0129-use-only-pydantic-ai-native-model-transports.md) 又删除项目维护的
+> OpenCode 连接预设与专属适配器；任意兼容地址现在都只走 Pydantic AI 原生 Provider factory。
 
 ## 背景
 

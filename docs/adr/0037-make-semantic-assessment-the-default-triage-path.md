@@ -9,6 +9,8 @@
 > output tool；本 ADR 的默认 assessment、零可执行工具、零重试与失败关闭继续有效。
 > 当前目标 / 现象 / 维护深度 schema 与资格 revision 已由
 > [ADR-0043](history/0043-separate-support-goals-observations-and-maintenance-depth.md) 替代。
+> 本 ADR 下文描述的 `OPEN_INCIDENT`、一次性 Incident 授权和 `LiveReportService` 已于 2026-09-16
+> 随不可达兼容链路删除；默认语义 assessment、确定性单动作路由和失败关闭继续有效。
 > [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) 已窄范围替代本 ADR 保留的
 > custom Base URL 禁令；默认 assessment、零可执行工具、零重试与失败关闭继续有效。
 

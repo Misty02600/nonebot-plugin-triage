@@ -4,7 +4,7 @@
 
 已采纳
 
-MLflow 依赖、发布入口及 Tracking 历史安排由 [ADR-0125](0125-remove-mlflow-tracking-from-maintainer-evaluations.md) 局部替代；插件发行隔离继续有效。
+MLflow 依赖、发布入口及 Tracking 历史安排由 [ADR-0125](0125-remove-mlflow-tracking-from-maintainer-evaluations.md) 局部替代；插件发行隔离继续有效。下文列举的旧 Incident / Trial 运行类型及独立 bot-docs PoC 已于 2026-09-16 删除，不再属于发行面。
 
 ## 日期
 
@@ -87,11 +87,12 @@ wheel 不能证明发布面已经收紧。
 
 ## 落实与确认
 
-- 实施情况：已落实。维护者 CLI、采集 / 策展、离线评测、会话审计、bot-docs 索引和 MLflow 发布器已迁入
-  `tools/nbtriage_maintainer/`；DeepSeek 评测适配器、历史 Responses 客户端、单步补证策略和尚未接入插件的
+- 实施情况：已落实。维护者 CLI、采集 / 策展和离线评测已迁入 `tools/nbtriage_maintainer/`；DeepSeek
+  评测适配器、历史 Responses 客户端、单步补证策略和尚未接入插件的
   Alconna capability experiment 也已迁出。`src/nbtriage/` 只保留插件运行路径和其领域依赖。真实导入闭包要求
   `baselines.py` 继续留在发行包，因为 RAG、证据回执和安全守门复用其中的版本与 secret 模式；这不是把
-  评测 orchestrator 留在运行面。
+  评测 orchestrator 留在运行面。曾一并迁出的独立 bot-docs 索引与评测 PoC 已由产品 Knowledge Pack
+  完整取代并删除。
 - `[project.scripts]`、公开 `tracking-mlflow` 与只服务维护者评测的 `model-deepseek` extra 已删除；MLflow、
   DeepSeek SDK 与对应 Pydantic AI 依赖只存在于 `maintainer` dependency group。
   仓库入口是 `just maintainer <command>`，其完整形式为

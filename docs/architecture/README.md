@@ -8,7 +8,7 @@
   适配；QQ、OneBot 和 NoneBot 传输类型不进入领域核心。
 - 当前用户入口是显式 `triage`。能力教学、行为探索和 Bug assessment 共享只读 Evidence 边界，但拥有
   独立任务合同、资格结论和状态生命周期。
-- 运行观察、短期 Thread、可重建能力索引、长期 Bug 工作流、知识包和 Behavior checkpoint 分别使用不同
+- 运行观察、短期 Thread、可重建能力索引、长期 Bug 工作流、知识包和维护者原生消息快照分别使用不同
   状态层；不要因为都位于本地就把它们视为同一持久化语义。
 - architecture 描述系统现在如何工作；[当前 ADR](../adr/README.md)解释仍在约束架构的主要取舍；
   [ADR 历史](../adr/history/README.md)只用于追溯旧方案、局部实现理由和被替代决定。
@@ -26,10 +26,9 @@
 | 跨平台 Reply、运行证据与短期 Thread 如何关联 | [跨平台支持入口](flows/cross-platform-report-intake.md) |
 | OneBot V11 如何把入站和出站消息引用绑定到运行证据 | [OneBot V11 引用关联](flows/onebot-v11-reply-reference-correlation.md) |
 | NoneBot 运行观察允许保存哪些字段 | [运行观察入口](flows/runtime-observation-intake.md) |
-| Alconna 命令结构、能力快照和解析回执如何分工 | [Alconna 能力与解析回执](flows/alconna-capability-and-parse-receipts.md) |
+| Alconna 公开 Provider 与部署本地能力快照如何分工 | [Alconna 能力发现](flows/alconna-capability-discovery.md) |
 | 离线 Agent 单步为何不能直接执行动作 | [有界 Agent 单步](flows/bounded-agent-step.md) |
 | B1 支持会话如何审批补证与 Oracle 结果 | [可审计支持会话](flows/support-session.md) |
-| 当前不可达但仍保留兼容合同的 Incident / trial 流程 | [短期 Incident 聚类](flows/incident-clustering.md)、[观察型生产 trial](flows/observation-first-trials.md) |
 
 ## 阅读决定
 

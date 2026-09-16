@@ -2,6 +2,8 @@
 
 > 后续关系：ADR-0086 允许部署者自由使用 Pydantic AI 可解析的模型；Provider SDK 仍按本 ADR 按需安装，
 > held-out 状态只表示项目验证质量，不再决定模型能否运行。
+> [ADR-0129](0129-use-only-pydantic-ai-native-model-transports.md) 已删除 OpenCode 专属适配器与依赖说明；
+> 本 ADR 的 Pydantic AI 控制层默认安装、Provider SDK 按需安装边界不变。
 > 具体导航依赖已由 [ADR-0123](0123-use-refresh-scoped-ty-definition-navigation.md) 部分替代为 ty；
 > 控制层默认安装、Provider SDK 与 Adapter 按需安装的边界保持不变。
 

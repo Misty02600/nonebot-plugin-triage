@@ -50,7 +50,7 @@ Handler、wrapper、注册材料及直接 gate/参数依赖优先完整保留；
 可选预载的整理阈值，不作为单次输入硬上限或模型容量声明。首包超出时只移除未被结构化事实引用的可选预载；
 必要材料及后续历史即使仍超出估算阈值也不拒绝、不截断。维护 capture 保存逐请求估算、整理阈值和移除数量，
 与 Provider 实际用量分开。明确的 Provider 上下文超限记录为 HTTP/context_length_exceeded，未知 400 不猜测；
-正式刷新不自动重跑整个单元。已完整到达的最终候选仍可校验。192k 单元累计预算、时间/请求/工具限制和本地文件/AST
+正式刷新不自动重跑整个单元。已完整到达的最终候选仍可校验。384k 单元累计预算、时间/请求/工具限制和本地文件/AST
 资源保护保留。自动普通调用展开仍为两层，不因取消字符门槛而递归展开整个依赖树。
 
 request v94 在既有时间、请求、工具和累计 75% 收尾条件之外，增加历史规模信号：剩余累计预算不超过
@@ -430,7 +430,7 @@ SUPERUSER 身份自动进入 LLM。真正执行仍由原插件自己的 Matcher�
 ## 相关资料
 
 - [部署本地能力影子索引](flows/capability-shadow-index.md)
-- [Alconna 公开能力与解析回执](flows/alconna-capability-and-parse-receipts.md)
+- [Alconna 能力发现](flows/alconna-capability-discovery.md)
 - [ADR-0021：用部署本地影子索引整理 Bot 能力证据](../adr/0021-use-deployment-local-capability-shadow-index.md)
 - [ADR-0024：自动公开确定且低风险的能力字段](../adr/0024-auto-publish-deterministic-capability-fields.md)
 - [ADR-0026：在检索与模型前隔离能力知识受众域](../adr/0026-filter-capability-knowledge-before-retrieval.md)

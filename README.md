@@ -23,10 +23,10 @@
 信息时，插件会在同一 `适配器 + Bot + 会话 + 用户` 作用域保留一次补充机会；下一条显式 `triage` 无需 Reply
 即可续接。第二轮无论是否解决都会关闭，之后的 `triage` 开启新的短期 Support Thread。
 
-Behavior exploration 是明确的例外：通过 `SUPERUSER` 鉴权后，同一作用域使用一个可跨 Bot 重启延续的长期
-Behavior Thread。每条新消息仍是一次独立、会结束的 Agent Run，但 Run 结束不会关闭 Thread；明确的新
-Guidance、Bug 或 Feature 意图优先，只有含糊续问才会接回已有 Behavior Thread。同一作用域正在处理时不会
-排队或并行执行，维护者可用 `triage 行为重置` 删除整个长期工作区。
+维护者对话是明确的例外：通过 `SUPERUSER` 鉴权后，整个插件部署共享一个可跨 Bot 重启延续的项目会话。
+每条新消息仍是一次独立、会结束的 Agent Run；每轮会注入当前 Adapter、Bot、群聊或私聊场景，但场景不拆分
+历史。运行中收到新的普通 `triage` 会立即返回忙碌，不排队也不改变当前工作。维护者可用 `triage 停止`
+取消当前 Run 并保留快照，或用 `triage 开始新对话` 取消当前 Run 后清空全局会话。
 Reply 不选择、恢复或延长 Thread；它的可见正文只在路由后帮助识别具体命令、操作或报错，message ID 则
 独立用于关联本机运行证据。
 
@@ -50,10 +50,10 @@ flowchart TD
     D -->|"证据不足"| X["暂时无法判断"]
 
     E --> S["模型外 SUPERUSER 鉴权"]
-    S --> W["读取当前 Capability Shadow<br/>并重验证据 revision"]
-    W --> L["LangGraph 长期工作区<br/>Pydantic AI 只读 ReAct"]
-    L --> H["发布带依据、未知项和证据状态的解释"]
-    H -. "后续 triage 继续同一 Thread" .-> L
+    S --> W["Pydantic AI 只读工具<br/>读取能力、代码与日志"]
+    W --> L["LocalStore 原生消息快照<br/>Harness 按上下文比例压缩"]
+    L --> H["自然语言回答并保存完成上下文"]
+    H -. "后续 triage 继续全局会话" .-> W
     F --> Q["识别建议<br/>暂不创建外部工单"]
 ```
 
@@ -62,9 +62,10 @@ flowchart TD
 每次非空 `triage` 都经过版本化语义 assessment service。语义模型只接收当前这条规范化请求，输出
 `guidance`、`behavior_exploration`、`bug_assessment`、`feature_feedback` 四类目标和独立的现象陈述；
 确定性 router 才决定 action，模型不能回答、鉴权或直接建单。当前中文
-`support-semantic-v7-prompt-v5-zh` 已分别通过 OpenCode Go 与国内 Alibaba Qwen3.6 Flash 的 40 条独立
-forward-heldout：两者的 schema 与 status 均为 1.000，exact 分别为 1.000 与 0.975；运行时只登记各自的
-Provider、endpoint、settings、Prompt、Fixture、隐私、预算与评测 revision 精确组合。router 选择公开能力指导后，插件会从显式 Provider、能力影子与
+`support-semantic-v7-prompt-v5-zh` 使用统一 Pydantic AI 设置，当前 semantic 资格集合为空。
+Alibaba Qwen3.6 Flash 曾在已删除的厂商专属非思考设置下取得 schema / status 1.000、
+exact 0.975；该结果只保留为历史证据，不进入当前资格集合。
+router 选择公开能力指导后，插件会从显式 Provider、能力影子与
 经校验的教学注释构造只含公开事实的闭合请求，再调用独立的 Answer
 Agent 组织自然语言回答。Answer Agent 没有工具，只能把当前问题、公开事实与路由后有界的首轮 / Reply
 上下文组织成教学回复；上下文不能覆盖公开事实、权限或披露边界。未明确命中功能时只保留一次补充机会；
@@ -81,12 +82,12 @@ NoneBot ORM 在一个事务中保存 Report、Occurrence、Problem 和首条 Dec
 也不会自动创建外部 Issue。当前日志证据只覆盖本插件 runtime hook 精确关联捕获的 Matcher / API 异常，
 不会搜索任意宿主文件日志。
 
-维护者的 Behavior exploration 使用另一套长期工作区：LangGraph Checkpointer 加密保存有界的安全摘要、
-Claim、Evidence Reference、Artifact revision、幂等窗口和投递状态，不保存用户问题原文、完整 Pydantic AI
-消息历史、工具正文、Provider 原始输入输出、配置值、日志或源码。当前首个证据纵切只读取 Capability Shadow
-白名单化后的结构事实，因此回答会诚实保留 `partial / stale / conflicted / unknown`；源码、配置和运行观察的
-多源取证尚未接入。SQLite 实现只支持单机单 writer，并设置 Thread checkpoint 容量硬上限；达到上限后需由
-维护者显式重置，不会偷偷丢弃旧状态。该 Agent 尚无独立真实 Provider held-out 质量资格，当前属于受控首切。
+维护者对话把 Pydantic AI 原生 `ModelMessage` 序列保存到 LocalStore data 下唯一的
+`maintainer-conversation.json`。文件包含用户与 assistant 正文、完整工具调用/结果，以及 Provider 续接所需的
+thinking/signature 元数据；写入使用同目录临时文件、`fsync` 和 `os.replace`。Harness
+`SummarizingCompaction` 在上下文达到模型窗口的 80% 时保留最近消息并总结旧历史，压缩后的消息在下一次
+模型请求前保存。Agent 可检索 Capability Shadow，并使用项目根目录的只读文件工具查看代码、配置投影和日志；
+`.env`、凭据、密钥与数据库等硬拒绝路径仍不会通过工具暴露。
 
 ## 安装
 
@@ -97,9 +98,9 @@ uv sync --all-extras --group dev
 ```
 
 基础安装已经包含 Pydantic AI 公共控制层、只读 Harness 与 ty，但不会安装或启用任何模型 Provider SDK。
-使用当前 OpenCode Go transport（供教学注释和受控模型任务）时还需安装
-`nonebot-plugin-triage[openai]`；Anthropic 部署使用 `[anthropic]`。OpenCode Go 复用 Pydantic AI 的
-OpenAI Provider，不再声明内容重复的专用 extra。
+使用 OpenAI、DeepSeek、Alibaba 等基于 OpenAI SDK 的 Pydantic AI Provider 时安装
+`nonebot-plugin-triage[openai]`；Anthropic 部署使用 `[anthropic]`。项目不维护 Provider SDK、模型注册表
+或厂商专属 transport。
 
 NoneBot Adapter 由宿主 Bot 按实际平台自行安装并注册。Triage 不提供 `onebot` / `discord` extras，也不会
 替宿主注册 Adapter；没有安装 OneBot 时，只会缺少 OneBot 群历史与出站引用等平台增强，通用插件入口和
@@ -131,46 +132,32 @@ uv run nb orm upgrade
 | `NBTRIAGE_RATE_LIMIT_MAX_SCOPES` | `4096` | 当前进程入口限流表最多保留的不同 `适配器 + Bot + 会话 + 用户` scope 数；容量满时淘汰最旧 scope 并累计 drop 计数。它限制内存键数量，不提高单个用户频率，也不提供跨进程协调。 |
 | `NBTRIAGE_CAPABILITY_VISIBILITY_TIMEOUT_SECONDS` | `0.25` | 收集显式 Alconna 能力时，等待单个第三方 Provider 异步可见性判断的最长秒数；超时、异常或返回 false 的能力不会进入本轮公开说明。它不控制模型请求或能力影子后台刷新。 |
 | `NBTRIAGE_OBSERVATION_MAX_ENTRIES` | `10000` | 当前进程最多保留的 NoneBot 生命周期观察记录数，用于 Reply 关联后的可信失败复核；容量满时旧记录被淘汰，原始 API data/result 不会存入该 buffer，重启后清空。 |
-| `NBTRIAGE_OBSERVATION_RETENTION_SECONDS` | `900` | 生命周期观察记录可参与故障证据关联的最长秒数；过期记录不能再支持 Incident，同时也界定受理服务接受证据的时间范围。它不是日志保存期。 |
+| `NBTRIAGE_OBSERVATION_RETENTION_SECONDS` | `900` | 生命周期观察记录可参与 Bug 证据关联的最长秒数；过期记录不能再支持本次关联取证。它不是日志保存期。 |
 | `NBTRIAGE_REFERENCE_MAX_ENTRIES` | `4096` | 当前进程最多保留的出站消息引用索引数，用于把用户 Reply 的 `message_id` 精确关联到近期 Bot 运行；容量满时旧引用被淘汰，索引保存 HMAC scope 而不是平台身份原文。 |
 | `NBTRIAGE_REFERENCE_RETENTION_SECONDS` | `900` | 出站引用可以被 Reply 命中的最长秒数；过期 Reply 不能再关联本机运行证据。该索引不选择 Thread，也不控制补充机会。 |
 | `NBTRIAGE_THREAD_IDLE_SECONDS` | `900` | 未解决首轮等待唯一一次显式 `triage` 补充的最长空闲秒数；成功消费补充、得到终局结果或处理失败都会关闭。 |
 | `NBTRIAGE_THREAD_ABSOLUTE_SECONDS` | `1800` | Thread 从首轮创建起不可延长的总寿命；到期后的下一条 `triage` 开启新 Thread。该值不能短于空闲期限。 |
 | `NBTRIAGE_THREAD_MAX_ENTRIES` | `4096` | 当前进程最多保存的短期 Thread 数量；容量满时旧状态会被淘汰，重启后全部清空，不是持久会话存储。 |
-| `NBTRIAGE_INCIDENT_MAX_ENTRIES` | `256` | 当前进程最多保存的短期 Incident/活跃 trial 数量；容量满时旧项被淘汰，查询可能返回未找到。它不是数据库容量或持久工单上限。 |
-| `NBTRIAGE_INCIDENT_RETENTION_SECONDS` | `86400` | Incident 与活跃 trial 在当前进程中可查询、反馈和汇总的最长秒数；过期或重启后维护命令不再命中。已写入 observe JSONL 的最小审计事件不由该值删除。 |
-| `NBTRIAGE_TRIAL_MODE` | `off` | `off` 不创建 trial sink、不解析 LocalStore data 路径，也不写观察型事件；`observe` 把受理、查询、反馈和统计所需的最小审计事件写入 LocalStore data。它不启用模型，也不放宽 Incident 证据门。 |
-| `NBTRIAGE_TRIAL_LOG_MAX_BYTES` | `10485760` | `observe` 模式下单个 `trial-events.jsonl` 文件轮转前允许的最大字节数；达到上限后按备份数量轮转。`off` 时不使用该值。 |
-| `NBTRIAGE_TRIAL_LOG_BACKUP_COUNT` | `5` | `observe` 模式下轮转 JSONL 最多保留的历史备份数；超出的最旧备份被轮转策略删除。它不改变内存 Incident 的数量或寿命。 |
-| `NBTRIAGE_KNOWLEDGE_PACK_AUTO_UPDATE` | `true` | 启动后后台检查项目维护的 stable catalog；先恢复本地 active 包，新包完整校验后才原子切换。断网、catalog / 下载 / 校验失败均继续使用旧包或降级为 no-knowledge，不阻止插件加载。设为 `false` 可关闭默认联网检查。 |
+| `NBTRIAGE_KNOWLEDGE_PACK_AUTO_UPDATE` | `true` | 启动后后台检查当前冻结的 stable catalog，以便新安装取得 NoneBot 2.5.0 知识包；先恢复本地 active 包，资产完整校验后才原子切换。断网、catalog / 下载 / 校验失败均继续使用旧包或降级为 no-knowledge，不阻止插件加载。设为 `false` 可关闭默认联网检查。 |
 | `NBTRIAGE_KNOWLEDGE_PACK_URL` | 未设置 | 与 SHA-256 成对固定经过发布审核的 HTTPS knowledge pack 资产，并覆盖 stable catalog；适合离线镜像或可复现实验。固定包安装仍在后台执行；URL / SHA 只配一项或格式非法时只禁用知识服务，不阻止 Bot 启动，也不会偷偷改用 stable catalog。 |
 | `NBTRIAGE_KNOWLEDGE_PACK_SHA256` | 未设置 | 与 URL 成对固定 knowledge pack 压缩包的 64 位十六进制 SHA-256；下载内容不匹配时拒绝安装。它校验制品身份，不表示制品来源或许可证已自动获准。 |
 | `NBTRIAGE_MODEL_NAME` | 未设置 | 使用 Pydantic AI 的 `provider:model` 选择 Provider、API 族和精确模型，例如 `alibaba:qwen-max`；任意 OpenAI-compatible Chat 服务使用 `openai-chat:<模型 ID>`。这是唯一的 transport 选择字段。held-out 只标记项目已经验证的精确组合，未评测模型不会因此被拒绝运行。未设置时插件仍能启动并提供确定性能力索引，但不会生成教学注释、执行语义分类或调用 Answer / Behavior Agent。 |
 | `NBTRIAGE_MODEL_BASE_URL` | 未设置 | 可选覆盖所选 Provider 的部署端地址，例如中国大陆百炼或自建 OpenAI-compatible Chat endpoint。它不替代 `provider:model`；已知 Provider 保留其 ModelProfile，通用兼容服务应显式选择 `openai-chat:`。Provider 构造器不支持地址覆盖时失败关闭。外部地址必须为 HTTPS，HTTP 只允许本机 loopback，且 URL 不得携带凭据、query 或 fragment。 |
-| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 范围 `0 < seconds ≤ 400`。单次语义、公开能力回答的最长等待时间，也是自动教学注释与 Behavior Agent 一轮分析的总 timeout。显式 Provider SDK 对瞬时连接、限流和 5xx 最多进行两次传输重试；教学层不会因此重跑整个 Agent，只保留输出 / 投影 correction。Bug Agent 使用独立的 120 秒任务上限。与已发布评测预算不同只会使组合显示为未验证，不会成为运行禁令。 |
-| `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 单次语义 assessment 与 Answer Agent 结构化输出的 token 上限。自动教学注释使用任务内固定的 32768 output token（包含 Provider 计入输出的 reasoning token），单元累计仍限制为 192k；Bug Agent 使用独立的 800 output token、最多 8 次请求、6 次实际证据读取和 0.50 美元单轮预算。它不限制用户输入长度；与已发布评测预算不同会使用新的未验证质量标签。 |
-| `NBTRIAGE_BEHAVIOR_MAX_OUTPUT_TOKENS` | `1200` | Behavior Agent 单次 Provider 响应的 output token 上限，范围 `256..8192`。每轮另有固定的最多 5 次模型请求、3 次只读证据检索、60000 total token 和 0.50 美元预算；该值不改变长期工作区的 6000 字投递与 64 KiB State 上限。 |
-| `NBTRIAGE_BEHAVIOR_MAX_CONCURRENCY` | `2` | 不同 Behavior Thread 同时占用模型的全局上限，范围 `1..16`；同一 Thread 始终只允许一个活动 Turn，第二个请求直接返回忙碌而不排队。它不把 SQLite saver 升级为多进程协调后端。 |
+| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 范围 `0 < seconds ≤ 400`。这是语义、公开能力回答和维护者 Agent 每次模型请求的最长等待时间；维护者 Run 可进行最多 15 次请求，另有总用量与总时长上限。显式 Provider SDK 对瞬时连接、限流和 5xx 最多进行两次传输重试；教学层不会因此重跑整个 Agent，只保留输出 / 投影 correction。Bug Agent 使用独立的 120 秒任务上限。与已发布评测预算不同只会使组合显示为未验证，不会成为运行禁令。 |
+| `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 单次语义 assessment 的 output token 上限。该任务关闭 thinking，只进行一次请求。它不限制用户输入长度；与已发布评测预算不同会使用新的未验证质量标签。 |
+| `NBTRIAGE_PUBLIC_GUIDANCE_MAX_OUTPUT_TOKENS` | `2048` | 公开 Guidance 单次结构化回答的 output token 上限，范围 `256..8192`；任务关闭 thinking，只进行一次请求。 |
+| `NBTRIAGE_BEHAVIOR_MAX_OUTPUT_TOKENS` | `8192` | 维护者 Agent 单次 Provider 响应的 output token 上限，范围 `256..8192`。每个 Run 最多 15 次模型请求、60 次工具调用、512000 total token 和 1 美元预算；对话总轮数不限。整个部署始终只允许一个活动 Run。 |
+| 固定任务预算 | — | 自动教学注释使用 32768 单次 output、384000 单元累计 total token、最多 10 次请求和 0.05 美元；Bug Agent 使用 800 单次 output、最多 9 次请求、120000 total token、6 次实际证据读取和 0.50 美元。累计预算是宽松止损线，单次 output 才是 Provider 生成硬上限。 |
 | `NBTRIAGE_AGENT_TRACE_ENABLED` | `true` | 模型 transport 已配置时，把脱敏后的 Pydantic AI Agent / model / tool spans 写入本插件 LocalStore data 下的 `agent-traces.jsonl`；固定按 10 MiB、5 个备份轮转。文件只含调用结构、耗时、状态、Provider/model、token、费用、安全关联 ID，以及响应 part 类型和正文/工具参数长度等无内容形状，不含 Prompt、源码、模型原文、工具参数/结果或配置值。设为 `false` 时不解析路径、不创建文件。 |
 | `NBTRIAGE_CAPABILITY_ANNOTATION_MAX_CONCURRENCY` | `50` | 自动教学注释同时运行的教学单元数上限，接受任意正整数；同一插件的不同单元也可以并行，设为 `1` 可恢复全局串行。HTTP 连接池会跟随该值，但 Provider、网关或操作系统仍可能施加更低的实际并发限制。它不改变单次请求 timeout，较慢 Provider 继续通过 `NBTRIAGE_MODEL_TIMEOUT_SECONDS` 调整。 |
 | `NBTRIAGE_RESTRICTED_CONFIG` | `[]` | JSON 数组，列出禁止把实际值交给能力分析模型的 NoneBot 顶层配置键；键名大小写不敏感，`FOO__BAR` 等嵌套写法按顶层 `foo` 整项限制。命中后在读取实际值前拒绝；它不会删除 NoneBot 配置、禁止分析公开 schema/源码，也不表示未列出的整份 `.env` 会被发送。 |
 | `NBTRIAGE_EVIDENCE_DENIED_PATTERNS` | `[]` | JSON 数组，为所有只读源码与文件证据根追加相对 POSIX glob 拒绝项；例如 `"private/**"`。它只能在内置硬拒绝之外继续缩小范围，不能重新允许 `.env`、凭据、越界路径或 symlink 外跳。教学和 Bug 仍分别应用自己的任务级拒绝与日志准入规则。 |
 
-OpenCode Go 配置示例：
-
-```dotenv
-OPENAI_API_KEY=<OpenCode Go API Key>
-NBTRIAGE_MODEL_NAME=openai-chat:deepseek-v4-flash
-NBTRIAGE_MODEL_BASE_URL=https://opencode.ai/zen/go/v1
-NBTRIAGE_MODEL_TIMEOUT_SECONDS=60
-NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS=240
-```
-
 `provider:model` 由 Pydantic AI 解析，不需要 Triage 为每家服务增加 backend。常见填写方式如下：
 
 | 服务 | `NBTRIAGE_MODEL_NAME` | `NBTRIAGE_MODEL_BASE_URL` | 密钥环境变量 |
 |---|---|---|---|
-| OpenCode Go | `openai-chat:<模型 ID>` | `https://opencode.ai/zen/go/v1` | `OPENAI_API_KEY` |
+| DeepSeek | `deepseek:<模型 ID>` | 不设置 | `DEEPSEEK_API_KEY` |
 | 中国大陆百炼 | `alibaba:<百炼模型 ID>` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` 或 `ALIBABA_API_KEY` |
 | 国际站 DashScope | `alibaba:<模型 ID>` | 不设置 | `DASHSCOPE_API_KEY` 或 `ALIBABA_API_KEY` |
 | Google Gemini API | `google:<模型 ID>` | 不设置 | `GOOGLE_API_KEY` 或 `GEMINI_API_KEY` |
@@ -207,8 +194,8 @@ Provider 的标准环境变量配置，不能写进 Base URL 或 `NBTriageConfig
 部署者还需安装该 Provider 的 Pydantic AI SDK 依赖并配置其标准密钥环境变量。项目支持矩阵中的 held-out
 结果用于说明已验证质量，不是运行白名单；未评测组合仍执行相同 schema、Evidence、安全和预算检查。
 
-密钥只从对应 Provider 的标准进程环境变量读取，不写入 `NBTriageConfig`；例如 OpenCode Go 使用
-`OPENAI_API_KEY`，中国大陆百炼使用 `DASHSCOPE_API_KEY` 或 `ALIBABA_API_KEY`。
+密钥只从对应 Provider 的标准进程环境变量读取，不写入 `NBTriageConfig`；例如 DeepSeek 使用
+`DEEPSEEK_API_KEY`，中国大陆百炼使用 `DASHSCOPE_API_KEY` 或 `ALIBABA_API_KEY`。
 `NBTRIAGE_MODEL_BACKEND` 已删除；配置中出现该字段会被明确拒绝，必须改成 `provider:model + 可选 Base URL`。
 语义 assessment 只发送当前单条、
 规范化并通过秘密守门的 `triage` 请求文字，不接收 Reply 或 Thread。公开能力 Answer Agent 在路由后另接收
@@ -216,16 +203,15 @@ Provider 的标准环境变量配置，不能写进 Base URL 或 `NBTriageConfig
 事实或权限。两类请求都不接收配置、环境变量、日志、源码、运行证据、证据位置或 restricted 能力，并各自
 最多一次请求、零自动重试、不切换模型。
 语义失败会 abstain；回答失败或非法引用会退回确定性模板。语义客户端使用 Pydantic AI
-`Agent(output_type=SupportSemanticAssessment)`；当前
-OpenCode Go Profile 以 `final_result` output tool 承载闭合结果，该 tool 只用于结构化返回，插件不会把它
-升级为业务工具或副作用授权。
+`Agent(output_type=SupportSemanticAssessment)`；结构化输出方式完全由所选模型的 Pydantic AI
+`ModelProfile` 决定，项目不会按厂商改写请求或建立专属 output tool 合同。
 
 Bug assessment 使用独立的数据与任务合同。它可以把与本案相关、已经绑定 subject / revision / correlation
 并清理秘密的源码、关联异常日志、完整 traceback 与获准设计摘录发送给 Bug Agent；直接 Reply 与模型外
 固定锚点读取的同群可见聊天正文则原样提供，不执行凭据或个人信息遮蔽。它不会上传整个仓库、任意文件日志、
 平台原始 event、原始用户 ID 或配置。Agent 直接使用 Pydantic AI 原生
 `Agent(output_type=BugAssessmentCandidate)`、`Tool`、`ModelProfile` 和 `UsageLimits`，模型候选不能绕过
-本地 reconciliation，也不能写 LocalStore、建 incident、发送额外消息或执行插件代码。
+本地 reconciliation，也不能写问题库、发送额外消息或执行插件代码。
 Bug 的源码工具只在当前已加载 subject 的批准插件根内执行有界 Python 文本搜索和按文件读取；它不会启动
 外部语言服务器、读取整个仓库或越过路径、文件大小与结果数量门禁。共享的 ty
 `go_to_definition` 与只读 FileSystem 目前服务教学注释，尚未接入 Bug。
@@ -243,11 +229,6 @@ exploration。分类不接收身份，选中行为探索后才执行模型外 `S
 Bug 判定同样不依赖身份，但它只回答三值结论；如果用户明确要求查看源码、配置、环境、版本、调用流或运行
 证据本身，才属于 behavior exploration，并在分类后执行 `SUPERUSER` 鉴权。一次请求可以识别多个目标，
 router 仍只执行一个动作。
-
-`observe` 模式的审计事件固定写入 LocalStore 为本插件解析出的 data 目录下
-`trial-events.jsonl`；部署者如需更换目录，使用 LocalStore 的 `LOCALSTORE_PLUGIN_DATA_DIR`，插件不再提供
-独立日志路径配置。旧 `NBTRIAGE_TRIAL_LOG_PATH` 会在初始化时给出迁移错误；既有
-`logs/nbtriage-trials.jsonl` 不会自动迁移、合并或读取。
 
 配置模型 transport 后，脱敏 Agent 轨迹默认写入同一插件 data 目录下的 `agent-traces.jsonl`。它和普通告警
 日志互补：日志快速指出失败单元，trace 用共同的 trace ID 串起 Agent run、模型请求、工具调用、重试、耗时和
@@ -297,8 +278,9 @@ uv run python -m tools.nbtriage_maintainer analyze-capability-teaching `
 报告和生成目录属于本地工件，按上述诊断数据规则管理。预检不验证远端认证、计费、模型响应或检索带来的教学质量；
 后续真实冷测与人工语义评审继续独立记录，不能用缓存命中率、生成成功率替代质量结论。
 
-教学 fixture 评测使用 Pydantic Evals 2.28.0 调度，继续调用现有教学分析与领域评分函数。维护者安装
-`uv sync --group maintainer` 后，沿用 `evaluate-capability-teaching` 的模型、预算与付费确认参数；可加
+教学 fixture 评测使用 Pydantic Evals 2.43.0 调度，继续调用现有教学分析与领域评分函数。维护者安装
+`uv sync --group maintainer` 后，沿用 `evaluate-capability-teaching` 的模型、预算与付费确认参数，并显式提供
+本次冻结 Fixture 路径、集合 ID 与内容哈希；仓库不再把已消费的旧合同默认为当前资格集。可加
 `--repeat 3` 独立运行每题三次。重复次数大于 1 时只形成诊断结果，不授予模型资格。总预算覆盖全部重复，
 达到阈值或无法确定费用后不再创建后续模型客户端；已开始的一例仍可能使总费用超过阈值，因此它不是请求内
 的美元硬上限。SDK 重试与教学轮内纠错沿用实际模型配置，评测层不自动重跑失败任务。
@@ -413,8 +395,8 @@ Evidence 闭合、投影、预算、工具与 12/12 源码提取均通过，但�
 forward-heldout。源码提取率为 1.000，但 schema / Evidence / 投影 / 安全 / 预算均为 0.900，语义率为
 0.600，需要补读工具的案例未通过，正式 Gate 失败；因此 Qwen 能力标注仍只属于“可运行、未验证”，不会进入
 `QUALIFIED_CAPABILITY_ANNOTATION_TASKS`。
-2026-08-19 又用旧 request v2、Prompt v38 和 fixture schema v4 对 OpenCode Go `deepseek-v4-flash`
-运行全新 v12：12/20 案例通过真实 production request builder，整批 20 条中 16 条通过；schema / Evidence
+2026-08-19 又用旧 request v2、Prompt v38 和 fixture schema v4 运行全新 v12：12/20 案例通过真实
+production request builder，整批 20 条中 16 条通过；schema / Evidence
 闭合为 0.950，投影 / 安全为 0.900，语义为 0.800，工具案例为 0.500，预算与源码提取均为 1.000。33 次请求
 共 197,757 input / 110,238 output tokens，按冻结价格审计为 37,169 microUSD，正式 Gate 失败，因此当前请求
 合同不登记能力注释质量资格。v12 暴露了输入 requirement 重复、`@` 公开文字过度拒绝、基线细化语义和截断后
@@ -478,8 +460,8 @@ usage，普通 family 查询使用聚合 usage。这不是新的 LLM 工具，�
 普通用户入口可以在私聊、群聊或频道直接发送，也可以 `@Bot` 后发送；三种会话使用相同分流和调用者
 鉴权规则。私聊目前不能建立故障记录，维护命令仍需要 `@Bot`。配置的 Provider/model 可由 Pydantic AI
 解析、所需 SDK 和密钥可用且传输能力满足当前任务时，下表的 `triage` 场景会调用在线语义分类。当前
-semantic v7 中文 Prompt 的 OpenCode Go 与国内 Alibaba Qwen3.6 Flash 精确组合已有 held-out 结果；其他组合
-可以运行，但标记为未验证。Qwen 的 Bug assessment 同 Fixture 评测未过门槛，不能继承 semantic 标签。
+semantic 没有任何已验证模型组合；所有 Pydantic AI 可解析组合都按未验证运行。使用已删除专属设置的
+held-out 结果只保留为历史证据，不能继承为当前资格。
 
 | 指令                                              | 权限      | 说明                           |
 | ------------------------------------------------- | --------- | ------------------------------ |
@@ -490,8 +472,9 @@ semantic v7 中文 Prompt 的 OpenCode Go 与国内 Alibaba Qwen3.6 Flash 精确
 | `triage 查看帮助边界 <plugin_module>`              | SUPERUSER | 查看已发布原始边界、版本和单元 / 条目 ID |
 | `triage 修改帮助边界 <generation> <unit_id> <entry_id> "原文" "新文"` | SUPERUSER | 精确替换一条已有边界，不调用模型 |
 | `triage 这是不是 Bug`                             | 所有人    | 判断 Bug / 非 Bug / 未知；确认 Bug 时自动记录 |
-| `triage <内部行为探索问题>`                        | SUPERUSER | 在长期 Behavior Thread 中读取当前安全能力结构并给出证据式解释；多源取证仍在扩展 |
-| `triage 行为重置`                                  | SUPERUSER | 删除当前维护者在当前会话的整个长期 Behavior Thread |
+| `triage <项目问题>`                                | SUPERUSER | 在部署内唯一的长期会话中使用只读工具交流项目内容 |
+| `triage 停止`                                      | SUPERUSER | 取消当前 Agent Run，保留最近成功会话快照 |
+| `triage 开始新对话`                                | SUPERUSER | 取消当前 Run 并清空部署内全局维护者会话 |
 | `triage 报错查询`                                 | SUPERUSER | 列出当前所有待处理 Problem |
 | `triage 报错查询 <P-编号>`                        | SUPERUSER | 查看判断、报告/发生次数和状态 |
 | `triage 报错查询 <P-编号> <确认Bug/确认非Bug/解决>` | SUPERUSER | 追加人工 Decision 或标记已解决 |
@@ -540,10 +523,10 @@ just maintainer search-capabilities "搜图怎么用" \
 
 本地维护者已经在模型外确认自己有权查看当前部署的内部能力时，可以额外使用 `--include-restricted`。CLI
 开关只是声明带外授权，不自行检查身份；语义 router 选中行为探索后，私聊、群聊和频道中的 `triage` 都会
-对当前 Bot / Event 的请求者执行同一 NoneBot `SUPERUSER` 检查。当前 Behavior 纵切会在每次读取前重新鉴权，
-只把 Capability Shadow 中白名单化、去路径和去配置值的安全结构事实交给 Agent，再由模型外 reconciler 校验
-Evidence ID、basis、revision 和披露边界。它不会把“已注册”写成“本次实际执行”，也不会把尚未接通的源码、
-配置或运行观察冒充成已完成取证。
+对当前 Bot / Event 的请求者执行同一 NoneBot `SUPERUSER` 检查。维护者 Agent 在每次模型请求和工具执行前
+重新鉴权。它可读取 Capability Shadow 与项目根目录内的只读文件，并把本轮使用的原生消息上下文完整保存；
+工具仍硬拒绝 `.env`、凭据、密钥和数据库路径。历史消息帮助继续讨论，但不恢复权限，也不会自动执行其中
+出现的指令。
 
 这条检索链不依赖模型、网络或向量服务。首次后台构建尚未发布可服务 generation 时，普通用户继续回退
 显式 Provider；发布后也只检索派生 ServingView 中符合上述条件的能力。

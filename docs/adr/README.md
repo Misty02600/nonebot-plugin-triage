@@ -3,7 +3,7 @@
 这里列出仍作为当前一等架构约束的 ADR。精确状态、局部替代关系和完整理由以各 ADR 正文为准；
 已经替代、未采纳、评测性、实现级或仅作支持性解释的记录见[历史 ADR](history/README.md)。
 
-当前根目录保留 63 份，历史区保存 62 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
+当前根目录保留 67 份，历史区保存 62 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
 为了简短而合并决定。阅读系统现状时先从[架构入口](../architecture/README.md)进入，再按问题查本索引。
 
 没有进入 ADR 的理由也不会丢失：跨实现的当前事实进入 architecture / flow，局部不变量进入代码注释和
@@ -22,7 +22,8 @@
 | [ADR-0037](0037-make-semantic-assessment-the-default-triage-path.md) | 删除本地意图词表和产品启用开关，每轮 triage 默认经受限语义 assessment，transport 不可用时 abstain |
 | [ADR-0060](0060-use-scope-thread-and-post-route-conversation-context.md) | 用稳定 scope Thread 承接一次显式补充；Semantic 只看当前文字，Reply 与会话内容只在路由后作为任务上下文 |
 | [ADR-0065](0065-only-expose-conversation-history-for-supported-platforms.md) | 只在 Adapter 有真实会话历史 Provider 时向 Bug Agent 暴露聊天工具；不再用本地滚动窗口模拟跨平台历史 |
-| [ADR-0101](0101-use-langgraph-checkpoints-for-long-running-behavior-inquiries.md) | 以加密 LangGraph checkpoint 保存单 scope 长期 Behavior 工作区；Store、复杂控制面和跨 Thread Memory 后置 |
+| [ADR-0101](0101-use-langgraph-checkpoints-for-long-running-behavior-inquiries.md) | 已替代的加密 LangGraph Behavior 工作区；SUPERUSER 自由对话已迁移到 ADR-0128 |
+| [ADR-0128](0128-use-native-message-snapshots-for-maintainer-conversations.md) | 用 Pydantic AI、Harness 压缩和 LocalStore 单文件消息快照保存部署内唯一的维护者自由对话；每轮注入当前场景，忙时直接拒绝新请求，已实施 |
 
 ## 自治、Agent 控制与远端数据安全
 
@@ -31,6 +32,7 @@
 | [ADR-0002](0002-tiered-autonomy-and-ownership-aware-remediation.md) | 以分级自治、责任层路由和动作专用执行器扩展诊断到修复闭环 |
 | [ADR-0010](0010-use-bounded-evidence-seeking-agent-loop.md) | 用单 Agent、typed tools、有界循环、HITL 与 trajectory Gate 验证 Agent 能力 |
 | [ADR-0012](0012-use-pydantic-ai-deferred-tools-behind-domain-runtime.md) | 用领域 runtime 掌握循环与授权，只借用 Pydantic AI Deferred Tools 做单步多 Provider 适配 |
+| [ADR-0130](0130-finalize-production-agents-before-hard-budget-exhaustion.md) | 生产多步 Agent 最多提示一次收敛阶段，并在硬预算前用动态 `tool_choice="none"` 保留最终交付机会；Bug 调整为十二请求与八加一次证据额度 |
 | [ADR-0038](0038-limit-semantic-assessment-remote-data-projection.md) | 只允许向合格语义 assessment transport 投影当前单条规范化 triage 请求文字，其他上下文仍禁止出站 |
 | [ADR-0053](0053-allow-relevant-source-and-log-bodies-for-bug-assessment.md) | 允许任务相关源码、日志与 traceback 经专用准入和秘密清理后进入 Bug assessment，同时保持普通用户安全投影 |
 | [ADR-0059](0059-share-read-only-evidence-access-across-agent-flows.md) | 跨 Agent 共享受逻辑根、realpath containment、敏感文件拒绝和 revision 约束的只读 Evidence 工具 |
@@ -51,6 +53,7 @@
 | [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) | 保留标准 `provider:model` 与 ModelProfile，并允许部署者为支持该参数的 Pydantic AI Provider 配置受限 Base URL |
 | [ADR-0091](0091-use-pydantic-ai-model-ids-as-the-public-transport-selector.md) | 直接以 Pydantic AI `provider:model` 选择 transport；Base URL 连接兼容服务 |
 | [ADR-0092](0092-remove-legacy-model-backend-configuration.md) | 删除旧 backend 字段、专用 runtime 分支和 OpenCode 密钥别名；旧配置明确失败并迁移到唯一的 `provider:model` 入口 |
+| [ADR-0129](0129-use-only-pydantic-ai-native-model-transports.md) | 只维护 Pydantic AI 原生模型解析、Provider/Profile、统一 thinking 与 usage；删除 OpenCode 专属适配器，并把任务预算恢复为宽松止损上限 |
 
 ## 评测合同与知识包
 
@@ -61,6 +64,7 @@
 | [ADR-0019](0019-distribute-rag-corpus-as-versioned-knowledge-pack.md) | 基础发行包不内置 RAG 语料；默认发现与更新改由 stable catalog 提供 |
 | [ADR-0051](0051-let-the-bug-assessment-agent-query-design-rag.md) | 允许 Bug Agent 在历史与公开合同初检未命中后查询版本化设计 RAG，并保持设计、源码与运行证据分层 |
 | [ADR-0067](0067-refresh-knowledge-pack-from-stable-catalog-at-startup.md) | 启动后后台检查 stable catalog，校验新包后原子切换；所有更新失败均保留旧包或降级且不阻断插件加载 |
+| [ADR-0131](0131-freeze-the-nonebot-only-knowledge-pack.md) | 冻结现有 NoneBot 2.5.0 知识包与 stable catalog，只保留 Markdown 构建和验证代码，不再维护多来源语料或自动发布工作流 |
 
 ## 能力影子、行为解释与公开教学
 

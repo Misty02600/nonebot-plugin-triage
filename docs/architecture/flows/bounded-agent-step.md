@@ -34,7 +34,7 @@ flowchart TD
 | 层 | 拥有的职责 | 明确不拥有 |
 |---|---|---|
 | 领域 runtime | 状态、跨步预算、按 capability / trajectory 收缩 action 白名单、参数复核、observation 执行、暂停恢复、trajectory、停止 | Provider wire、SDK 类型 |
-| Pydantic AI 单步适配器 | 把动态 action 联合和已观察 citation 渲染为唯一 `propose_action` schema、参数解析、协议响应、返回 Provider / model / request identity 与单步 usage / cost 归一化；以 client timeout 和领域剩余 deadline 较小值执行 hard timeout；DeepSeek Responses 未承诺 strict wire 时仍执行本地参数校验 | 会话循环、项目授权、工具副作用、持久状态 |
+| Pydantic AI 单步适配器 | 把动态 action 联合和已观察 citation 渲染为唯一 `propose_action` schema、参数解析、协议响应、返回 Provider / model / request identity 与单步 usage / cost 归一化；以 client timeout 和领域剩余 deadline 较小值执行 hard timeout；Provider 未承诺 strict 时仍执行本地参数校验 | 会话循环、项目授权、工具副作用、持久状态 |
 | 真实 Gate 审计层 | 独立 `b4-real-partial`、请求前/响应后原子 checkpoint、Provider failure reason / 可选 HTTP status、whole-run timeout、成功报告 no-overwrite 发布与失败 code/stage | 模型决策、产品 Provider 资格、对未知响应猜测 token 或费用、保存响应 body / headers / 异常文本 |
 
 ## 不变量
@@ -45,8 +45,8 @@ flowchart TD
   call-slot 计数前抛出 `TimeoutError`；其他 hard timeout 也保留该异常，由 runner 映射为 `DEADLINE`；
 - 唯一框架工具立即 deferred；信封联合只含本轮可用 capability，已产生 observation 的只读能力不再暴露，
   citation 只允许来自已观察支持案例；未知 action、多个调用、自由文本和不合法参数在读取任何 observation 前失败；
-  Provider 支持 strict tool definition 时显式启用；DeepSeek Responses 当前 `strict=false`，不会跳过
-  Pydantic 与领域层的本地二次校验；
+  Provider 支持 strict tool definition 时由其 ModelProfile 启用；无论 wire 是否 strict，都不会跳过 Pydantic
+  与领域层的本地二次校验；
 - 持久状态不包含 Pydantic AI message history、原始日志、秘密、身份、Gold 或私有 Chain-of-Thought；
 - `request_evidence` 成功 observation 保存 receipt / run / Case / slot、原始材料指纹、字节数、规范化 facts
   与域分隔 `receipt_revision`；`AgentRunState.schema_version=2` 在读取时重算版本，拒绝旧 observation 或
@@ -74,7 +74,7 @@ flowchart TD
 - `request_evidence` 只暂停，不向真实用户发送消息；当前脚本 Gate 也不执行网络或外部工具。
 
 实现见 `src/nbtriage/bounded_agent.py`、`src/nbtriage/pydantic_agent_adapter.py`、
-`src/nbtriage/_model_runtime/usage.py`、`tools/nbtriage_maintainer/deepseek_adapter.py` 与
+`src/nbtriage/_model_runtime/usage.py`、`tools/nbtriage_maintainer/model_evaluation_target.py` 与
 `tools/nbtriage_maintainer/agent_evaluation.py`，选型依据见
 [ADR-0012](../../adr/0012-use-pydantic-ai-deferred-tools-behind-domain-runtime.md)。
 首轮线上失败边界与当前证据记录在本文和
@@ -90,8 +90,8 @@ whole-run 机制是这次失败后的本地修正，不会反向补全 run-2。
 checkpoint 能在失败后保全边界。它没有 success report；历史本地记录使用 schema v1，当前 v3 的 Provider
 分类不能反向补造这次未知原因。
 
-`tests/support/opencode_go_backend.py` 仅是 evaluation-only 兼容 Chat 测试夹具，用于验证 renderer、一次请求和
-usage 失败关闭；它不进入上述运行流程，也不进入 wheel、CLI、插件配置或 Provider 资格。一次另行授权的
+旧 `tests/support/opencode_go_backend.py` 曾作为 evaluation-only 兼容 Chat 测试夹具验证 renderer、一次请求和
+usage 失败关闭；专属夹具现已删除，以下内容只保留为历史诊断。一次另行授权的
 direct client smoke 只调用 1 次且没有 retry，本地未取得响应，外层约 388.7 秒后终止，Provider 是否受理、
 usage 与费用均未知。该 smoke 绕过了原本已有 deadline 守门的领域 runner，因而暴露并促成上述 adapter 级
 hard timeout；它不是产品或 Provider 结论。

@@ -82,4 +82,4 @@ LLM 补全功能语义。如果先把全部记录交给词法 / 向量检索、�
 - [架构概览](../architecture/overview.md)
 - [部署本地能力影子索引](../architecture/flows/capability-shadow-index.md)
 - [可选帮助数据源与复用边界](../architecture/help-source-adapters.md)
-- [Alconna 能力与解析回执](../architecture/flows/alconna-capability-and-parse-receipts.md)
+- [Alconna 能力发现](../architecture/flows/alconna-capability-discovery.md)

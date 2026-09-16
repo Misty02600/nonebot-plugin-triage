@@ -82,4 +82,4 @@ ADR-0026 已经决定在检索和模型前排除普通用户无权感知的能�
 
 - [部署本地能力影子索引](../../architecture/flows/capability-shadow-index.md)
 - [可选帮助数据源与复用边界](../../architecture/help-source-adapters.md)
-- [Alconna 能力与解析回执](../../architecture/flows/alconna-capability-and-parse-receipts.md)
+- [Alconna 能力发现](../../architecture/flows/alconna-capability-discovery.md)

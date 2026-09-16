@@ -15,6 +15,9 @@
 > 部署者可以为标准 Pydantic AI Provider 配置受限 Base URL；Provider / Model / Profile、参数门和失败关闭
 > 继续有效。
 
+> [ADR-0129](0129-use-only-pydantic-ai-native-model-transports.md) 已删除下文记录的 OpenAI、Anthropic 与
+> DeepSeek 专属 factory；B1 Direct Request 合同继续由通用客户端承担，历史文件路径仅说明当时实现。
+
 ## 背景
 
 当前 B1 领域边界已经通过 `B1ModelClient` 把模型调用隔离在核心之外，但具体实现直接依赖 OpenAI Python

@@ -5,6 +5,10 @@
 >
 > 2026-08-21：[ADR-0104](history/0104-preload-one-hop-python-dependency-source-for-teaching.md)
 > 细化教学链路的依赖导航：可预载一层唯一外部函数，安全根、revision 和不递归边界继续有效。
+>
+> 2026-09-16：删除已经没有生产、维护或评测消费者的 `nbtriage.installed_sources` 遗留包。
+> distribution/RECORD 归属、runtime binding、editable 校验和越界拒绝统一由 `nbtriage.source_roots`
+> 与 `nonebot_plugin_triage.evidence_access` 承担；不保留旧 catalog、模型或 resolver 兼容入口。
 
 | 状态 | 决策日期 |
 |---|---|

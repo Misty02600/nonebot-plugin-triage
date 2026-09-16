@@ -161,4 +161,3 @@ Bug 判定必须协调人工合同、当前实现与实际运行证据。
 
 - [支持入口分流](../architecture/flows/support-intake-routing.md)
 - [可选帮助数据源与复用边界](../architecture/help-source-adapters.md)
-- [观察型生产 trial](../architecture/flows/observation-first-trials.md)

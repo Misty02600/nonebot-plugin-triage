@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；原始内容维护模式由 [ADR-0097](0097-capture-complete-capability-model-output-in-explicit-maintenance-runs.md) 部分替代 | 2026-08-17 |
+| 已采纳；原始内容维护模式由 [ADR-0097](0097-capture-complete-capability-model-output-in-explicit-maintenance-runs.md) 部分替代，维护者会话业务存储由 [ADR-0128](0128-use-native-message-snapshots-for-maintainer-conversations.md) 增加例外 | 2026-08-17 |
 
 > [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) 已补充连接地址身份：轨迹保存
 > 规范化 Base URL 的 SHA-256 revision，不保存完整 URL。
@@ -57,6 +57,8 @@
 
 ## 替代关系
 
+- [ADR-0128](0128-use-native-message-snapshots-for-maintainer-conversations.md) 对维护者自由对话的业务恢复文件
+  增加原生消息正文持久化例外；本 ADR 的日志与 trace 脱敏合同继续有效；
 - 窄范围替代 [ADR-0018](history/0018-use-localstore-only-for-enabled-trial-audit-log.md) 第 8 条中“模型 trace 不写入
   LocalStore”的决定；ADR-0018 对 trial 审计、原始运行状态和自动遥测的其他限制继续有效。
 

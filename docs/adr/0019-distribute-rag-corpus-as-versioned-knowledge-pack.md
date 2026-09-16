@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳；默认无网络与固定资产发现策略由 ADR-0067 部分替代
+已采纳；默认无网络与固定资产发现策略由 ADR-0067 部分替代，持续发布安排由 ADR-0131 部分替代；作为背景的独立 bot-docs PoC 已删除
 
 ## 日期
 
@@ -81,14 +81,17 @@
 - 当前验证覆盖配置成对校验、HTTPS 限制、后台下载、完整性与兼容校验、失败回退、分发许可门和归档成员。
 - 独立工作流只发布已经人工创建的 Draft Release：它从 `knowledge-v*` tag checkout 发布合同，复核候选资产
   与 tag commit 的绑定和全部完整性条件，成功后发布 Draft；不会改动插件 `v*` / PyPI 发布链。
+- 2026-09-16 删除未接入产品运行时的外部 bot-docs 索引、专属检索评测及三个维护命令；当前构建、检索与
+  评测统一复用产品 Knowledge Pack 和 `KnowledgeIndexReader`，本 ADR 前文对 PoC 的描述仅保留为历史背景。
 
 ## 替代关系
 
 - 部分被替代：[ADR-0067：启动后从 stable catalog 刷新知识包](0067-refresh-knowledge-pack-from-stable-catalog-at-startup.md)
+- 部分被替代：[ADR-0131：冻结只含 NoneBot 文档的产品知识包](0131-freeze-the-nonebot-only-knowledge-pack.md)
 - 补充：[ADR-0015：分离版本化评测合同与本地运行数据](0015-separate-versioned-evals-from-local-runtime-data.md)
 - 补充：[ADR-0016：将维护者评测工具排除在插件安装面之外](0016-keep-maintainer-evaluation-tooling-out-of-install-surface.md)
 - 补充：[ADR-0018：只用 LocalStore 保存显式启用的 trial 审计日志](history/0018-use-localstore-only-for-enabled-trial-audit-log.md)
 
 ## 相关文档
 
-- [架构概览：bot-docs 检索与知识包边界](../architecture/overview.md#核心能力与当前命令入口)
+- [架构概览：知识包边界](../architecture/overview.md#核心能力与当前命令入口)

@@ -2,7 +2,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；续问触发由 ADR-0031 恢复并细化，动态入口配置与两级限流由 ADR-0045 部分替代 | 2026-08-11 |
+| 已采纳；续问触发由 ADR-0031 恢复并细化，动态入口配置与两级限流由 ADR-0045 部分替代；旧 Incident / Trial 分支已于 2026-09-16 删除 | 2026-08-11 |
 
 ## 当时遇到了什么
 
@@ -67,4 +67,3 @@ ADR-0021 已加入默认关闭的部署本地能力影子索引，自动收集�
 
 - [支持入口分流](../architecture/flows/support-intake-routing.md)
 - [跨平台支持入口](../architecture/flows/cross-platform-report-intake.md)
-- [观察型生产 trial](../architecture/flows/observation-first-trials.md)

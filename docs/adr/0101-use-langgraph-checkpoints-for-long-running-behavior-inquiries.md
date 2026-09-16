@@ -1,8 +1,8 @@
 # ADR-0101：用 LangGraph Checkpoint 保存长期开发者行为讨论
 
-| 状态 | 决策日期 |
-|---|---|
-| 已采纳；首个纵向切片已实现，真实模型质量资格待补 | 2026-08-21 |
+| 状态 | 决策日期 | 最近复评 |
+|---|---|---|
+| 已替代；SUPERUSER 自由对话已经迁移到 [ADR-0128](0128-use-native-message-snapshots-for-maintainer-conversations.md) | 2026-08-21 | 2026-09-15 |
 
 ## 当时遇到了什么
 
@@ -20,13 +20,45 @@ LangGraph 提供 thread-scoped State、逐 super-step checkpoint、恢复、历�
 
 ## 决定
 
+### 复评后继续采用 Pydantic AI + LangGraph 的方案 A
+
+2026-09-15 以 Pydantic AI 2.43.0 与 Pydantic AI Harness 0.31.0 重新核对持久化边界。Pydantic AI Core
+已经提供 `conversation_id` / `run_id`、消息序列化与恢复入口、history processor / compaction，以及
+Temporal、DBOS、Prefect、Restate、AWS Lambda 等 durable execution 集成；Harness `StepPersistence` 也已
+提供 File / SQLite / MongoDB store、Agent step event、continuable snapshot、`continue_run()` / `fork_run()`
+和 tool-effect ledger。不能再用“Pydantic AI 不支持持久化”解释本 ADR。
+
+但 `StepPersistence` 的官方边界仍不是完整 graph-state checkpoint：它不恢复 capability per-run state、任意
+workspace、graph node、retry counter 或 in-flight stream，副作用去重、整 Conversation 删除、TTL / event /
+media GC 仍由调用方承担，官方文档与内置 store 也没有提供本 ADR 当前依赖的 checkpoint 加密与 PostgreSQL
+adapter。其
+continuable snapshot 保存 Pydantic AI 消息，而 Behavior 的持久化合同明确禁止保存用户原文、原始工具结果和
+完整模型 I/O。
+
+因此继续采用方案 A，但把理由收窄为职责匹配，而不是框架能力有无：
+
+- Pydantic AI 拥有模型 / Provider、单轮 Agent loop、工具协议、结构化输出和**单轮内部**消息历史处理与
+  compaction；项目不实现通用 history 修复、裁剪或摘要框架；
+- LangGraph Checkpointer 只拥有经过领域校验、最小化和加密的**跨轮 Behavior Workspace**，以及 Thread
+  checkpoint / 恢复 / 整体删除；
+- 项目领域层拥有 schema、scope 鉴权、Evidence provenance / freshness、Claim、预算、投递幂等和保留策略；
+- Behavior 不同时启用 Harness `StepPersistence`，避免完整消息快照与安全 Workspace 形成第二份持久真值；
+- Harness `Memory` 是模型可写且可能过期的非权威笔记，不用作 Claim、授权、审批或项目事实真源；
+- `UseThreadExecutor` 只是同步回调的线程池能力，与对话 Thread 持久化无关。
+
+出现以下任一变化时重新比较 Pydantic AI 单栈与方案 A：`StepPersistence` 能恢复项目所需的类型化 workspace
+并满足加密、最小化和整 Conversation 删除；Behavior 不再需要 workspace / graph 恢复而只需消息续聊；或
+方案 A 的双框架集成成本经真实故障测试证明高于单栈收益。任何替换 spike 都必须复用相同的重启恢复、错误
+密钥失败关闭、原文不落盘、scope 隔离、整 Thread 删除、未决副作用与 schema 升级合同。
+
 ### 让 Checkpoint 成为首版 Behavior 工作区的唯一持久真值
 
 1. 行为探索首版采用嵌入式 LangGraph。锁定 `langgraph==1.2.11`、`langgraph-checkpoint==4.2.0`、
    `langgraph-checkpoint-sqlite==3.1.1`、`aiosqlite==0.22.1` 与 `pycryptodome==3.23.0`，由
    `AsyncSqliteSaver` 保存 State；Pydantic AI Agent 继续拥有
    模型、Provider `ModelProfile`、结构化输出、工具与单次 ReAct 循环。LangGraph 不替代 Pydantic AI，
-   Pydantic AI 的完整 `message_history` 也不进入 LangGraph。
+   Pydantic AI 的完整 `message_history` 也不进入 LangGraph，Behavior 不再并行启用 Harness
+   `StepPersistence`。
 2. 每个 `adapter + Bot + conversation + actor` 只有一个长期 Behavior 工作区。通过部署本地长期稳定密钥、
    结构化编码和用途隔离的 HMAC 直接派生内部 `thread_id`；不暴露 Thread ID，不允许调用者提交任意
    `thread_id` 或 `checkpoint_id`，首版也不提供多工作区、列表、共享、归档或跨作用域恢复。
@@ -75,28 +107,33 @@ LangGraph 提供 thread-scoped State、逐 super-step checkpoint、恢复、历�
     task 参数可以携带当前用户原文而不落 checkpoint，task 结果只能是已验证的安全 JSON 候选或稳定失败码，
     因为 task 结果与错误也可能进入 checkpoint。进程在 task 完成前崩溃仍可能重复模型费用，但不会重复外部写
     操作；每次 Run 仍受 request、tool、token、费用和 deadline 硬预算。
+12. 单轮 ReAct 内的消息历史增长由 Pydantic AI 的 history processor、Harness compaction strategy 或经过资格
+    验证的 Provider 原生 compaction 处理；不在领域层实现通用截断、Tool Call 配对修复或摘要运行时。压缩结果
+    只是本轮模型上下文，不自动成为证据或跨轮权威状态；需要进入下一轮的内容仍须经过 Evidence / Claim 校验
+    后投影到安全 Workspace。首个有界 ReAct 未达到压缩触发条件，因此当前只冻结所有权，不提前启用能力。
 
 ### 幂等、投递和删除采用保守语义
 
-12. 只接受 Adapter 提供的稳定、不能由消息正文伪造的 event / message ID。其用途隔离 HMAC 与当前请求
+13. 只接受 Adapter 提供的稳定、不能由消息正文伪造的 event / message ID。其用途隔离 HMAC 与当前请求
     digest 进入有界幂等窗口：相同 event 和相同正文不再运行 Agent；相同 event 与不同正文失败关闭。窗口
     之外不承诺永久去重，也不使用“正文 + 时间”猜造 Event ID。
-13. 发送不是可重放 Graph node。Graph 先以 `durability="sync"` 保存 Artifact 和 `pending`；当前调用栈再
+14. 发送不是可重放 Graph node。Graph 先以 `durability="sync"` 保存 Artifact 和 `pending`；当前调用栈再
     同步保存 `sending(invocation_id)`，之后最多调用平台一次。合法 Receipt 后写 `sent`；平台调用已经开始却
     抛错、取消、Receipt 无法验证或进程在保存 `sent` 前崩溃时，恢复为 `unknown`，绝不自动重发。该协议
     倾向 at-most-once，只表达系统对投递的认知，不承诺平台 exactly-once 或可靠最终送达。
-14. 首版只支持整 Thread 删除。删除在 scope lock 内调用 `adelete_thread(thread_id)`，同时清除 checkpoints
+15. 首版只支持整 Thread 删除。删除在 scope lock 内调用 `adelete_thread(thread_id)`，同时清除 checkpoints
     与 writes；不声称能从历史 checkpoint 中单独擦除一个 Turn。删除后若平台极晚重投旧 Event，仍可能在
     同一派生 ID 上建立新 Thread；需要严格 tombstone 时必须增加图外持久控制面。
-15. 当前 State 的条目数、字段长度和序列化字节有硬上限；每 Thread checkpoint 数也有保守上限。SQLite
+16. 当前 State 的条目数、字段长度和序列化字节有硬上限；每 Thread checkpoint 数也有保守上限。SQLite
     saver 3.1.1 没有可用的原生 `keep_latest` prune，首版不用 beta `DeltaChannel`，到达上限后拒绝继续并要求
     维护者显式整 Thread 重置，不用“删除后再写回”冒充原子 compact。长期保存不等于无限增长。
 
 ### 跨 Thread Memory 明确后置
 
-16. 首版不启用 LangGraph Store，不从历史 Thread 自动提炼用户画像、项目事实、工具批准或 few-shot。当前
-    Thread 的安全状态可以长期保存，但归档 Thread 本身不自动成为 episodic / semantic memory。
-17. 以后确需跨 Thread 记忆时，新增独立 `MemoryCandidate → Policy / Validation → MemoryItem` 流程；每项
+17. 首版不启用 LangGraph Store 或 Harness `Memory`，不从历史 Thread 自动提炼用户画像、项目事实、工具批准
+    或 few-shot。当前 Thread 的安全状态可以长期保存，但归档 Thread 本身不自动成为 episodic / semantic
+    memory。
+18. 以后确需跨 Thread 记忆时，新增独立 `MemoryCandidate → Policy / Validation → MemoryItem` 流程；每项
     Memory 必须有 deployment / project / actor namespace、来源 Thread / Artifact、Evidence revision、TTL、
     ACL、冲突 / supersession 和删除语义。模型与不可信项目文字不能直接写全局权威记忆。
 
@@ -121,6 +158,13 @@ LangGraph 提供 thread-scoped State、逐 super-step checkpoint、恢复、历�
 
 没有采用。它会把旧工具调用、模型文本、权限暗示、Prompt 注入和过期项目事实重新放进可信控制流，也违反
 ADR-0089 的生产持久化边界。下一轮上下文由安全摘要、相关近期 Turn、当前 Claim 与重新获取的证据编译。
+
+### 用最新 Harness StepPersistence 直接替代 LangGraph Checkpointer
+
+复评后暂不采用。`StepPersistence` 已适合保存和恢复 Agent 消息、Run step 与 tool-effect ledger，但当前版本
+明确不恢复任意 workspace / graph node / capability state，也没有直接满足本项目加密、整 Conversation 删除和
+不保存用户原文的合同。若只为使用它而另建 Behavior ORM 状态、过滤层和删除器，会重新形成两份持久状态；
+按上述复评条件证明单栈能完整满足合同后再替换。
 
 ### 首版启用 LangGraph Store 或向量化全部历史
 
@@ -160,6 +204,8 @@ namespace、权限、来源、有效期、撤销和污染防护。
 
 ## 替代关系
 
+- 被 [ADR-0128](0128-use-native-message-snapshots-for-maintainer-conversations.md) 替代其 SUPERUSER 自由对话的
+  Workspace、加密、actor/scope 隔离和 checkpoint 控制；旧 Behavior 实现已从运行代码移除；
 - 部分替代 [ADR-0025](0025-explain-plugin-behavior-from-deployment-evidence.md) 第 8 条“不建立持续会话”以及
   “不引入跨重启权威状态”的范围；其多源证据、鉴权、Claim basis、只读与秘密边界继续有效；
 - 只对 Behavior 长期续问部分替代
@@ -180,3 +226,7 @@ namespace、权限、来源、有效期、撤销和污染防护。
 - [LangGraph Memory](https://docs.langchain.com/oss/python/concepts/memory)
 - [LangGraph Interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)
 - [LangGraph SQLite Checkpointer](https://pypi.org/project/langgraph-checkpoint-sqlite/)
+- [Pydantic AI Messages and chat history](https://pydantic.dev/docs/ai/core-concepts/message-history/)
+- [Pydantic AI Harness Step Persistence](https://pydantic.dev/docs/ai/harness/step-persistence/)
+- [Pydantic AI Durable Execution](https://pydantic.dev/docs/ai/capabilities/durable_execution/overview/)
+- [Pydantic AI Harness Memory](https://pydantic.dev/docs/ai/harness/memory/)

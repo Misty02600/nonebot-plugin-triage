@@ -4,7 +4,7 @@
 
 | 状态 | 决策日期 |
 |---|---|
-| 已采纳；已实现 | 2026-08-15 |
+| 已采纳；发布更新安排由 ADR-0131 部分替代 | 2026-08-15 |
 
 ## 背景
 
@@ -85,6 +85,8 @@ ADR-0019 已把 RAG 语料从插件 wheel 中拆成独立、版本化、可校�
   许可复核与版本隔离继续有效。
 - 延续：[ADR-0063：让插件启动独立于模型增强](0063-keep-plugin-startup-independent-from-model-enhancements.md)
   的可选增强不得阻断插件加载原则。
+- 部分被替代：[ADR-0131：冻结只含 NoneBot 文档的产品知识包](0131-freeze-the-nonebot-only-knowledge-pack.md)
+  不再维护新包的自动发布与 catalog 更新；启动恢复、静态 catalog 发现和失败回退继续有效。
 
 ## 相关文档
 

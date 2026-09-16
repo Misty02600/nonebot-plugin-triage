@@ -4,6 +4,9 @@
 
 已采纳
 
+Provider 专属 step factory 已由 [ADR-0129](0129-use-only-pydantic-ai-native-model-transports.md)
+替代并删除；领域 runner、通用 Pydantic AI step 客户端和 B4 评测合同继续有效。
+
 ## 日期
 
 2026-08-09

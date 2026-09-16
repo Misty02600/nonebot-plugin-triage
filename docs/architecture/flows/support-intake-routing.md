@@ -22,8 +22,8 @@ Semantic assessment（只接收当前文字）
    │            → runtime / log / conversation / source / design / deployment
    │            → deterministic reconciliation → bug / not_bug / unknown
    ├─ BEHAVIOR_EXPLORATION → 模型外 SUPERUSER 鉴权
-   │            → 长期 LangGraph Thread → Capability Shadow 安全事实
-   │            → Pydantic AI 只读 ReAct → 模型外证据协调 → 解释卡
+   │            → 部署内唯一维护者会话 → 当前场景注入
+   │            → Pydantic AI + 项目只读工具 → 自然语言回答
    ├─ FEATURE_FEEDBACK → 有界状态；尚不创建外部工单
    ├─ unresolved / task unavailable → CLARIFY
    └─ policy blocked / unsupported → REFUSE / OUT_OF_SCOPE
@@ -59,26 +59,21 @@ Reply 仍有两个与 Thread 独立的作用：可见正文供路由后的 Guida
 历史窗口中的消息 / Reply / 发言人 ID 可以作为会话关系事实进入 Bug Agent，但不改变 Thread 或工具 scope。
 未知或过期 Reply 不妨碍创建新 Thread，也不会恢复旧 Thread。
 
-### Behavior 的长期 Thread 例外
+### 全局维护者会话例外
 
-上述“一次补充”只属于普通 Support Thread。Behavior exploration 在鉴权后使用单独的长期工作区：同一
-`adapter + Bot + conversation + actor` 经用途隔离 HMAC 派生一个不对外暴露的 LangGraph `thread_id`，每条
-新消息在该 Thread 上开启一次新的 graph invocation。一次 Run 完成会发布本轮解释，但不会关闭 Thread；工作区
-可以跨进程重启恢复，直到维护者执行 `triage 行为重置` 或达到容量硬上限。
+上述“一次补充”只属于普通 Support Thread。Behavior exploration 在鉴权后进入整个插件部署唯一的维护者
+会话；所有 Adapter、Bot、聊天入口和 SUPERUSER 共享同一份历史。每轮从当前 Event/Bot 注入场景，供 Agent
+理解消息来自群聊、私聊或频道，但场景不参与会话分区。
 
-普通跟进不使用 `interrupt()`。只有当前 Semantic 结果为 `ASSESSMENT_UNRESOLVED` 的 `CLARIFY` 或
-`OUT_OF_SCOPE`，并且请求者重新通过 `SUPERUSER`、同 scope 已存在 Behavior 工作区时，才把含糊文字接回
-长期 Thread。明确 Guidance、Bug、Feature 或 Refuse 仍优先，旧工作区不会劫持新意图。
+维护者历史的真值是 LocalStore data 下的 `maintainer-conversation.json`。它保存 `session_id`、更新时间与
+Pydantic AI 原生消息，包括用户和 assistant 正文、工具调用/结果与 Provider 续接元数据。Harness
+`SummarizingCompaction(max_fraction=0.8, keep_messages=20)` 在模型上下文接近上限时总结旧历史；压缩结果在
+下一次模型请求前写入原子快照，Run 正常完成后再保存最终上下文。
 
-Checkpoint 是首版 Behavior 工作区的持久真值，但不是完整聊天归档：State 只保存有界安全摘要、Claim、
-Evidence Reference、Artifact revision、稳定事件摘要和投递状态。用户原文只存在于当前 runtime context；
-Pydantic AI message history、工具正文、Provider 原始输入输出、源码、配置值、日志、绝对路径和凭据均不进入
-checkpoint。每轮重新取得当前 evidence generation，旧 Claim 不匹配时降为 `stale / conflicted / unknown`。
-
-首个证据纵切只投影 Capability Shadow 中白名单化的结构事实，统一标记 `partial`；它能说明当前记录到的能力
-结构和静态推断，但不能证明某次请求实际执行，也尚不能回答需要源码正文、配置值或运行观察的完整问题。
-SQLite saver 仅支持单机、单进程、单 writer；进程锁阻止第二实例共用数据库，同 Thread 的并发 Turn 返回
-`BUSY`。State 与 checkpoint 数都有硬上限，首版不自动裁剪、不启用跨 Thread Store。
+所有入口共用一个活动 Run。忙时新的普通 `triage` 立即返回 `BUSY`，不排队也不 steer。`triage 停止` 取消
+当前 Run 并保留最近成功快照；`triage 开始新对话` 等待当前写入收口后以新 `session_id` 的空快照替换旧文件。
+Agent 可检索 Capability Shadow 并读取项目根目录内的只读文件；文件工具继续硬拒绝 `.env`、凭据、密钥与
+数据库路径。崩溃恢复最近成功消息快照，等待维护者继续，不复活后台任务。
 
 ## Semantic v7 与确定性路由
 
@@ -97,10 +92,9 @@ SQLite saver 仅支持单机、单进程、单 writer；进程锁阻止第二实
 assessment，而不是直接建单。router 不读取原文，且每轮只选择一个 action；当前优先级为 Bug、行为探索、
 Guidance、功能建议。模型输出不含 action、authorization、confidence 或副作用字段。
 
-当前中文 v7 Prompt v5 已分别通过 OpenCode Go 与国内 Alibaba Qwen3.6 Flash 的 40 条独立
-forward-heldout；两者的 schema / status 均为 1.000，exact 分别为 1.000 / 0.975，
-`QUALIFIED_SEMANTIC_TASKS` 只登记这两个精确组合。旧英文 Prompt 或 capability annotation 的 provisional
-资格没有迁移。
+当前 `QUALIFIED_SEMANTIC_TASKS` 为空，所有 Pydantic AI 可解析组合都按未验证运行。
+国内 Alibaba Qwen3.6 Flash 曾在已删除的专属非思考设置下通过 40 条独立 forward-heldout，
+但该结果与旧 OpenCode、旧英文 Prompt 结果一样只作历史证据；capability annotation 的 provisional 资格也没有迁移。
 
 ## 路由后的 Guidance 上下文
 
@@ -125,7 +119,7 @@ ADR-0066 的首个保守纵切已经接入：模型外 resolver 先从当前 Ser
 角色、场景、限流与 behavior boundary 仍保持不确定并进入下述正式调查；被动能力门禁由能力索引层统一决定。
 
 协调器先固定 subject、source root、revision、adapter、correlation 和部署 generation，并预加载
-公开合同、首轮上下文与直接 Reply。Agent 在最多 9 次模型请求、一次独立聊天窗口、6 次通用证据工具调用、120k total token、
+公开合同、首轮上下文与直接 Reply。Agent 在最多 12 次模型请求、一次独立聊天窗口、8 次通用证据工具调用、120k 隐藏 emergency fuse、
 800 output token 和 0.50 美元单轮上限内按需读取：
 
 - 与 Reply correlation 精确绑定的 runtime observation 与异常 traceback；
@@ -144,24 +138,19 @@ stale、partial、预算耗尽或只有聊天陈述时都只能得到 `unknown`�
 源码、日志、内部路径、Evidence ID 或责任候选。合格 Agent 确认 `bug` 时，在一个 ORM 事务中写入薄 Report、
 可去重 Occurrence、长期 Problem 和追加式 Decision；普通用户得到中性 `P-...` 编号。同一报告重放不重复计数，
 有完整、版本兼容且可从引用 Evidence 复算的技术签名时才自动聚合到已有 Problem。无可靠签名则建立新 Problem，
-不根据用户措辞或自然语言相似度合并。`not_bug` 和 `unknown` 不写入问题库，也不创建 incident 或外部工单。
+不根据用户措辞或自然语言相似度合并。`not_bug` 和 `unknown` 不写入问题库，也不执行外部副作用。
 
 SUPERUSER 通过真实 Alconna 子命令 `triage 报错查询` 列出待处理 Problem，加 `P-...` 查看详情，再加
 `确认Bug`、`确认非Bug` 或 `解决` 追加人工判断或更新 lifecycle。子命令在 Semantic 之前确定性鉴权，不创建 Thread，
 不调用任何 Agent。
 
-当前中文 Prompt v8 包含 Reply / 最新 conversation 窗口、独立聊天调用和 6 次通用证据预算，并通过初始信封
+当前中文 Prompt v9 包含 Reply / 最新 conversation 窗口、独立聊天调用和 8 次通用证据预算，并在硬上限前显式切换到无函数工具的最终提交；旧 v8 通过初始信封
 明确告知 Agent 本案是否存在聊天历史 Provider。它不能继承 v6、v7 或旧英文 Prompt 的历史 Gate。全新的
 16 条真实 forward-heldout 只运行一次，schema、verdict、occurrence、responsibility、citation、budget、usage、
-scenario 与 safety 均为 1.000；`QUALIFIED_BUG_TASKS` 只登记对应 Prompt / Fixture / 策略 / 预算 / evaluation
-revision 的精确组合，匹配部署配置与密钥后才建立真实 Bug Agent client。
-
-## 保留但不在当前入口可达的 Incident 兼容层
-
-`OPEN_INCIDENT`、`IncidentAuthorization`、`LiveReportService`、短期 Incident 与 trial 查询仍作为旧领域兼容
-能力保留；v7 已删除 `incident_intake` goal，当前 semantic router 和 handler 不会产生这条 action。它们不能
-被文档、固定文字、模型候选或聊天正文直接调用。未来若重新接入写入生命周期，需要新的明确副作用授权与
-模型外证据门。
+scenario 与 safety 均为 1.000；这是已退出运行资格的历史 OpenCode 证据。当前 `QUALIFIED_BUG_TASKS` 为空；
+Pydantic AI 可解析的模型仍可运行，但必须以未验证 evaluation 标签记录，不能继承旧组合结论。
+v9 已有 10 条合成 development 边界集，默认每条运行两轮，检查早停、第六次收敛、第七/八次证据价值、
+重复工具、finalizing 后调用和 cache/token/cost 异常；可按 case 运行 canary，但 development、子集或多轮结果均不产生资格。
 
 ## 安全与数据不变量
 
@@ -199,6 +188,6 @@ revision 的精确组合，匹配部署配置与密钥后才建立真实 Bug Age
 - [ADR-0075：把问题维护注册为 triage 子命令](../../adr/0075-register-problem-maintenance-under-triage-subcommand.md)
 - [ADR-0078：在可记录性合同确定前不持久化 unknown](../../adr/0078-defer-persisting-unknown-bug-assessments.md)
 - [ADR-0079：用无编号的 triage 报错查询列出待处理问题](../../adr/history/0079-list-pending-problems-with-triage-query.md)
-- [ADR-0101：用 LangGraph Checkpoint 保存长期开发者行为讨论](../../adr/0101-use-langgraph-checkpoints-for-long-running-behavior-inquiries.md)
-- [Alconna 能力与解析回执](alconna-capability-and-parse-receipts.md)
+- [ADR-0128：用原生消息快照保存维护者自由对话](../../adr/0128-use-native-message-snapshots-for-maintainer-conversations.md)
+- [Alconna 能力发现](alconna-capability-discovery.md)
 - [运行观察入口](runtime-observation-intake.md)

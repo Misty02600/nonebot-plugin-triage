@@ -201,6 +201,20 @@ behavior boundary 而从聚合 usage 删除。
 保存 ID、相对位置与 revision 清单。文件名不使用 hash fallback，也没有 module 到文件名 manifest；无法
 安全直接落盘或在当前轮发生大小写折叠冲突的 module name 只关闭相关插件的教学增强。
 
+正常启动的全量、非强制刷新会先复用现有请求构建器取得 Runtime、配置和主源码投影，但不展开递归
+源码切片。另核对导航批准根中 Python 源码的内容与文件集合、Triage 实现、Python / distribution 环境、
+知识包索引、读取策略及分析版本。每次发布成功后可在缓存目录写入 `startup-reuse.json`，仅保存输入
+摘要与活动 generation 的绑定，不保存配置值或另一份注解。首次部署、旧版本缓存没有该材料时，仍需
+完整准备并在成功发布后建立绑定；完整路径结束时再次核对输入，变化期间不签发复用材料。
+
+绑定匹配、单元集合一致、Evidence 仍有效且没有未发布 checkpoint 或失败记录时，服务直接读取活动
+generation 中的原始注解，用当前 Runtime 投影重建自动参数数量边界，再沿用同一次原子发布与内存
+激活流程；不会启动源码导航会话、生成递归切片或调用模型。全树内容扫描仍有本地 I/O 成本，不等于
+零准备。任一输入变化、源码根不可验证、读取异常或扫描超限，都回退既有完整准备与逐单元缓存判定；
+不保证变化后一定重调模型。`force=True`、限定插件的维护刷新及冷测不使用此快速路径。
+维护者编辑生成的新 generation 不继承旧绑定，后续正常刷新重新核对；可删除的复用材料不改变
+`current.json` 的唯一活动真值地位。
+
 一次可发布刷新把同一份内存 staging 投影成两类一插件一文件的数据：紧凑的
 `help-display/<module>.yml` 和供 Answer 使用的 `answer-knowledge/<module>.md`。文件先写入 LocalStore data
 下 `capability-teaching/objects/<generation>/`，manifest 同时记录每个 teaching unit 的状态和每个插件的
