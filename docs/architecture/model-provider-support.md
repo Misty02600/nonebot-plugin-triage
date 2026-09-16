@@ -1,6 +1,6 @@
 # 模型 Provider 支持矩阵
 
-最后更新：2026-09-15
+最后更新：2026-09-16
 
 这份矩阵记录 NoneBot Triage Agent 对精确模型组合已经取得的质量证据，不代表 Pydantic AI 或厂商 SDK 的
 全部能力，也不是运行白名单。Pydantic AI `ModelProfile` 负责模型传输能力和默认结构化输出方式；项目按
@@ -19,8 +19,9 @@ Bug Agent 的质量结论分别记账，不能相互继承。“OpenAI-compatibl
 ## 状态含义
 
 当前教学单次输出预算为 32768，累计为 384k；下表既有真实评测的 16384 / 192k 数值保留为历史条件，
-不能继承为新预算的资格。语义、Guidance、Bug 分别使用 240 / 2048 / 800 单次输出；维护者对话默认使用
-8192 单次输出与 512k 单轮累计。累计 token 是防止失控的宽松止损线，不是常态配额。
+不能继承为新预算的资格。语义、Guidance、Bug 分别使用 240 / 2048 / 16384 单次输出；Bug 另有可配置的
+300k 累计宽松止损，维护者对话默认使用 8192 单次输出与 512k 单轮累计。累计 token 是防止失控的宽松止损线，
+不是常态配额。
 
 DeepSeek 官方 Chat 绑定完全使用 Pydantic AI 2.43.0 的 `DeepSeekProvider`、模型 Profile 和统一
 `ModelSettings.thinking`。项目不再为 `deepseek-flash` 补别名 Profile，也不覆盖 `max_tokens`/

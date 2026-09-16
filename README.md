@@ -20,8 +20,8 @@
 发送 `triage <求助内容>` 即可调用插件，`@Bot` 可选。`triage` 后可以直接写自然语言，例如询问功能用法或
 描述遇到的问题。回复近期消息时，插件还会尝试关联这条消息在本机产生的运行记录。
 只有 Reply、没有 `triage` 的消息不会触发该入口。Guidance / Bug 等普通支持首轮确实缺少用户可以补充的
-信息时，插件会在同一 `适配器 + Bot + 会话 + 用户` 作用域保留一次补充机会；下一条显式 `triage` 无需 Reply
-即可续接。第二轮无论是否解决都会关闭，之后的 `triage` 开启新的短期 Support Thread。
+信息时，插件会在同一 `适配器 + Bot + 会话 + 用户` 作用域保留最多两次补充机会；下一条显式 `triage`
+无需 Reply 即可续接。额度用完或得到终局结果后关闭，之后的 `triage` 开启新的短期 Support Thread。
 
 维护者对话是明确的例外：通过 `SUPERUSER` 鉴权后，整个插件部署共享一个可跨 Bot 重启延续的项目会话。
 每条新消息仍是一次独立、会结束的 Agent Run；每轮会注入当前 Adapter、Bot、群聊或私聊场景，但场景不拆分
@@ -59,10 +59,11 @@ flowchart TD
 
 详细状态与失败边界见 [triage 自然语言支持流程](docs/architecture/flows/support-intake-routing.md)。
 
-每次非空 `triage` 都经过版本化语义 assessment service。语义模型只接收当前这条规范化请求，输出
-`guidance`、`behavior_exploration`、`bug_assessment`、`feature_feedback` 四类目标和独立的现象陈述；
-确定性 router 才决定 action，模型不能回答、鉴权或直接建单。当前中文
-`support-semantic-v7-prompt-v5-zh` 使用统一 Pydantic AI 设置，当前 semantic 资格集合为空。
+每次非空 `triage` 都经过版本化语义 assessment service。v8 联合合同接收当前规范化请求、当前可公开
+插件目录，以及有界的直接 Reply / 补充问答；一次输出四类目标、独立的现象陈述和公开插件选择。
+`guidance`、`behavior_exploration`、`bug_assessment`、`feature_feedback` 最终仍由确定性 router 映射为
+唯一 action，模型不能回答、鉴权或直接建单。当前中文
+`support-semantic-v8-catalog-prompt-v5-zh` 使用统一 Pydantic AI 设置，当前 semantic 资格集合为空。
 Alibaba Qwen3.6 Flash 曾在已删除的厂商专属非思考设置下取得 schema / status 1.000、
 exact 0.975；该结果只保留为历史证据，不进入当前资格集合。
 router 选择公开能力指导后，插件会从显式 Provider、能力影子与
@@ -72,15 +73,17 @@ Agent 组织自然语言回答。Answer Agent 没有工具，只能把当前问�
 正常回答后立即关闭 Thread。失败、超时、未知事实引用或非法输出会退回确定性模板。
 
 当模型识别到用户是在询问“这是不是 Bug”时，会进入独立的只读 Bug assessment。有界 Agent 预加载
-当前 Thread 与直接 Reply，并可按需查询 Reply 关联的运行观察与异常 traceback、固定
-Bot / 群 / 消息锚点附近的聊天、当前已加载 subject 的 Python 源码、已安装设计知识包和部署摘要，再由
+已选插件的公开初检事实、当前 Thread 与直接 Reply，并可按需展开成员目录，查询 Reply 关联的运行观察与
+异常 traceback、固定 Bot / 群 / 消息锚点附近的聊天、已选插件批准根内的 Python 源码、设计知识包和部署摘要，再由
 确定性 reconciler 检查引用、revision、freshness 与 partial 状态。聊天中平台可见的正文按原样提供，不做
 凭据或个人信息遮蔽；平台原始 envelope 和用户 ID 不进入模型，源码、日志、配置仍执行原有秘密守门。普通用户
 只会收到安全的结论，不会看到源码、日志、配置键或内部责任候选。合格 Agent 确认为 Bug 后，插件使用
 NoneBot ORM 在一个事务中保存 Report、Occurrence、Problem 和首条 Decision，并返回 `P-...` 问题编号；
 重复 Report 幂等，有可复算的同一技术签名时会关联到已有 Problem。`not_bug` 和 `unknown` 不建立问题记录，
 也不会自动创建外部 Issue。当前日志证据只覆盖本插件 runtime hook 精确关联捕获的 Matcher / API 异常，
-不会搜索任意宿主文件日志。
+不会搜索任意宿主文件日志。当前中文 Bug Prompt 为 `bug-assessment-agent-v1-prompt-v23-zh`；生产默认
+15 次请求、12 次通用证据、1 次会话读取、300k token 宽松止损，不设默认美元上限；运行期工具定义保持稳定，
+接近硬上限时先提示收敛，进入收尾阶段后以 `tool_choice="none"` 禁用调用。
 
 维护者对话把 Pydantic AI 原生 `ModelMessage` 序列保存到 LocalStore data 下唯一的
 `maintainer-conversation.json`。文件包含用户与 assistant 正文、完整工具调用/结果，以及 Provider 续接所需的
@@ -143,11 +146,15 @@ uv run nb orm upgrade
 | `NBTRIAGE_KNOWLEDGE_PACK_SHA256` | 未设置 | 与 URL 成对固定 knowledge pack 压缩包的 64 位十六进制 SHA-256；下载内容不匹配时拒绝安装。它校验制品身份，不表示制品来源或许可证已自动获准。 |
 | `NBTRIAGE_MODEL_NAME` | 未设置 | 使用 Pydantic AI 的 `provider:model` 选择 Provider、API 族和精确模型，例如 `alibaba:qwen-max`；任意 OpenAI-compatible Chat 服务使用 `openai-chat:<模型 ID>`。这是唯一的 transport 选择字段。held-out 只标记项目已经验证的精确组合，未评测模型不会因此被拒绝运行。未设置时插件仍能启动并提供确定性能力索引，但不会生成教学注释、执行语义分类或调用 Answer / Behavior Agent。 |
 | `NBTRIAGE_MODEL_BASE_URL` | 未设置 | 可选覆盖所选 Provider 的部署端地址，例如中国大陆百炼或自建 OpenAI-compatible Chat endpoint。它不替代 `provider:model`；已知 Provider 保留其 ModelProfile，通用兼容服务应显式选择 `openai-chat:`。Provider 构造器不支持地址覆盖时失败关闭。外部地址必须为 HTTPS，HTTP 只允许本机 loopback，且 URL 不得携带凭据、query 或 fragment。 |
-| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 范围 `0 < seconds ≤ 400`。这是语义、公开能力回答和维护者 Agent 每次模型请求的最长等待时间；维护者 Run 可进行最多 15 次请求，另有总用量与总时长上限。显式 Provider SDK 对瞬时连接、限流和 5xx 最多进行两次传输重试；教学层不会因此重跑整个 Agent，只保留输出 / 投影 correction。Bug Agent 使用独立的 120 秒任务上限。与已发布评测预算不同只会使组合显示为未验证，不会成为运行禁令。 |
+| `NBTRIAGE_MODEL_TIMEOUT_SECONDS` | `60` | 范围 `0 < seconds ≤ 400`。这是语义、公开能力回答和维护者 Agent 每次模型请求的最长等待时间；维护者 Run 可进行最多 15 次请求，另有总用量与总时长上限。显式 Provider SDK 对瞬时连接、限流和 5xx 最多进行两次传输重试；教学层不会因此重跑整个 Agent，只保留输出 / 投影 correction。Bug Agent 使用下方独立任务总超时。与已发布评测预算不同只会使组合显示为未验证，不会成为运行禁令。 |
 | `NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS` | `240` | 单次语义 assessment 的 output token 上限。该任务关闭 thinking，只进行一次请求。它不限制用户输入长度；与已发布评测预算不同会使用新的未验证质量标签。 |
 | `NBTRIAGE_PUBLIC_GUIDANCE_MAX_OUTPUT_TOKENS` | `2048` | 公开 Guidance 单次结构化回答的 output token 上限，范围 `256..8192`；任务关闭 thinking，只进行一次请求。 |
 | `NBTRIAGE_BEHAVIOR_MAX_OUTPUT_TOKENS` | `8192` | 维护者 Agent 单次 Provider 响应的 output token 上限，范围 `256..8192`。每个 Run 最多 15 次模型请求、60 次工具调用、512000 total token 和 1 美元预算；对话总轮数不限。整个部署始终只允许一个活动 Run。 |
-| 固定任务预算 | — | 自动教学注释使用 32768 单次 output、384000 单元累计 total token、最多 10 次请求和 0.05 美元；Bug Agent 使用 800 单次 output、最多 9 次请求、120000 total token、6 次实际证据读取和 0.50 美元。累计预算是宽松止损线，单次 output 才是 Provider 生成硬上限。 |
+| `NBTRIAGE_BUG_TIMEOUT_SECONDS` | `300` | 一次 Bug Agent 调查的总墙钟秒数；必须为有限正数。 |
+| `NBTRIAGE_BUG_MAX_OUTPUT_TOKENS` | `16384` | Bug Agent 每次 Provider 响应的 output token 上限；必须为正数，实际支持范围由 Provider 合同决定。 |
+| `NBTRIAGE_BUG_TOTAL_TOKENS_LIMIT` | `300000` | 一次 Bug 调查累计输入与输出 token 的宽松止损线；包含 Provider 报告的缓存输入，不是严格账单上限。 |
+| `NBTRIAGE_BUG_MAX_TOOL_CALLS` | `12` | Bug Agent 的通用证据调用额度；另有一次独立会话读取。模型请求上限自动取该值加 3，默认 15 次，为最终输出和一次纠正保留空间。 |
+| 固定任务预算 | — | 自动教学注释使用 32768 单次 output、384000 单元累计 total token、最多 10 次请求和 0.05 美元。Bug Agent 默认不设美元费用上限，也不从单次 output 额度派生累计 output 限制。 |
 | `NBTRIAGE_AGENT_TRACE_ENABLED` | `true` | 模型 transport 已配置时，把脱敏后的 Pydantic AI Agent / model / tool spans 写入本插件 LocalStore data 下的 `agent-traces.jsonl`；固定按 10 MiB、5 个备份轮转。文件只含调用结构、耗时、状态、Provider/model、token、费用、安全关联 ID，以及响应 part 类型和正文/工具参数长度等无内容形状，不含 Prompt、源码、模型原文、工具参数/结果或配置值。设为 `false` 时不解析路径、不创建文件。 |
 | `NBTRIAGE_CAPABILITY_ANNOTATION_MAX_CONCURRENCY` | `50` | 自动教学注释同时运行的教学单元数上限，接受任意正整数；同一插件的不同单元也可以并行，设为 `1` 可恢复全局串行。HTTP 连接池会跟随该值，但 Provider、网关或操作系统仍可能施加更低的实际并发限制。它不改变单次请求 timeout，较慢 Provider 继续通过 `NBTRIAGE_MODEL_TIMEOUT_SECONDS` 调整。 |
 | `NBTRIAGE_RESTRICTED_CONFIG` | `[]` | JSON 数组，列出禁止把实际值交给能力分析模型的 NoneBot 顶层配置键；键名大小写不敏感，`FOO__BAR` 等嵌套写法按顶层 `foo` 整项限制。命中后在读取实际值前拒绝；它不会删除 NoneBot 配置、禁止分析公开 schema/源码，也不表示未列出的整份 `.env` 会被发送。 |
@@ -466,7 +473,7 @@ held-out 结果只保留为历史证据，不能继承为当前资格。
 | 指令                                              | 权限      | 说明                           |
 | ------------------------------------------------- | --------- | ------------------------------ |
 | `triage 某个功能怎么使用`                         | 所有人    | 说明当前平台确定公开的功能     |
-| 同一会话继续发送 `triage <补充>`                  | 所有人    | Guidance / Bug 首轮未解决时消费唯一一次补充机会；Reply 可选 |
+| 同一会话继续发送 `triage <补充>`                  | 所有人    | Guidance / Bug 调查前澄清共用最多两次补充；Reply 可选 |
 | `triage <公开能力问题>`                            | 所有人    | 检索当前平台可安全说明的能力   |
 | `triage 刷新帮助 [plugin_module]`                 | SUPERUSER | 强制刷新全部或指定插件模块的教学数据 |
 | `triage 查看帮助边界 <plugin_module>`              | SUPERUSER | 查看已发布原始边界、版本和单元 / 条目 ID |

@@ -3,7 +3,7 @@
 这里列出仍作为当前一等架构约束的 ADR。精确状态、局部替代关系和完整理由以各 ADR 正文为准；
 已经替代、未采纳、评测性、实现级或仅作支持性解释的记录见[历史 ADR](history/README.md)。
 
-当前根目录保留 67 份，历史区保存 62 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
+当前根目录保留 68 份，历史区保存 62 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
 为了简短而合并决定。阅读系统现状时先从[架构入口](../architecture/README.md)进入，再按问题查本索引。
 
 没有进入 ADR 的理由也不会丢失：跨实现的当前事实进入 architecture / flow，局部不变量进入代码注释和
@@ -32,7 +32,8 @@
 | [ADR-0002](0002-tiered-autonomy-and-ownership-aware-remediation.md) | 以分级自治、责任层路由和动作专用执行器扩展诊断到修复闭环 |
 | [ADR-0010](0010-use-bounded-evidence-seeking-agent-loop.md) | 用单 Agent、typed tools、有界循环、HITL 与 trajectory Gate 验证 Agent 能力 |
 | [ADR-0012](0012-use-pydantic-ai-deferred-tools-behind-domain-runtime.md) | 用领域 runtime 掌握循环与授权，只借用 Pydantic AI Deferred Tools 做单步多 Provider 适配 |
-| [ADR-0130](0130-finalize-production-agents-before-hard-budget-exhaustion.md) | 生产多步 Agent 最多提示一次收敛阶段，并在硬预算前用动态 `tool_choice="none"` 保留最终交付机会；Bug 调整为十二请求与八加一次证据额度 |
+| [ADR-0130](0130-finalize-production-agents-before-hard-budget-exhaustion.md) | 生产多步 Agent 最多提示一次收敛阶段，并在硬预算前用动态 `tool_choice="none"` 保留最终交付机会；Bug 数值与工具可见性由 ADR-0145 修正 |
+| [ADR-0145](0145-combine-configurable-bug-budgets-with-finalization.md) | Bug 沿用可配置宽松预算和稳定工具 schema，同时保留 checkpoint / finalizing 收尾机制 |
 | [ADR-0038](0038-limit-semantic-assessment-remote-data-projection.md) | 只允许向合格语义 assessment transport 投影当前单条规范化 triage 请求文字，其他上下文仍禁止出站 |
 | [ADR-0053](0053-allow-relevant-source-and-log-bodies-for-bug-assessment.md) | 允许任务相关源码、日志与 traceback 经专用准入和秘密清理后进入 Bug assessment，同时保持普通用户安全投影 |
 | [ADR-0059](0059-share-read-only-evidence-access-across-agent-flows.md) | 跨 Agent 共享受逻辑根、realpath containment、敏感文件拒绝和 revision 约束的只读 Evidence 工具 |
@@ -110,7 +111,7 @@
 | [ADR-0133](0133-read-bug-member-evidence-from-the-bound-snapshot.md) | 按 ID 读取本轮绑定的公开成员快照，共用调查工具与证据预算 |
 | [ADR-0134](0134-share-public-guidance-facts-with-bug-investigation.md) | Bug 调查沿用公开初检事实，避免重复生成同一教学正文 |
 | [ADR-0135](0135-expand-bug-member-directories-on-demand.md) | 首轮提供教学单元目录，需要时再按 unit_ref 展开完整成员 |
-| [ADR-0136](0136-configure-bug-investigation-budgets.md) | 已替代的部署可调 Bug 预算方案；当前固定预算与收尾边界见 ADR-0130 |
+| [ADR-0136](0136-configure-bug-investigation-budgets.md) | 部署可调 Bug 预算、默认 12 次通用取证 / 15 次请求及稳定工具定义；与收尾机制的组合见 ADR-0145 |
 | [ADR-0137](0137-interpret-support-supplements-with-the-pending-question.md) | Semantic 结合首轮问题与实际追问理解补充；明确的新任务独立判断 |
 | [ADR-0138](0138-combine-support-intent-and-plugin-selection.md) | 一次联合判断支持意图与公开插件对象，并在选定范围内交接 Bug |
 | [ADR-0139](0139-persist-readable-bug-investigations-with-plugin-scope.md) | 保存可读 Bug 调查结论与已确认插件范围，支持插件级建档 |

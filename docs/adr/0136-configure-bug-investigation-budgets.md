@@ -1,6 +1,7 @@
 # ADR-0136：由部署者配置 Bug 调查预算
 
-> 已由 [ADR-0130](0130-finalize-production-agents-before-hard-budget-exhaustion.md) 替代。当前生产 Bug 调查使用固定的请求、证据、输出、时间、token 与费用边界，并在硬上限前显式进入收尾阶段；下文保留为历史决定。
+> 2026-09-16：[ADR-0145](0145-combine-configurable-bug-budgets-with-finalization.md) 重申本决定的可配置宽松预算和稳定工具定义，
+> 并组合 ADR-0130 的预算前收尾机制；本决定继续有效。
 
 | 状态 | 决策日期 |
 |---|---|

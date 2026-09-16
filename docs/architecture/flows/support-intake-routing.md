@@ -12,7 +12,7 @@ current triage text + optional direct Reply
                     ↓
 按 adapter + Bot + conversation + actor Claim scope Thread
                     ↓
-Semantic assessment（只接收当前文字）
+Semantic assessment（当前文字 + public catalog + 有界 Reply / 补充）
                     ↓
 确定性 router（只执行一个 action）
    ├─ GUIDANCE → public facts + 路由后 Thread / Reply context
@@ -30,11 +30,11 @@ Semantic assessment（只接收当前文字）
 ```
 
 Semantic、Guidance 与 Bug 是三个独立模型任务。一个 Provider/model 在某一任务通过 Gate，不能把资格继承给
-其他任务。当前 semantic v7 中文 Prompt v5 与 Bug assessment 中文 Prompt v8 已分别通过自己的真实 Provider
-Gate，并只登记各自精确组合。Public Guidance v2 只有两条真实 Provider smoke，仍属于 provisional
+其他任务。当前 semantic v8 中文 Prompt v5 与 Bug assessment 中文 Prompt v23 的资格集合均为空，历史
+Provider Gate 结果不能迁移到当前合同。Public Guidance v2 只有两条真实 Provider smoke，仍属于 provisional
 dogfood，而不是 held-out 质量资格。
 
-## 一次补充的 scope Thread
+## 最多两次补充的 scope Thread
 
 Thread 不再由 Reply 选择。`SupportThreadTurnCoordinator` 以
 `adapter + Bot + conversation + actor` 的 HMAC scope 保存最多一个 active Thread，并用单活动 turn lease
@@ -44,13 +44,12 @@ Thread 不再由 Reply 选择。`SupportThreadTurnCoordinator` 以
    correlation ID。当前尚未把 subject、operation 或 fact refs 结构化写入 Thread。
 2. 只有首轮确实需要用户补充时，回答发送成功后才调用 `await_supplement`。发送失败、处理异常、拒绝、
    超长输入或终局 action 都关闭 Thread；不依赖 UniSeg Receipt message ID 建立续接点。
-3. 下一条同 scope 显式 `triage` 自动消费唯一一次补充，无需 Reply。补充轮的当前文字仍必须自己形成可路由
-   goal 或 `reported_observation`；Thread / Reply 只能补 subject、操作和证据，不能让“继续”“看看这个”
-   自动变成意图。
-4. Guidance 给出实际命中能力的教学后立即关闭；只有“有能力可枚举但用户没有说明具体功能”才等待一次
+3. 下一条同 scope 显式 `triage` 自动消费补充，无需 Reply。联合 assessment 会同时看到首轮、已经完成的
+   一次问答和当前待答问题；这些内容可用于解释当前回复，但不能盲目继承旧 goal 或把 Reply 当成可信事实。
+4. Guidance 给出实际命中能力的教学后立即关闭；只有缺少会改变下一步且用户可回答的上下文时才等待
    补充。能力资料本身不可用时直接关闭，不反复追问用户。
-5. Bug 得到 `bug` 或 `not_bug` 后关闭；首轮 `unknown` 可请求一次实际操作、Bot 返回或报错，补充轮仍
-   `unknown` 则以预算耗尽关闭。第二轮不会再次等待。
+5. 整个 Thread 最多两次补充，意图澄清、插件确认和公开初检共用额度。Bug 调查前仍可询问对象或操作；
+   一旦真实调查返回 `bug / not_bug / unknown` 就关闭，不再按通用 missing evidence 自动追问。
 6. idle / absolute TTL、容量淘汰、并发 `BUSY`、发送失败和进程重启都失败关闭。Thread 是单进程短期事务，
    不是聊天历史或跨重启会话。
 
@@ -61,7 +60,7 @@ Reply 仍有两个与 Thread 独立的作用：可见正文供路由后的 Guida
 
 ### 全局维护者会话例外
 
-上述“一次补充”只属于普通 Support Thread。Behavior exploration 在鉴权后进入整个插件部署唯一的维护者
+上述“最多两次补充”只属于普通 Support Thread。Behavior exploration 在鉴权后进入整个插件部署唯一的维护者
 会话；所有 Adapter、Bot、聊天入口和 SUPERUSER 共享同一份历史。每轮从当前 Event/Bot 注入场景，供 Agent
 理解消息来自群聊、私聊或频道，但场景不参与会话分区。
 
@@ -75,20 +74,21 @@ Pydantic AI 原生消息，包括用户和 assistant 正文、工具调用/结�
 Agent 可检索 Capability Shadow 并读取项目根目录内的只读文件；文件工具继续硬拒绝 `.env`、凭据、密钥与
 数据库路径。崩溃恢复最近成功消息快照，等待维护者继续，不复活后台任务。
 
-## Semantic v7 与确定性路由
+## Semantic v8 与确定性路由
 
-`SupportAssessmentRequest` 的远端投影仍闭合为 `schema_version + request_text`。领域上限为 8000 字，入口先
-执行固定 2000 字限制和秘密守门。它不包含 Reply、Thread、身份、scope、配置、日志、源码、运行证据或能力
-索引。
+`SupportAssessmentRequest` 的远端投影包含 schema version、当前 request、当前 public catalog、直接相关 Reply
+和同 scope 有界补充问答。领域 request 上限为 8000 字，入口先执行固定 2000 字限制和秘密守门；Reply 与
+补充文字各自有界。它不包含身份、scope、内部 owner 映射、配置、日志、源码、运行证据或 restricted 资料。
 
-`SupportSemanticAssessment` v7 只包含四种 goal：
+`SupportSemanticAssessment` v8 包含四种 goal：
 
 - `guidance`：公开功能、语法、参数、场景和用法；
 - `behavior_exploration`：为什么这样实现、源码、内部配置、环境、版本、调用流或运行证据；
 - `bug_assessment`：判断观察到的现象是否属于 Bot 软件责任链中的 Bug；
 - `feature_feedback`：功能建议。
 
-`reported_observation` 独立描述用户声称真实发生过的 Bot 行为；即使没有显式 goal，router 也把它送入 Bug
+`selection` 独立返回 `matched / ambiguous / none` 和最多五个目录内短 ID，只供 Guidance 与 Bug 公开初检；
+程序会复核 ID 及刷新后的 owner 映射。`reported_observation` 独立描述用户声称真实发生过的 Bot 行为；即使没有显式 goal，router 也把它送入 Bug
 assessment，而不是直接建单。router 不读取原文，且每轮只选择一个 action；当前优先级为 Bug、行为探索、
 Guidance、功能建议。模型输出不含 action、authorization、confidence 或副作用字段。
 
@@ -111,16 +111,17 @@ v2 已完成两条真实 smoke：Reply 上下文成功定位“回复图片后�
 
 ## 普通用户 Bug 判定
 
-ADR-0066 的首个保守纵切已经接入：模型外 resolver 先从当前 ServingView 定位唯一 public 主动能力，并检查
-语义路由是否报告具体观察；缺少能力或观察时共用 scope Thread 的一次补充，在信息就绪前不创建案件指纹、
+ADR-0066 的公开初检已经接入 v8 联合选择：程序复核模型选择的一个或多个 public 插件及当前资料快照，并检查
+语义路由是否报告具体观察；缺少对象或操作时共用 scope Thread 的补充额度，在信息就绪前不创建案件指纹、
 源码后端或 Agent 工具箱。索引本身不可用时直接按分析不可用结束，不错误要求用户补充。当前生效的公开结构
 化教学注释作为第一层用法合同并进入 public contract Evidence；只有直接 Reply 精确指向报障者本人操作、且
 能够机器验证其缺少所有 usage 都要求的 Reply 上下文时，才零调查工具复用 Guidance 纠正。其他参数、媒体、
 角色、场景、限流与 behavior boundary 仍保持不确定并进入下述正式调查；被动能力门禁由能力索引层统一决定。
 
 协调器先固定 subject、source root、revision、adapter、correlation 和部署 generation，并预加载
-公开合同、首轮上下文与直接 Reply。Agent 在最多 12 次模型请求、一次独立聊天窗口、8 次通用证据工具调用、120k 隐藏 emergency fuse、
-800 output token 和 0.50 美元单轮上限内按需读取：
+公开合同、首轮上下文与直接 Reply。Agent 默认在最多 15 次模型请求、一次独立聊天窗口、12 次通用证据工具调用、
+300k total-token 宽松止损、16,384 单次 output token 和 300 秒总超时内按需读取；这些 Bug 专属值可由部署者调整，
+默认不设美元费用上限：
 
 - 与 Reply correlation 精确绑定的 runtime observation 与异常 traceback；
 - OneBot V11 群聊中由当前 Bot 和群预绑定、一次读取的最新最多 30 条可见聊天窗口；精确 Reply 独立预装，不受窗口是否覆盖影响；
@@ -144,12 +145,14 @@ SUPERUSER 通过真实 Alconna 子命令 `triage 报错查询` 列出待处理 P
 `确认Bug`、`确认非Bug` 或 `解决` 追加人工判断或更新 lifecycle。子命令在 Semantic 之前确定性鉴权，不创建 Thread，
 不调用任何 Agent。
 
-当前中文 Prompt v9 包含 Reply / 最新 conversation 窗口、独立聊天调用和 8 次通用证据预算，并在硬上限前显式切换到无函数工具的最终提交；旧 v8 通过初始信封
-明确告知 Agent 本案是否存在聊天历史 Provider。它不能继承 v6、v7 或旧英文 Prompt 的历史 Gate。全新的
+当前中文 Prompt v23 沿用公开初检事实和已选插件范围，包含按需成员展开、Reply / 最新 conversation 窗口、
+独立聊天调用和默认 12 次通用证据预算，并在硬上限前显式切换到无函数工具调用的最终提交。工具定义按本轮
+初始范围固定；额度耗尽由执行层返回结构化不可用结果，finalizing 通过 `tool_choice="none"` 禁止继续调用，
+不通过删改 schema 表达。它不能继承 v6–v22 或旧英文 Prompt 的历史 Gate。旧合同的
 16 条真实 forward-heldout 只运行一次，schema、verdict、occurrence、responsibility、citation、budget、usage、
 scenario 与 safety 均为 1.000；这是已退出运行资格的历史 OpenCode 证据。当前 `QUALIFIED_BUG_TASKS` 为空；
 Pydantic AI 可解析的模型仍可运行，但必须以未验证 evaluation 标签记录，不能继承旧组合结论。
-v9 已有 10 条合成 development 边界集，默认每条运行两轮，检查早停、第六次收敛、第七/八次证据价值、
+历史 development 边界集检查早停、第六次收敛、第七/八次证据价值、
 重复工具、finalizing 后调用和 cache/token/cost 异常；可按 case 运行 canary，但 development、子集或多轮结果均不产生资格。
 
 ## 安全与数据不变量

@@ -28,6 +28,6 @@
 
 展开非常大的 family 仍会消耗大量上下文；这次只避免每轮调查预先承担全部目录成本，不保证任意规模目录都能在当前预算下完成调查。
 
-后续预算方向曾由 [ADR-0136](0136-configure-bug-investigation-budgets.md) 部分替代；当前预算与收尾边界以 [ADR-0130](0130-finalize-production-agents-before-hard-budget-exhaustion.md) 为准。
+后续预算方向由 [ADR-0136](0136-configure-bug-investigation-budgets.md) 部分替代；当前可配置预算与收尾边界的组合以 [ADR-0145](0145-combine-configurable-bug-budgets-with-finalization.md) 为准。
 
 2026-09-15 的后续落实又由 ADR-0136 固定了单次调查的工具定义：成员工具在本轮开始时不可用才不下发，已下发后不再因预算耗尽而隐藏；额度仍由执行层严格检查。上方“耗尽时隐藏”保留为本决定当时的历史实现。

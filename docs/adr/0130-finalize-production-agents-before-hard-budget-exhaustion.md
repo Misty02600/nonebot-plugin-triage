@@ -1,5 +1,8 @@
 # ADR-0130：在生产 Agent 硬预算耗尽前显式收尾
 
+> 2026-09-16：[ADR-0145](0145-combine-configurable-bug-budgets-with-finalization.md) 替代本决定中的 Bug 固定数值、
+> 动态移除工具和 120k / 0.50 美元条款；`running → checkpoint → finalizing` 及最终提交预留机制继续有效。
+
 | 状态 | 决策日期 |
 |---|---|
 | 已采纳 | 2026-09-16 |
