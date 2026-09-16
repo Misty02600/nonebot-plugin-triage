@@ -34,8 +34,11 @@ async def test_real_bug_agent_stops_when_deployment_configuration_is_unavailable
     from nbtriage.support.threads import ThreadStatus
     from nonebot_plugin_triage import handlers
     from nonebot_plugin_triage.bug.assessment import (
-        OPENCODE_GO_BUG_TASK_QUALIFICATION,
+        BUG_ASSESSMENT_BUDGET_PROFILE,
+        BUG_ASSESSMENT_PRIVACY_POLICY,
+        BUG_ASSESSMENT_TASK,
         BugAssessmentRuntimeService,
+        BugTaskQualification,
     )
     from nonebot_plugin_triage.capability.shadow import (
         CapabilityShadowService,
@@ -119,11 +122,15 @@ async def test_real_bug_agent_stops_when_deployment_configuration_is_unavailable
         log_buffer=CorrelatedBugLogBuffer(max_entries=8, retention_seconds=60),
         agent_client_factory=lambda: agent,
         design_component_versions={},
-        agent_qualification=replace(
-            OPENCODE_GO_BUG_TASK_QUALIFICATION,
+        agent_qualification=BugTaskQualification(
             provider=binding.provider,
+            api_family=binding.api_family,
             model=binding.model_name,
+            task=BUG_ASSESSMENT_TASK,
+            schema_version=1,
             prompt_id=BUG_AGENT_PROMPT_ID,
+            privacy_policy=BUG_ASSESSMENT_PRIVACY_POLICY,
+            budget_profile=BUG_ASSESSMENT_BUDGET_PROFILE,
             verified=False,
             evaluation="unverified:deployment-boundary-live",
         ),

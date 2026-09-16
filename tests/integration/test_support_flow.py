@@ -50,6 +50,10 @@ async def test_support_matcher_accepts_optional_at(
 ) -> None:
     from nonebot_plugin_triage import handlers
 
+    async def fixed_guidance(*_: object, **__: object) -> object:
+        return handlers._GuidanceResult("固定教学回答", ())
+
+    monkeypatch.setattr(handlers, "_capability_guidance_result", fixed_guidance)
     _inject_semantic_assessment(monkeypatch, goals=("guidance",))
     async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = ctx.create_bot()
@@ -64,11 +68,7 @@ async def test_support_matcher_accepts_optional_at(
         ctx.receive_event(bot, event)
         ctx.should_call_send(
             event,
-            FallbackMessage(
-                "我目前能说明这些 Alconna 功能：\n"
-                "- triage：说明功能用法、纠正指令或受理故障\n"
-                "告诉我具体功能名，我再给你用法。"
-            ),
+            FallbackMessage("固定教学回答"),
             result=None,
         )
         ctx.should_finished(handlers.support_matcher)
@@ -145,6 +145,7 @@ async def test_scope_thread_is_consumed_by_next_explicit_triage_without_reply(
         content: str,
         *,
         conversation_context: str | None = None,
+        **_: object,
     ) -> object:
         observed.append((content, conversation_context))
         return handlers._GuidanceResult("固定教学回答", ())
@@ -163,7 +164,13 @@ async def test_scope_thread_is_consumed_by_next_explicit_triage_without_reply(
         ctx.should_call_send(second, Message("固定教学回答"), result=None)
         ctx.should_finished(handlers.support_matcher)
 
-    assert observed == [("搜图怎么用", "首轮 triage：\n继续")]
+    assert observed == [
+        (
+            "搜图怎么用",
+            "首轮 triage：\n继续\n\n上一轮追问：\n"
+            "我还不能确定你想获得什么结果，请再明确一次：了解用法、判断 Bug，还是提出功能建议。",
+        )
+    ]
     assert runtime.support_threads.get(waiting[0].thread_id).status is ThreadStatus.CLOSED
 
 
@@ -231,6 +238,7 @@ async def test_reply_cannot_select_cross_scope_thread_but_reaches_guidance(
         _content: str,
         *,
         conversation_context: str | None = None,
+        **_: object,
     ) -> object:
         observed.append(conversation_context)
         return handlers._GuidanceResult("跨作用域教学", ())
@@ -314,12 +322,13 @@ async def test_unmatched_guidance_waits_once_then_closes_after_second_miss(
         _content: str,
         *,
         conversation_context: str | None = None,
+        **_: object,
     ) -> object:
         observed_contexts.append(conversation_context)
         return handlers._GuidanceResult(
             "告诉我具体功能名，我再给你用法。",
             (),
-            handlers._GuidanceStatus.NEEDS_SUBJECT,
+            handlers._GuidanceStatus.NEEDS_CONTEXT,
         )
 
     monkeypatch.setattr(handlers, "_capability_guidance_result", unmatched_guidance)
@@ -347,14 +356,15 @@ async def test_unmatched_guidance_waits_once_then_closes_after_second_miss(
         ctx.receive_event(bot, second)
         ctx.should_call_send(
             second,
-            Message(
-                "告诉我具体功能名，我再给你用法。\n本次补充已结束；请重新发送 triage 和完整问题。"
-            ),
+            Message("现有信息还不足以给出适用于这次需求的具体操作。"),
             result=None,
         )
         ctx.should_finished(handlers.support_matcher)
 
-    assert observed_contexts == [None, "首轮 triage：\n这个怎么用"]
+    assert observed_contexts == [
+        None,
+        "首轮 triage：\n这个怎么用\n\n上一轮追问：\n告诉我具体功能名，我再给你用法。",
+    ]
     records = tuple(runtime.support_threads._entries.values())
     assert len(records) == 1
     assert records[0].status is ThreadStatus.CLOSED
@@ -431,7 +441,7 @@ async def test_first_clarify_waits_once_and_second_unresolved_closes(
         ctx.receive_event(bot, second)
         ctx.should_call_send(
             second,
-            Message("我仍无法确定你想获得什么结果，本次补充已结束；请重新发送 triage 和完整问题。"),
+            Message("目前仍无法确定你需要用法说明、异常排查还是功能建议，因此这次无法继续处理。"),
             result=None,
         )
         ctx.should_finished(handlers.support_matcher)
@@ -441,7 +451,7 @@ async def test_first_clarify_waits_once_and_second_unresolved_closes(
     assert records[0].status is ThreadStatus.CLOSED
 
 
-async def test_first_bug_unknown_waits_once_and_second_unknown_closes(
+async def test_bug_unknown_without_specific_clarification_closes_immediately(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -489,37 +499,22 @@ async def test_first_bug_unknown_waits_once_and_second_unknown_closes(
         user_id=631,
         to_me=False,
     )
-    second = _group_text_event(
-        "triage 点了按钮仍然没响应",
-        message_id=1_242,
-        user_id=631,
-        to_me=False,
-    )
     async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = _onebot_test_bot(ctx)
         ctx.receive_event(bot, first)
         ctx.should_call_send(
             first,
             Message(
-                "判断结果：暂时无法判断。请回复实际执行的命令或机器人返回，"
-                "并在下一条 triage 中补充操作对象、输入与可见结果。"
+                "目前只确认了公开用法，尚未取得能核对这次实际执行过程的现场信息，"
+                "因此还不能判断是不是 Bug。"
             ),
             result=None,
         )
         ctx.should_finished(handlers.support_matcher)
-        ctx.receive_event(bot, second)
-        ctx.should_call_send(
-            second,
-            Message("暂时无法判断是不是 Bug。"),
-            result=None,
-        )
-        ctx.should_finished(handlers.support_matcher)
 
-    assert len(observed) == 2
+    assert len(observed) == 1
     assert observed[0].reported_observation is True
-    assert observed[1].reported_observation is True
     assert observed[0].conversation_context is None
-    assert observed[1].conversation_context == "首轮 triage：\n刚才没反应，判断是不是 Bug"
     records = tuple(runtime.support_threads._entries.values())
     assert len(records) == 1
     assert records[0].status is ThreadStatus.CLOSED
@@ -631,7 +626,13 @@ async def test_public_precheck_misuse_reuses_guidance_and_closes_scope(
                 source=BugDecisionSource.PUBLIC_PRECHECK,
             )
 
-    async def correction_guidance(*_: Any, **__: Any) -> Any:
+    async def correction_guidance(*_: Any, precheck: bool = False, **__: Any) -> Any:
+        if precheck:
+            return handlers._GuidanceResult(
+                "需要结合现场信息继续调查。",
+                ("搜图",),
+                handlers._GuidanceStatus.INVESTIGATE,
+            )
         return handlers._GuidanceResult("正确用法：回复图片后发送“搜图”。", ("搜图",))
 
     monkeypatch.setattr(
@@ -771,11 +772,8 @@ async def test_guidance_never_reads_restricted_shadow_or_checks_superuser(
     )
     event = fake_group_message_event_v11(user_id=200)
 
-    assert await handlers._capability_guidance(bot, event, "搜图功能怎么用") == (
-        "我目前能说明这些 Alconna 功能：\n"
-        "- triage：说明功能用法、纠正指令或受理故障\n"
-        "告诉我具体功能名，我再给你用法。"
-    )
+    result = await handlers._capability_guidance_result(bot, event, "搜图功能怎么用")
+    assert result.status is handlers._GuidanceStatus.UNAVAILABLE
 
 
 async def test_public_shadow_capability_guidance_is_available_to_regular_user(
@@ -890,11 +888,12 @@ async def test_public_shadow_capability_guidance_is_available_to_regular_user(
         replace(handlers.plugin_runtime, capability_shadow=shadow),
     )
     bot = OneBotV11Bot(adapter=OneBotV11Adapter(get_driver()), self_id="1")
-    event = fake_group_message_event_v11(user_id=214)
-
-    assert await handlers._capability_guidance(bot, event, "搜图功能怎么用") == (
-        "搜图\n搜索图片出处\n用法：回复图片后发送搜图"
-    )
+    catalog = await shadow.public_catalog(type(bot.adapter))
+    assert catalog is not None
+    assert len(catalog.entries) == 1
+    selected = catalog.select((catalog.entries[0].plugin_id,), "搜图功能怎么用")
+    assert selected.selected_owners == ("YetAnotherPicSearch",)
+    assert selected.plugin_records == (record,)
 
 
 @pytest.mark.parametrize(
@@ -920,6 +919,8 @@ async def test_support_matcher_asks_one_question_for_incomplete_intent(
     from nonebot_plugin_triage import handlers
 
     _install_isolated_support_threads(monkeypatch)
+    if text != "triage":
+        _inject_semantic_assessment(monkeypatch)
     async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = ctx.create_bot()
         event = _group_text_event(
@@ -1039,6 +1040,7 @@ async def test_support_matcher_rate_limits_all_support_responses(
         raise AssertionError("unclassified text must not read capability sources")
 
     monkeypatch.setattr(handlers, "_capability_guidance_result", unexpected_guidance)
+    _inject_semantic_assessment(monkeypatch)
     async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = ctx.create_bot()
         first = _group_text_event(
@@ -1300,6 +1302,11 @@ async def test_private_semantic_guidance_uses_common_routing(
         "collect_visible_alconna_capabilities",
         fixed_capabilities,
     )
+
+    async def fixed_guidance(*_: object, **__: object) -> object:
+        return handlers._GuidanceResult("私聊教学", ())
+
+    monkeypatch.setattr(handlers, "_capability_guidance_result", fixed_guidance)
     _inject_semantic_assessment(monkeypatch, goals=("guidance",))
     text = "triage 某个功能怎么使用"
     async with app.test_matcher(handlers.support_matcher) as ctx:
@@ -1319,11 +1326,7 @@ async def test_private_semantic_guidance_uses_common_routing(
         ctx.receive_event(bot, event)
         ctx.should_call_send(
             event,
-            Message(
-                "我目前能说明这些 Alconna 功能：\n"
-                "- triage：说明功能用法、纠正指令或受理故障\n"
-                "告诉我具体功能名，我再给你用法。"
-            ),
+            Message("私聊教学"),
             result=None,
         )
         ctx.should_finished(handlers.support_matcher)

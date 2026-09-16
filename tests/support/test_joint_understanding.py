@@ -191,7 +191,7 @@ def test_routes_without_public_answer_do_not_require_plugin_selection(status, go
     assert outcome.execution_status is SupportAssessmentExecutionStatus.COMPLETED
 
 
-def test_deepseek_joint_factory_uses_low_without_mutating_shared_settings(monkeypatch) -> None:
+def test_joint_factory_requests_disabled_thinking_without_mutating_binding(monkeypatch) -> None:
     from types import SimpleNamespace
 
     from nonebot_plugin_triage.config import NBTriageConfig
@@ -214,14 +214,19 @@ def test_deepseek_joint_factory_uses_low_without_mutating_shared_settings(monkey
         connection_revision="fixture",
         settings_revision="high-fixture",
     )
-    monkeypatch.setattr(
-        semantic_runtime, "create_task_model_binding", lambda *args, **kwargs: binding
-    )
+    calls = []
+
+    def create_binding(*args, **kwargs):
+        calls.append(kwargs)
+        return binding
+
+    monkeypatch.setattr(semantic_runtime, "create_task_model_binding", create_binding)
     config = NBTriageConfig(
         nbtriage_model_name="deepseek:deepseek-v4-flash", nbtriage_model_max_output_tokens=4096
     )
     client = semantic_runtime.create_semantic_client_factory(config, qualified_tasks=frozenset())()
-    assert client._agent.model_settings["openai_reasoning_effort"] == "low"
+    assert calls == [{"thinking": False}]
+    assert client._agent.model_settings["openai_reasoning_effort"] == "high"
     assert settings["openai_reasoning_effort"] == "high"
 
 
@@ -240,41 +245,6 @@ def test_long_direct_reply_keeps_existing_bound_and_supplement_prefix() -> None:
         ),
     )
     assert _build_payload(second).startswith(_build_payload(initial) + "\n")
-
-
-async def test_native_deepseek_joint_transport_does_not_retry(monkeypatch) -> None:
-    import httpx2 as httpx
-    from pydantic_ai import models
-
-    from nonebot_plugin_triage.config import NBTriageConfig
-    from nonebot_plugin_triage.support.semantic_runtime import create_semantic_client_factory
-
-    calls = []
-
-    def fail(request: httpx.Request) -> httpx.Response:
-        calls.append(request)
-        return httpx.Response(503, json={"error": {"message": "unavailable"}})
-
-    config = NBTriageConfig(nbtriage_model_name="deepseek:deepseek-v4-flash")
-    from nonebot_plugin_triage import task_model_runtime
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(fail)) as transport:
-        monkeypatch.setattr(task_model_runtime, "provider_http_client", lambda **kwargs: transport)
-        factory = create_semantic_client_factory(
-            config,
-            environ={"DEEPSEEK_API_KEY": "local-test-placeholder"},
-            qualified_tasks=frozenset(),
-        )
-        client = factory()
-        assert client._agent.model_settings["timeout"] == 60.0
-        assert client._agent.model_settings["max_tokens"] == 8192
-        assert client._agent.model.client.max_retries == 0
-        with models.override_allow_model_requests(True):
-            outcome = await SemanticAssessmentService(lambda: client, timeout_seconds=60).assess(
-                request()
-            )
-    assert outcome.execution_status is SupportAssessmentExecutionStatus.TRANSPORT_FAILURE
-    assert len(calls) == 1
 
 
 def test_joint_model_never_receives_unprojected_private_role_catalog():

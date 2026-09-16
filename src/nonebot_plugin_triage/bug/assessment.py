@@ -61,6 +61,7 @@ from nbtriage.bug.workflow import (
 )
 from nbtriage.capability.catalog.records import CapabilityRecord, CapabilitySearchHit, ClaimBasis
 from nbtriage.capability.teaching.annotations import CapabilityTeachingAnnotation
+from nbtriage.public_guidance import PublicGuidanceAction, PublicGuidanceExecutionStatus
 from nbtriage.runtime_observations import RuntimeObservationBuffer
 from nonebot_plugin_triage.capability.shadow import (
     CapabilityShadowService,
@@ -86,11 +87,36 @@ _CONVERSATION_SEGMENT_TYPE_MAX_CHARS = 32
 _DESIGN_EVIDENCE_LIMIT = 5
 BUG_ASSESSMENT_TASK = "bug-assessment-agent-v1"
 BUG_ASSESSMENT_PRIVACY_POLICY = "bounded-visible-conversation-source-log-design-v1"
-BUG_ASSESSMENT_BUDGET_PROFILE = (
-    "agent-12req-1conversation-plus-8evidence-finalize-output-correction-120k-0.50usd-v4"
+BUG_ASSESSMENT_TIMEOUT_SECONDS = 300.0
+BUG_ASSESSMENT_MAX_OUTPUT_TOKENS = 16_384
+
+
+def _bug_budget_profile(
+    *,
+    timeout_seconds: float,
+    max_output_tokens: int,
+    total_tokens_limit: int,
+    max_tool_calls: int,
+    context_window_tokens: int | None = None,
+) -> str:
+    budget: dict[str, float | int] = {
+        "timeout_seconds": timeout_seconds,
+        "max_output_tokens": max_output_tokens,
+        "total_tokens_limit": total_tokens_limit,
+        "max_tool_calls": max_tool_calls,
+    }
+    if context_window_tokens is not None:
+        budget["context_window_tokens"] = context_window_tokens
+    digest = hashlib.sha256(json.dumps(budget, sort_keys=True).encode()).hexdigest()[:16]
+    return f"bug-budget-v2:{digest}"
+
+
+BUG_ASSESSMENT_BUDGET_PROFILE = _bug_budget_profile(
+    timeout_seconds=BUG_ASSESSMENT_TIMEOUT_SECONDS,
+    max_output_tokens=BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
+    total_tokens_limit=300_000,
+    max_tool_calls=12,
 )
-BUG_ASSESSMENT_TIMEOUT_SECONDS = 120.0
-BUG_ASSESSMENT_MAX_OUTPUT_TOKENS = 800
 
 
 @dataclass(frozen=True, slots=True)
@@ -709,8 +735,11 @@ def _create_bug_agent_runtime_binding(
 
         return PydanticAIBugAssessmentAgent(
             binding.model,
-            timeout_seconds=BUG_ASSESSMENT_TIMEOUT_SECONDS,
-            max_output_tokens=BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
+            timeout_seconds=config.nbtriage_bug_timeout_seconds,
+            max_output_tokens=config.nbtriage_bug_max_output_tokens,
+            total_tokens_limit=config.nbtriage_bug_total_tokens_limit,
+            context_window_tokens=binding.context_window_tokens,
+            max_tool_calls=config.nbtriage_bug_max_tool_calls,
             model_settings=binding.model_settings,
             expected_provider=binding.provider,
             expected_model=binding.model_name,
@@ -755,18 +784,6 @@ def _bug_task_qualification(
     *,
     verified: bool,
 ) -> BugTaskQualification:
-    budget = {
-        "timeout_seconds": config.nbtriage_bug_timeout_seconds,
-        "max_output_tokens": config.nbtriage_bug_max_output_tokens,
-        "total_tokens_limit": config.nbtriage_bug_total_tokens_limit,
-        "max_tool_calls": config.nbtriage_bug_max_tool_calls,
-    }
-    if context_window_tokens is not None:
-        budget["context_window_tokens"] = context_window_tokens
-    budget_profile = (
-        "bug-budget-v2:"
-        + hashlib.sha256(json.dumps(budget, sort_keys=True).encode()).hexdigest()[:16]
-    )
     return BugTaskQualification(
         provider=provider,
         api_family=api_family,
@@ -775,7 +792,13 @@ def _bug_task_qualification(
         schema_version=1,
         prompt_id=BUG_AGENT_PROMPT_ID,
         privacy_policy=BUG_ASSESSMENT_PRIVACY_POLICY,
-        budget_profile=BUG_ASSESSMENT_BUDGET_PROFILE,
+        budget_profile=_bug_budget_profile(
+            timeout_seconds=config.nbtriage_bug_timeout_seconds,
+            max_output_tokens=config.nbtriage_bug_max_output_tokens,
+            total_tokens_limit=config.nbtriage_bug_total_tokens_limit,
+            max_tool_calls=config.nbtriage_bug_max_tool_calls,
+            context_window_tokens=context_window_tokens,
+        ),
         evaluation=(
             unverified_evaluation_id(
                 task=BUG_ASSESSMENT_TASK,

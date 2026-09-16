@@ -11,7 +11,7 @@ from pydantic_ai import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.profiles import ModelProfile
 
-from nbtriage.bug._agent import PydanticAIBugAssessmentAgent, _build_payload
+from nbtriage.bug._agent import BUG_AGENT_PROMPT_ID, PydanticAIBugAssessmentAgent, _build_payload
 from nbtriage.bug.assessment import (
     BugAssessmentCandidate,
     BugAssessmentContractError,
@@ -43,9 +43,12 @@ from nbtriage.public_guidance import (
 )
 from nbtriage.runtime_observations import RuntimeObservationBuffer
 from nonebot_plugin_triage.bug.assessment import (
-    OPENCODE_GO_BUG_TASK_QUALIFICATION,
+    BUG_ASSESSMENT_BUDGET_PROFILE,
+    BUG_ASSESSMENT_PRIVACY_POLICY,
+    BUG_ASSESSMENT_TASK,
     BugAssessmentRuntimeRequest,
     BugAssessmentRuntimeService,
+    BugTaskQualification,
     _public_member_directory,
 )
 from nonebot_plugin_triage.capability.shadow import (
@@ -53,6 +56,18 @@ from nonebot_plugin_triage.capability.shadow import (
     PublicCapabilitySearch,
     PublicPluginCatalog,
     build_public_guidance_request,
+)
+
+_FIXTURE_BUG_TASK_QUALIFICATION = BugTaskQualification(
+    provider="test",
+    api_family="test",
+    model="fixture",
+    task=BUG_ASSESSMENT_TASK,
+    schema_version=1,
+    prompt_id=BUG_AGENT_PROMPT_ID,
+    privacy_policy=BUG_ASSESSMENT_PRIVACY_POLICY,
+    budget_profile=BUG_ASSESSMENT_BUDGET_PROFILE,
+    evaluation="fixture",
 )
 
 
@@ -205,7 +220,7 @@ def _service(shadow, factory, *, max_tool_calls=12):
         log_buffer=CorrelatedBugLogBuffer(max_entries=8, retention_seconds=60),
         agent_client_factory=factory,
         design_component_versions={},
-        agent_qualification=OPENCODE_GO_BUG_TASK_QUALIFICATION,
+        agent_qualification=_FIXTURE_BUG_TASK_QUALIFICATION,
     )
 
 
@@ -516,6 +531,8 @@ async def test_sdk_follows_multiple_source_files_and_stops_at_shared_budget(
             name, args = steps[index]
             assert name in {tool.name for tool in info.function_tools}
             return ModelResponse(parts=[ToolCallPart(name, args, f"call-{index}")])
+        assert info.model_settings is not None
+        assert info.model_settings.get("tool_choice") == "none"
         return ModelResponse(
             parts=[
                 ToolCallPart(

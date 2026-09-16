@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from nonebot import logger
 
 from nbtriage.support._model_adapter import SUPPORT_SEMANTIC_PROMPT_ID
-from nbtriage.support.semantics import SUPPORT_SEMANTIC_SCHEMA_VERSION
+from nbtriage.support.semantics import (
+    SUPPORT_SEMANTIC_PRIVACY_POLICY,
+    SUPPORT_SEMANTIC_SCHEMA_VERSION,
+)
 from nonebot_plugin_triage.config import NBTriageConfig
 from nonebot_plugin_triage.support.semantic import (
     SemanticAssessmentService,
@@ -19,9 +22,8 @@ from nonebot_plugin_triage.task_model_runtime import (
     unverified_evaluation_id,
 )
 
-SUPPORT_SEMANTIC_TASK = "support-semantic-v7"
-SUPPORT_SEMANTIC_PRIVACY_POLICY = "current-request-text-only-v1"
-SUPPORT_SEMANTIC_BUDGET_PROFILE = "single-call-60s-240-v1"
+SUPPORT_SEMANTIC_TASK = "support-understanding-v8"
+SUPPORT_SEMANTIC_BUDGET_PROFILE = "joint-structure-repair-once-v1"
 SUPPORT_SEMANTIC_TIMEOUT_SECONDS = 60.0
 SUPPORT_SEMANTIC_MAX_OUTPUT_TOKENS = 240
 

@@ -15,11 +15,12 @@ from nbtriage.support._model_adapter import (
     SupportSemanticModelAdapterError,
 )
 from nbtriage.support.semantics import (
+    SUPPORT_SEMANTIC_PRIVACY_POLICY,
     SUPPORT_SEMANTIC_SCHEMA_VERSION,
     SupportAssessmentRequest,
 )
 
-SUPPORT_SEMANTIC_EVALUATION_ID = "support-semantic-v7"
+SUPPORT_SEMANTIC_EVALUATION_ID = "support-understanding-v8"
 SUPPORT_SEMANTIC_CANDIDATE_EVALUATION_REVISION = (
     "forward-heldout-40-20260916-v8-schema-v7-prompt-v5-zh-a"
 )
@@ -27,9 +28,9 @@ SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SET_ID = "support-semantic-v8-forward-heldout-
 SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SHA256 = (
     "84781f1a9f1efe7a8b2ace7df5ad33c9741da099fd1b1238bd5a365f4384e0b4"
 )
-_SEMANTIC_TASK = "support-semantic-v7"
-_SEMANTIC_PRIVACY_POLICY = "current-request-text-only-v1"
-_SEMANTIC_BUDGET_PROFILE = "single-call-60s-240-v1"
+_SEMANTIC_TASK = "support-understanding-v8"
+_SEMANTIC_PRIVACY_POLICY = SUPPORT_SEMANTIC_PRIVACY_POLICY
+_SEMANTIC_BUDGET_PROFILE = "joint-structure-repair-once-v1"
 
 
 class SupportSemanticEvaluationError(RuntimeError):
@@ -64,7 +65,7 @@ async def evaluate_support_semantics(
     if (
         payload.get("schema_version") != 1
         or not isinstance(fixture_set_id, str)
-        or payload.get("semantic_schema_version") != SUPPORT_SEMANTIC_SCHEMA_VERSION
+        or payload.get("semantic_schema_version") not in (7, SUPPORT_SEMANTIC_SCHEMA_VERSION)
         or payload.get("synthetic_only") is not True
         or payload.get("contains_real_user_data") is not False
         or split not in ("development", "held_out")

@@ -45,6 +45,7 @@ from nbtriage.runtime_observations import (
 )
 from nonebot_plugin_triage.bug import assessment as bug_assessment_runtime
 from nonebot_plugin_triage.bug.assessment import (
+    BUG_ASSESSMENT_BUDGET_PROFILE,
     QUALIFIED_BUG_TASKS,
     BugAssessmentRuntimeRequest,
     BugAssessmentRuntimeService,
@@ -136,6 +137,66 @@ def test_bug_agent_factory_allows_unverified_model_and_defers_credentials(
     assert create_bug_assessment_agent_factory(_config()) is not None
 
 
+def test_factory_uses_configured_bug_budget_and_qualifies_it_separately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-key")
+    config = _config()
+    original = bug_assessment_runtime._create_bug_agent_runtime_binding(
+        config,
+        qualified_tasks=frozenset(),
+    )
+    assert original is not None
+    client = original.client_factory()
+    assert client._timeout_seconds == 300
+    assert client._max_output_tokens == 16_384
+    assert client._total_tokens_limit == 300_000
+    assert client._max_tool_calls == 12
+    assert client._max_requests == 15
+    assert client._cost_limit_usd is None
+
+    qualification = replace(original.qualification, verified=True, evaluation="fixture-verified")
+    changes = {
+        "nbtriage_bug_timeout_seconds": 600,
+        "nbtriage_bug_max_output_tokens": 65_536,
+        "nbtriage_bug_total_tokens_limit": 1_000_000,
+        "nbtriage_bug_max_tool_calls": 18,
+    }
+    for field, value in changes.items():
+        changed = bug_assessment_runtime._create_bug_agent_runtime_binding(
+            NBTriageConfig.model_validate({**config.model_dump(), field: value}),
+            qualified_tasks=frozenset({qualification}),
+        )
+        assert changed is not None
+        assert changed.qualification.budget_profile != qualification.budget_profile
+        assert changed.qualification.verified is False
+
+    expanded = bug_assessment_runtime._create_bug_agent_runtime_binding(
+        NBTriageConfig.model_validate({**config.model_dump(), **changes}),
+    )
+    assert expanded is not None
+    expanded_client = expanded.client_factory()
+    assert expanded_client._timeout_seconds == 600
+    assert expanded_client._max_output_tokens == 65_536
+    assert expanded_client._total_tokens_limit == 1_000_000
+    assert expanded_client._max_tool_calls == 18
+    assert expanded_client._max_requests == 21
+
+
+def test_runtime_service_factory_propagates_tool_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bug_assessment_runtime, "_installed_design_component_versions", dict)
+    service = bug_assessment_runtime.create_bug_assessment_runtime_service(
+        NBTriageConfig(nbtriage_bug_max_tool_calls=18),
+        capability_shadow=None,
+        knowledge_pack=None,
+        runtime_buffer=RuntimeObservationBuffer(max_entries=8, retention_seconds=60),
+        log_buffer=CorrelatedBugLogBuffer(max_entries=8, retention_seconds=60),
+    )
+    assert service._max_tool_calls == 18
+
+
 def test_conclusive_agent_result_records_without_mistaking_log_revision_for_fingerprint() -> None:
     qualification = BugTaskQualification(
         provider="openai",
@@ -145,9 +206,7 @@ def test_conclusive_agent_result_records_without_mistaking_log_revision_for_fing
         schema_version=1,
         prompt_id=BUG_AGENT_PROMPT_ID,
         privacy_policy="bounded-visible-conversation-source-log-design-v1",
-        budget_profile=(
-            "agent-12req-1conversation-plus-8evidence-finalize-output-correction-120k-0.50usd-v4"
-        ),
+        budget_profile=BUG_ASSESSMENT_BUDGET_PROFILE,
         evaluation=f"unverified:bug-assessment-agent-v1:{BUG_AGENT_PROMPT_ID}",
         verified=False,
     )

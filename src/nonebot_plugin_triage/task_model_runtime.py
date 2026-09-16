@@ -29,6 +29,7 @@ class TaskModelBinding:
     model_settings: ModelSettings | None = None
     connection_revision: str = "provider-default"
     settings_revision: str = "provider-default"
+    context_window_tokens: int | None = None
 
 
 def create_task_model_binding(
@@ -83,6 +84,9 @@ def create_task_model_binding(
             model_settings=model_settings,
             connection_revision=model_connection_revision(config),
             settings_revision=settings_revision,
+            context_window_tokens=(
+                model.context_window if config.nbtriage_model_base_url is None else None
+            ),
         )
     except TaskModelRuntimeConfigurationError:
         raise
@@ -99,6 +103,7 @@ def _binding(
     model_settings: ModelSettings | None = None,
     connection_revision: str = "provider-default",
     settings_revision: str = "provider-default",
+    context_window_tokens: int | None = None,
 ) -> TaskModelBinding:
     return TaskModelBinding(
         model=model,
@@ -108,6 +113,7 @@ def _binding(
         model_settings=model_settings,
         connection_revision=connection_revision,
         settings_revision=settings_revision,
+        context_window_tokens=context_window_tokens,
     )
 
 

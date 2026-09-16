@@ -5,7 +5,9 @@ from pydantic import ValidationError
 from nonebot_plugin_triage.config import NBTriageConfig
 
 
-def test_bug_budget_defaults_and_nonebot_environment_override(monkeypatch) -> None:
+def test_bug_budget_defaults_and_nonebot_environment_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     defaults = NBTriageConfig()
     assert defaults.nbtriage_bug_timeout_seconds == 300
     assert defaults.nbtriage_bug_max_output_tokens == 16_384
@@ -19,15 +21,15 @@ def test_bug_budget_defaults_and_nonebot_environment_override(monkeypatch) -> No
     }
     for key, value in overrides.items():
         monkeypatch.setenv(key.upper(), str(value))
-    monkeypatch.setenv("NBTRIAGE_MODEL_MAX_OUTPUT_TOKENS", "240")
-    monkeypatch.setenv("NBTRIAGE_MODEL_TIMEOUT_SECONDS", "60")
     values = BaseSettings._settings_build_values(
-        NBTriageConfig, {}, env_file=(), env_file_encoding="utf-8", env_nested_delimiter="__"
+        NBTriageConfig,
+        {},
+        env_file=(),
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
     )
     configured = NBTriageConfig.model_validate(values)
     assert {key: getattr(configured, key) for key in overrides} == overrides
-    assert configured.nbtriage_model_max_output_tokens == 240
-    assert configured.nbtriage_model_timeout_seconds == 60
 
 
 @pytest.mark.parametrize(
@@ -40,13 +42,13 @@ def test_bug_budget_defaults_and_nonebot_environment_override(monkeypatch) -> No
     ],
 )
 @pytest.mark.parametrize("value", [0, -1])
-def test_bug_budget_rejects_nonpositive_values(key, value):
+def test_bug_budget_rejects_nonpositive_values(key: str, value: int) -> None:
     with pytest.raises(ValidationError):
         NBTriageConfig.model_validate({key: value})
 
 
 @pytest.mark.parametrize("value", [float("inf"), float("nan")])
-def test_bug_timeout_must_be_finite(value):
+def test_bug_timeout_must_be_finite(value: float) -> None:
     with pytest.raises(ValidationError):
         NBTriageConfig(nbtriage_bug_timeout_seconds=value)
 

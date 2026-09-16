@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from nbtriage.support.catalog import PluginSelection
 from nbtriage.support.semantics import (
     SupportAssessmentExecutionStatus,
     SupportAssessmentOutcome,
@@ -47,6 +48,7 @@ class SupportRoutingDecision:
     reported_observation: bool
     execution_status: SupportAssessmentExecutionStatus
     assessment_status: SupportAssessmentStatus | None
+    selection: PluginSelection | None = None
 
 
 def route_support_assessment(
@@ -141,6 +143,7 @@ def _decision(
         reported_observation=assessment.reported_observation,
         execution_status=execution_status,
         assessment_status=assessment.status,
+        selection=assessment.selection,
     )
 
 
@@ -156,6 +159,7 @@ def _failed_decision(
         reported_observation=False,
         execution_status=execution_status,
         assessment_status=None,
+        selection=None,
     )
 
 

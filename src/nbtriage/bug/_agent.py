@@ -306,7 +306,7 @@ class PydanticAIBugAssessmentAgent:
         *,
         timeout_seconds: float,
         max_output_tokens: int,
-        max_requests: int = 12,
+        max_requests: int | None = None,
         max_tool_calls: int = BUG_ASSESSMENT_MAX_TOOL_CALLS,
         total_tokens_limit: int = 300_000,
         context_window_tokens: int | None = None,
@@ -365,6 +365,7 @@ class PydanticAIBugAssessmentAgent:
                 "结构化 Bug 判断，证据不足时返回 unknown。"
             ),
         )
+        self._run_control = run_control
         self._agent: Agent[BugAgentDeps, BugAssessmentCandidate] = Agent(
             model,
             output_type=BugAssessmentCandidate,
@@ -381,7 +382,6 @@ class PydanticAIBugAssessmentAgent:
                 Tool(search_design_rag, prepare=prepare_bounded_bug_tool),
                 Tool(read_deployment_context, prepare=prepare_bounded_bug_tool),
             ),
-            capabilities=(run_control,),
             name="bug_assessment",
             model_settings=merge_model_settings(
                 model_settings,
@@ -454,21 +454,24 @@ class PydanticAIBugAssessmentAgent:
                         _build_payload(canonical, toolbox),
                         deps=BugAgentDeps(toolbox, canonical),
                         capabilities=(
-                            tuple(
-                                ToolsetCapability(toolset, id=f"bug_source_{index}")
-                                for index, toolset in enumerate(toolbox.source_tools.toolsets)
-                            )
-                            if toolbox.source_tools is not None
-                            else None
+                            self._run_control,
+                            *(
+                                tuple(
+                                    ToolsetCapability(toolset, id=f"bug_source_{index}")
+                                    for index, toolset in enumerate(toolbox.source_tools.toolsets)
+                                )
+                                if toolbox.source_tools is not None
+                                else ()
+                            ),
                         ),
                         retries={"tools": 1, "output": 1},
                         usage_limits=NextRequestInputTokenLimits(
                             cost_limit=self._cost_limit_usd,
                             request_limit=self._max_requests,
-                            # 最多一次聊天窗口 + 八次通用取证；第十一轮输出，
-                            # 第十二轮保留给一次输出修正。
+                            # 最多一次聊天窗口 + 配置的通用取证；最后两轮
+                            # 分别留给最终输出和一次输出修正。
                             # Provider 仍可能忽略 parallel_tool_calls=False，并在证据预算
-                            # 即将耗尽时并行请求多个工具。Toolbox 仍只执行前八次；这里仅允许
+                            # 即将耗尽时并行请求多个工具。Toolbox 仍只执行配置上限内的调用；这里仅允许
                             # Pydantic AI 接收并反馈同一响应中未执行的空结果。
                             tool_calls_limit=(
                                 (self._max_tool_calls + BUG_CONVERSATION_MAX_TOOL_CALLS)

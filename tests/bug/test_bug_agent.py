@@ -371,7 +371,7 @@ async def test_agent_reads_member_evidence_and_keeps_initial_toolset_stable(avai
         public_contract_loader=empty,
         capability_loader=capability if available and not directory else None,
         member_directory_loader=capability if available and directory else None,
-        max_tool_calls=1,
+        max_tool_calls=2,
     )
 
     def respond(messages, info):
@@ -865,7 +865,7 @@ async def test_conversation_plus_eight_evidence_rounds_leave_output_correction()
         conversation_loader=conversation,
         capability_loader=lambda _capability: empty(),
         member_directory_loader=lambda _unit: empty(),
-        max_tool_calls=general_limit,
+        max_tool_calls=8,
     )
 
     def respond(_messages, info: AgentInfo) -> ModelResponse:
@@ -895,7 +895,7 @@ async def test_conversation_plus_eight_evidence_rounds_leave_output_correction()
                 ]
             )
 
-        assert not info.function_tools
+        assert info.function_tools
         assert info.model_settings is not None
         assert info.model_settings.get("tool_choice") == "none"
         output_tool = info.output_tools[0]
@@ -924,7 +924,7 @@ async def test_conversation_plus_eight_evidence_rounds_leave_output_correction()
         FunctionModel(respond, model_name="fixture-model", profile=_PROFILE),
         timeout_seconds=5,
         max_output_tokens=200,
-        max_tool_calls=general_limit,
+        max_tool_calls=8,
         expected_provider="function",
         expected_model="fixture-model",
     )
@@ -962,7 +962,7 @@ async def test_parallel_overflow_call_does_not_exceed_evidence_budget() -> None:
         )
 
     toolbox = BugAssessmentToolbox(
-        max_tool_calls=6,
+        max_tool_calls=8,
         runtime_loader=empty,
         log_loader=empty,
         source_loader=lambda _query: empty(),
@@ -1001,7 +1001,7 @@ async def test_parallel_overflow_call_does_not_exceed_evidence_budget() -> None:
                     ToolCallPart("read_runtime_evidence", {}, "call-overflow-2"),
                 ]
             )
-        assert not info.function_tools
+        assert info.function_tools
         assert info.model_settings is not None
         assert info.model_settings.get("tool_choice") == "none"
         output_tool = info.output_tools[0]
@@ -1029,7 +1029,7 @@ async def test_parallel_overflow_call_does_not_exceed_evidence_budget() -> None:
         FunctionModel(respond, model_name="fixture-model", profile=_PROFILE),
         timeout_seconds=5,
         max_output_tokens=200,
-        max_tool_calls=6,
+        max_tool_calls=8,
         expected_provider="function",
         expected_model="fixture-model",
     )

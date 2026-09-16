@@ -208,7 +208,6 @@ class _CorrectBugAgent:
         del case
         await toolbox.source("reminder")
         return BugAssessmentCandidate(
-            verdict=BugVerdict.BUG,
             occurrence=BugOccurrence.REPEATED,
             responsibility_candidates=(BugResponsibility.TARGET_PLUGIN,),
             reason=BugCandidateReason.IMPLEMENTATION_CONTRADICTS_CONTRACT,
@@ -270,7 +269,6 @@ class _OracleAgent:
         )
         if verdict is BugVerdict.UNKNOWN:
             return BugAssessmentCandidate(
-                verdict=verdict,
                 occurrence=occurrence,
                 responsibility_candidates=(BugResponsibility.UNKNOWN,),
                 reason=BugCandidateReason.INSUFFICIENT_EVIDENCE,
@@ -304,7 +302,6 @@ class _OracleAgent:
         else:
             reason = BugCandidateReason.PUBLIC_PRECONDITION_NOT_MET
         return BugAssessmentCandidate(
-            verdict=verdict,
             occurrence=occurrence,
             responsibility_candidates=responsibilities,
             reason=reason,
@@ -422,7 +419,6 @@ class _V9DevelopmentOracleAgent:
         )
         if verdict is BugVerdict.UNKNOWN:
             return BugAssessmentCandidate(
-                verdict=verdict,
                 occurrence=occurrence,
                 responsibility_candidates=(BugResponsibility.UNKNOWN,),
                 reason=BugCandidateReason.CONFLICTING_EVIDENCE,
@@ -458,7 +454,6 @@ class _V9DevelopmentOracleAgent:
             )
             evidence_ids = (expectation, actuality)
         return BugAssessmentCandidate(
-            verdict=verdict,
             occurrence=occurrence,
             responsibility_candidates=responsibilities,
             reason=reason,

@@ -32,7 +32,6 @@ from nbtriage.bug._agent import (
     BugAssessmentAgentError,
 )
 from nbtriage.bug.assessment import (
-    BUG_ASSESSMENT_MAX_TOOL_CALLS,
     BUG_ASSESSMENT_SCHEMA_VERSION,
     BUG_CONVERSATION_MAX_TOOL_CALLS,
     BugAssessmentCandidate,
@@ -61,6 +60,8 @@ _BUG_ASSESSMENT_BUDGET_PROFILE = (
 )
 _BUG_ASSESSMENT_TIMEOUT_SECONDS = 120.0
 _BUG_ASSESSMENT_MAX_OUTPUT_TOKENS = 800
+# 已冻结的 v9 development 合同保留八次取证，不随生产默认预算变化。
+BUG_ASSESSMENT_EVALUATION_MAX_TOOL_CALLS = 8
 _REQUIRED_FORWARD_COVERAGE = frozenset(
     {
         "exact_reply",
@@ -341,10 +342,10 @@ async def evaluate_bug_assessment(
             and requests is not None
             and requests <= 12
             and tool_calls is not None
-            and toolbox.general_tool_calls <= BUG_ASSESSMENT_MAX_TOOL_CALLS
+            and toolbox.general_tool_calls <= BUG_ASSESSMENT_EVALUATION_MAX_TOOL_CALLS
             and conversation_tool_calls <= BUG_CONVERSATION_MAX_TOOL_CALLS
             and toolbox.tool_calls
-            <= BUG_ASSESSMENT_MAX_TOOL_CALLS + BUG_CONVERSATION_MAX_TOOL_CALLS
+            <= BUG_ASSESSMENT_EVALUATION_MAX_TOOL_CALLS + BUG_CONVERSATION_MAX_TOOL_CALLS
             # Pydantic AI 把 Agent 的结构化 output tool 也计入 RunUsage.tool_calls；
             # 任务预算允许一次正常输出和一次 output correction，它们不能占用
             # 八次只读证据工具的领域预算。
@@ -404,7 +405,7 @@ async def evaluate_bug_assessment(
         )
         v9_output_reserve_passed = "conversation_plus_eight_tools_leave_output" not in coverage or (
             candidate is not None
-            and toolbox.general_tool_calls == BUG_ASSESSMENT_MAX_TOOL_CALLS
+            and toolbox.general_tool_calls == BUG_ASSESSMENT_EVALUATION_MAX_TOOL_CALLS
             and conversation_tool_calls == BUG_CONVERSATION_MAX_TOOL_CALLS
             and requests is not None
             and requests <= 12
@@ -991,17 +992,17 @@ def _parse_fixture(value: object) -> dict[str, Any]:
     expected_min_general_tool_calls = _parse_optional_bound(
         value.get("expected_min_general_tool_calls"),
         field="expected_min_general_tool_calls",
-        maximum=BUG_ASSESSMENT_MAX_TOOL_CALLS,
+        maximum=BUG_ASSESSMENT_EVALUATION_MAX_TOOL_CALLS,
     )
     expected_max_general_tool_calls = _parse_optional_bound(
         value.get("expected_max_general_tool_calls"),
         field="expected_max_general_tool_calls",
-        maximum=BUG_ASSESSMENT_MAX_TOOL_CALLS,
+        maximum=BUG_ASSESSMENT_EVALUATION_MAX_TOOL_CALLS,
     )
     required_new_evidence_at_general_call = _parse_optional_bound(
         value.get("required_new_evidence_at_general_call"),
         field="required_new_evidence_at_general_call",
-        maximum=BUG_ASSESSMENT_MAX_TOOL_CALLS,
+        maximum=BUG_ASSESSMENT_EVALUATION_MAX_TOOL_CALLS,
     )
     if (
         expected_min_general_tool_calls is not None
@@ -1109,7 +1110,9 @@ def _parse_expected_tool_calls(value: object, *, field: str) -> int | None:
         return None
     if (
         type(value) is not int
-        or not 0 <= value <= BUG_ASSESSMENT_MAX_TOOL_CALLS + BUG_CONVERSATION_MAX_TOOL_CALLS
+        or not 0
+        <= value
+        <= BUG_ASSESSMENT_EVALUATION_MAX_TOOL_CALLS + BUG_CONVERSATION_MAX_TOOL_CALLS
     ):
         raise BugAssessmentEvaluationError(f"{field} is invalid")
     return value
@@ -1296,7 +1299,7 @@ def _consumption_anomaly_flags(
     flags: list[str] = []
     if requests is not None and requests >= 12:
         flags.append("request_limit_reached")
-    if general_tool_calls >= BUG_ASSESSMENT_MAX_TOOL_CALLS:
+    if general_tool_calls >= BUG_ASSESSMENT_EVALUATION_MAX_TOOL_CALLS:
         flags.append("general_tool_limit_reached")
     if trajectory["duplicate_tool_call_count"]:
         flags.append("repeated_tool_call")
@@ -1369,6 +1372,7 @@ def _write_full_trace(
 __all__ = (
     "BUG_ASSESSMENT_CANDIDATE_EVALUATION_REVISION",
     "BUG_ASSESSMENT_EVALUATION_ID",
+    "BUG_ASSESSMENT_EVALUATION_MAX_TOOL_CALLS",
     "BUG_ASSESSMENT_OFFICIAL_FIXTURE_SET_ID",
     "BUG_ASSESSMENT_OFFICIAL_FIXTURE_SHA256",
     "BugAssessmentEvaluationError",

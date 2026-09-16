@@ -50,6 +50,22 @@ class NextRequestTokenLimits(NextRequestInputTokenLimits):
         UsageLimits.check_tokens(response_limits, usage)
 
 
+def response_model_matches(
+    response: ModelResponse,
+    *,
+    expected_provider: str | None,
+    expected_model: str | None,
+) -> bool:
+    """校验返回模型名，仅兼容已观察到的官方单向改名；不授予评测资格。"""
+    if expected_model is None or response.model_name == expected_model:
+        return True
+    return (
+        expected_provider == response.provider_name == "deepseek"
+        and expected_model == "deepseek-v4-flash"
+        and response.model_name == "deepseek-flash"
+    )
+
+
 def provider_response_identity(response: ModelResponse | None) -> ProviderResponseIdentity:
     if response is None:
         return ProviderResponseIdentity(None, None, None, None)
