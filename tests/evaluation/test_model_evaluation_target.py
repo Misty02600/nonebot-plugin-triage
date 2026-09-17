@@ -7,8 +7,9 @@ from tools.nbtriage_maintainer.model_evaluation_target import (
     ModelEvaluationTargetError,
     TokenPriceProfile,
     create_model_evaluation_binding,
-    model_connection_revision,
 )
+
+from nbtriage._model_runtime.settings import connection_revision
 
 
 def test_alibaba_evaluation_target_preserves_endpoint_identity(
@@ -28,7 +29,7 @@ def test_alibaba_evaluation_target_preserves_endpoint_identity(
     assert binding.provider == "alibaba"
     assert binding.model_name == "qwen3.6-flash"
     assert binding.api_family == "pydantic-ai"
-    assert binding.connection_revision == model_connection_revision(base_url)
+    assert binding.connection_revision == connection_revision(base_url)
     assert base_url not in binding.connection_revision
     assert binding.settings_revision == "provider-default"
     assert binding.model_settings is None

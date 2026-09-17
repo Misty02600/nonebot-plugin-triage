@@ -25,7 +25,8 @@ from pydantic_ai.settings import ModelSettings, merge_model_settings
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RunUsage
 
-from nbtriage._model_runtime.diagnostics import last_model_response
+from nbtriage._model_runtime.diagnostics import captured_run_usage, last_model_response
+from nbtriage._model_runtime.failures import is_transport_timeout
 from nbtriage._model_runtime.run_control import RunControlCapability, RunPhase
 from nbtriage._model_runtime.telemetry import current_agent_instrumentation
 from nbtriage._model_runtime.usage import NextRequestInputTokenLimits
@@ -308,7 +309,7 @@ class PydanticAIBugAssessmentAgent:
         max_output_tokens: int,
         max_requests: int | None = None,
         max_tool_calls: int = BUG_ASSESSMENT_MAX_TOOL_CALLS,
-        total_tokens_limit: int = 300_000,
+        total_tokens_limit: int | None = None,
         context_window_tokens: int | None = None,
         cost_limit_usd: Decimal | None = None,
         model_settings: ModelSettings | None = None,
@@ -326,7 +327,7 @@ class PydanticAIBugAssessmentAgent:
             raise BugAssessmentAgentError("max_requests must be positive")
         if max_tool_calls < 1:
             raise BugAssessmentAgentError("max_tool_calls must be positive")
-        if total_tokens_limit < 1:
+        if total_tokens_limit is not None and total_tokens_limit < 1:
             raise BugAssessmentAgentError("total_tokens_limit must be positive")
         if context_window_tokens is not None and context_window_tokens <= max_output_tokens:
             raise BugAssessmentAgentError(
@@ -491,7 +492,7 @@ class PydanticAIBugAssessmentAgent:
             finally:
                 self._last_messages = tuple(captured_messages)
                 self._last_response = last_model_response(captured_messages)
-                self._last_usage = _captured_run_usage(
+                self._last_usage = captured_run_usage(
                     captured_messages,
                     tool_calls=toolbox.tool_calls,
                 )
@@ -533,7 +534,7 @@ def _classify_agent_failure(error: Exception) -> tuple[BugAgentFailureKind, str]
     while current is not None and current not in chain:
         chain.append(current)
         current = current.__cause__ or current.__context__
-    if any(isinstance(item, TimeoutError) for item in chain):
+    if any(is_transport_timeout(item) for item in chain):
         return "transport_timeout", "model_transport"
     if any(isinstance(item, (ModelHTTPError, ModelAPIError)) for item in chain):
         return "provider_error", "model_transport"
@@ -599,21 +600,6 @@ def _build_payload(case: BugAssessmentCase, toolbox: BugAssessmentToolbox) -> st
         separators=(",", ":"),
         allow_nan=False,
     )
-
-
-def _captured_run_usage(
-    messages: list[ModelMessage],
-    *,
-    tool_calls: int,
-) -> RunUsage:
-    """在 Agent 异常退出、没有 RunResult 时保留已产生的请求用量。"""
-    usage = RunUsage(tool_calls=tool_calls)
-    for message in messages:
-        if not isinstance(message, ModelResponse):
-            continue
-        usage.requests += 1
-        usage.incr(message.usage)
-    return usage
 
 
 __all__ = (

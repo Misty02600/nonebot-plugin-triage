@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from hashlib import sha256
 from inspect import signature
 from typing import Any, cast
 
@@ -12,7 +11,7 @@ from pydantic_ai.providers import Provider, infer_provider, infer_provider_class
 from pydantic_ai.settings import ModelSettings, ThinkingLevel
 
 from nbtriage._model_runtime.http_diagnostics import provider_http_client
-from nbtriage._model_runtime.settings import task_model_settings
+from nbtriage._model_runtime.settings import connection_revision, task_model_settings
 from nonebot_plugin_triage.config import NBTriageConfig
 
 
@@ -200,11 +199,8 @@ def _pydantic_ai_api_family(model_id: str) -> str:
 
 
 def model_connection_revision(config: NBTriageConfig) -> str:
-    base_url = config.nbtriage_model_base_url
-    if base_url is None:
-        return "provider-default"
-    digest = sha256(base_url.encode("utf-8")).hexdigest()
-    return f"custom-endpoint-sha256:{digest}"
+    """按运行配置的端点地址计算连接修订号（无自定义端点时为默认端点）。"""
+    return connection_revision(config.nbtriage_model_base_url)
 
 
 def unverified_evaluation_id(*, task: str, prompt_id: str) -> str:

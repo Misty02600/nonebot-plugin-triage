@@ -1,5 +1,4 @@
 import json
-from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -41,7 +40,6 @@ from nbtriage.bug.workflow import (
     format_problem_details,
     format_problem_list,
 )
-from nbtriage.capability.catalog.records import CapabilitySearchHit
 from nbtriage.public_guidance import (
     PublicGuidanceAction,
     PublicGuidanceExecutionStatus,
@@ -895,22 +893,6 @@ async def _finish_thread_response(
         target=target,
         thread_bridge=plugin_runtime.thread_reference_bridge,
     )
-
-
-def _shadow_topic_labels(hits: Iterable[CapabilitySearchHit]) -> tuple[str, ...]:
-    labels: list[str] = []
-    for hit in hits:
-        header = next(
-            (
-                claim.value
-                for claim in hit.record.claims
-                if claim.field == "command.header" and isinstance(claim.value, str)
-            ),
-            None,
-        )
-        if header:
-            labels.append(header)
-    return tuple(labels)
 
 
 @support_matcher.handle()

@@ -22,3 +22,13 @@ def classify_provider_http_status(status_code: int) -> ProviderFailureReason:
     if 500 <= status_code < 600:
         return ProviderFailureReason.SERVER_ERROR
     return ProviderFailureReason.UNCLASSIFIED_PROVIDER_ERROR
+
+
+_TRANSPORT_TIMEOUT_TYPE_NAMES = frozenset(
+    {"APITimeoutError", "ConnectTimeout", "PoolTimeout", "ReadTimeout", "WriteTimeout"}
+)
+
+
+def is_transport_timeout(error: BaseException) -> bool:
+    """判断单个异常是否为传输超时（含 httpx/httpcore 的非 TimeoutError 子类）。"""
+    return isinstance(error, TimeoutError) or type(error).__name__ in _TRANSPORT_TIMEOUT_TYPE_NAMES

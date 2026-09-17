@@ -41,6 +41,8 @@ from nbtriage.capability.teaching.analysis import (
     TeachingRole,
 )
 from nbtriage.capability.teaching.annotations import (
+    CAPABILITY_ANNOTATION_BUDGET_PROFILE,
+    CAPABILITY_ANNOTATION_REQUEST_REVISION,
     CapabilityAnnotationError,
     CapabilityAnnotationEvidenceRef,
     CapabilityTeachingAnnotation,
@@ -1135,6 +1137,12 @@ def test_runtime_rejects_missing_mandatory_annotation_transport() -> None:
         match="model name",
     ):
         create_capability_annotation_client_factory(NBTriageConfig())
+
+
+def test_teaching_contract_does_not_advertise_removed_cumulative_token_limits() -> None:
+    assert CAPABILITY_ANNOTATION_REQUEST_REVISION == "capability-teaching-request-v115"
+    assert "384k" not in CAPABILITY_ANNOTATION_BUDGET_PROFILE
+    assert "64k" not in CAPABILITY_ANNOTATION_BUDGET_PROFILE
 
 
 @pytest.mark.asyncio

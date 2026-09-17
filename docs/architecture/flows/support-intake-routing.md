@@ -120,8 +120,8 @@ ADR-0066 的公开初检已经接入 v8 联合选择：程序复核模型选择�
 
 协调器先固定 subject、source root、revision、adapter、correlation 和部署 generation，并预加载
 公开合同、首轮上下文与直接 Reply。Agent 默认在最多 15 次模型请求、一次独立聊天窗口、12 次通用证据工具调用、
-300k total-token 宽松止损、16,384 单次 output token 和 300 秒总超时内按需读取；这些 Bug 专属值可由部署者调整，
-默认不设美元费用上限：
+16,384 单次 output token 和 300 秒总超时内按需读取；这些 Bug 专属值可由部署者调整，生产运行不设累计
+token 或美元费用上限：
 
 - 与 Reply correlation 精确绑定的 runtime observation 与异常 traceback；
 - OneBot V11 群聊中由当前 Bot 和群预绑定、一次读取的最新最多 30 条可见聊天窗口；精确 Reply 独立预装，不受窗口是否覆盖影响；

@@ -435,15 +435,25 @@ def _diagnostic_key_is_sensitive(value: str) -> bool:
 def captured_run_usage(
     messages: list[ModelMessage],
     *,
+    tool_calls: int | None = None,
     provider_responses: Sequence[ModelResponse] = (),
 ) -> RunUsage:
-    """在 Agent 异常退出、没有 RunResult 时汇总已产生的请求用量。"""
-    tool_calls = sum(
-        isinstance(part, ToolReturnPart)
-        for message in messages
-        if isinstance(message, ModelRequest)
-        for part in message.parts
-    )
+    """在 Agent 异常退出、没有 RunResult 时汇总已产生的请求用量。
+
+    Args:
+        messages: Agent 取消前保存的完整消息快照。
+        tool_calls: 已执行的工具调用计数；为 ``None`` 时按消息中的
+            ``ToolReturnPart`` 统计。调用方掌握严格执行计数时显式传入。
+        provider_responses: 与消息互补的 Provider 响应序列；缺省时从
+            ``messages`` 中提取 ``ModelResponse``。
+    """
+    if tool_calls is None:
+        tool_calls = sum(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        )
     usage = RunUsage(tool_calls=tool_calls)
     responses = provider_responses or tuple(
         message for message in messages if isinstance(message, ModelResponse)

@@ -18,10 +18,10 @@ Bug Agent 的质量结论分别记账，不能相互继承。“OpenAI-compatibl
 
 ## 状态含义
 
-当前教学单次输出预算为 32768，累计为 384k；下表既有真实评测的 16384 / 192k 数值保留为历史条件，
-不能继承为新预算的资格。语义、Guidance、Bug 分别使用 240 / 2048 / 16384 单次输出；Bug 另有可配置的
-300k 累计宽松止损，维护者对话默认使用 8192 单次输出与 512k 单轮累计。累计 token 是防止失控的宽松止损线，
-不是常态配额。
+当前教学单次输出预算为 32768，不设累计 token 上限；下表既有真实评测的 16384 / 192k 数值保留为历史条件，
+不能继承为新预算的资格。语义、Guidance、Bug 分别使用 240 / 2048 / 16384 单次输出；Bug 与维护者对话
+均不设累计 token 或美元熔断：Bug 由请求次数、工具额度与单轮输入上限约束，维护者对话由压缩、每轮请求/
+工具额度和轮数收敛约束，维护者对话默认单次输出 8192。
 
 DeepSeek 官方 Chat 绑定完全使用 Pydantic AI 2.43.0 的 `DeepSeekProvider`、模型 Profile 和统一
 `ModelSettings.thinking`。项目不再为 `deepseek-flash` 补别名 Profile，也不覆盖 `max_tokens`/
@@ -88,7 +88,7 @@ held-out 回答质量 Gate，因此只属于 provisional dogfood。
 
 维护者项目对话又是一个独立任务，不能继承 Bug、semantic、公开 Answer 或教学注释的质量资格。每条消息在
 部署内唯一的长期会话上启动一次 Pydantic AI 只读 Agent Run；当前 ModelProfile 必须支持 function tools。
-单轮最多 15 次模型请求、60 次工具调用、512000 total token 和 1 美元，单次输出默认不超过 8192 token。
+单轮最多 15 次模型请求、60 次工具调用（执行以 15 次为限），不设累计 token 或美元熔断，单次输出默认不超过 8192 token。
 Agent 可读取 Capability Shadow 与项目根目录内通过硬拒绝策略的只读文件。LocalStore JSON 保存 Pydantic AI
 原生消息历史和 Provider 续接元数据，Harness 在上下文达到模型窗口 80% 时压缩。该任务尚未完成真实模型
 held-out，因而只属于 provisional dogfood，不能宣称多源项目问答质量已经合格。
@@ -193,7 +193,7 @@ got 的补证调用由3降至1，reject 由6降至1，主要交互语义均正�
 | Provider | API 族 | model / profile | 安装依赖 | 离线合约 | 获授权线上门 | 当前状态 | 主要证据或缺口 |
 |---|---|---|---|---|---|---|---|
 | OpenAI | Responses | 部署者使用 `openai:<model>` 选择模型；profile 必须声明当前任务所需的 JSON Schema 与 function tools | 基础 wheel 安装 Pydantic AI 控制层；`openai` extra 只补 Provider SDK | 原生 Provider/Profile 构造与通用 B1/B4 客户端合同通过；旧厂商 wire 测试仅作历史证据 | 未执行当前任务 held-out | 未验证 | 项目尚无精确模型质量结论；产品 runtime 不再提供 `openai-responses` backend 别名 |
-| DeepSeek | Chat Completions（Pydantic AI 原生 Provider） | `deepseek:<模型 ID>`；短任务使用 `thinking=false`，维护者对话与教学使用 `thinking=high`；教学单次输出 32768、单元累计 384k | 安装 `openai` extra；使用 `DEEPSEEK_API_KEY` 与 Provider 默认 endpoint | Pydantic AI 2.43.0 原生 Provider/Profile、统一 thinking、结构化输出和 usage；项目不补模型别名或请求字段 | 旧 OpenCode 与早期 DeepSeek 诊断仅保留历史证据 | 未验证 | 新组合必须按任务、设置、连接和预算独立评测 |
+| DeepSeek | Chat Completions（Pydantic AI 原生 Provider） | `deepseek:<模型 ID>`；短任务使用 `thinking=false`，维护者对话与教学使用 `thinking=high`；教学单次输出 32768（不设累计上限） | 安装 `openai` extra；使用 `DEEPSEEK_API_KEY` 与 Provider 默认 endpoint | Pydantic AI 2.43.0 原生 Provider/Profile、统一 thinking、结构化输出和 usage；项目不补模型别名或请求字段 | 旧 OpenCode 与早期 DeepSeek 诊断仅保留历史证据 | 未验证 | 新组合必须按任务、设置、连接和预算独立评测 |
 | Anthropic | Messages | 部署者使用 `anthropic:<model>`；profile 必须声明当前任务所需的结构化输出与 tools | `anthropic` extra 补 Provider SDK | 原生 Provider/Profile 构造与通用 B1/B4 客户端合同通过；旧厂商 wire 测试仅作历史证据 | 未执行当前任务 held-out | 未验证 | 历史离线模型名不构成质量承诺；产品 runtime 不再提供 `anthropic-messages` backend 别名 |
 | Google | GenAI | 使用 Pydantic AI 官方 `google:<model>` 模型标识 | 部署者另行安装 Pydantic AI 所需 Google Provider 依赖 | 运行时由 ModelProfile 检查当前任务能力 | 未执行 | 未验证 | 无项目专用 adapter；通用 Pydantic AI transport 可运行，实际能力不足时任务失败关闭 |
 | Alibaba Cloud Model Studio | OpenAI-compatible Chat | `alibaba:<model>`；只传递 Pydantic AI 统一 settings，不注入 `enable_thinking` 等厂商私有字段 | `openai` extra；Key 由 Pydantic AI 原生 `AlibabaProvider` 读取 | Provider factory、受限 Base URL 覆盖、统一 ModelProfile / settings / usage 路径通过本地合同测试 | Qwen3.6 Flash 的 40 条 semantic forward-heldout 只属于已删除的 `alibaba-qwen3.6-non-thinking-v2`；schema / status 1.000、exact 0.975 | 未验证 | `QUALIFIED_SEMANTIC_TASKS` 为空；若原生 Profile 不支持任务所需 thinking / tool / output 组合，运行时失败关闭，项目不增加厂商补丁 |

@@ -3,14 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
-from hashlib import sha256
 from typing import Any, cast
 
 from pydantic_ai.models import Model, infer_model
 from pydantic_ai.providers import Provider, infer_provider_class
 from pydantic_ai.settings import ModelSettings, ThinkingLevel
 
-from nbtriage._model_runtime.settings import task_model_settings
+from nbtriage._model_runtime.settings import connection_revision, task_model_settings
 
 _PER_MILLION = Decimal(1_000_000)
 
@@ -78,7 +77,7 @@ def create_model_evaluation_binding(
             model,
             api_family=_pydantic_ai_api_family(model_name),
             model_settings=model_settings,
-            connection_revision=model_connection_revision(base_url),
+            connection_revision=connection_revision(base_url),
             settings_revision=settings_revision,
         )
     except ModelEvaluationTargetError:
@@ -98,12 +97,6 @@ def _pydantic_ai_api_family(model_id: str) -> str:
     if provider == "anthropic":
         return "messages"
     return "pydantic-ai"
-
-
-def model_connection_revision(base_url: str | None) -> str:
-    if base_url is None:
-        return "provider-default"
-    return f"custom-endpoint-sha256:{sha256(base_url.encode('utf-8')).hexdigest()}"
 
 
 def _binding(
@@ -201,5 +194,4 @@ __all__ = (
     "ModelEvaluationTargetError",
     "TokenPriceProfile",
     "create_model_evaluation_binding",
-    "model_connection_revision",
 )

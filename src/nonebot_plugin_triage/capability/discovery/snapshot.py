@@ -1623,13 +1623,6 @@ def _alconna_component(
     )
 
 
-def _alconna_matcher_components(
-    matcher: object,
-    command: object,
-) -> tuple[AlconnaComponent, ...]:
-    return _alconna_matcher_shape(matcher, command)[1]
-
-
 def _dispatch_presence(call: object) -> tuple[str, object, bool]:
     from nonebot_plugin_alconna.params import _Dispatch, assign, match_path
 

@@ -150,7 +150,7 @@ def test_factory_uses_configured_bug_budget_and_qualifies_it_separately(
     client = original.client_factory()
     assert client._timeout_seconds == 300
     assert client._max_output_tokens == 16_384
-    assert client._total_tokens_limit == 300_000
+    assert client._total_tokens_limit is None
     assert client._max_tool_calls == 12
     assert client._max_requests == 15
     assert client._cost_limit_usd is None
@@ -159,7 +159,6 @@ def test_factory_uses_configured_bug_budget_and_qualifies_it_separately(
     changes = {
         "nbtriage_bug_timeout_seconds": 600,
         "nbtriage_bug_max_output_tokens": 65_536,
-        "nbtriage_bug_total_tokens_limit": 1_000_000,
         "nbtriage_bug_max_tool_calls": 18,
     }
     for field, value in changes.items():
@@ -178,7 +177,7 @@ def test_factory_uses_configured_bug_budget_and_qualifies_it_separately(
     expanded_client = expanded.client_factory()
     assert expanded_client._timeout_seconds == 600
     assert expanded_client._max_output_tokens == 65_536
-    assert expanded_client._total_tokens_limit == 1_000_000
+    assert expanded_client._total_tokens_limit is None
     assert expanded_client._max_tool_calls == 18
     assert expanded_client._max_requests == 21
 

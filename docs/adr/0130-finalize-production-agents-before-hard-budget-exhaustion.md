@@ -2,6 +2,9 @@
 
 > 2026-09-16：[ADR-0145](0145-combine-configurable-bug-budgets-with-finalization.md) 替代本决定中的 Bug 固定数值、
 > 动态移除工具和 120k / 0.50 美元条款；`running → checkpoint → finalizing` 及最终提交预留机制继续有效。
+>
+> 2026-09-17：[ADR-0146](0146-remove-cumulative-budgets-from-bug-and-maintainer-agents.md) 进一步替代 Bug 与
+> 维护者对话的累计 token 条款；请求、工具、时限、单次输出和收尾阶段继续有效。
 
 | 状态 | 决策日期 |
 |---|---|

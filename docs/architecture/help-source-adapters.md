@@ -47,13 +47,8 @@ Startswith、Endswith、Fullmatch、Keywords、Regex 与 IsType Rule；这不是
 request v89 移除单函数/单份 Evidence 8,000 字符、初始源码总字符数、目标函数数和已解析模块数的独立门槛。
 Handler、wrapper、注册材料及直接 gate/参数依赖优先完整保留；普通调用与静态 family Callable 的实现是可选
 预载。每次发送前复用 Harness 文本估算，并补计当前工具与结构化输出 Schema。request v115 移除 64k 首包整理阈值与可选预载移除；请求不再因估算修剪或拒绝，仅保留发送前的窗口×0.9 硬校验，并记录逐请求估算参考。维护 capture 保存逐请求估算，与 Provider 实际用量分开。明确的 Provider 上下文超限记录为 HTTP/context_length_exceeded，未知 400 不猜测；
-正式刷新不自动重跑整个单元。已完整到达的最终候选仍可校验。384k 单元累计预算、时间/请求/工具限制和本地文件/AST
+正式刷新不自动重跑整个单元。已完整到达的最终候选仍可校验。时间/请求/工具限制和本地文件/AST
 资源保护保留。自动普通调用展开仍为两层，不因取消字符门槛而递归展开整个依赖树。
-
-request v94 在既有时间、请求、工具和累计 75% 收尾条件之外，增加历史规模信号：剩余累计预算不超过
-最近一次 Provider 实际输入用量的两倍时停止源码补证，只保留输出工具并要求提交。进入收尾后不重新开放
-导航；没有实际输入用量时不使用此信号。两倍只是提前收尾的启发式，不保证剩余预算够两轮完整请求，
-也不替代实际用量硬上限或结果校验；不因这一信号删除 Evidence 或直接判定教学失败。
 
 request v93 / Prompt v117 允许 `usage` 沿用 claim 的 `gate_candidate_ids` 关联调用结构条件，
 同一 entry 的多条 usage 可共同承接一个 gate；不要求为覆盖检查追加重复的 behavior_boundary。

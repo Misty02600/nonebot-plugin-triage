@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hashlib import sha256
+
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings, ThinkingLevel, merge_model_settings
 
@@ -94,12 +96,20 @@ def _thinking_revision(thinking: ThinkingLevel) -> str:
     return f"pydantic-ai-thinking-{thinking}-v1"
 
 
+def connection_revision(base_url: str | None) -> str:
+    """连接修订号：无自定义端点时为默认端点，否则为端点地址的 SHA-256 摘要。"""
+    if base_url is None:
+        return "provider-default"
+    digest = sha256(base_url.encode("utf-8")).hexdigest()
+    return f"custom-endpoint-sha256:{digest}"
+
+
 __all__ = (
-    "DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION",
     "OPENAI_RESPONSES_PRIVACY_SETTINGS_REVISION",
     "PROVIDER_DEFAULT_SETTINGS_REVISION",
     "PYDANTIC_AI_THINKING_DISABLED_SETTINGS_REVISION",
     "PYDANTIC_AI_THINKING_HIGH_SETTINGS_REVISION",
+    "connection_revision",
     "task_model_settings",
     "task_model_settings_revision",
 )

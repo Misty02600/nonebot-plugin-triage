@@ -18,37 +18,6 @@ CAPABILITY_SCHEMA_VERSION = 2
 SNAPSHOT_SCHEMA_VERSION = 2
 CAPABILITY_INDEX_SCHEMA_VERSION = 3
 
-DEFAULT_SOURCE_EXTENSIONS = frozenset({".py", ".toml", ".yaml", ".yml", ".json", ".md"})
-DEFAULT_EXCLUDED_DIRECTORIES = frozenset(
-    {
-        ".cache",
-        ".git",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".venv",
-        "__pycache__",
-        "artifacts",
-        "cache",
-        "caches",
-        "data",
-        "database",
-        "databases",
-        "db",
-        "logs",
-        "mlartifacts",
-        "mlruns",
-        "reports",
-        "storage",
-        "upload",
-        "uploads",
-        "venv",
-    }
-)
-DEFAULT_EXCLUDED_FILE_SUFFIXES = frozenset(
-    {".db", ".duckdb", ".shm", ".sqlite", ".sqlite3", ".wal"}
-)
-
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -837,80 +806,6 @@ class CapabilitySearchHit:
 CapabilitySearchResult = CapabilitySearchHit
 
 
-def fingerprint_source_tree(
-    root: Path,
-    *,
-    source_id: str = "local-source",
-    locator: str = ".",
-    extensions: Iterable[str] = DEFAULT_SOURCE_EXTENSIONS,
-    excluded_directories: Iterable[str] = DEFAULT_EXCLUDED_DIRECTORIES,
-    max_files: int = 10_000,
-    max_total_bytes: int = 128 * 1024 * 1024,
-) -> SourceRevision:
-    """生成只含相对路径与内容摘要的本地源码修订指纹。
-
-    函数不解析或持久化文件内容，也不跟随符号链接。`.env*`、运行数据、缓存、数据库与上传目录
-    始终排除；调用方扩大扩展名集合也不能绕过这些排除规则。
-
-    Args:
-        root: 要遍历的本地源码树根目录。
-        source_id: 在快照中标识该来源的稳定 ID。
-        locator: 写入修订记录的公开定位符；默认不暴露绝对本地路径。
-        extensions: 允许参与指纹的文件扩展名集合。
-        excluded_directories: 在默认安全排除项之外追加的目录名集合。
-        max_files: 允许读取的最大源码文件数。
-        max_total_bytes: 允许散列的最大文件总字节数。
-
-    Returns:
-        revision 为规范文件清单哈希、payload 只含排序相对路径和逐文件 SHA-256 的来源修订。
-
-    Raises:
-        CapabilityError: 根目录无效、扩展名不合法或文件读取失败。
-    """
-    root = Path(root)
-    if not root.is_dir():
-        raise CapabilityError(f"source tree root is not a directory: {root}")
-    normalized_extensions = _normalize_extensions(extensions)
-    max_files = _positive_limit(max_files, "max_files")
-    max_total_bytes = _positive_limit(max_total_bytes, "max_total_bytes")
-    excluded = {item.casefold() for item in DEFAULT_EXCLUDED_DIRECTORIES}
-    excluded.update(_text(item, "excluded directory").casefold() for item in excluded_directories)
-
-    files: list[dict[str, str]] = []
-    total_bytes = 0
-    try:
-        for directory, directory_names, file_names in os.walk(root, followlinks=False):
-            directory_names[:] = sorted(
-                name
-                for name in directory_names
-                if name.casefold() not in excluded and not (Path(directory) / name).is_symlink()
-            )
-            for file_name in sorted(file_names):
-                path = Path(directory) / file_name
-                if not _included_source_file(path, normalized_extensions) or path.is_symlink():
-                    continue
-                if len(files) >= max_files:
-                    raise CapabilityError(
-                        f"source tree exceeds max_files safety limit ({max_files})"
-                    )
-                relative_path = path.relative_to(root).as_posix()
-                content_hash, byte_count = _hash_file(path, max_bytes=max_total_bytes - total_bytes)
-                total_bytes += byte_count
-                files.append({"path": relative_path, "sha256": content_hash})
-    except OSError as error:
-        raise CapabilityError(f"failed to fingerprint source tree {root}: {error}") from error
-
-    files.sort(key=lambda item: item["path"])
-    revision = hashlib.sha256(_canonical_json(files).encode("utf-8")).hexdigest()
-    return SourceRevision(
-        source_id=source_id,
-        kind="source_tree",
-        revision=revision,
-        locator=locator,
-        payload={"files": files},
-    )
-
-
 def build_capability_index(path: Path, snapshot: CapabilitySnapshot) -> None:
     """在同目录临时库中构建 FTS5 trigram 索引，再原子替换目标文件。
 
@@ -1172,11 +1067,6 @@ def search_capability_index(
             connection.close()
 
 
-def capability_index_public_records(path: Path) -> tuple[CapabilityRecord, ...]:
-    """只读加载可参与普通用户检索的 public 记录，用于检索前构造受众域。"""
-    return _capability_index_projection_records(path, include_restricted=False)
-
-
 def capability_index_projection_records(path: Path) -> tuple[CapabilityRecord, ...]:
     """加载公开投影所需的内部记录；受限记录仅用于排除交叉引用，不可直接外发。"""
     return _capability_index_projection_records(path, include_restricted=True)
@@ -1251,39 +1141,6 @@ def _snapshot_generation(
         "records": [item.to_dict() for item in normalized_records],
     }
     return hashlib.sha256(_canonical_json(document).encode("utf-8")).hexdigest()
-
-
-def _included_source_file(path: Path, extensions: frozenset[str]) -> bool:
-    name = path.name.casefold()
-    if name.startswith(".env"):
-        return False
-    if any(name.endswith(suffix) for suffix in DEFAULT_EXCLUDED_FILE_SUFFIXES):
-        return False
-    return path.suffix.casefold() in extensions
-
-
-def _normalize_extensions(extensions: Iterable[str]) -> frozenset[str]:
-    normalized: set[str] = set()
-    for item in extensions:
-        extension = _text(item, "source extension").casefold()
-        if not extension.startswith(".") or "/" in extension or "\\" in extension:
-            raise CapabilityError("source extensions must be simple suffixes beginning with '.'")
-        normalized.add(extension)
-    if not normalized:
-        raise CapabilityError("at least one source extension is required")
-    return frozenset(normalized)
-
-
-def _hash_file(path: Path, *, max_bytes: int) -> tuple[str, int]:
-    digest = hashlib.sha256()
-    byte_count = 0
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            byte_count += len(chunk)
-            if byte_count > max_bytes:
-                raise CapabilityError("source tree exceeds max_total_bytes safety limit")
-            digest.update(chunk)
-    return digest.hexdigest(), byte_count
 
 
 def _record_search_text(record: CapabilityRecord) -> str:
@@ -1599,12 +1456,6 @@ def _adapter_spec(value: Any, label: str) -> str:
     if not parts or not all(part.isidentifier() for part in parts):
         raise CapabilityError(f"{label} must be a normalized adapter spec")
     return normalized
-
-
-def _positive_limit(value: Any, label: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise CapabilityError(f"{label} must be a positive integer")
-    return value
 
 
 def _sha256(value: Any, label: str) -> str:

@@ -1005,6 +1005,26 @@ def test_maintenance_diagnostics_capture_redacted_http_error() -> None:
     )
 
 
+def test_unbounded_maintenance_diagnostics_do_not_restore_removed_preload_target() -> None:
+    client = PydanticAICapabilityAnalysisClient(
+        FunctionModel(
+            lambda _messages, _info: ModelResponse(parts=[]),
+            model_name="fixture-model",
+            profile=_NATIVE_PROFILE,
+        ),
+        max_output_tokens=240,
+    )
+
+    client.enable_maintenance_diagnostics(unbounded=True)
+
+    assert client._max_output_tokens is None
+    assert client._max_requests is None
+    assert client._max_tool_calls is None
+    assert client._total_tokens_limit is None
+    assert client._cost_limit_usd is None
+    assert not hasattr(client._input_preparation, "target")
+
+
 @pytest.mark.parametrize(
     ("body", "expected"),
     [
@@ -1172,7 +1192,9 @@ def test_full_input_budget_sends_oversized_first_request_without_trimming() -> N
     assert len(sent) == 1
     assert large.evidence_id in sent[0]["allowed_evidence_ids"]
     assert (
-        next(u for u in sent[0]["evidence_units"] if u["evidence_id"] == large.evidence_id)["content"]
+        next(u for u in sent[0]["evidence_units"] if u["evidence_id"] == large.evidence_id)[
+            "content"
+        ]
         == large.content
     )
     estimate = client.diagnostic_input_estimates[0]

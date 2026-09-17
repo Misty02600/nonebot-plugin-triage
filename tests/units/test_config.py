@@ -11,12 +11,10 @@ def test_bug_budget_defaults_and_nonebot_environment_override(
     defaults = NBTriageConfig()
     assert defaults.nbtriage_bug_timeout_seconds == 300
     assert defaults.nbtriage_bug_max_output_tokens == 16_384
-    assert defaults.nbtriage_bug_total_tokens_limit == 300_000
     assert defaults.nbtriage_bug_max_tool_calls == 12
     overrides = {
         "nbtriage_bug_timeout_seconds": 600,
         "nbtriage_bug_max_output_tokens": 65_536,
-        "nbtriage_bug_total_tokens_limit": 1_000_000,
         "nbtriage_bug_max_tool_calls": 18,
     }
     for key, value in overrides.items():
@@ -37,7 +35,6 @@ def test_bug_budget_defaults_and_nonebot_environment_override(
     [
         "nbtriage_bug_timeout_seconds",
         "nbtriage_bug_max_output_tokens",
-        "nbtriage_bug_total_tokens_limit",
         "nbtriage_bug_max_tool_calls",
     ],
 )
@@ -58,6 +55,7 @@ def test_bug_timeout_must_be_finite(value: float) -> None:
     [
         ("nbtriage_command", "fixed to triage"),
         ("nbtriage_model_backend", "provider:model"),
+        ("nbtriage_bug_total_tokens_limit", "bounded by request"),
     ],
 )
 def test_removed_product_contract_settings_fail_fast(key: str, replacement: str) -> None:

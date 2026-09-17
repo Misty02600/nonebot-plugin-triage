@@ -95,14 +95,12 @@ def _bug_budget_profile(
     *,
     timeout_seconds: float,
     max_output_tokens: int,
-    total_tokens_limit: int,
     max_tool_calls: int,
     context_window_tokens: int | None = None,
 ) -> str:
     budget: dict[str, float | int] = {
         "timeout_seconds": timeout_seconds,
         "max_output_tokens": max_output_tokens,
-        "total_tokens_limit": total_tokens_limit,
         "max_tool_calls": max_tool_calls,
     }
     if context_window_tokens is not None:
@@ -114,7 +112,6 @@ def _bug_budget_profile(
 BUG_ASSESSMENT_BUDGET_PROFILE = _bug_budget_profile(
     timeout_seconds=BUG_ASSESSMENT_TIMEOUT_SECONDS,
     max_output_tokens=BUG_ASSESSMENT_MAX_OUTPUT_TOKENS,
-    total_tokens_limit=300_000,
     max_tool_calls=12,
 )
 
@@ -737,7 +734,6 @@ def _create_bug_agent_runtime_binding(
             binding.model,
             timeout_seconds=config.nbtriage_bug_timeout_seconds,
             max_output_tokens=config.nbtriage_bug_max_output_tokens,
-            total_tokens_limit=config.nbtriage_bug_total_tokens_limit,
             context_window_tokens=binding.context_window_tokens,
             max_tool_calls=config.nbtriage_bug_max_tool_calls,
             model_settings=binding.model_settings,
@@ -795,7 +791,6 @@ def _bug_task_qualification(
         budget_profile=_bug_budget_profile(
             timeout_seconds=config.nbtriage_bug_timeout_seconds,
             max_output_tokens=config.nbtriage_bug_max_output_tokens,
-            total_tokens_limit=config.nbtriage_bug_total_tokens_limit,
             max_tool_calls=config.nbtriage_bug_max_tool_calls,
             context_window_tokens=context_window_tokens,
         ),

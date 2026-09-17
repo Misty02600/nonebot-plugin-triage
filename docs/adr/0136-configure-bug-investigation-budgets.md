@@ -2,6 +2,9 @@
 
 > 2026-09-16：[ADR-0145](0145-combine-configurable-bug-budgets-with-finalization.md) 重申本决定的可配置宽松预算和稳定工具定义，
 > 并组合 ADR-0130 的预算前收尾机制；本决定继续有效。
+>
+> 2026-09-17：[ADR-0146](0146-remove-cumulative-budgets-from-bug-and-maintainer-agents.md) 替代累计 token 配置与
+> 默认值；超时、单次输出、通用工具额度、请求推导和稳定工具定义继续有效。
 
 | 状态 | 决策日期 |
 |---|---|

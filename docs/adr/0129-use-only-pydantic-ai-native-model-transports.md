@@ -1,5 +1,8 @@
 # ADR-0129：只维护 Pydantic AI 原生模型传输
 
+> 2026-09-17：[ADR-0146](0146-remove-cumulative-budgets-from-bug-and-maintainer-agents.md) 替代本决定中的
+> Bug、维护者对话和教学累计 token 数值；Provider、Profile、单次输出与任务设置边界继续有效。
+
 ## 状态
 
 已采纳

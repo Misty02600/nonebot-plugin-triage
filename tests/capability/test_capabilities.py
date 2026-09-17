@@ -25,8 +25,7 @@ from nbtriage.capability.catalog.records import (
     SnapshotError,
     SourceRevision,
     build_capability_index,
-    capability_index_public_records,
-    fingerprint_source_tree,
+    capability_index_projection_records,
     search_capability_index,
 )
 
@@ -99,30 +98,6 @@ def _snapshot(
         ),
         errors=errors,
     )
-
-
-def test_source_fingerprint_excludes_env_and_changes_with_source(tmp_path: Path) -> None:
-    (tmp_path / "plugin.py").write_text("COMMAND = '搜图'\n", encoding="utf-8")
-    (tmp_path / ".env").write_text("TOKEN=first-secret\n", encoding="utf-8")
-    (tmp_path / ".env.production").write_text("TOKEN=other-secret\n", encoding="utf-8")
-    (tmp_path / ".envrc").write_text("export TOKEN=third-secret\n", encoding="utf-8")
-    (tmp_path / "data").mkdir()
-    (tmp_path / "data" / "case.json").write_text('{"private": true}', encoding="utf-8")
-
-    first = fingerprint_source_tree(tmp_path)
-    (tmp_path / ".env").write_text("TOKEN=changed-secret\n", encoding="utf-8")
-    second = fingerprint_source_tree(tmp_path)
-
-    assert first.revision == second.revision
-    assert first.payload == {
-        "files": [{"path": "plugin.py", "sha256": first.payload["files"][0]["sha256"]}]
-    }
-    assert "first-secret" not in json.dumps(first.to_dict())
-
-    (tmp_path / "plugin.py").write_text("COMMAND = '截图'\n", encoding="utf-8")
-    third = fingerprint_source_tree(tmp_path)
-
-    assert third.revision != first.revision
 
 
 def test_snapshot_generation_is_order_independent_and_round_trips() -> None:
@@ -301,7 +276,7 @@ def test_index_readers_reject_mismatched_record_identity(tmp_path: Path) -> None
     with pytest.raises(CapabilityIndexError, match="identity"):
         search_capability_index(index_path, "搜图")
     with pytest.raises(CapabilityIndexError, match="identity"):
-        capability_index_public_records(index_path)
+        capability_index_projection_records(index_path)
 
 
 def test_internal_config_and_handler_references_are_not_search_terms(tmp_path: Path) -> None:

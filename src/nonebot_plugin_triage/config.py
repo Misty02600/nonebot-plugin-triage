@@ -62,7 +62,6 @@ class NBTriageConfig(BaseModel):
     nbtriage_behavior_max_output_tokens: int = Field(default=8_192, ge=256, le=8_192)
     nbtriage_bug_timeout_seconds: float = Field(default=300.0, gt=0, allow_inf_nan=False)
     nbtriage_bug_max_output_tokens: int = Field(default=16_384, ge=1)
-    nbtriage_bug_total_tokens_limit: int = Field(default=300_000, ge=1)
     nbtriage_bug_max_tool_calls: int = Field(default=12, ge=1)
     nbtriage_agent_trace_enabled: bool = True
     nbtriage_capability_annotation_max_concurrency: int = Field(default=50, ge=1)
@@ -151,6 +150,10 @@ class NBTriageConfig(BaseModel):
                 ),
                 "nbtriage_model_backend": (
                     "remove it and select the transport with nbtriage_model_name=provider:model"
+                ),
+                "nbtriage_bug_total_tokens_limit": (
+                    "remove it; the Bug Agent is bounded by request, tool-call and "
+                    "per-request input budgets"
                 ),
             }
             removed = next((key for key in removed_settings if key in data), None)

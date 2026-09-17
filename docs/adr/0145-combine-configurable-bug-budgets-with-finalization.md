@@ -1,5 +1,8 @@
 # ADR-0145：把可配置 Bug 预算与预算前收尾机制组合使用
 
+> 2026-09-17：[ADR-0146](0146-remove-cumulative-budgets-from-bug-and-maintainer-agents.md) 替代本决定中的
+> Bug 累计 token 配置；其他离散边界、稳定工具定义与收尾机制继续有效。
+
 | 状态 | 决策日期 |
 |---|---|
 | 已采纳 | 2026-09-16 |

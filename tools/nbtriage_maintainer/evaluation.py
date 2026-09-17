@@ -1059,16 +1059,6 @@ def _build_evaluation_report(
     }
 
 
-def write_evaluation_report(path: Path, report: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
-
-
 @contextmanager
 def reserve_new_evaluation_report(path: Path) -> Iterator[EvaluationReportReservation]:
     """在昂贵评测开始前独占预留一个终态报告目标。寻址文件不是报告本身。"""

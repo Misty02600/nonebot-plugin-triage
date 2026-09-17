@@ -21,7 +21,7 @@ def load_source_chunks(
 ) -> tuple[list[KnowledgeChunk], int, str]:
     source_root = _resolve_source_root(snapshot_root, source)
     paths = _selected_paths(source_root, source)
-    revision = _content_revision(snapshot_root, paths)
+    revision = source_snapshot_sha256(snapshot_root, source)
     chunks: list[KnowledgeChunk] = []
     for path in paths:
         raw = path.read_bytes()

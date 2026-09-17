@@ -5,7 +5,6 @@ import json
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
-from decimal import Decimal
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,9 +26,7 @@ from nbtriage.behavior.exploration import (
 )
 
 MAINTAINER_AGENT_MAX_REQUESTS = 15
-MAINTAINER_AGENT_TOTAL_TOKEN_LIMIT = 512_000
 MAINTAINER_AGENT_TOOL_CALL_LIMIT = 60
-MAINTAINER_AGENT_COST_LIMIT_USD = Decimal("1.00")
 
 SYSTEM_INSTRUCTION = """\
 你是与已鉴权项目维护者协作的 NoneBot 项目 Agent。直接围绕当前部署、项目源码、配置、日志、依赖和设计进行自然多轮对话。
@@ -301,13 +298,8 @@ class PydanticAIMaintainerConversationAgent:
                     deps=MaintainerAgentDeps(toolbox),
                     capabilities=(lifecycle, run_control),
                     usage_limits=UsageLimits(
-                        cost_limit=MAINTAINER_AGENT_COST_LIMIT_USD,
                         request_limit=MAINTAINER_AGENT_MAX_REQUESTS,
                         tool_calls_limit=MAINTAINER_AGENT_TOOL_CALL_LIMIT,
-                        output_tokens_limit=(
-                            self._max_output_tokens * MAINTAINER_AGENT_MAX_REQUESTS
-                        ),
-                        total_tokens_limit=MAINTAINER_AGENT_TOTAL_TOKEN_LIMIT,
                     ),
                 )
         except MaintainerAuthorizationError:

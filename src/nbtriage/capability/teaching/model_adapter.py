@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from time import monotonic_ns
@@ -16,7 +16,6 @@ from pydantic_ai import (
     ModelRetry,
     PromptedOutput,
     ToolOutput,
-    UsageLimits,
     capture_run_messages,
 )
 from pydantic_ai.capabilities import Toolset as ToolsetCapability
@@ -51,12 +50,13 @@ from nbtriage._model_runtime.diagnostics import (
     unexpected_behavior_reason,
     usage_limit_name,
 )
+from nbtriage._model_runtime.failures import is_transport_timeout
 from nbtriage._model_runtime.run_control import RunControlCapability, RunPhase
 from nbtriage._model_runtime.telemetry import (
     current_agent_instrumentation,
     record_agent_response_shape,
 )
-from nbtriage._model_runtime.usage import response_model_matches
+from nbtriage._model_runtime.usage import NextRequestTokenLimits, response_model_matches
 from nbtriage.capability.teaching._input_budget import TeachingInputPreparation
 from nbtriage.capability.teaching._prompt import (
     ANCHORED_INSTRUCTION as ANCHORED_INSTRUCTION,
@@ -797,14 +797,6 @@ def _display_trigger_usage_error(
     return None
 
 
-class _NextRequestTokenLimits(UsageLimits):
-    """允许已付费响应完成校验，把 token 超限延迟到下一请求前。"""
-
-    def check_tokens(self, usage: RunUsage) -> None:
-        response_limits = replace(self, total_tokens_limit=None)
-        UsageLimits.check_tokens(response_limits, usage)
-
-
 def _http_failure_detail(error: ModelHTTPError) -> str:
     body = error.body
     if error.status_code in {400, 413} and isinstance(body, Mapping):
@@ -834,13 +826,7 @@ def _error_chain_contains_timeout(error: BaseException) -> bool:
         if current_id in visited:
             continue
         visited.add(current_id)
-        if isinstance(current, TimeoutError) or type(current).__name__ in {
-            "APITimeoutError",
-            "ConnectTimeout",
-            "PoolTimeout",
-            "ReadTimeout",
-            "WriteTimeout",
-        }:
+        if is_transport_timeout(current):
             return True
         if current.__cause__ is not None:
             pending.append(current.__cause__)
@@ -1133,7 +1119,6 @@ class PydanticAICapabilityAnalysisClient:
         self._max_tool_calls = None
         self._total_tokens_limit = None
         self._cost_limit_usd = None
-        self._input_preparation.target = None
         model_settings = self._agent.model_settings
         if callable(model_settings):
             raise CapabilityModelAdapterError(
@@ -1219,7 +1204,7 @@ class PydanticAICapabilityAnalysisClient:
                                 if analysis_toolsets is not None
                                 else None
                             ),
-                            usage_limits=_NextRequestTokenLimits(
+                            usage_limits=NextRequestTokenLimits(
                                 cost_limit=self._cost_limit_usd,
                                 request_limit=self._max_requests,
                                 output_tokens_limit=(

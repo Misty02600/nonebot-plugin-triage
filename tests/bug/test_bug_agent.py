@@ -33,6 +33,25 @@ _PROFILE = ModelProfile(
 )
 
 
+def test_transport_timeout_chain_is_classified_as_transport_timeout() -> None:
+    from pydantic_ai.exceptions import ModelAPIError
+
+    import nbtriage.bug._agent as bug_agent_module
+
+    class ConnectTimeout(Exception):
+        pass
+
+    try:
+        raise ConnectTimeout() from None
+    except ConnectTimeout as cause:
+        try:
+            raise ModelAPIError("scripted", "transport failed") from cause
+        except ModelAPIError as error:
+            kind, stage = bug_agent_module._classify_agent_failure(error)
+    assert kind == "transport_timeout"
+    assert stage == "model_transport"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalid", ["missing", "blank", "outside_plugin", "outside_capability"])
 async def test_invalid_bug_reports_share_the_existing_output_retry_limit(invalid):

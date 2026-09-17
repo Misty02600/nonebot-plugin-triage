@@ -3,7 +3,7 @@
 这里列出仍作为当前一等架构约束的 ADR。精确状态、局部替代关系和完整理由以各 ADR 正文为准；
 已经替代、未采纳、评测性、实现级或仅作支持性解释的记录见[历史 ADR](history/README.md)。
 
-当前根目录保留 68 份，历史区保存 62 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
+当前根目录保留 69 份，历史区保存 62 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
 为了简短而合并决定。阅读系统现状时先从[架构入口](../architecture/README.md)进入，再按问题查本索引。
 
 没有进入 ADR 的理由也不会丢失：跨实现的当前事实进入 architecture / flow，局部不变量进入代码注释和
@@ -32,8 +32,9 @@
 | [ADR-0002](0002-tiered-autonomy-and-ownership-aware-remediation.md) | 以分级自治、责任层路由和动作专用执行器扩展诊断到修复闭环 |
 | [ADR-0010](0010-use-bounded-evidence-seeking-agent-loop.md) | 用单 Agent、typed tools、有界循环、HITL 与 trajectory Gate 验证 Agent 能力 |
 | [ADR-0012](0012-use-pydantic-ai-deferred-tools-behind-domain-runtime.md) | 用领域 runtime 掌握循环与授权，只借用 Pydantic AI Deferred Tools 做单步多 Provider 适配 |
-| [ADR-0130](0130-finalize-production-agents-before-hard-budget-exhaustion.md) | 生产多步 Agent 最多提示一次收敛阶段，并在硬预算前用动态 `tool_choice="none"` 保留最终交付机会；Bug 数值与工具可见性由 ADR-0145 修正 |
-| [ADR-0145](0145-combine-configurable-bug-budgets-with-finalization.md) | Bug 沿用可配置宽松预算和稳定工具 schema，同时保留 checkpoint / finalizing 收尾机制 |
+| [ADR-0130](0130-finalize-production-agents-before-hard-budget-exhaustion.md) | 生产多步 Agent 最多提示一次收敛阶段，并用动态 `tool_choice="none"` 保留最终交付机会；Bug 数值与工具可见性由 ADR-0145 修正，累计预算由 ADR-0146 修正 |
+| [ADR-0145](0145-combine-configurable-bug-budgets-with-finalization.md) | Bug 沿用可配置的离散执行边界和稳定工具 schema，同时保留 checkpoint / finalizing 收尾机制；累计 token 配置由 ADR-0146 移除 |
+| [ADR-0146](0146-remove-cumulative-budgets-from-bug-and-maintainer-agents.md) | Bug 与维护者 Agent 不使用累计 token、累计输出或美元熔断，继续由请求、工具、时限、单次输出与单请求窗口边界约束 |
 | [ADR-0038](0038-limit-semantic-assessment-remote-data-projection.md) | 只允许向合格语义 assessment transport 投影当前单条规范化 triage 请求文字，其他上下文仍禁止出站 |
 | [ADR-0053](0053-allow-relevant-source-and-log-bodies-for-bug-assessment.md) | 允许任务相关源码、日志与 traceback 经专用准入和秘密清理后进入 Bug assessment，同时保持普通用户安全投影 |
 | [ADR-0059](0059-share-read-only-evidence-access-across-agent-flows.md) | 跨 Agent 共享受逻辑根、realpath containment、敏感文件拒绝和 revision 约束的只读 Evidence 工具 |
@@ -54,7 +55,7 @@
 | [ADR-0090](0090-configure-pydantic-ai-provider-base-urls-at-deployment.md) | 保留标准 `provider:model` 与 ModelProfile，并允许部署者为支持该参数的 Pydantic AI Provider 配置受限 Base URL |
 | [ADR-0091](0091-use-pydantic-ai-model-ids-as-the-public-transport-selector.md) | 直接以 Pydantic AI `provider:model` 选择 transport；Base URL 连接兼容服务 |
 | [ADR-0092](0092-remove-legacy-model-backend-configuration.md) | 删除旧 backend 字段、专用 runtime 分支和 OpenCode 密钥别名；旧配置明确失败并迁移到唯一的 `provider:model` 入口 |
-| [ADR-0129](0129-use-only-pydantic-ai-native-model-transports.md) | 只维护 Pydantic AI 原生模型解析、Provider/Profile、统一 thinking 与 usage；删除 OpenCode 专属适配器，并把任务预算恢复为宽松止损上限 |
+| [ADR-0129](0129-use-only-pydantic-ai-native-model-transports.md) | 只维护 Pydantic AI 原生模型解析、Provider/Profile、统一 thinking 与 usage；累计预算数值已由 ADR-0146 替代 |
 
 ## 评测合同与知识包
 
@@ -111,7 +112,7 @@
 | [ADR-0133](0133-read-bug-member-evidence-from-the-bound-snapshot.md) | 按 ID 读取本轮绑定的公开成员快照，共用调查工具与证据预算 |
 | [ADR-0134](0134-share-public-guidance-facts-with-bug-investigation.md) | Bug 调查沿用公开初检事实，避免重复生成同一教学正文 |
 | [ADR-0135](0135-expand-bug-member-directories-on-demand.md) | 首轮提供教学单元目录，需要时再按 unit_ref 展开完整成员 |
-| [ADR-0136](0136-configure-bug-investigation-budgets.md) | 部署可调 Bug 预算、默认 12 次通用取证 / 15 次请求及稳定工具定义；与收尾机制的组合见 ADR-0145 |
+| [ADR-0136](0136-configure-bug-investigation-budgets.md) | 部署可调 Bug 超时、单次输出和工具额度，默认 12 次通用取证 / 15 次请求并保持稳定工具定义；累计 token 配置由 ADR-0146 移除 |
 | [ADR-0137](0137-interpret-support-supplements-with-the-pending-question.md) | Semantic 结合首轮问题与实际追问理解补充；明确的新任务独立判断 |
 | [ADR-0138](0138-combine-support-intent-and-plugin-selection.md) | 一次联合判断支持意图与公开插件对象，并在选定范围内交接 Bug |
 | [ADR-0139](0139-persist-readable-bug-investigations-with-plugin-scope.md) | 保存可读 Bug 调查结论与已确认插件范围，支持插件级建档 |

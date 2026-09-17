@@ -6,6 +6,7 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.profiles import ModelProfile
+from pydantic_ai.usage import RequestUsage
 
 from nbtriage.behavior.conversation_agent import (
     MAINTAINER_AGENT_MAX_REQUESTS,
@@ -69,6 +70,8 @@ async def test_native_agent_injects_scene_and_snapshots_request_and_result() -> 
 
 async def test_request_budget_checkpoints_once_and_forces_final_request() -> None:
     provider_calls = 0
+    per_request_input_tokens = 40_000
+    per_request_output_tokens = 300
     observed_instructions: list[str] = []
     observed_tool_choices: list[object] = []
     observed_tools: list[tuple[str, ...]] = []
@@ -102,9 +105,19 @@ async def test_request_budget_checkpoints_once_and_forces_final_request() -> Non
                         {"query": f"question-{provider_calls}"},
                         f"call-{provider_calls}",
                     )
-                ]
+                ],
+                usage=RequestUsage(
+                    input_tokens=per_request_input_tokens,
+                    output_tokens=per_request_output_tokens,
+                ),
             )
-        return ModelResponse(parts=[TextPart("根据现有证据完成回答。")])
+        return ModelResponse(
+            parts=[TextPart("根据现有证据完成回答。")],
+            usage=RequestUsage(
+                input_tokens=per_request_input_tokens,
+                output_tokens=per_request_output_tokens,
+            ),
+        )
 
     agent = PydanticAIMaintainerConversationAgent(
         FunctionModel(
@@ -130,6 +143,8 @@ async def test_request_budget_checkpoints_once_and_forces_final_request() -> Non
 
     assert result.answer == "根据现有证据完成回答。"
     assert provider_calls == 15
+    assert provider_calls * per_request_input_tokens > 512_000
+    assert provider_calls * per_request_output_tokens > 256 * MAINTAINER_AGENT_MAX_REQUESTS
     assert observed_tools == [("search_deployment_capabilities",)] * 15
     assert observed_tool_choices[:14] == [None] * 14
     assert observed_tool_choices[14] == "none"

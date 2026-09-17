@@ -1513,60 +1513,6 @@ def _text_retrieval_score(
     return 0.0
 
 
-def _collapse_annotation_families(
-    hits: list[CapabilitySearchHit],
-    annotation_lookup: Callable[[str], CapabilityTeachingAnnotation | None],
-) -> list[CapabilitySearchHit]:
-    """让同一个 family 在检索阶段只占一个候选，保留排名最高的具体成员。"""
-    accepted_units: set[str] = set()
-    collapsed: list[CapabilitySearchHit] = []
-    for hit in hits:
-        annotation = annotation_lookup(hit.record.capability_id)
-        unit_id = annotation.capability_id if annotation is not None else hit.record.capability_id
-        if unit_id in accepted_units:
-            continue
-        accepted_units.add(unit_id)
-        collapsed.append(hit)
-    return collapsed
-
-
-def _expand_small_annotation_family(
-    hits: list[CapabilitySearchHit],
-    records: tuple[CapabilityRecord, ...],
-    annotation_lookup: Callable[[str], CapabilityTeachingAnnotation | None],
-    *,
-    adapter_type: type[object],
-    limit: int,
-) -> list[CapabilitySearchHit]:
-    """只在当前 Runtime family 不超过三个成员时补齐精确 Matcher。"""
-    if not hits or limit <= len(hits):
-        return hits[:limit]
-    primary_annotation = annotation_lookup(hits[0].record.capability_id)
-    if primary_annotation is None:
-        return hits[:limit]
-    members = tuple(
-        record
-        for record in records
-        if (annotation := annotation_lookup(record.capability_id)) is not None
-        and _record_is_publicly_servable(
-            record,
-            adapter_type,
-            annotation=annotation,
-        )
-        and annotation.capability_id == primary_annotation.capability_id
-    )
-    if len(members) <= 1 or len(members) > 3:
-        return hits[:limit]
-    accepted = {item.record.capability_id for item in hits}
-    expanded = list(hits)
-    expanded.extend(
-        CapabilitySearchHit(record=record, score=0.0)
-        for record in members
-        if record.capability_id not in accepted
-    )
-    return expanded[:limit]
-
-
 def _project_public_result(result: PublicCapabilitySearch) -> PublicCapabilitySearch:
     records, annotations = project_public_capabilities(
         result.plugin_records or tuple(hit.record for hit in result.hits),

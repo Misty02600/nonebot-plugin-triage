@@ -40,15 +40,14 @@ from nbtriage.capability.teaching.usage import (
 
 CAPABILITY_ANNOTATION_SCHEMA_VERSION = 15
 CAPABILITY_ANNOTATION_PROMPT_ID = "capability-teaching-annotation-v5-prompt-v135-zh"
-CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v114"
+CAPABILITY_ANNOTATION_REQUEST_REVISION = "capability-teaching-request-v115"
 CAPABILITY_ANNOTATION_TASK = "capability-teaching-annotation-agent-v4"
 CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
     "runtime-public-capability-approved-roots-no-dotenv-citable-read-evidence-v2"
 )
-CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT = 384_000
 CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
     "background-unit-10req-10read-navigation-tools-300line-default-32kchar-read-"
-    "window90pct-384k-reserve-finalize-32768out-0.05usd-schema15"
+    "window90pct-reserve-finalize-32768out-0.05usd-schema15"
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SEARCH_TERM_LIST_SEPARATOR = re.compile(r"[,，、;；|]")
@@ -1466,7 +1465,6 @@ __all__ = (
     "CAPABILITY_ANNOTATION_REQUEST_REVISION",
     "CAPABILITY_ANNOTATION_SCHEMA_VERSION",
     "CAPABILITY_ANNOTATION_TASK",
-    "CAPABILITY_ANNOTATION_TOTAL_TOKEN_LIMIT",
     "CapabilityAnnotationError",
     "CapabilityAnnotationEvidenceRef",
     "CapabilityAnnotationProjectionCode",

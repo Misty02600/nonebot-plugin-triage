@@ -171,18 +171,6 @@ def evidence_receipt_revision(receipt: EvidenceReceipt) -> str:
     )
 
 
-def receipt_revision_for_content(payload: Any) -> str:
-    """为受限回执内容计算域分隔版本，不接受已声明的版本字段。"""
-    normalized = _normalize_receipt_content(
-        payload,
-        expected_fields=RECEIPT_CONTENT_FIELDS,
-        accepted_schema_version=EVIDENCE_RECEIPT_SCHEMA_VERSION,
-    )
-    return receipt_revision_for_observation(
-        {key: value for key, value in normalized.items() if key in RECEIPT_REVISION_FIELDS}
-    )
-
-
 def receipt_revision_for_observation(payload: Any) -> str:
     """根据 Agent observation 保存的回执绑定与规范化事实重算版本。"""
     if not isinstance(payload, dict) or set(payload) != RECEIPT_REVISION_FIELDS:

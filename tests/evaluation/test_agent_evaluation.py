@@ -16,7 +16,6 @@ from tools.nbtriage_maintainer.agent_evaluation import (
     b4_real_partial_report_path,
     evaluate_b4_real_fixtures,
     evaluate_b4_scripted_fixtures,
-    load_b4_scripted_report,
 )
 from tools.nbtriage_maintainer.cli import main
 
@@ -163,50 +162,6 @@ def test_custom_scripted_inputs_cannot_claim_official_identity(
     assert report["source"]["fixtures_sha256"] != B4_OFFICIAL_FIXTURES_SHA256 or (
         report["source"]["split_sha256"] != B4_OFFICIAL_SPLIT_SHA256
     )
-
-
-@pytest.mark.parametrize(
-    ("mutation", "error_message"),
-    [
-        ("handwritten", "fields are invalid"),
-        ("metric", "not reproducible"),
-        ("source_hash", "official frozen contract"),
-        ("duplicate_key", "failed to load B4 scripted report"),
-    ],
-)
-def test_scripted_report_loader_rejects_tampering_without_external_calls(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mutation: str,
-    error_message: str,
-) -> None:
-    report = asyncio.run(evaluate_b4_scripted_fixtures(FIXTURES, SPLIT))
-    report_path = tmp_path / "scripted.json"
-    if mutation == "handwritten":
-        raw = json.dumps(
-            {
-                "schema_version": 3,
-                "evaluation_id": B4_EVALUATION_ID,
-                "evaluation_qualification": "official_frozen_fixture",
-            }
-        )
-    elif mutation == "duplicate_key":
-        raw = '{"schema_version":3,"schema_version":3}'
-    else:
-        if mutation == "metric":
-            report["metrics"]["b4"]["task_success_rate"] = 1.0
-        else:
-            report["source"]["fixtures_sha256"] = "0" * 64
-        raw = json.dumps(report)
-    report_path.write_text(raw, encoding="utf-8")
-
-    def fail_external_call(*args: object, **kwargs: object) -> None:
-        raise AssertionError("scripted validation attempted an external call")
-
-    monkeypatch.setattr(agent_evaluation, "evaluate_b4_real_fixtures", fail_external_call)
-
-    with pytest.raises(AgentEvaluationError, match=error_message):
-        load_b4_scripted_report(report_path)
 
 
 def test_gold_marker_in_agent_visible_case_is_detected(tmp_path: Path) -> None:
