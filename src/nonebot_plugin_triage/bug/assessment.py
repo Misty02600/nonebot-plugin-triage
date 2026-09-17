@@ -15,6 +15,7 @@ from typing import Protocol
 
 from nonebot import logger
 
+from nbtriage._model_runtime.settings import MODEL_REQUEST_TIMEOUT_SECONDS
 from nbtriage.bug._agent import BUG_AGENT_PROMPT_ID
 from nbtriage.bug.assessment import (
     BUG_ASSESSMENT_MAX_TOOL_CALLS,
@@ -732,9 +733,11 @@ def _create_bug_agent_runtime_binding(
 
         return PydanticAIBugAssessmentAgent(
             binding.model,
-            timeout_seconds=config.nbtriage_bug_timeout_seconds,
+            timeout_seconds=min(
+                config.nbtriage_bug_timeout_seconds,
+                MODEL_REQUEST_TIMEOUT_SECONDS,
+            ),
             max_output_tokens=config.nbtriage_bug_max_output_tokens,
-            context_window_tokens=binding.context_window_tokens,
             max_tool_calls=config.nbtriage_bug_max_tool_calls,
             model_settings=binding.model_settings,
             expected_provider=binding.provider,

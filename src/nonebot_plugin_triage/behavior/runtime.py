@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from pydantic_ai.toolsets import AbstractToolset
 
+from nbtriage._model_runtime.settings import MODEL_REQUEST_TIMEOUT_SECONDS
 from nbtriage.behavior.conversation_agent import (
     CapabilityEvidenceSearchResult,
     ConversationAgentClient,
@@ -78,7 +79,10 @@ def create_behavior_exploration_service(
         def create_agent() -> ConversationAgentClient:
             return PydanticAIMaintainerConversationAgent(
                 binding.model,
-                timeout_seconds=config.nbtriage_model_timeout_seconds,
+                timeout_seconds=min(
+                    config.nbtriage_model_timeout_seconds,
+                    MODEL_REQUEST_TIMEOUT_SECONDS,
+                ),
                 max_output_tokens=config.nbtriage_behavior_max_output_tokens,
                 model_settings=binding.model_settings,
                 toolsets=toolsets,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from decimal import Decimal
 
@@ -109,21 +108,14 @@ async def test_invalid_bug_reports_share_the_existing_output_retry_limit(invalid
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("limit", ["none", "tokens", "timeout", "requests"])
+@pytest.mark.parametrize("limit", ["none", "requests"])
 async def test_run_budget_stops_without_an_extra_model_call(limit: str) -> None:
     calls = 0
-    cancelled = False
 
     async def respond(_messages, info):
-        nonlocal calls, cancelled
+        nonlocal calls
         calls += 1
-        if limit == "timeout":
-            try:
-                await asyncio.sleep(1)
-            except asyncio.CancelledError:
-                cancelled = True
-                raise
-        if limit in {"tokens", "requests"}:
+        if limit == "requests":
             return ModelResponse(
                 parts=[ToolCallPart("read_runtime_evidence", {}, "runtime")],
                 usage=RequestUsage(input_tokens=700, output_tokens=100),
@@ -148,10 +140,9 @@ async def test_run_budget_stops_without_an_extra_model_call(limit: str) -> None:
 
     agent = PydanticAIBugAssessmentAgent(
         FunctionModel(respond, profile=_PROFILE),
-        timeout_seconds=0.2 if limit == "timeout" else 5,
+        timeout_seconds=5,
         max_output_tokens=200,
         max_requests=1 if limit == "requests" else None,
-        total_tokens_limit=600 if limit == "tokens" else 300_000,
     )
 
     class Prechecker:
@@ -169,52 +160,6 @@ async def test_run_budget_stops_without_an_extra_model_call(limit: str) -> None:
     else:
         assert decision.reason is BugReason.ANALYSIS_UNAVAILABLE
     assert toolbox.general_tool_calls == (1 if limit == "requests" else 0)
-    assert cancelled == (limit == "timeout")
-
-
-@pytest.mark.asyncio
-async def test_provider_context_window_stops_after_an_oversized_request() -> None:
-    calls = 0
-
-    def respond(_messages, _info):
-        nonlocal calls
-        calls += 1
-        return ModelResponse(
-            parts=[ToolCallPart("read_runtime_evidence", {}, "runtime")],
-            usage=RequestUsage(input_tokens=801, output_tokens=10),
-        )
-
-    agent = PydanticAIBugAssessmentAgent(
-        FunctionModel(respond, profile=_PROFILE),
-        timeout_seconds=5,
-        max_output_tokens=200,
-        context_window_tokens=1_000,
-    )
-
-    class Prechecker:
-        async def check(self, case, toolbox):
-            return None
-
-    toolbox = _toolbox([])
-    decision = await BugAssessmentCoordinator(Prechecker(), lambda: agent).assess(_case(), toolbox)
-
-    assert calls == 1
-    assert toolbox.general_tool_calls == 1
-    assert decision.verdict is BugVerdict.UNKNOWN
-    assert decision.reason is BugReason.ANALYSIS_UNAVAILABLE
-
-
-def test_provider_context_window_must_leave_room_for_output() -> None:
-    with pytest.raises(BugAssessmentAgentError, match="context_window_tokens"):
-        PydanticAIBugAssessmentAgent(
-            FunctionModel(
-                lambda _messages, _info: ModelResponse(parts=[]),
-                profile=_PROFILE,
-            ),
-            timeout_seconds=5,
-            max_output_tokens=200,
-            context_window_tokens=200,
-        )
 
 
 def _case() -> BugAssessmentCase:

@@ -148,12 +148,10 @@ def test_factory_uses_configured_bug_budget_and_qualifies_it_separately(
     )
     assert original is not None
     client = original.client_factory()
-    assert client._timeout_seconds == 300
+    assert client._timeout_seconds == 100
     assert client._max_output_tokens == 16_384
-    assert client._total_tokens_limit is None
     assert client._max_tool_calls == 12
     assert client._max_requests == 15
-    assert client._cost_limit_usd is None
 
     qualification = replace(original.qualification, verified=True, evaluation="fixture-verified")
     changes = {
@@ -175,9 +173,8 @@ def test_factory_uses_configured_bug_budget_and_qualifies_it_separately(
     )
     assert expanded is not None
     expanded_client = expanded.client_factory()
-    assert expanded_client._timeout_seconds == 600
+    assert expanded_client._timeout_seconds == 100
     assert expanded_client._max_output_tokens == 65_536
-    assert expanded_client._total_tokens_limit is None
     assert expanded_client._max_tool_calls == 18
     assert expanded_client._max_requests == 21
 

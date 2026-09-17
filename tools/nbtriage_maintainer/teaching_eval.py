@@ -167,8 +167,6 @@ class _EvaluationClient:
                     "_max_output_tokens",
                     "_max_requests",
                     "_max_tool_calls",
-                    "_total_tokens_limit",
-                    "_cost_limit_usd",
                     "_timeout_seconds",
                 )
             },

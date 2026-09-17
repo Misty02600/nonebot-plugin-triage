@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
@@ -290,18 +289,17 @@ class PydanticAIMaintainerConversationAgent:
             ),
         )
         try:
-            async with asyncio.timeout(self._timeout_seconds * MAINTAINER_AGENT_MAX_REQUESTS):
-                result = await self._agent.run(
-                    question,
-                    message_history=message_history,
-                    instructions=scene.as_instruction(),
-                    deps=MaintainerAgentDeps(toolbox),
-                    capabilities=(lifecycle, run_control),
-                    usage_limits=UsageLimits(
-                        request_limit=MAINTAINER_AGENT_MAX_REQUESTS,
-                        tool_calls_limit=MAINTAINER_AGENT_TOOL_CALL_LIMIT,
-                    ),
-                )
+            result = await self._agent.run(
+                question,
+                message_history=message_history,
+                instructions=scene.as_instruction(),
+                deps=MaintainerAgentDeps(toolbox),
+                capabilities=(lifecycle, run_control),
+                usage_limits=UsageLimits(
+                    request_limit=MAINTAINER_AGENT_MAX_REQUESTS,
+                    tool_calls_limit=MAINTAINER_AGENT_TOOL_CALL_LIMIT,
+                ),
+            )
         except MaintainerAuthorizationError:
             raise
         except ModelHTTPError as error:

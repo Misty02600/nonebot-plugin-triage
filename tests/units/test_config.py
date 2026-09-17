@@ -9,7 +9,7 @@ def test_bug_budget_defaults_and_nonebot_environment_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     defaults = NBTriageConfig()
-    assert defaults.nbtriage_bug_timeout_seconds == 300
+    assert defaults.nbtriage_bug_timeout_seconds == 100
     assert defaults.nbtriage_bug_max_output_tokens == 16_384
     assert defaults.nbtriage_bug_max_tool_calls == 12
     overrides = {

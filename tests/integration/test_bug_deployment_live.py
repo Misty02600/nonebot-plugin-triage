@@ -89,9 +89,8 @@ async def test_real_bug_agent_stops_when_deployment_configuration_is_unavailable
     )
     agent = PydanticAIBugAssessmentAgent(
         binding.model,
-        timeout_seconds=300,
+        timeout_seconds=min(300, 100),
         max_output_tokens=16_384,
-        total_tokens_limit=300_000,
         max_tool_calls=12,
         model_settings=binding.model_settings,
         expected_provider=binding.provider,

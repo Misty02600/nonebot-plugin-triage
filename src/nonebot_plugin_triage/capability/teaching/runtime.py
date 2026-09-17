@@ -8,6 +8,7 @@ import httpx2 as httpx
 from nonebot import logger
 
 from nbtriage._model_runtime.settings import (
+    MODEL_REQUEST_TIMEOUT_SECONDS,
     PROVIDER_DEFAULT_SETTINGS_REVISION,
     PYDANTIC_AI_THINKING_HIGH_SETTINGS_REVISION,
     task_model_settings_revision,
@@ -113,7 +114,10 @@ def create_capability_annotation_client_factory(
 
         return PydanticAICapabilityAnalysisClient(
             binding.model,
-            timeout_seconds=config.nbtriage_model_timeout_seconds,
+            timeout_seconds=min(
+                config.nbtriage_model_timeout_seconds,
+                MODEL_REQUEST_TIMEOUT_SECONDS,
+            ),
             max_output_tokens=CAPABILITY_ANNOTATION_MAX_OUTPUT_TOKENS,
             model_settings=binding.model_settings,
             expected_provider=binding.provider,

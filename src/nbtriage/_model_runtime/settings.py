@@ -6,6 +6,8 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings, ThinkingLevel, merge_model_settings
 
 PROVIDER_DEFAULT_SETTINGS_REVISION = "provider-default"
+MODEL_REQUEST_TIMEOUT_SECONDS = 100.0
+"""单次模型 HTTP 请求的统一超时上限；这是请求层，不是 Agent 总运行时限。"""
 DEEPSEEK_V4_THINKING_HIGH_SETTINGS_REVISION = "deepseek-v4-thinking-high-pydantic-ai-v3"
 PYDANTIC_AI_THINKING_DISABLED_SETTINGS_REVISION = "pydantic-ai-thinking-disabled-v1"
 PYDANTIC_AI_THINKING_HIGH_SETTINGS_REVISION = "pydantic-ai-thinking-high-v1"
@@ -105,6 +107,7 @@ def connection_revision(base_url: str | None) -> str:
 
 
 __all__ = (
+    "MODEL_REQUEST_TIMEOUT_SECONDS",
     "OPENAI_RESPONSES_PRIVACY_SETTINGS_REVISION",
     "PROVIDER_DEFAULT_SETTINGS_REVISION",
     "PYDANTIC_AI_THINKING_DISABLED_SETTINGS_REVISION",

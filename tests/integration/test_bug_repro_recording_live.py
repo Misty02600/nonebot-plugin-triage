@@ -249,9 +249,8 @@ async def test_repro_investigation_records_and_finishes_through_runtime(app, mon
     bug_model.set_lifecycle_sink(bug_model_lifecycle.append)
     agent = PydanticAIBugAssessmentAgent(
         bug_model,
-        timeout_seconds=300,
+        timeout_seconds=min(300, 100),
         max_output_tokens=16_384,
-        total_tokens_limit=600_000,
         max_tool_calls=max_tool_calls,
         model_settings=binding.model_settings,
         expected_provider=binding.provider,

@@ -47,7 +47,7 @@ CAPABILITY_ANNOTATION_PRIVACY_POLICY = (
 )
 CAPABILITY_ANNOTATION_BUDGET_PROFILE = (
     "background-unit-10req-10read-navigation-tools-300line-default-32kchar-read-"
-    "window90pct-reserve-finalize-32768out-0.05usd-schema15"
+    "window90pct-reserve-finalize-32768out-schema15"
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SEARCH_TERM_LIST_SEPARATOR = re.compile(r"[,，、;；|]")

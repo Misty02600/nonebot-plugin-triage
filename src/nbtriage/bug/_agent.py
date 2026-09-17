@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from contextlib import AsyncExitStack
-from decimal import Decimal
 from typing import Literal
 from uuid import uuid4
 
 from pydantic import ValidationError
-from pydantic_ai import Agent, ModelRetry, RunContext, Tool, capture_run_messages
+from pydantic_ai import Agent, ModelRetry, RunContext, Tool, UsageLimits, capture_run_messages
 from pydantic_ai.capabilities import Toolset as ToolsetCapability
 from pydantic_ai.exceptions import (
     AgentRunError,
@@ -29,7 +27,6 @@ from nbtriage._model_runtime.diagnostics import captured_run_usage, last_model_r
 from nbtriage._model_runtime.failures import is_transport_timeout
 from nbtriage._model_runtime.run_control import RunControlCapability, RunPhase
 from nbtriage._model_runtime.telemetry import current_agent_instrumentation
-from nbtriage._model_runtime.usage import NextRequestInputTokenLimits
 from nbtriage.bug.assessment import (
     BUG_ASSESSMENT_MAX_TOOL_CALLS,
     BUG_CONVERSATION_MAX_TOOL_CALLS,
@@ -309,9 +306,6 @@ class PydanticAIBugAssessmentAgent:
         max_output_tokens: int,
         max_requests: int | None = None,
         max_tool_calls: int = BUG_ASSESSMENT_MAX_TOOL_CALLS,
-        total_tokens_limit: int | None = None,
-        context_window_tokens: int | None = None,
-        cost_limit_usd: Decimal | None = None,
         model_settings: ModelSettings | None = None,
         expected_provider: str | None = None,
         expected_model: str | None = None,
@@ -327,12 +321,6 @@ class PydanticAIBugAssessmentAgent:
             raise BugAssessmentAgentError("max_requests must be positive")
         if max_tool_calls < 1:
             raise BugAssessmentAgentError("max_tool_calls must be positive")
-        if total_tokens_limit is not None and total_tokens_limit < 1:
-            raise BugAssessmentAgentError("total_tokens_limit must be positive")
-        if context_window_tokens is not None and context_window_tokens <= max_output_tokens:
-            raise BugAssessmentAgentError(
-                "context_window_tokens must be greater than max_output_tokens"
-            )
         if not model.profile.get("supports_tools", False):
             raise BugAssessmentAgentError("bug assessment requires model tool support")
         output_mode = model.profile.get("default_structured_output_mode", "tool")
@@ -342,11 +330,6 @@ class PydanticAIBugAssessmentAgent:
         self._max_output_tokens = max_output_tokens
         self._max_requests = max_requests
         self._max_tool_calls = max_tool_calls
-        self._total_tokens_limit = total_tokens_limit
-        self._per_request_input_tokens_limit = (
-            context_window_tokens - max_output_tokens if context_window_tokens is not None else None
-        )
-        self._cost_limit_usd = cost_limit_usd
         self._expected_provider = expected_provider
         # 保留旧参数名兼容调用方；请求名称仅用于诊断，不要求响应名称相同。
         self._requested_model_name = expected_model or model.model_name
@@ -390,7 +373,7 @@ class PydanticAIBugAssessmentAgent:
             ),
             retries={"tools": 1, "output": 1},
             end_strategy="early",
-            tool_timeout=min(timeout_seconds, 15.0),
+            tool_timeout=min(timeout_seconds, 30.0),
         )
         self._agent.instrument = current_agent_instrumentation()
         self._agent.output_validator(validate_bug_report)
@@ -444,7 +427,7 @@ class PydanticAIBugAssessmentAgent:
         self._last_trace_id = uuid4().hex
         with capture_run_messages() as captured_messages:
             try:
-                async with asyncio.timeout(self._timeout_seconds), AsyncExitStack() as stack:
+                async with AsyncExitStack() as stack:
                     if toolbox.source_tools is not None:
                         from nbtriage.readonly_tools.ty_navigation import navigation_session
 
@@ -466,8 +449,7 @@ class PydanticAIBugAssessmentAgent:
                             ),
                         ),
                         retries={"tools": 1, "output": 1},
-                        usage_limits=NextRequestInputTokenLimits(
-                            cost_limit=self._cost_limit_usd,
+                        usage_limits=UsageLimits(
                             request_limit=self._max_requests,
                             # 最多一次聊天窗口 + 配置的通用取证；最后两轮
                             # 分别留给最终输出和一次输出修正。
@@ -478,8 +460,6 @@ class PydanticAIBugAssessmentAgent:
                                 (self._max_tool_calls + BUG_CONVERSATION_MAX_TOOL_CALLS)
                                 * _PARALLEL_TOOL_CALL_LIMIT_FACTOR
                             ),
-                            total_tokens_limit=self._total_tokens_limit,
-                            per_request_input_tokens_limit=(self._per_request_input_tokens_limit),
                         ),
                     )
             except Exception as error:

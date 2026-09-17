@@ -56,11 +56,11 @@ class NBTriageConfig(BaseModel):
     )
     nbtriage_model_name: ModelName | None = None
     nbtriage_model_base_url: str | None = None
-    nbtriage_model_timeout_seconds: float = Field(default=60.0, gt=0, le=400)
+    nbtriage_model_timeout_seconds: float = Field(default=100.0, gt=0, le=400)
     nbtriage_model_max_output_tokens: int = Field(default=240, ge=1, le=8_192)
     nbtriage_public_guidance_max_output_tokens: int = Field(default=2_048, ge=256, le=8_192)
     nbtriage_behavior_max_output_tokens: int = Field(default=8_192, ge=256, le=8_192)
-    nbtriage_bug_timeout_seconds: float = Field(default=300.0, gt=0, allow_inf_nan=False)
+    nbtriage_bug_timeout_seconds: float = Field(default=100.0, gt=0, allow_inf_nan=False)
     nbtriage_bug_max_output_tokens: int = Field(default=16_384, ge=1)
     nbtriage_bug_max_tool_calls: int = Field(default=12, ge=1)
     nbtriage_agent_trace_enabled: bool = True

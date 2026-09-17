@@ -5,7 +5,6 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal
 from enum import StrEnum
 from time import monotonic_ns
 from typing import Annotated, Any, Literal, cast
@@ -16,6 +15,7 @@ from pydantic_ai import (
     ModelRetry,
     PromptedOutput,
     ToolOutput,
+    UsageLimits,
     capture_run_messages,
 )
 from pydantic_ai.capabilities import Toolset as ToolsetCapability
@@ -52,11 +52,14 @@ from nbtriage._model_runtime.diagnostics import (
 )
 from nbtriage._model_runtime.failures import is_transport_timeout
 from nbtriage._model_runtime.run_control import RunControlCapability, RunPhase
+from nbtriage._model_runtime.settings import (
+    MODEL_REQUEST_TIMEOUT_SECONDS as _MODEL_REQUEST_TIMEOUT_SECONDS,
+)
 from nbtriage._model_runtime.telemetry import (
     current_agent_instrumentation,
     record_agent_response_shape,
 )
-from nbtriage._model_runtime.usage import NextRequestTokenLimits, response_model_matches
+from nbtriage._model_runtime.usage import response_model_matches
 from nbtriage.capability.teaching._input_budget import TeachingInputPreparation
 from nbtriage.capability.teaching._prompt import (
     ANCHORED_INSTRUCTION as ANCHORED_INSTRUCTION,
@@ -144,9 +147,6 @@ class CapabilityModelAdapterError(CapabilityAnalysisError):
         self.detail_code = detail_code
 
 
-_MODEL_REQUEST_TIMEOUT_SECONDS = 150.0
-
-
 class _CapabilityRunDeadline:
     """把单元总时限转换成单调的正常、预留和最终提交阶段。"""
 
@@ -169,7 +169,7 @@ class _CapabilityRunDeadline:
 
     @property
     def request_timeout_seconds(self) -> float:
-        return min(_MODEL_REQUEST_TIMEOUT_SECONDS, self._total_seconds)
+        return _MODEL_REQUEST_TIMEOUT_SECONDS
 
     def phase(self) -> Literal["normal", "reserve", "finalize"]:
         remaining = self.remaining_seconds
@@ -895,8 +895,6 @@ class PydanticAICapabilityAnalysisClient:
         tool_runtime_factory: CapabilityAnalysisToolRuntimeFactory | None = None,
         max_requests: int = 10,
         max_tool_calls: int = 10,
-        total_tokens_limit: int | None = None,
-        cost_limit_usd: Decimal = Decimal("0.05"),
         capture_diagnostics: bool = False,
         context_window: int | None = None,
     ) -> None:
@@ -910,22 +908,13 @@ class PydanticAICapabilityAnalysisClient:
                 "max_output_tokens must be positive",
                 reason_code=CapabilityModelAdapterReason.BUDGET,
             )
-        if (
-            max_requests < 1
-            or max_tool_calls < 0
-            or (total_tokens_limit is not None and total_tokens_limit < 1)
-        ):
+        if max_requests < 1 or max_tool_calls < 0:
             raise CapabilityModelAdapterError(
                 "capability Agent budgets are invalid",
                 reason_code=CapabilityModelAdapterReason.BUDGET,
             )
         if context_window is not None and context_window < 1:
             raise CapabilityModelAdapterError("context_window must be positive")
-        if cost_limit_usd <= 0:
-            raise CapabilityModelAdapterError(
-                "cost_limit_usd must be positive",
-                reason_code=CapabilityModelAdapterReason.BUDGET,
-            )
         if tool_runtime_factory is not None and not model.profile.get("supports_tools", False):
             raise CapabilityModelAdapterError("capability navigation requires model tool support")
         output_mode = model.profile.get("default_structured_output_mode", "tool")
@@ -948,8 +937,6 @@ class PydanticAICapabilityAnalysisClient:
         self._tool_runtime_factory = tool_runtime_factory
         self._max_requests: int | None = max_requests
         self._max_tool_calls: int | None = max_tool_calls
-        self._total_tokens_limit: int | None = total_tokens_limit
-        self._cost_limit_usd: Decimal | None = cost_limit_usd
         self._last_validation_failure: str | None = None
         self._last_validation_detail_code: str | None = None
         self._alias_retry_used = False
@@ -997,7 +984,7 @@ class PydanticAICapabilityAnalysisClient:
             ),
             retries={"tools": 0, "output": 2},
             end_strategy="early",
-            tool_timeout=min(timeout_seconds, 15.0),
+            tool_timeout=min(timeout_seconds, 30.0),
             capabilities=[self._input_preparation],
         )
         self._agent.instrument = current_agent_instrumentation()
@@ -1117,8 +1104,6 @@ class PydanticAICapabilityAnalysisClient:
         self._max_output_tokens = None
         self._max_requests = None
         self._max_tool_calls = None
-        self._total_tokens_limit = None
-        self._cost_limit_usd = None
         model_settings = self._agent.model_settings
         if callable(model_settings):
             raise CapabilityModelAdapterError(
@@ -1181,9 +1166,8 @@ class PydanticAICapabilityAnalysisClient:
         normal_usage: RunUsage | None = None
         with capture_run_messages() as captured_messages:
             try:
-                async with asyncio.timeout(run_deadline.remaining_seconds):
-                    with self._agent.parallel_tool_call_execution_mode("sequential"):
-                        result = await self._agent.run(
+                with self._agent.parallel_tool_call_execution_mode("sequential"):
+                    result = await self._agent.run(
                             _build_payload(request),
                             model=self._diagnostic_model,
                             instructions=_instructions_for_request(request),
@@ -1204,19 +1188,17 @@ class PydanticAICapabilityAnalysisClient:
                                 if analysis_toolsets is not None
                                 else None
                             ),
-                            usage_limits=NextRequestTokenLimits(
-                                cost_limit=self._cost_limit_usd,
+                            usage_limits=UsageLimits(
                                 request_limit=self._max_requests,
                                 output_tokens_limit=(
                                     None
                                     if self._max_output_tokens is None or self._max_requests is None
                                     else self._max_output_tokens * self._max_requests
                                 ),
-                                total_tokens_limit=self._total_tokens_limit,
                             ),
                         )
-                        normal_output = result.output
-                        normal_usage = result.usage
+                    normal_output = result.output
+                    normal_usage = result.usage
             except asyncio.CancelledError as error:
                 cancelled_run = RunCancelled.from_cancellation(error)
                 if cancelled_run is not None:
@@ -1251,11 +1233,7 @@ class PydanticAICapabilityAnalysisClient:
                     raise CapabilityModelAdapterError(
                         "capability model request timed out",
                         reason_code=CapabilityModelAdapterReason.TIMEOUT,
-                        detail_code=(
-                            "unit_deadline"
-                            if run_deadline.remaining_seconds <= 0
-                            else "model_request_timeout"
-                        ),
+                        detail_code="model_request_timeout",
                     ) from error
             except ModelAPIError as error:
                 if _error_chain_contains_timeout(error):

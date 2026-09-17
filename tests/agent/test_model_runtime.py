@@ -18,7 +18,7 @@ def test_model_config_uses_only_pydantic_ai_model_identity() -> None:
     assert "nbtriage_model_backend" not in NBTriageConfig.model_json_schema()["properties"]
     assert config.nbtriage_model_name is None
     assert config.nbtriage_model_base_url is None
-    assert config.nbtriage_model_timeout_seconds == 60
+    assert config.nbtriage_model_timeout_seconds == 100
     assert config.nbtriage_model_max_output_tokens == 240
     assert config.nbtriage_public_guidance_max_output_tokens == 2_048
     assert config.nbtriage_behavior_max_output_tokens == 8_192

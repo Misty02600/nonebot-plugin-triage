@@ -1020,8 +1020,6 @@ def test_unbounded_maintenance_diagnostics_do_not_restore_removed_preload_target
     assert client._max_output_tokens is None
     assert client._max_requests is None
     assert client._max_tool_calls is None
-    assert client._total_tokens_limit is None
-    assert client._cost_limit_usd is None
     assert not hasattr(client._input_preparation, "target")
 
 
@@ -1065,48 +1063,7 @@ def test_context_overflow_is_distinct_from_budget_and_not_retried(body, expected
     assert len(client.diagnostic_input_estimates) == 1
 
 
-def test_total_token_limit_accepts_received_valid_response_but_blocks_further_correction() -> None:
-    def run(*, repair_second_response: bool):
-        provider_calls = 0
-
-        def respond(_messages, _info: AgentInfo) -> ModelResponse:
-            nonlocal provider_calls
-            provider_calls += 1
-            output = _output()
-            if provider_calls == 1 or not repair_second_response:
-                entry = cast(dict[str, object], cast(list[object], output["entries"])[0])
-                entry["entry_id"] = "other"
-            return ModelResponse(
-                parts=[TextPart(json.dumps(output, ensure_ascii=False))],
-                usage=RequestUsage(input_tokens=60, output_tokens=5),
-                finish_reason="stop",
-            )
-
-        client = PydanticAICapabilityAnalysisClient(
-            FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
-            max_output_tokens=240,
-            total_tokens_limit=100,
-        )
-        return client, lambda: provider_calls
-
-    valid_client, valid_calls = run(repair_second_response=True)
-    result = asyncio.run(CapabilityAnalysisService(valid_client).analyze(_request()))
-
-    assert result.entries[0].entry_id == "root"
-    assert valid_calls() == 2
-    assert valid_client.last_usage is not None
-    assert valid_client.last_usage.total_tokens == 130
-
-    invalid_client, invalid_calls = run(repair_second_response=False)
-    with pytest.raises(CapabilityModelAdapterError) as error_info:
-        asyncio.run(CapabilityAnalysisService(invalid_client).analyze(_request()))
-
-    assert error_info.value.reason_code is CapabilityModelAdapterReason.BUDGET
-    assert error_info.value.detail_code == "total_tokens_limit"
-    assert invalid_calls() == 2
-
-
-def test_large_actual_input_allows_correction_within_total_budget() -> None:
+def test_large_actual_input_allows_correction() -> None:
     def run(*, repair_second_response: bool):
         provider_calls = 0
 
@@ -1140,7 +1097,6 @@ def test_large_actual_input_allows_correction_within_total_budget() -> None:
         client = PydanticAICapabilityAnalysisClient(
             FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
             max_output_tokens=240,
-            total_tokens_limit=100_000,
             tool_runtime_factory=lambda _request: runtime,
         )
         return client, lambda: provider_calls
@@ -1463,7 +1419,6 @@ def test_parallel_navigation_batch_respects_budget_then_finalizes() -> None:
         max_output_tokens=240,
         max_requests=5,
         max_tool_calls=2,
-        total_tokens_limit=1_000,
         tool_runtime_factory=lambda _request: runtime,
     )
 
@@ -2345,30 +2300,23 @@ def test_length_finish_reason_is_classified_as_output_truncated() -> None:
 
 def test_request_timeout_is_classified_separately_from_transport_failure() -> None:
     async def respond(_messages: object, _info: AgentInfo) -> ModelResponse:
-        await asyncio.sleep(0.5)
-        return _native_response()
+        raise TimeoutError("provider request timed out")
 
     client = PydanticAICapabilityAnalysisClient(
         FunctionModel(respond, model_name="fixture-model", profile=_NATIVE_PROFILE),
         max_output_tokens=240,
         timeout_seconds=0.1,
     )
-    lifecycle: list[dict[str, object]] = []
     client.enable_maintenance_diagnostics()
-    client.set_maintenance_lifecycle_sink(lifecycle.append)
 
     with pytest.raises(CapabilityModelAdapterError) as error_info:
         asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
 
     assert error_info.value.reason_code is CapabilityModelAdapterReason.TIMEOUT
     assert "timed out" in str(error_info.value)
-    assert [event["phase"] for event in lifecycle] == [
-        "provider_request_started",
-        "provider_request_cancelled",
-    ]
 
 
-def test_unit_timeout_caps_each_model_request_at_150_seconds() -> None:
+def test_unit_timeout_caps_each_model_request_at_100_seconds() -> None:
     observed_settings: list[dict[str, object]] = []
 
     def respond(_messages: object, info: AgentInfo) -> ModelResponse:
@@ -2383,9 +2331,9 @@ def test_unit_timeout_caps_each_model_request_at_150_seconds() -> None:
 
     asyncio.run(CapabilityAnalysisService(client).analyze(_request()))
 
-    assert observed_settings[0]["timeout"] == 150
+    assert observed_settings[0]["timeout"] == 100
     assert client.diagnostic_timeout_seconds == 300
-    assert client.diagnostic_request_timeout_seconds == 150
+    assert client.diagnostic_request_timeout_seconds == 100
 
 
 def test_completed_final_result_can_be_revalidated_after_cancellation() -> None:
