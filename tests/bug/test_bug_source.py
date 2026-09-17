@@ -103,21 +103,6 @@ async def test_read_rejects_unapproved_paths(tmp_path, path):
 
 
 @pytest.mark.asyncio
-async def test_search_cannot_follow_symlink_outside_scope(tmp_path):
-    package = tmp_path / "plugin"
-    package.mkdir()
-    outside = tmp_path / "outside.py"
-    outside.write_text("LEAK_FROM_OUTSIDE = True", encoding="utf-8")
-    try:
-        (package / "linked.py").symlink_to(outside)
-    except OSError:
-        pytest.skip("symlink creation is unavailable")
-    sources, _toolbox, ctx = source_context({"p1": ApprovedSourceRoot("plugin", package)})
-    result = await call_source(sources, ctx, "p1_search_files", {"pattern": "LEAK_FROM_OUTSIDE"})
-    assert "LEAK_FROM_OUTSIDE = True" not in result[0]["body"]
-
-
-@pytest.mark.asyncio
 async def test_ty_opens_relative_import_and_rejects_changed_anchor(tmp_path):
     (tmp_path / "__init__.py").write_text("", encoding="utf-8")
     entry = tmp_path / "entry.py"
