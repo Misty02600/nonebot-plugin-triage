@@ -337,7 +337,6 @@ def _family_static_callable_evidence(
                     f"family-callable:{function_name}@{function.lineno}",
                 ),
                 source_kind="python_family_callable",
-                preload_optional=True,
                 content=content,
                 revision=parsed.revision,
                 locator=_target_plugin_locator(source.locator, function_name, function.lineno),

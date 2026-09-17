@@ -1139,32 +1139,15 @@ def test_large_actual_input_allows_correction_within_total_budget() -> None:
     assert invalid_calls() == 3
 
 
-@pytest.mark.parametrize("kind", ["optional", "assignment", "required", "referenced"])
-def test_full_input_budget_removes_only_optional_preloads_before_sending(kind: str) -> None:
+def test_full_input_budget_sends_oversized_first_request_without_trimming() -> None:
     request = _request()
     large = CapabilityEvidenceUnit(
         "large-helper",
-        "python_assignment" if kind == "assignment" else "python_function",
+        "python_function",
         "x" * 270_000,
         "sha256:large",
-        preload_optional=kind != "required",
     )
-    request = replace(
-        request,
-        evidence_units=(*request.evidence_units, large),
-        gate_candidates=(
-            (
-                CapabilityGateCandidate(
-                    "gate-large",
-                    CapabilityGateKind.RULE,
-                    ("root",),
-                    (large.evidence_id,),
-                ),
-            )
-            if kind == "referenced"
-            else ()
-        ),
-    )
+    request = replace(request, evidence_units=(*request.evidence_units, large))
     sent: list[dict[str, Any]] = []
 
     def respond(messages, info: AgentInfo) -> ModelResponse:
@@ -1177,20 +1160,7 @@ def test_full_input_budget_removes_only_optional_preloads_before_sending(kind: s
         )
         assert isinstance(prompt, str)
         sent.append(json.loads(prompt))
-        output = _output()
-        if kind == "referenced":
-            output = {
-                "knowledge_enabled": False,
-                "entries": [],
-                "gate_resolutions": [
-                    {
-                        "candidate_id": "gate-large",
-                        "outcome": "unresolved",
-                        "evidence_ids": [large.evidence_id],
-                    }
-                ],
-            }
-        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, output)])
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, _output())])
 
     client = PydanticAICapabilityAnalysisClient(
         FunctionModel(respond, model_name="fixture-model", profile=_TOOL_PROFILE),
@@ -1198,23 +1168,16 @@ def test_full_input_budget_removes_only_optional_preloads_before_sending(kind: s
     )
     client.enable_maintenance_diagnostics()
     result = asyncio.run(client.analyze(request))
-    assert result.knowledge_enabled == (kind != "referenced")
+    assert result.knowledge_enabled
     assert len(sent) == 1
-    if kind in {"optional", "assignment"}:
-        assert sent[0]["allowed_evidence_ids"] == ["evidence-handler"]
-        assert all(unit["evidence_id"] != large.evidence_id for unit in sent[0]["evidence_units"])
-    else:
-        assert large.evidence_id in sent[0]["allowed_evidence_ids"]
-        assert (
-            next(u for u in sent[0]["evidence_units"] if u["evidence_id"] == large.evidence_id)[
-                "content"
-            ]
-            == large.content
-        )
+    assert large.evidence_id in sent[0]["allowed_evidence_ids"]
+    assert (
+        next(u for u in sent[0]["evidence_units"] if u["evidence_id"] == large.evidence_id)["content"]
+        == large.content
+    )
     estimate = client.diagnostic_input_estimates[0]
-    assert estimate["estimated_input_tokens_before"] is not None
-    assert estimate["estimated_input_tokens_before"] > 64_000
-    assert estimate["removed_optional_preloads"] == (1 if kind in {"optional", "assignment"} else 0)
+    assert estimate["estimated_input_tokens"] is not None
+    assert estimate["estimated_input_tokens"] > 64_000
 
 
 @pytest.mark.parametrize("window", [None, 5_000, 100_000])
@@ -1295,7 +1258,6 @@ def test_input_estimate_keeps_large_tool_history_and_allows_final_result() -> No
     assert calls == 2
     estimated_input = client.diagnostic_input_estimates[-1]["estimated_input_tokens"]
     assert estimated_input is not None and estimated_input > 64_000
-    assert client.diagnostic_input_estimates[-1]["removed_optional_preloads"] == 0
 
 
 def test_input_estimate_includes_instructions_and_visible_tool_schema() -> None:

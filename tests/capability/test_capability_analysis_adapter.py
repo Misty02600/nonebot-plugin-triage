@@ -729,7 +729,6 @@ async def handle(scene):
     bindings = [unit for unit in request.evidence_units if unit.source_kind == "python_assignment"]
     assert len(bindings) == 1
     assert '"channel_text"' in bindings[0].content
-    assert bindings[0].preload_optional
     sent = []
 
     def respond(messages, info):
@@ -1862,7 +1861,6 @@ def test_long_handler_is_kept_complete_until_request_budgeting(
     request = build_capability_analysis_request(record, ConfigValuePolicy())
     handler = next(unit for unit in request.evidence_units if "x" * 8_000 in unit.content)
     assert handler.content.endswith("'\n") or handler.content.endswith("'")
-    assert not handler.preload_optional
 
 
 @pytest.mark.parametrize("dynamic", ["none", "both", "second", "mismatch"])

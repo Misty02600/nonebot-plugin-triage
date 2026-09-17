@@ -7,7 +7,7 @@ import sys
 import textwrap
 from collections import deque
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import StrEnum
 from itertools import chain
 from pathlib import Path
@@ -311,7 +311,6 @@ def _append_bounded_source_slices(
                 call=call,
                 definition=definition,
                 known=known,
-                preload_optional=call.terminal_name not in gate_names,
             )
             if resolved is not None and not external and depth < _MAX_SOURCE_SLICE_DEPTH:
                 queued.append((resolved, depth + 1))
@@ -359,7 +358,6 @@ def _append_direct_binding_evidence(
                     "assignment",
                     span.start.line,
                 ),
-                preload_optional=True,
             )
         )
         known.add(evidence_id)
@@ -374,20 +372,10 @@ def _append_call_definition(
     call: _CallSite,
     definition: DefinitionLocation,
     known: set[tuple[str, str, int]],
-    preload_optional: bool = False,
 ) -> tuple[_FunctionSlice | None, bool]:
     identity = (definition.root_name, definition.relative_path, definition.line)
     external = not _definition_belongs_to_plugin(navigation, definition)
     if identity in known:
-        if not preload_optional:
-            resolved = _cached_definition_slice(cache, navigation, definition)
-            if resolved is not None:
-                evidence_id = _function_slice_evidence(
-                    analysis_unit_id, navigation, resolved, external=external
-                ).evidence_id
-                for index, unit in enumerate(evidence_units):
-                    if unit.evidence_id == evidence_id and unit.preload_optional:
-                        evidence_units[index] = replace(unit, preload_optional=False)
         return None, external
     known.add(identity)
     external_mode = _external_definition_mode(definition) if external else None
@@ -410,7 +398,6 @@ def _append_call_definition(
                 navigation,
                 resolved,
                 external=external,
-                preload_optional=preload_optional,
             )
         )
         return resolved, external
@@ -452,7 +439,6 @@ def _function_slice_evidence(
     resolved: _FunctionSlice,
     *,
     external: bool,
-    preload_optional: bool = False,
 ) -> CapabilityEvidenceUnit:
     symbol = resolved.full_name or resolved.name
     if external:
@@ -475,7 +461,6 @@ def _function_slice_evidence(
         content=resolved.content,
         revision=f"sha256:{resolved.source_revision}",
         locator=locator,
-        preload_optional=preload_optional,
     )
 
 

@@ -46,10 +46,7 @@ Startswith、Endswith、Fullmatch、Keywords、Regex 与 IsType Rule；这不是
 版本或绑定冲突不回退到较弱匹配；动态入口未知也不能当成与当前入口不同。request v88 收敛此边界，不做通用数据流分析。
 request v89 移除单函数/单份 Evidence 8,000 字符、初始源码总字符数、目标函数数和已解析模块数的独立门槛。
 Handler、wrapper、注册材料及直接 gate/参数依赖优先完整保留；普通调用与静态 family Callable 的实现是可选
-预载。每次发送前复用 Harness 文本估算，并补计当前工具与结构化输出 Schema。request v92 将 64k 改为首包
-可选预载的整理阈值，不作为单次输入硬上限或模型容量声明。首包超出时只移除未被结构化事实引用的可选预载；
-必要材料及后续历史即使仍超出估算阈值也不拒绝、不截断。维护 capture 保存逐请求估算、整理阈值和移除数量，
-与 Provider 实际用量分开。明确的 Provider 上下文超限记录为 HTTP/context_length_exceeded，未知 400 不猜测；
+预载。每次发送前复用 Harness 文本估算，并补计当前工具与结构化输出 Schema。request v115 移除 64k 首包整理阈值与可选预载移除；请求不再因估算修剪或拒绝，仅保留发送前的窗口×0.9 硬校验，并记录逐请求估算参考。维护 capture 保存逐请求估算，与 Provider 实际用量分开。明确的 Provider 上下文超限记录为 HTTP/context_length_exceeded，未知 400 不猜测；
 正式刷新不自动重跑整个单元。已完整到达的最终候选仍可校验。384k 单元累计预算、时间/请求/工具限制和本地文件/AST
 资源保护保留。自动普通调用展开仍为两层，不因取消字符门槛而递归展开整个依赖树。
 

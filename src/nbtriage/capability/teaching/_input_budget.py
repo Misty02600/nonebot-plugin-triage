@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 
 from pydantic_ai.capabilities import AbstractCapability
@@ -75,10 +74,9 @@ def _estimate_anchored_input(request: ModelRequestContext) -> int:
 
 
 class TeachingInputPreparation(AbstractCapability[CapabilityAnalysisRequest]):
-    """整理首包可选预载，并按模型窗口和输出预留检查完整请求；不截断必要资料。"""
+    """按模型窗口和输出预留检查完整请求；不发送时拒绝并保留估算记录。"""
 
-    def __init__(self, target: int | None, *, context_window: int | None = None) -> None:
-        self.target = target
+    def __init__(self, *, context_window: int | None = None) -> None:
         self.context_window = context_window
         self.estimates: list[dict[str, int | None]] = []
 
@@ -87,13 +85,7 @@ class TeachingInputPreparation(AbstractCapability[CapabilityAnalysisRequest]):
         ctx: RunContext[CapabilityAnalysisRequest],
         request_context: ModelRequestContext,
     ) -> ModelRequestContext:
-        target = self.target
         estimated = estimate_request_tokens(request_context)
-        estimated_before = estimated
-        removed = 0
-        if target is not None and estimated > target and ctx.usage.requests == 0:
-            removed = self._trim_preloads(ctx.deps, request_context, target)
-        estimated = estimate_request_tokens(request_context) if removed else estimated
         window = (
             self.context_window
             or resolve_context_window(request_context.model)
@@ -104,10 +96,7 @@ class TeachingInputPreparation(AbstractCapability[CapabilityAnalysisRequest]):
         self.estimates.append(
             {
                 "request_index": ctx.usage.requests + 1,
-                "estimated_input_tokens_before": estimated_before,
                 "estimated_input_tokens": estimated,
-                "preload_token_target": target,
-                "removed_optional_preloads": removed,
                 "context_window": window,
                 "output_reserve": output_reserve,
             }
@@ -119,52 +108,3 @@ class TeachingInputPreparation(AbstractCapability[CapabilityAnalysisRequest]):
         if window is not None and estimated + output_reserve > window * 0.9:
             raise UsageLimitExceeded("teaching context estimate exceeds window with output reserve")
         return request_context
-
-    @staticmethod
-    def _trim_preloads(
-        request: CapabilityAnalysisRequest, context: ModelRequestContext, target: int
-    ) -> int:
-        prompt = next(
-            (
-                part
-                for message in context.messages
-                if isinstance(message, ModelRequest)
-                for part in message.parts
-                if isinstance(part, UserPromptPart) and isinstance(part.content, str)
-            ),
-            None,
-        )
-        if prompt is None or not isinstance(prompt.content, str):
-            return 0
-        payload = json.loads(prompt.content)
-        # 注册、Runtime、配置及已被结构化事实引用的材料不能作为预载移除。
-        protected = {
-            evidence_id
-            for item in (
-                *request.family_members,
-                *request.gate_candidates,
-                *request.fixed_constraints,
-            )
-            for evidence_id in item.evidence_ids
-        } | {
-            evidence_id
-            for item in request.invocations
-            for evidence_id in item.shortcut_evidence_ids
-        }
-        optional = [
-            unit.evidence_id
-            for unit in reversed(request.evidence_units)
-            if unit.preload_optional and unit.evidence_id not in protected
-        ]
-        removed = 0
-        for evidence_id in optional:
-            payload["evidence_units"] = [
-                unit for unit in payload["evidence_units"] if unit["evidence_id"] != evidence_id
-            ]
-            payload["allowed_evidence_ids"].remove(evidence_id)
-            removed += 1
-            # 原地更新原始消息，诊断和后续请求都保留实际发送的首包。
-            prompt.content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-            if estimate_request_tokens(context) <= target:
-                break
-        return removed

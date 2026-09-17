@@ -94,7 +94,6 @@ from nbtriage.capability.teaching.analysis import (
     validate_capability_analysis_output,
 )
 from nbtriage.capability.teaching.annotations import (
-    CAPABILITY_ANNOTATION_PRELOAD_TOKEN_TARGET,
     CAPABILITY_ANNOTATION_PROMPT_ID,
     CapabilityAnnotationError,
     CapabilityAnnotationProjectionError,
@@ -995,7 +994,6 @@ class PydanticAICapabilityAnalysisClient:
             else _AnalysisOutput
         )
         self._input_preparation = TeachingInputPreparation(
-            CAPABILITY_ANNOTATION_PRELOAD_TOKEN_TARGET,
             context_window=context_window,
         )
         self._agent: Agent[CapabilityAnalysisRequest, _AnalysisOutput] = Agent(

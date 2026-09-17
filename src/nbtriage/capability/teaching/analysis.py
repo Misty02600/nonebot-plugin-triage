@@ -334,8 +334,6 @@ class CapabilityEvidenceUnit:
     content: str = field(repr=False)
     revision: str
     locator: str | None = None
-    # 仅用于首包选择，不改变 Evidence 身份，也不表示其业务语义可以忽略。
-    preload_optional: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _bounded_text(self.evidence_id, "evidence_id", max_length=128)
