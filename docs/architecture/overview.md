@@ -50,8 +50,8 @@ partial 与冲突，只返回 `bug / not_bug / unknown`，不执行外部副作�
 LocalStore 插件 cache 解析内部 SQLite 位置。制品扫描、已加载 Plugin / Matcher / Alconna 观察、源码摘要和
 FTS5 原子构建在线程中执行，不阻塞 Bot 启动关键路径。同一轮制品解析只枚举一次 distribution package map。
 `restricted` 保存 SUPERUSER 与内部管理能力；本地检索组件已支持普通域与维护者域。合格 assessment 选中
-guidance 后，普通用户只读当前 adapter 域内自动或显式确定公开的能力，不检查身份或回退 restricted；选中
-behavior exploration 后，私聊、群聊和频道才按当前 Bot / Event 的请求者执行模型外 `SUPERUSER` 鉴权。
+guidance 后，普通用户只读当前 adapter 域内自动或显式确定公开的能力，不检查身份或回退 restricted；
+行为探索/维护者会话只在 `私聊 + SUPERUSER` 时于语义路由前直接进入，其他场景一律不执行。
 当前 schema v2 直接保存每条能力记录的披露、平台、分析问题与约束；
 不会从 handler 源码推断 Matcher 角色或跨 Matcher 支撑关系。动态或被动入口若缺少可确定展示字段，继续保留
 `dynamic_entry` 并退出普通 ServingView，而不是猜测用户能力身份。
@@ -141,7 +141,8 @@ LLM 只能提出引用既有 Evidence ID 与 revision 的语义 Claim，不能�
 关系见 [ADR-0034](../adr/history/0034-distinguish-matchers-from-user-observable-capabilities.md)。
 
 项目已经实现面向已鉴权维护者的全局项目对话：每条消息是一次新的 Pydantic AI 只读 Agent Run，整个插件
-部署只有一个跨 Bot、Adapter、群聊和私聊共享的会话。当前可信场景每轮注入但不参与分区；Capability Shadow
+部署只有一个全局会话，所有 Bot 和 Adapter 共享历史，但只在 `私聊 + SUPERUSER` 时由语义前的直接准入进入。
+当前可信场景每轮注入但不参与分区；Capability Shadow
 检索和项目根目录只读文件工具可用于核对代码、配置投影和日志，凭据类路径继续硬拒绝。
 
 LocalStore 的 `maintainer-conversation.json` 是会话真值，保存 Pydantic AI 原生消息和 Provider 续接元数据。
@@ -149,10 +150,11 @@ Harness 根据真实上下文窗口比例压缩旧历史；文件通过同目录
 普通 Support Thread 的最多两次补充合同不变。维护者会话的状态、停止与新对话合同见
 [ADR-0128](../adr/0128-use-native-message-snapshots-for-maintainer-conversations.md)。
 
-已采纳的投递合同还允许私聊、群聊和频道请求进入同一 `triage` 意图分流，该入口场景边界现已落实。行为探索在针对当前 Bot / Event
-完成模型外 `SUPERUSER` 鉴权后，可以把获准披露且已净化的完整解释返回到原始提问会话；系统不再按房间
-成员构成增加 allowlist、旁观者鉴权或强制转私聊，由请求者选择合适的会话。这不放宽秘密过滤或远端模型
-数据授权。当前 Behavior 分支在每次模型请求和工具执行前重新鉴权，
+已采纳的投递合同允许私聊、群聊和频道请求进入同一 `triage` 意图分流，但行为探索/维护者会话只准入
+`私聊 + SUPERUSER`：准入后任何 `triage` 内容都在语义路由之前直接进入全局维护者会话，Agent 可以把获准披露
+且已净化的完整解释返回到私聊；群聊、频道和私聊非 SUPERUSER 不执行维护者会话。语义 router 若仍输出
+`behavior_exploration`，带 `reported_observation` 的转入 Bug 判定，否则明确拒绝。这不放宽秘密过滤或远端模型
+数据授权。Behavior 分支在每次模型请求和工具执行前重新鉴权，
 详见 [ADR-0028](../adr/0028-allow-private-triage-and-superuser-request-context-replies.md)。
 
 ## 核心能力与当前命令入口
@@ -187,7 +189,7 @@ Harness 根据真实上下文窗口比例压缩旧历史；文件通过同目录
 | OneBot V11 outgoing reference Provider | 从 Matcher 内成功的群发送结果补齐运行证据 correlation | OneBot 是可选依赖；只读路由字段和 message ID；不结算 Thread，不保存完整 API data / result 或被回复正文 | `src/nonebot_plugin_triage/onebot_v11_references.py` |
 | `SupportThreadRecord` / scope Turn coordinator | 以 HMAC scope 保存首轮有界 request / Reply / correlation，并只允许下一条同 scope 显式 `triage` 补充一次 | 单进程、有界、TTL 后逻辑失效并在下一次协调器操作时惰性清理；HMAC 绑定 adapter、Bot、场景和 actor；Reply 与 Receipt 不选择 Thread；只有发送成功才等待补充，第二轮、终局 action、异常或发送失败都关闭；不跨重启 | `src/nbtriage/support/threads.py`、`src/nonebot_plugin_triage/support/threads.py`、`src/nonebot_plugin_triage/support/responses.py` |
 | Pydantic AI maintainer conversation | 让已鉴权维护者跨入口持续交流项目内容；每条消息是新 Run，Run 完成不关闭全局会话 | LocalStore JSON 保存原生消息；Harness 比例压缩；十五次请求与六十次工具保险丝，第十三次请求后最多提示一次收敛，第十五次请求动态 `tool_choice=none`；每轮及每次工具执行重新鉴权；项目文件与 Capability Shadow 只读；全局非排队 admission；停止保留快照，新对话整体替换 | `src/nbtriage/behavior/conversation_agent.py`、`src/nonebot_plugin_triage/behavior/conversation_store.py`、`src/nonebot_plugin_triage/behavior/contracts.py`、`src/nonebot_plugin_triage/behavior/evidence.py`、`src/nonebot_plugin_triage/behavior/service.py`、`src/nonebot_plugin_triage/behavior/runtime.py`、`src/nonebot_plugin_triage/handlers.py`、[ADR-0128](../adr/0128-use-native-message-snapshots-for-maintainer-conversations.md) |
-| Alconna `triage` Matcher / support intake adapter | 每轮以必选指令接收自由文本；先 Claim 普通 scope Thread，再让 Semantic 联合判断当前文字、公开目录与有界 Reply / 补充上下文；Behavior 进入全局维护者会话 | Alconna / UniSeg 提供命令、Reply / Target 和发送抽象；普通 scope lease 判断归属、TTL、最多两次补充与并发；Behavior 先鉴权并使用全局 admission；私聊、群聊和频道每轮注入当前场景；Reply message ID 只作独立运行 correlation | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support/intake.py` |
+| Alconna `triage` Matcher / support intake adapter | 每轮以必选指令接收自由文本；先 Claim 普通 scope Thread，再让 Semantic 联合判断当前文字、公开目录与有界 Reply / 补充上下文；Behavior 进入全局维护者会话 | Alconna / UniSeg 提供命令、Reply / Target 和发送抽象；普通 scope lease 判断归属、TTL、最多两次补充与并发；私聊 + SUPERUSER 时在限流后、语义前直接进入全局维护者会话，其他场景不进入，语义输出 `behavior_exploration` 的非准入场景带 `reported_observation` 转 Bug 判定、否则拒绝；每次模型请求和工具执行前重新鉴权；Reply message ID 只作独立运行 correlation | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support/intake.py` |
 | `SupportAssessmentRequest` / `SupportSemanticAssessment` | 冻结语义 assessment v8 的联合请求投影和受限多标签输出 | 请求包含版本号、当前规范化文字、public catalog、直接 Reply 与有界补充问答；输出包含四类 goal、独立 observation 与 public plugin selection，或澄清 / unsupported；不包含 action、回答或副作用授权 | `src/nbtriage/support/semantics.py` |
 | semantic Agent output client / assessment service / support router | 直接以 `SupportSemanticAssessment` 作为 Pydantic AI Agent `output_type`；把秘密、超时、传输失败和非法输出收敛为 abstain，再映射为唯一 action | 中文 `support-semantic-v8-catalog-prompt-v5-zh`；当前资格集合为空，所有 Pydantic AI 可解析组合均标记未验证 | `src/nbtriage/support/_model_adapter.py`、`src/nonebot_plugin_triage/support/semantic_runtime.py`、`src/nonebot_plugin_triage/support/semantic.py`、`src/nbtriage/support/routing.py` |
 | Bug assessment coordinator / bounded Agent | 沿用已选插件和公开初检，预加载公开事实、Thread 与直接 Reply；仍未解决时按需展开成员目录并选择聊天、运行、日志、源码、设计和部署证据，最后确定性形成三值结论 | OneBot 群历史由当前 Bot / 群模型外绑定并一次读取最新最多 30 条，精确 Reply 独立预装；没有历史 Provider 时不暴露聊天工具；默认 15 请求 / 1 次独立聊天 / 12 次通用证据 / 300 秒 / 16,384 单次 output，不设累计 token 或默认美元上限；第 10 次通用证据或第 12 次已完成请求后最多提示一次收敛，证据耗尽或第 13 次已完成请求后以 `tool_choice=none` 收尾并保留输出纠正。工具 schema 按初始范围稳定，超额调用由执行层拒绝。聊天正文、必要 ID 与角色不遮蔽，源码 / 日志仍清理；模型候选不能写问题库或披露内部证据。中文 Prompt v23 与当前预算尚未重新通过 held-out，旧结果只作历史证据 | `src/nbtriage/bug/assessment.py`、`src/nbtriage/bug/_agent.py`、`src/nbtriage/bug/conversation.py`、`src/nbtriage/bug/logs.py`、`src/nbtriage/bug/source.py`、`src/nbtriage/bug/design.py`、`src/nonebot_plugin_triage/bug/assessment.py`、`src/nonebot_plugin_triage/bug/onebot_v11_conversation.py`、[ADR-0145](../adr/0145-combine-configurable-bug-budgets-with-finalization.md)、[ADR-0146](../adr/0146-remove-cumulative-budgets-from-bug-and-maintainer-agents.md) |
@@ -228,7 +230,7 @@ NoneBot public hooks → event-state correlation → runtime observer → bounde
                                       └─→ Reply + bounded conversation/runtime/log/    │
                                           source/design/deployment Agent → reconciler ─┴─→ safe three-way reply
 ordinary scope Thread → first unresolved response sent → next explicit triage consumes one supplement → close
-maintainer conversation ─→ SUPERUSER check ─→ global native-message session ─→ read-only project tools
+maintainer conversation ─→ 私聊 + SUPERUSER 直接准入 ─→ global native-message session ─→ read-only project tools
                                                         └─→ Pydantic AI ReAct → reconciler → explanation artifact
 regular capability query ─→ current-adapter public ID domain ─→ SQL FTS ───────→ UniMessage guidance
 triage request text → semantic assessment → trusted minimal signals → deterministic router
@@ -286,7 +288,7 @@ current runtime capability record → bounded handler/config EvidenceUnit
 | OneBot V11 outgoing reference provider | 从 Matcher 内成功群发送结果提取运行证据 message ID | OneBot Adapter 由宿主安装注册，不是插件依赖或 extra；只在模块存在时延迟加载；缺失时仅停用此增强，不读取被回复正文或执行外部查询 | Provider 本地丢弃计数；映射只进入通用运行证据引用索引 | `src/nonebot_plugin_triage/onebot_v11_references.py` |
 | Support Thread store / scope Turn coordinator | 保存首轮有界 request / Reply / correlation、已完成补充和当前待答问题；同 scope 下一条显式 `triage` 原子消费补充，让一个 scope 同时只有一个处理轮 | 有界内存、idle / absolute TTL；HMAC 绑定 adapter、Bot、场景和 actor；不依赖 Reply / Receipt，最多两次补充，终局或失败关闭，不跨重启 | `SupportThreadInitialContext`、scope lease 与 HMAC scope 索引；不保存邻近历史或原始平台身份 | `src/nbtriage/support/threads.py`、`src/nonebot_plugin_triage/support/threads.py`、`src/nonebot_plugin_triage/support/responses.py` |
 | Maintainer conversation | 用一个 LocalStore JSON 原子快照保存 Pydantic AI 原生消息；所有 Bot、Adapter、入口和 SUPERUSER 共享历史，每轮注入当前场景；Harness 按上下文比例压缩；十五次请求与六十次工具保险丝，第十三次请求后最多提示一次收敛，第十五次请求动态 `tool_choice=none` | 每轮重鉴权；只读文件工具硬拒绝凭据类路径；全局只允许一个 Run，新请求忙时直接拒绝；停止保留快照，新对话取消后整体替换；不恢复后台调用栈 | `session_id`、时间戳与原生 `ModelMessage` 序列 | `src/nbtriage/behavior/conversation_agent.py`、`src/nonebot_plugin_triage/behavior/conversation_store.py`、`src/nonebot_plugin_triage/behavior/service.py`、`src/nonebot_plugin_triage/behavior/runtime.py` |
-| Alconna triage entry | 每轮接收必选 `triage` 后的当前自由文本；Reply 可选；SUPERUSER 项目讨论使用全局维护者会话 | Semantic 联合读取当前文字、公开目录和有界 Reply / 补充上下文；普通 scope Thread 最多两次补充；维护者已有上下文可承接 unresolved / out-of-scope 续问；Reply ID 独立关联 runtime。所有轮次先过轻量 HMAC 限流；模型未配置或 transport / schema / Evidence 校验失败时安全降级 | 短期 Support Thread、全局维护者消息快照、本地公开能力 Provider 和维护者影子视图 | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support/intake.py` |
+| Alconna triage entry | 每轮接收必选 `triage` 后的当前自由文本；Reply 可选；SUPERUSER 项目讨论使用全局维护者会话 | 私聊 + SUPERUSER 时在限流后、语义前直接进入全局维护者会话，其他场景不进入；普通 scope Thread 最多两次补充；语义输出 `behavior_exploration` 的非准入场景，带 `reported_observation` 转 Bug 判定，否则拒绝；Reply ID 独立关联 runtime。所有轮次先过轻量 HMAC 限流；模型未配置或 transport / schema / Evidence 校验失败时安全降级 | 短期 Support Thread、全局维护者消息快照、本地公开能力 Provider 和维护者影子视图 | `src/nonebot_plugin_triage/handlers.py`、`src/nonebot_plugin_triage/support/intake.py` |
 | Deployment-local capability shadow | 启动钩子后台生成字段级 Claim、Evidence、Constraint 和本地 FTS5 索引；每个已观察命令或 Matcher 保持为独立记录 | 默认启用；导入期不解析路径，扫描与构建在线程中执行；首次可服务 generation 发布前普通用户回退显式 Provider；普通用户只读派生 ServingView，SUPERUSER 鉴权后可定向检索未解决或受限记录；不做 handler 效果、跨 Matcher 角色或逐记录源码清单推断；LocalStore 解析或刷新失败保留上一索引或降级，普通视图另行拒绝 partial / stale | LocalStore 插件 cache 中可删除重建的 SQLite 派生数据与内存构建状态 | `src/nonebot_plugin_triage/capability/discovery/snapshot.py`、`src/nonebot_plugin_triage/capability/shadow.py`、`src/nbtriage/capability/catalog/records.py` |
 | Public capability provider | 运行时说明显式登记且当前可见的公开能力，并向影子快照提供明确披露意图 | 未登记、`CommandMeta.hide=True`、停用或不可见能力失败关闭；不重跑 `parse()` 或执行命令 | 进程内 Provider 注册 | `src/nonebot_plugin_triage/capability/discovery/registry.py`、`src/nonebot_plugin_triage/capability/guidance.py` |
 

@@ -10,6 +10,8 @@ current triage text + optional direct Reply
                     ↓
 入口限流、长度守门、Reply 正文与 correlation 捕获
                     ↓
+私聊 + SUPERUSER → 直接进入全局维护者会话（不经过语义分流）
+                    ↓
 按 adapter + Bot + conversation + actor Claim scope Thread
                     ↓
 Semantic assessment（当前文字 + public catalog + 有界 Reply / 补充）
@@ -21,9 +23,9 @@ Semantic assessment（当前文字 + public catalog + 有界 Reply / 补充）
    │            → public teaching contract → bounded Bug Agent
    │            → runtime / log / conversation / source / design / deployment
    │            → deterministic reconciliation → bug / not_bug / unknown
-   ├─ BEHAVIOR_EXPLORATION → 模型外 SUPERUSER 鉴权
-   │            → 部署内唯一维护者会话 → 当前场景注入
-   │            → Pydantic AI + 项目只读工具 → 自然语言回答
+   ├─ BEHAVIOR_EXPLORATION（非准入场景不执行）
+   │            → 有 reported_observation 时转入 Bug 判定
+   │            → 否则明确拒绝，不进入维护者会话
    ├─ FEATURE_FEEDBACK → 有界状态；尚不创建外部工单
    ├─ unresolved / task unavailable → CLARIFY
    └─ policy blocked / unsupported → REFUSE / OUT_OF_SCOPE
@@ -60,9 +62,13 @@ Reply 仍有两个与 Thread 独立的作用：可见正文供路由后的 Guida
 
 ### 全局维护者会话例外
 
-上述“最多两次补充”只属于普通 Support Thread。Behavior exploration 在鉴权后进入整个插件部署唯一的维护者
-会话；所有 Adapter、Bot、聊天入口和 SUPERUSER 共享同一份历史。每轮从当前 Event/Bot 注入场景，供 Agent
-理解消息来自群聊、私聊或频道，但场景不参与会话分区。
+行为探索/维护者会话的准入与语义分类无关：`私聊 + SUPERUSER` 时，任何 `triage` 内容都在限流后、语义路由之前
+直接进入部署内唯一的维护者会话；其他场景（群聊、频道，或私聊中的非 SUPERUSER）一律不进入。所有 Adapter、
+Bot 和 SUPERUSER 共享同一份会话历史，每轮从当前 Event/Bot 注入私聊场景，供 Agent 理解本次提问，但场景不参与
+会话分区。
+
+语义 router 在非准入场景仍可能输出 `behavior_exploration` goal，插件不会执行它：若本轮同时存在
+`reported_observation`（用户陈述真实发生过的 Bot 行为），转入 Bug 判定；否则明确拒绝并关闭本轮。
 
 维护者历史的真值是 LocalStore data 下的 `maintainer-conversation.json`。它保存 `session_id`、更新时间与
 Pydantic AI 原生消息，包括用户和 assistant 正文、工具调用/结果与 Provider 续接元数据。Harness
@@ -160,7 +166,8 @@ Pydantic AI 可解析的模型仍可运行，但必须以未验证 evaluation �
 - 所有 `triage` 轮次共用同一入口限流；普通 scope Thread 不提供跨进程协调或费用预算；Behavior 另有
   单 writer 进程锁、同 Thread admission 和全局模型并发预算，但仍不支持多 worker；
 - Reply / Thread /聊天、插件元数据、源码和文档都是不可信证据，不能升级为工具参数、权限或副作用；
-- `SUPERUSER` 只在 router 已选中 behavior exploration 后模型外鉴权，不扩大 Semantic / Guidance / Bug payload；
+- `SUPERUSER` 只用于行为探索/维护者会话准入（`私聊 + SUPERUSER`），不扩大 Semantic / Guidance / Bug payload；
+- 非准入场景即使语义输出 `behavior_exploration` 也不进入维护者会话：带 `reported_observation` 转 Bug 判定，否则拒绝；
 - public guidance 不返回 restricted、隐藏、停用、平台不匹配、blocking issue 或 stale 的能力；
 - RAG 只证明适用版本的预期合同，不证明当前代码或本次分支实际执行；缺知识不能成为 `not_bug`；
 - runtime/log 只记录本插件 hook 关联到的结构化生命周期与异常，不是聊天历史，也不搜索任意宿主日志。

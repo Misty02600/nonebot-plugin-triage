@@ -7,7 +7,7 @@ import pytest
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
 from nonebot.adapters.onebot.v11.event import Reply as OneBotReply
 from nonebot.adapters.onebot.v11.event import Sender
-from tests.units.fake import fake_group_message_event_v11
+from tests.units.fake import fake_group_message_event_v11, fake_private_message_event_v11
 
 
 def _group_text_event(text: str, **field: Any) -> GroupMessageEvent:
@@ -15,6 +15,16 @@ def _group_text_event(text: str, **field: Any) -> GroupMessageEvent:
         message=Message(text),
         original_message=Message(text),
         raw_message=text,
+        **field,
+    )
+
+
+def _private_text_event(text: str, **field: Any) -> Any:
+    return fake_private_message_event_v11(
+        message=Message(text),
+        original_message=Message(text),
+        raw_message=text,
+        to_me=True,
         **field,
     )
 

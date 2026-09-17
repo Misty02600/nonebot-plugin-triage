@@ -18,7 +18,8 @@
               ├─ task 未资格 / 请求期失败 → abstain → 唯一一次澄清
               ├─ Guidance → public facts + 路由后 Reply / Thread context → UniMessage
               ├─ Bug / observation → reviewed catalog / bounded Agent → 三值结论
-              └─ Behavior → 模型外 SUPERUSER 鉴权 → 全局维护者原生消息会话
+              ├─ Behavior（非准入场景不执行）→ reported_observation 转 Bug，否则拒绝
+              └─ 私聊 + SUPERUSER → 语义前直接进入全局维护者原生消息会话
                            → Capability Shadow / 项目只读文件 → 自然语言回答
 ```
 
@@ -27,8 +28,10 @@
 新回答成功发送即可提交等待状态，不再依赖 Receipt message ID。并发 Claim 返回 `BUSY`，处理、取消、发送
 失败、TTL 或第二轮结束都会关闭 Thread。
 
-这段一次补充合同只描述普通 Support Thread。Behavior 另有部署内唯一的长期维护者会话：每条显式
-`triage` 创建一次新 Run，Run 结束后原生消息历史仍保留；当前入口场景每轮注入但不拆分历史。全局并发 Run
+这段一次补充合同只描述普通 Support Thread。Behavior 另有部署内唯一的长期维护者会话，但只准入
+`私聊 + SUPERUSER`：私聊中每条显式 `triage` 都在语义前创建一次新 Run（不经过意图分类），Run 结束后原生
+消息历史仍保留；群聊、频道和私聊非 SUPERUSER 不进入维护者会话，语义 router 若输出 `behavior_exploration`
+则带 `reported_observation` 的转入 Bug 判定，否则明确拒绝。全局并发 Run
 返回 `BUSY`。`triage 停止` 取消运行并保留快照，`triage 开始新对话` 取消后清空全局会话。
 
 `@Bot` 由 NoneBot / 适配器预处理，入口本身不要求 `to_me()`。`triage` 在每轮都必选，所以插件不会把普通
@@ -40,22 +43,18 @@
 
 ## 已采纳目标与当前差距
 
-ADR-0028 已经部分替代分类前统一拒绝私聊的入口边界：当前实现允许私聊进入与群聊、频道相同的
-本地守门和意图分类；需要权限的分支都按当前 Bot / Event 的请求者执行相同鉴权。公开教学、用法纠错与
-澄清可以原路回复。已采纳的行为探索目标要求在读取
-restricted 证据前，先对当前 Bot / Event 的请求者执行模型外 `SUPERUSER` 鉴权；鉴权后可在原始提问会话
-返回完整解释，不检查其他参与者，也不要求房间 allowlist 或强制转私聊，但仍执行秘密过滤、文本净化和
-模型外发授权。当前 router 会产生 behavior candidate，Matcher 在分类后鉴权并进入全局 Pydantic AI
-维护者会话；Agent 可读取 Capability Shadow 和项目根目录的只读文件。每次模型请求和工具执行前都会重新
-鉴权，文件工具继续硬拒绝凭据类路径。
-分类本身不消费身份。
+行为探索/维护者会话只准入 `私聊 + SUPERUSER`：准入后任何 `triage` 内容都在语义路由前直接进入全局维护者
+会话；其他场景不进入维护者会话，语义输出 `behavior_exploration` 时带 `reported_observation` 的转入 Bug
+判定，否则明确拒绝。Agent 可读取 Capability Shadow 和项目根目录的只读文件；每次模型请求和工具执行前都会
+重新鉴权，文件工具继续硬拒绝凭据类路径。分类本身不消费身份；私聊的准入检查在限流后、语义前执行，不扩大
+Semantic / Guidance / Bug payload。
 
 ## 支持矩阵
 
 | 能力 | OneBot V11 | QQ 官方及其他 UniSeg 适配器 |
 |---|---|---|
 | `triage <自由文本>`，无 `@Bot` | 已做 Matcher 与服务测试 | 入口无专属类型；尚未逐平台端到端测试 |
-| 私聊 `triage <自由文本>` | 已允许进入统一分流；鉴权规则与群聊一致 | 合同相同；尚未逐平台端到端测试 |
+| 私聊 `triage <自由文本>` | 已允许进入统一分流；私聊 + SUPERUSER 在语义前直接进入维护者会话，其余走与群聊一致的鉴权规则 | 合同相同；尚未逐平台端到端测试 |
 | `@Bot triage <自由文本>` | 依赖 NoneBot 标准 `to_me` 预处理 | 依赖对应适配器标准预处理 |
 | Reply / Target | 已用真实事件模型测试 | Discord 频道 / 私聊事件模型已做合同测试；其他平台待验证 |
 | 回复入站消息并关联 | 支持 | exporter 可提供 target 与 message ID 时支持 |

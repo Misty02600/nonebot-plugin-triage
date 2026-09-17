@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 
@@ -750,33 +750,18 @@ async def _behavior_authorized(bot: Bot, event: Event) -> bool:
         return False
 
 
+async def _behavior_admitted(bot: Bot, event: Event, target: MsgTarget) -> bool:
+    if not target.private:
+        return False
+    return await _behavior_authorized(bot, event)
+
+
 def _behavior_scope(bot: Bot, target: MsgTarget) -> BehaviorScope:
     return BehaviorScope(
         adapter_name=adapter_name(bot),
         bot_scope=str(bot.self_id),
         conversation_scope=conversation_scope(target),
     )
-
-
-async def _has_active_behavior_inquiry(
-    bot: Bot,
-    event: Event,
-    target: MsgTarget,
-) -> bool:
-    if not await _behavior_authorized(bot, event):
-        return False
-
-    async def authorization_guard() -> bool:
-        return await _behavior_authorized(bot, event)
-
-    try:
-        return await plugin_runtime.behavior_exploration_service.has_active_inquiry(
-            _behavior_scope(bot, target),
-            authorization_guard,
-        )
-    except Exception:
-        logger.warning("NoneBot Triage behavior inquiry lookup failed")
-        return False
 
 
 async def _maintainer_run_is_busy(bot: Bot, event: Event) -> bool:
@@ -917,6 +902,10 @@ async def handle_support(
     if not allowed:
         await support_matcher.finish(UniMessage.text("求助请求过于频繁，请稍后再试。"))
 
+    if content.strip() and await _behavior_admitted(bot, event, target):
+        await _run_behavior_exploration(bot, event, target, content)
+        return
+
     reply_visible_text = _reply_visible_text(original)
     reply_reference = _reply_reference(original)
     correlation_id = _resolve_runtime_correlation(bot, target, reply_reference)
@@ -962,6 +951,22 @@ async def handle_support(
     if routing.reason is SupportRoutingReason.ASSESSMENT_EXECUTION_FAILED:
         _close_scope_turn(matcher, lease)
         await support_matcher.finish(UniMessage.text("本次请求理解暂时不可用，请稍后重试。"))
+    if (
+        routing.action is SupportRoutingAction.BEHAVIOR_EXPLORATION_CANDIDATE
+        and not await _behavior_admitted(bot, event, target)
+    ):
+        if routing.reported_observation:
+            routing = replace(
+                routing,
+                action=SupportRoutingAction.BUG_ASSESSMENT_CANDIDATE,
+            )
+        else:
+            _close_scope_turn(matcher, lease)
+            await support_matcher.finish(
+                UniMessage.text(
+                    "内部行为探索仅限部署维护者在私聊中使用，当前会话不会进入维护者对话。"
+                )
+            )
     public_result = None
     if catalog is not None and routing.action in (
         SupportRoutingAction.SHOW_GUIDANCE,
@@ -1034,10 +1039,6 @@ async def handle_support(
         await support_matcher.finish(
             UniMessage.text("求助内容可能包含密钥或其他敏感信息，请移除后重新发送。")
         )
-    if routing.action is SupportRoutingAction.BEHAVIOR_EXPLORATION_CANDIDATE:
-        _close_scope_turn(matcher, lease)
-        await _run_behavior_exploration(bot, event, target, request.content)
-        return
     if routing.action is SupportRoutingAction.BUG_ASSESSMENT_CANDIDATE:
         precheck = await _capability_guidance_result(
             bot,
@@ -1136,21 +1137,8 @@ async def handle_support(
             )
         )
     if routing.action is SupportRoutingAction.OUT_OF_SCOPE:
-        if await _has_active_behavior_inquiry(bot, event, target):
-            _close_scope_turn(matcher, lease)
-            await _run_behavior_exploration(bot, event, target, request.content)
-            return
         _close_scope_turn(matcher, lease)
         await support_matcher.finish(UniMessage.text("这个请求不属于当前 Bot 支持入口的处理范围。"))
-
-    if (
-        routing.action is SupportRoutingAction.CLARIFY
-        and routing.reason is SupportRoutingReason.ASSESSMENT_UNRESOLVED
-        and await _has_active_behavior_inquiry(bot, event, target)
-    ):
-        _close_scope_turn(matcher, lease)
-        await _run_behavior_exploration(bot, event, target, request.content)
-        return
 
     question = "我还不能确定你想获得什么结果，请再明确一次：了解用法、判断 Bug，还是提出功能建议。"
     if not _can_ask_support_question(lease, question):

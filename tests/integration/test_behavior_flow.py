@@ -12,10 +12,13 @@ from tests.integration._plugin_helpers import (
     _inject_semantic_assessment,
     _install_behavior_probe,
     _onebot_test_bot,
+    _private_text_event,
 )
 
+_BEHAVIOR_REFUSAL = "内部行为探索仅限部署维护者在私聊中使用，当前会话不会进入维护者对话。"
 
-async def test_explicit_behavior_route_sends_agent_answer(
+
+async def test_private_superuser_enters_behavior_without_semantic_routing(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -23,19 +26,21 @@ async def test_explicit_behavior_route_sends_agent_answer(
 
     probe = _BehaviorServiceProbe()
     _install_behavior_probe(monkeypatch, probe)
-    _inject_semantic_assessment(monkeypatch, goals=("behavior_exploration",))
     authorization_events: list[Any] = []
 
     async def authorized(_bot: object, event: object) -> bool:
         authorization_events.append(event)
         return True
 
+    async def forbidden_routing(*_: object, **__: object) -> object:
+        raise AssertionError("private SUPERUSER triage must enter behavior before semantic routing")
+
     monkeypatch.setattr(handlers, "SUPERUSER", authorized)
-    event = _group_text_event(
+    monkeypatch.setattr(handlers, "_route_support_text", forbidden_routing)
+    event = _private_text_event(
         "triage 为什么当前插件没有触发",
         message_id=2_601,
         user_id=200,
-        to_me=False,
     )
 
     async with app.test_matcher(handlers.support_matcher) as ctx:
@@ -52,25 +57,23 @@ async def test_explicit_behavior_route_sends_agent_answer(
     assert len(authorization_events) >= 2
 
 
-@pytest.mark.parametrize("semantic_status", ["needs_clarification", "unsupported"])
-async def test_active_behavior_inquiry_continues_unresolved_or_out_of_scope_text(
+async def test_group_behavior_goal_is_refused(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
-    semantic_status: str,
 ) -> None:
     from nonebot_plugin_triage import handlers
 
     probe = _BehaviorServiceProbe(active=True)
     _install_behavior_probe(monkeypatch, probe)
-    _inject_semantic_assessment(monkeypatch, status=semantic_status)
+    _inject_semantic_assessment(monkeypatch, goals=("behavior_exploration",))
 
     async def authorized(*_: object, **__: object) -> bool:
         return True
 
     monkeypatch.setattr(handlers, "SUPERUSER", authorized)
     event = _group_text_event(
-        "triage 那配置覆盖之后呢",
-        message_id=2_602,
+        "triage 为什么当前插件没有触发",
+        message_id=2_603,
         user_id=200,
         to_me=False,
     )
@@ -78,13 +81,66 @@ async def test_active_behavior_inquiry_continues_unresolved_or_out_of_scope_text
     async with app.test_matcher(handlers.support_matcher) as ctx:
         bot = _onebot_test_bot(ctx)
         ctx.receive_event(bot, event)
-        ctx.should_call_send(event, Message("行为解释 1"), result=None)
+        ctx.should_call_send(event, Message(_BEHAVIOR_REFUSAL), result=None)
         ctx.should_finished(handlers.support_matcher)
 
-    assert len(probe.active_checks) == 1
-    assert len(probe.explorations) == 1
-    assert probe.active_checks[0] == probe.explorations[0].scope
-    assert probe.explorations[0].question == "那配置覆盖之后呢"
+    assert probe.active_checks == []
+    assert probe.explorations == []
+
+
+async def test_group_behavior_with_observed_bug_redirects_to_bug_assessment(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nbtriage.bug.assessment import BugReason, unknown_bug_decision
+    from nonebot_plugin_triage import handlers
+    from nonebot_plugin_triage.bug.assessment import BugAssessmentRuntimeOutcome
+
+    probe = _BehaviorServiceProbe(active=True)
+    _install_behavior_probe(monkeypatch, probe)
+    _inject_semantic_assessment(
+        monkeypatch,
+        goals=("behavior_exploration",),
+        reported_observation=True,
+    )
+
+    async def authorized(*_: object, **__: object) -> bool:
+        return True
+
+    async def prechecked(*_: object, **kwargs: object) -> object:
+        assert kwargs["precheck"] is True
+        return handlers._GuidanceResult(
+            "公开资料不足以确定原因。", (), handlers._GuidanceStatus.INVESTIGATE
+        )
+
+    async def investigated(*_: object, **__: object) -> object:
+        return BugAssessmentRuntimeOutcome(unknown_bug_decision(BugReason.INSUFFICIENT_EVIDENCE))
+
+    monkeypatch.setattr(handlers, "SUPERUSER", authorized)
+    monkeypatch.setattr(handlers, "_capability_guidance_result", prechecked)
+    monkeypatch.setattr(handlers, "_bug_assessment_decision", investigated)
+    event = _group_text_event(
+        "triage 帮我看下这个 bug 的原因",
+        message_id=2_604,
+        user_id=200,
+        to_me=False,
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message(
+                "目前只确认了公开用法，尚未取得能核对这次实际执行过程的现场信息，"
+                "因此还不能判断是不是 Bug。"
+            ),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
+
+    assert probe.active_checks == []
+    assert probe.explorations == []
 
 
 async def test_running_maintainer_agent_rejects_new_triage_before_routing(
@@ -122,6 +178,115 @@ async def test_running_maintainer_agent_rejects_new_triage_before_routing(
         ctx.should_finished(handlers.support_matcher)
 
     assert probe.explorations == []
+
+
+@pytest.mark.parametrize(
+    ("semantic_status", "expected"),
+    [
+        (
+            "needs_clarification",
+            "我还不能确定你想获得什么结果，请再明确一次：了解用法、判断 Bug，还是提出功能建议。",
+        ),
+        ("unsupported", "这个请求不属于当前 Bot 支持入口的处理范围。"),
+    ],
+)
+async def test_group_triage_never_enters_behavior_session(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+    semantic_status: str,
+    expected: str,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    probe = _BehaviorServiceProbe(active=True)
+    _install_behavior_probe(monkeypatch, probe)
+    _inject_semantic_assessment(monkeypatch, status=semantic_status)
+
+    async def authorized(*_: object, **__: object) -> bool:
+        return True
+
+    monkeypatch.setattr(handlers, "SUPERUSER", authorized)
+    event = _group_text_event(
+        "triage 那配置覆盖之后呢",
+        message_id=2_602,
+        user_id=200,
+        to_me=False,
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(event, Message(expected), result=None)
+        ctx.should_finished(handlers.support_matcher)
+
+    assert probe.active_checks == []
+    assert probe.explorations == []
+
+
+async def test_private_non_superuser_behavior_goal_is_refused(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    probe = _BehaviorServiceProbe(active=True)
+    _install_behavior_probe(monkeypatch, probe)
+    _inject_semantic_assessment(monkeypatch, goals=("behavior_exploration",))
+
+    async def denied(*_: object, **__: object) -> bool:
+        return False
+
+    monkeypatch.setattr(handlers, "SUPERUSER", denied)
+    event = _private_text_event(
+        "triage 这个插件为什么这么实现",
+        message_id=2_606,
+        user_id=12_345,
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(event, Message(_BEHAVIOR_REFUSAL), result=None)
+        ctx.should_finished(handlers.support_matcher)
+
+    assert probe.explorations == []
+
+
+async def test_private_superuser_with_unavailable_service_reports_unavailability(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+    from nonebot_plugin_triage.behavior.service import (
+        UnavailableBehaviorExplorationService,
+    )
+
+    runtime = replace(
+        handlers.plugin_runtime,
+        behavior_exploration_service=UnavailableBehaviorExplorationService(),
+    )
+    monkeypatch.setattr(handlers, "plugin_runtime", runtime)
+    monkeypatch.setattr(runtime.support_rate_limiter, "allow", lambda *_: True)
+
+    async def authorized(*_: object, **__: object) -> bool:
+        return True
+
+    monkeypatch.setattr(handlers, "SUPERUSER", authorized)
+    event = _private_text_event(
+        "triage 检查一下当前部署配置",
+        message_id=2_605,
+        user_id=200,
+    )
+
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            Message("维护者对话暂时不可用，请检查模型配置和只读工具初始化状态。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
 
 
 @pytest.mark.parametrize("explicit_route", ["bug", "feature", "guidance"])
@@ -277,12 +442,12 @@ async def test_stop_command_cancels_global_run_without_reset(
         (
             ("behavior_exploration",),
             False,
-            "该请求需要部署维护者权限；本轮不会读取内部配置、源码、环境或运行证据。",
+            _BEHAVIOR_REFUSAL,
         ),
         (
             ("behavior_exploration",),
             True,
-            "维护者对话暂时不可用，请检查模型配置和只读工具初始化状态。",
+            _BEHAVIOR_REFUSAL,
         ),
         (
             ("feature_feedback",),
@@ -299,16 +464,8 @@ async def test_semantic_candidate_routes_have_specific_zero_side_effect_response
     expected: str,
 ) -> None:
     from nonebot_plugin_triage import handlers
-    from nonebot_plugin_triage.behavior.service import (
-        UnavailableBehaviorExplorationService,
-    )
 
     _inject_semantic_assessment(monkeypatch, goals=goals)
-    runtime = replace(
-        handlers.plugin_runtime,
-        behavior_exploration_service=UnavailableBehaviorExplorationService(),
-    )
-    monkeypatch.setattr(handlers, "plugin_runtime", runtime)
     if authorized is None:
 
         async def unexpected_permission(*_: object, **__: object) -> bool:
