@@ -216,6 +216,7 @@ class CapabilityShadowService:
         runtime_modules: Callable[[], Collection[str]] = _loaded_plugin_module_names,
         annotation_service: CapabilityAnnotationService | None = None,
         teaching_output_writer: CapabilityTeachingOutputWriter | None = None,
+        annotation_startup_refresh: bool = True,
     ) -> None:
         if isinstance(path, Path):
             self._path: Path | None = path
@@ -232,6 +233,7 @@ class CapabilityShadowService:
         self._runtime_modules = runtime_modules
         self._annotation_service = annotation_service
         self._teaching_output_writer = teaching_output_writer
+        self._annotation_startup_refresh = annotation_startup_refresh
         self._deployment: CapabilityDeployment | None = None
         self._latest_snapshot: CapabilitySnapshot | None = None
         self._status = CapabilityShadowStatus(
@@ -620,7 +622,22 @@ class CapabilityShadowService:
         snapshot = self._latest_snapshot
         if self._annotation_service is not None and snapshot is not None:
             async with self._teaching_refresh_lock:
-                await self._refresh_teaching_outputs(snapshot)
+                if self._annotation_startup_refresh:
+                    await self._refresh_teaching_outputs(snapshot)
+                else:
+                    await self._restore_teaching_outputs(snapshot)
+
+    async def _restore_teaching_outputs(self, snapshot: CapabilitySnapshot) -> None:
+        """启动自动刷新关闭时只挂载已发布教学视图；不调用模型、不发布教学输出。"""
+        if self._annotation_service is None:
+            return
+        try:
+            await self._annotation_service.refresh(snapshot, analyze=False)
+        except Exception as error:
+            logger.warning(
+                "NoneBot Triage 教学注释启动恢复失败；确定性能力索引仍会正常运行：error_type={}",
+                type(error).__name__,
+            )
 
     async def refresh_teaching(
         self,
@@ -903,6 +920,7 @@ def register_capability_shadow(
     annotation_max_concurrency: int = 50,
     annotation_startup_revision: Callable[[tuple[CapabilityAnalysisRequest, ...]], str]
     | None = None,
+    annotation_startup_refresh: bool = True,
 ) -> CapabilityShadowService:
     """注册后台能力快照刷新，并把 LocalStore 路径解析延后到启动阶段。"""
     if startup_registrar is None:
@@ -932,6 +950,7 @@ def register_capability_shadow(
         lambda: cache_file_resolver(_CAPABILITY_SHADOW_FILENAME),
         annotation_service=annotation_service,
         teaching_output_writer=teaching_output_writer,
+        annotation_startup_refresh=annotation_startup_refresh,
     )
     background_tasks: set[asyncio.Task[None]] = set()
 

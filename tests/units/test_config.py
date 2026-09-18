@@ -30,6 +30,24 @@ def test_bug_budget_defaults_and_nonebot_environment_override(
     assert {key: getattr(configured, key) for key in overrides} == overrides
 
 
+def test_capability_annotation_startup_refresh_defaults_off_with_environment_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = NBTriageConfig()
+    assert defaults.nbtriage_capability_annotation_startup_refresh is False
+
+    monkeypatch.setenv("NBTRIAGE_CAPABILITY_ANNOTATION_STARTUP_REFRESH", "true")
+    values = BaseSettings._settings_build_values(
+        NBTriageConfig,
+        {},
+        env_file=(),
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+    )
+    configured = NBTriageConfig.model_validate(values)
+    assert configured.nbtriage_capability_annotation_startup_refresh is True
+
+
 @pytest.mark.parametrize(
     "key",
     [

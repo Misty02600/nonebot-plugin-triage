@@ -294,6 +294,7 @@ def create_plugin_runtime(
         annotation_evidence_validator=capability_teaching_tools.validate_evidence_currentness,
         annotation_request_enricher=capability_teaching_tools.prepare_request,
         annotation_startup_revision=capability_teaching_tools.startup_revision,
+        annotation_startup_refresh=config.nbtriage_capability_annotation_startup_refresh,
         annotation_max_concurrency=config.nbtriage_capability_annotation_max_concurrency,
     )
     bug_workflow_repository = NoneBotORMBugWorkflowRepository()

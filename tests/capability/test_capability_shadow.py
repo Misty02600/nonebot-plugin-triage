@@ -1891,3 +1891,96 @@ def test_full_plugin_teaching_deduplicates_family_and_keeps_late_usage() -> None
     assert "@bot 提醒" not in texts
     assert len(request.facts) < 15
     assert not request.candidate_materials_omitted
+
+
+@pytest.mark.asyncio
+async def test_disabled_startup_teaching_refresh_restores_without_publish(
+    tmp_path: Path,
+) -> None:
+    refresh_kwargs: dict[str, object] = {}
+    published = 0
+
+    class StubAnnotations:
+        async def refresh(
+            self,
+            _snapshot: CapabilitySnapshot,
+            **kwargs: object,
+        ) -> CapabilityAnnotationRefreshStatus:
+            refresh_kwargs.update(kwargs)
+            return CapabilityAnnotationRefreshStatus(refresh_id="restore-only")
+
+    class CountingWriter:
+        def publish(self, *_args: object, **_kwargs: object) -> object:
+            nonlocal published
+            published += 1
+            return object()
+
+    service = _service(
+        tmp_path / "capabilities.sqlite3",
+        snapshot_builder=lambda **_: _snapshot("command:image"),
+        annotation_service=cast(CapabilityAnnotationService, StubAnnotations()),
+        teaching_output_writer=cast(CapabilityTeachingOutputWriter, CountingWriter()),
+        annotation_startup_refresh=False,
+    )
+    await service.refresh_in_background()
+
+    # 关闭启动自动刷新：只恢复已发布教学视图，不调用模型、不 publish。
+    assert refresh_kwargs.get("analyze") is False
+    assert published == 0
+
+
+@pytest.mark.asyncio
+async def test_enabled_startup_teaching_refresh_still_publishes(
+    tmp_path: Path,
+) -> None:
+    refresh_kwargs: dict[str, object] = {}
+    published = 0
+
+    class StubAnnotations:
+        async def refresh(
+            self,
+            _snapshot: CapabilitySnapshot,
+            **kwargs: object,
+        ) -> CapabilityAnnotationRefreshStatus:
+            refresh_kwargs.update(kwargs)
+            return CapabilityAnnotationRefreshStatus(refresh_id="full-refresh")
+
+        def get_pending(self, _capability_id: str) -> object:
+            return None
+
+        def pending_annotation_caches(self) -> tuple[object, ...]:
+            return ()
+
+        async def commit_pending(
+            self,
+            _refresh_id: str | None,
+            _published_generation: str,
+            *,
+            preserved_plugin_modules: Collection[str] = (),
+        ) -> None:
+            del preserved_plugin_modules
+            return None
+
+    class CountingWriter:
+        class _Publication:
+            generation = "0" * 64
+            preserved_plugin_modules = ()
+            paths = ()
+
+        def publish(self, *_args: object, **_kwargs: object) -> object:
+            nonlocal published
+            published += 1
+            return self._Publication()
+
+    service = _service(
+        tmp_path / "capabilities.sqlite3",
+        snapshot_builder=lambda **_: _snapshot("command:image"),
+        annotation_service=cast(CapabilityAnnotationService, StubAnnotations()),
+        teaching_output_writer=cast(CapabilityTeachingOutputWriter, CountingWriter()),
+        annotation_startup_refresh=True,
+    )
+    await service.refresh_in_background()
+
+    # 默认行为不变：走完整发布链路，analyze 保持 True。
+    assert refresh_kwargs.get("analyze", True) is True
+    assert published == 1

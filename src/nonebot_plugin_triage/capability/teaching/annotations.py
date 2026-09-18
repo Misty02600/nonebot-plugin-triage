@@ -746,8 +746,14 @@ class CapabilityAnnotationService:
         plugin_module: str | None = None,
         plugin_modules: tuple[str, ...] | None = None,
         force: bool = False,
+        analyze: bool = True,
     ) -> CapabilityAnnotationRefreshStatus:
-        """刷新当前 runtime snapshot 的自动注释；单项失败不影响其他能力或基础索引。"""
+        """刷新当前 runtime snapshot 的自动注释；单项失败不影响其他能力或基础索引。
+
+        Args:
+            analyze: False 时只恢复已发布教学视图，不调用模型、不发布输出，
+                也不为失败/失效单元自动重试；用于关闭启动自动刷新后的启动恢复。
+        """
         if not isinstance(snapshot, CapabilitySnapshot):
             raise TypeError("snapshot must be CapabilitySnapshot")
         selected_plugins = teaching_plugin_scope(plugin_module, plugin_modules)
@@ -893,9 +899,20 @@ class CapabilityAnnotationService:
                         cache_by_plugin,
                         published_generation,
                         refresh_id,
+                        require_clean_reuse=analyze,
                     )
                 ):
                     return self._status
+            if not analyze:
+                self._status = CapabilityAnnotationRefreshStatus(
+                    refresh_id=refresh_id,
+                    global_failure_reason="startup_restore_unavailable",
+                )
+                logger.warning(
+                    "NoneBot Triage 教学注释启动恢复不可用：启动自动刷新已关闭，且没有与当前"
+                    "能力目录一致的已发布教学输出；请手动执行刷新帮助",
+                )
+                return self._status
 
             source_paths: set[Path] = set()
             for module_name in sorted(known_plugins):
@@ -2104,32 +2121,39 @@ class CapabilityAnnotationService:
         local_caches: dict[str, CapabilityAnnotationPluginCache],
         generation: str,
         refresh_id: str,
+        *,
+        require_clean_reuse: bool = True,
     ) -> bool:
         identity, requests = projection
-        if not startup_receipt_matches(self._resolved_cache_directory(), generation, identity):
+        if require_clean_reuse and not startup_receipt_matches(
+            self._resolved_cache_directory(), generation, identity
+        ):
             return False
         try:
             published = self._published_annotations()
             originals = {}
             updates = []
             for cache in published:
-                local = local_caches.get(cache.module_name)
-                if local is None or local != cache:
-                    return False  # 保留失败重试和未发布 checkpoint 的既有路径。
+                if require_clean_reuse:
+                    local = local_caches.get(cache.module_name)
+                    if local is None or local != cache:
+                        return False  # 保留失败重试和未发布 checkpoint 的既有路径。
                 for unit in cache.units:
                     if (
                         unit.pending is not None
                         or unit.last_good is None
                         or (unit.last_attempt is not None and unit.last_attempt.state == "failed")
                     ):
-                        return False
+                        if require_clean_reuse:
+                            return False
+                        continue  # 宽松恢复只挂载已发布单元，失败/未发布单元留待手动刷新。
                     originals[unit.analysis_unit_id] = unit.last_good
                 updates.append(
                     _PluginCacheUpdate(cache.module_name, cache.plugin_source_revision, cache.units)
                 )
             if set(originals) != set(requests):
                 return False
-            if any(
+            if require_clean_reuse and any(
                 not self._validate_evidence(requests[key], annotation.evidence_manifest).current
                 for key, annotation in originals.items()
             ):
@@ -2175,14 +2199,19 @@ class CapabilityAnnotationService:
             )
             if self._resolve_published_generation() != generation:
                 return False
-            self._pending = _PendingAnnotationRefresh(
-                refresh_id,
-                view,
-                tuple(updates),
-                (),
-                True,
-                startup_identity=identity,
-            )
+            if require_clean_reuse:
+                self._pending = _PendingAnnotationRefresh(
+                    refresh_id,
+                    view,
+                    tuple(updates),
+                    (),
+                    True,
+                    startup_identity=identity,
+                )
+            else:
+                # 宽松恢复只挂载已发布视图，不发布、不写 checkpoint，也不写启动复用凭据。
+                self._active_view = view
+                self._pending = None
             self._status = CapabilityAnnotationRefreshStatus(
                 refresh_id=refresh_id,
                 eligible_count=len(units),

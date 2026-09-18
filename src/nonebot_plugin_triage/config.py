@@ -65,6 +65,7 @@ class NBTriageConfig(BaseModel):
     nbtriage_bug_max_tool_calls: int = Field(default=12, ge=1)
     nbtriage_agent_trace_enabled: bool = True
     nbtriage_capability_annotation_max_concurrency: int = Field(default=50, ge=1)
+    nbtriage_capability_annotation_startup_refresh: bool = False
     nbtriage_restricted_config: frozenset[str] = Field(default_factory=frozenset)
     nbtriage_evidence_denied_patterns: tuple[str, ...] = ()
 

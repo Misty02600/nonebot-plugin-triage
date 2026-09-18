@@ -70,8 +70,10 @@ from nonebot_plugin_triage.capability.teaching.annotations import (
     CapabilityTeachingUnitState,
 )
 from nonebot_plugin_triage.capability.teaching.cache import (
+    CapabilityAnnotationLastAttempt,
     CapabilityAnnotationPluginCache,
     read_capability_annotation_plugin_cache,
+    write_capability_annotation_plugin_cache,
 )
 from nonebot_plugin_triage.capability.teaching.outputs import CapabilityTeachingOutputWriter
 from nonebot_plugin_triage.capability.teaching.runtime import (
@@ -2672,4 +2674,172 @@ async def test_disabled_teaching_unit_is_counted_and_not_served(
     assert status.family_eligible_count == 0
     assert status.family_disabled_count == 0
     assert status.family_failed_count == 0
+    assert service.get("command:image") is None
+
+
+@pytest.mark.asyncio
+async def test_disabled_startup_analysis_recovers_published_view_without_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"prepare": 0, "model": 0}
+
+    def build_request(record, _policy, **_kwargs):
+        value = _request(record.capability_id)
+        return replace(
+            value,
+            invocations=(
+                replace(
+                    value.invocations[0],
+                    canonical_usages=("搜图 [<slot:0>]...",),
+                    argument_limits=((0, 3),),
+                ),
+            ),
+        )
+
+    class Client:
+        async def analyze(self, request):
+            del request
+            calls["model"] += 1
+            return CapabilityAnalysisOutput(
+                entries=(
+                    replace(
+                        _entry(),
+                        claims=tuple(
+                            replace(claim, statement="搜图 [<图片>]...")
+                            if claim.kind is SemanticClaimKind.USAGE
+                            else claim
+                            for claim in _entry().claims
+                        ),
+                    ),
+                )
+            )
+
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
+        build_request,
+    )
+    writer = CapabilityTeachingOutputWriter(tmp_path / "published")
+    cache_dir = tmp_path / "cache"
+    snapshot = CapabilitySnapshot.create((_record("command:image", Disclosure.PUBLIC),))
+
+    def service() -> CapabilityAnnotationService:
+        return CapabilityAnnotationService(
+            cache_dir,
+            client_factory=Client,
+            config_policy=ConfigValuePolicy(),
+            analysis_revision="analysis-v1",
+            evidence_validator=lambda *_: True,
+            published_generation_resolver=writer.current_generation,
+            published_annotations_resolver=writer.current_annotation_caches,
+            startup_revision=lambda _: "startup-identity",
+        )
+
+    def attach_prepare_counter(runtime: CapabilityAnnotationService) -> None:
+        original = runtime._prepare_one
+
+        def counted(*args, **kwargs):
+            calls["prepare"] += 1
+            return original(*args, **kwargs)
+
+        runtime._prepare_one = counted  # type: ignore[method-assign]
+
+    runtime = service()
+    attach_prepare_counter(runtime)
+    original = await runtime.refresh(snapshot)
+    assert original.publishable
+    publication = writer.publish(
+        snapshot,
+        runtime.get_pending,
+        original,
+        annotation_caches=runtime.pending_annotation_caches(),
+    )
+    await runtime.commit_pending(original.refresh_id, publication.generation)
+    assert runtime.get("command:image") is not None
+    assert calls["model"] == 1
+    assert calls["prepare"] == 1
+    objects_file = tmp_path / "published" / "objects" / publication.generation / "manifest.json"
+    objects_before = objects_file.stat().st_mtime_ns
+
+    # 重启：启动自动刷新关闭时只恢复已发布视图，不调用模型、不重分析、不重写输出。
+    restarted = service()
+    attach_prepare_counter(restarted)
+    status = await restarted.refresh(snapshot, analyze=False)
+    assert status.cached_count == 1
+    assert calls["model"] == 1
+    assert calls["prepare"] == 1
+    assert restarted.get("command:image") is not None
+    assert restarted._pending is None
+    assert objects_file.stat().st_mtime_ns == objects_before
+
+    # 上次自动刷新留下 failed last_attempt（例如 blogin）时，重启也不重试，只保留视图与 checkpoint。
+    cache = read_capability_annotation_plugin_cache(cache_dir, "plugin.image")
+    unit = cache.units[0]
+    assert unit.last_good is not None
+    write_capability_annotation_plugin_cache(
+        cache_dir,
+        replace(
+            cache,
+            units=(
+                replace(
+                    unit,
+                    last_attempt=CapabilityAnnotationLastAttempt(
+                        "failed",
+                        "agent_run",
+                        unit.last_good.request_fingerprint,
+                        reason="output_validation",
+                        attempts=1,
+                    ),
+                ),
+            ),
+        ),
+    )
+    new_process = service()
+    attach_prepare_counter(new_process)
+    status = await new_process.refresh(snapshot, analyze=False)
+    assert status.cached_count == 1
+    assert calls["model"] == 1
+    assert calls["prepare"] == 1
+    assert new_process.get("command:image") is not None
+    preserved = read_capability_annotation_plugin_cache(cache_dir, "plugin.image")
+    assert preserved.units[0].last_attempt.state == "failed"
+    assert preserved.units[0].last_good is not None
+
+
+@pytest.mark.asyncio
+async def test_disabled_startup_analysis_without_published_view_reports_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"model": 0}
+    monkeypatch.setattr(
+        "nonebot_plugin_triage.capability.teaching.annotations.build_capability_analysis_request",
+        lambda record, _policy, **_kwargs: _request(record.capability_id),
+    )
+
+    class Client:
+        async def analyze(self, request):
+            del request
+            calls["model"] += 1
+            return _output()
+
+    writer = CapabilityTeachingOutputWriter(tmp_path / "published")
+    service = CapabilityAnnotationService(
+        tmp_path / "cache",
+        client_factory=Client,
+        config_policy=ConfigValuePolicy(),
+        analysis_revision="analysis-v1",
+        evidence_validator=lambda *_: True,
+        published_generation_resolver=writer.current_generation,
+        published_annotations_resolver=writer.current_annotation_caches,
+        startup_revision=lambda _: "startup-identity",
+    )
+    status = await service.refresh(
+        CapabilitySnapshot.create((_record("command:image", Disclosure.PUBLIC),)),
+        analyze=False,
+    )
+
+    assert calls["model"] == 0
+    assert status.global_failure_reason == "startup_restore_unavailable"
+    assert not status.publishable
     assert service.get("command:image") is None
