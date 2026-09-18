@@ -1168,35 +1168,35 @@ class PydanticAICapabilityAnalysisClient:
             try:
                 with self._agent.parallel_tool_call_execution_mode("sequential"):
                     result = await self._agent.run(
-                            _build_payload(request),
-                            model=self._diagnostic_model,
-                            instructions=_instructions_for_request(request),
-                            deps=request,
-                            metadata=_analysis_metadata(request),
-                            retries={"tools": 1, "output": 2},
-                            capabilities=(
-                                (
-                                    *(
-                                        ToolsetCapability(
-                                            toolset,
-                                            id=f"capability_analysis_{index}",
-                                        )
-                                        for index, toolset in enumerate(analysis_toolsets)
-                                    ),
-                                    *((run_control_capability,) if run_control_capability else ()),
-                                )
-                                if analysis_toolsets is not None
-                                else None
-                            ),
-                            usage_limits=UsageLimits(
-                                request_limit=self._max_requests,
-                                output_tokens_limit=(
-                                    None
-                                    if self._max_output_tokens is None or self._max_requests is None
-                                    else self._max_output_tokens * self._max_requests
+                        _build_payload(request),
+                        model=self._diagnostic_model,
+                        instructions=_instructions_for_request(request),
+                        deps=request,
+                        metadata=_analysis_metadata(request),
+                        retries={"tools": 1, "output": 2},
+                        capabilities=(
+                            (
+                                *(
+                                    ToolsetCapability(
+                                        toolset,
+                                        id=f"capability_analysis_{index}",
+                                    )
+                                    for index, toolset in enumerate(analysis_toolsets)
                                 ),
+                                *((run_control_capability,) if run_control_capability else ()),
+                            )
+                            if analysis_toolsets is not None
+                            else None
+                        ),
+                        usage_limits=UsageLimits(
+                            request_limit=self._max_requests,
+                            output_tokens_limit=(
+                                None
+                                if self._max_output_tokens is None or self._max_requests is None
+                                else self._max_output_tokens * self._max_requests
                             ),
-                        )
+                        ),
+                    )
                     normal_output = result.output
                     normal_usage = result.usage
             except asyncio.CancelledError as error:
