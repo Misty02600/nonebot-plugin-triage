@@ -62,8 +62,7 @@ Reply 仍有两个与 Thread 独立的作用：可见正文供路由后的 Guida
 
 ### 全局维护者会话例外
 
-行为探索/维护者会话的准入与语义分类无关：`私聊 + SUPERUSER` 时，任何 `triage` 内容都在限流后、语义路由之前
-直接进入部署内唯一的维护者会话；其他场景（群聊、频道，或私聊中的非 SUPERUSER）一律不进入。所有 Adapter、
+行为探索/维护者会话的准入与语义分类无关：`私聊 + SUPERUSER` 时，任何 `triage` 内容都直接进入部署内唯一的维护者会话；SUPERUSER 不消耗统一入口冷却，其他场景（群聊、频道，或私聊中的非 SUPERUSER）一律不进入。所有 Adapter、
 Bot 和 SUPERUSER 共享同一份会话历史，每轮从当前 Event/Bot 注入私聊场景，供 Agent 理解本次提问，但场景不参与
 会话分区。
 
@@ -163,7 +162,7 @@ Pydantic AI 可解析的模型仍可运行，但必须以未验证 evaluation �
 
 ## 安全与数据不变量
 
-- 所有 `triage` 轮次共用同一入口限流；普通 scope Thread 不提供跨进程协调或费用预算；Behavior 另有
+- 所有 `triage` 轮次共用同一入口限流，SUPERUSER 豁免该冷却；普通 scope Thread 不提供跨进程协调或费用预算；Behavior 另有
   单 writer 进程锁、同 Thread admission 和全局模型并发预算，但仍不支持多 worker；
 - Reply / Thread /聊天、插件元数据、源码和文档都是不可信证据，不能升级为工具参数、权限或副作用；
 - `SUPERUSER` 只用于行为探索/维护者会话准入（`私聊 + SUPERUSER`），不扩大 Semantic / Guidance / Bug payload；

@@ -9,6 +9,10 @@ from nonebug import App
 from tests.integration._plugin_helpers import _group_text_event
 
 
+async def _allow_support_requests(*_: object) -> bool:
+    return True
+
+
 @pytest.fixture(autouse=True)
 def isolate_message_cache():
     # NoneBug 的 fallback 消息标识会在不同测试中复用；不能复用前一题的输入。
@@ -39,7 +43,7 @@ async def test_query_subcommand_sends_narrow_not_found_reply(
             bug_workflow_repository=cast(Any, EmptyRepository()),
         ),
     )
-    monkeypatch.setattr(handlers, "_support_request_allowed", lambda *_: True)
+    monkeypatch.setattr(handlers, "_support_request_allowed", _allow_support_requests)
     query_matcher = handlers.query_matcher
 
     async with app.test_matcher(query_matcher) as ctx:
@@ -103,7 +107,7 @@ async def test_query_subcommand_lists_pending_problems_without_semantic(
             semantic_assessment_service=cast(Any, ForbiddenSemantic()),
         ),
     )
-    monkeypatch.setattr(handlers, "_support_request_allowed", lambda *_: True)
+    monkeypatch.setattr(handlers, "_support_request_allowed", _allow_support_requests)
     query_matcher = handlers.query_matcher
 
     async with app.test_matcher(query_matcher) as ctx:
@@ -146,7 +150,7 @@ async def test_query_subcommand_denies_non_superuser_before_repository_access(
             bug_workflow_repository=cast(Any, ForbiddenRepository()),
         ),
     )
-    monkeypatch.setattr(handlers, "_support_request_allowed", lambda *_: True)
+    monkeypatch.setattr(handlers, "_support_request_allowed", _allow_support_requests)
     query_matcher = handlers.query_matcher
 
     async with app.test_matcher(query_matcher) as ctx:
@@ -185,7 +189,7 @@ async def test_query_subcommand_rejects_invalid_problem_id_before_repository_acc
             bug_workflow_repository=cast(Any, ForbiddenRepository()),
         ),
     )
-    monkeypatch.setattr(handlers, "_support_request_allowed", lambda *_: True)
+    monkeypatch.setattr(handlers, "_support_request_allowed", _allow_support_requests)
 
     async with app.test_matcher(handlers.query_matcher) as ctx:
         bot = ctx.create_bot()
@@ -248,7 +252,7 @@ async def test_split_command_keeps_maintainer_authorization_and_passes_exact_occ
         "plugin_runtime",
         replace(handlers.plugin_runtime, bug_workflow_repository=cast(Any, Repository())),
     )
-    monkeypatch.setattr(handlers, "_support_request_allowed", lambda *_: True)
+    monkeypatch.setattr(handlers, "_support_request_allowed", _allow_support_requests)
     async with app.test_matcher(handlers.query_matcher) as ctx:
         bot = ctx.create_bot()
         event = _group_text_event(
@@ -288,7 +292,7 @@ async def test_split_requires_an_occurrence_before_repository_access(app, monkey
         "plugin_runtime",
         replace(handlers.plugin_runtime, bug_workflow_repository=cast(Any, ForbiddenRepository())),
     )
-    monkeypatch.setattr(handlers, "_support_request_allowed", lambda *_: True)
+    monkeypatch.setattr(handlers, "_support_request_allowed", _allow_support_requests)
     async with app.test_matcher(handlers.query_matcher) as ctx:
         bot = ctx.create_bot()
         event = _group_text_event(

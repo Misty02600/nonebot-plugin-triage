@@ -155,7 +155,7 @@ NBTRIAGE_MODEL_NAME=google:gemini-2.5-flash
 | `NBTRIAGE_MODEL_TIMEOUT_SECONDS`      |                 否 |   `60` | 单次模型请求的最长等待秒数（`0 < 值 ≤ 400`）                                                |
 | `NBTRIAGE_AGENT_TRACE_ENABLED`        |                 否 | `true` | 把脱敏后的 Agent / 模型 / 工具 span 写入 `agent-traces.jsonl`（10 MiB、5 备份轮转）         |
 | `NBTRIAGE_KNOWLEDGE_PACK_AUTO_UPDATE` |                 否 | `true` | 启动后后台检查并安装冻结的 NoneBot 知识包；断网或校验失败不影响 Bot 启动                    |
-| `NBTRIAGE_COOLDOWN_SECONDS`           |                 否 |    `2` | 同一 `适配器 + Bot + 会话 + 用户` 两次 `triage` 的最短间隔                                  |
+| `NBTRIAGE_COOLDOWN_SECONDS`           |                 否 |  `300` | 同一 `适配器 + Bot + 会话 + 用户` 两次 `triage` 的最短间隔，默认 5 分钟；SUPERUSER 豁免该冷却                                          |
 
 不同服务的填写方式：
 

@@ -1074,6 +1074,82 @@ async def test_support_matcher_rate_limits_all_support_responses(
         ctx.should_finished(handlers.support_matcher)
 
 
+async def test_superuser_skips_support_entry_cooldown(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
+    from nonebot_plugin_triage import handlers
+
+    limiter_calls: list[tuple[str, ...]] = []
+
+    def recording_allow(*scope: str) -> bool:
+        limiter_calls.append(scope)
+        return True
+
+    monkeypatch.setattr(
+        handlers.plugin_runtime.support_rate_limiter,
+        "allow",
+        recording_allow,
+    )
+    target = Target(
+        "87654321",
+        self_id="1",
+        scope=SupportScope.qq_client,
+        adapter=SupportAdapter.onebot11,
+    )
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        event = _group_text_event(
+            "triage 看看这个",
+            message_id=1_350,
+            user_id=200,
+            to_me=False,
+        )
+        allowed = await handlers._support_request_allowed(bot, event, target)
+
+    assert allowed is True
+    assert limiter_calls == []
+
+
+async def test_ordinary_user_still_consumes_support_entry_cooldown(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
+    from nonebot_plugin_triage import handlers
+
+    limiter_calls: list[tuple[str, ...]] = []
+
+    def recording_allow(*scope: str) -> bool:
+        limiter_calls.append(scope)
+        return True
+
+    monkeypatch.setattr(
+        handlers.plugin_runtime.support_rate_limiter,
+        "allow",
+        recording_allow,
+    )
+    target = Target(
+        "87654321",
+        self_id="1",
+        scope=SupportScope.qq_client,
+        adapter=SupportAdapter.onebot11,
+    )
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = _onebot_test_bot(ctx)
+        event = _group_text_event(
+            "triage 看看这个",
+            message_id=1_351,
+            user_id=205,
+            to_me=False,
+        )
+        allowed = await handlers._support_request_allowed(bot, event, target)
+
+    assert allowed is True
+    assert len(limiter_calls) == 1
+
+
 async def test_same_scope_busy_is_rejected_while_another_actor_is_isolated(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
@@ -1191,7 +1267,7 @@ async def test_thread_claim_error_fails_closed_before_new_request(
     assert len(runtime.support_threads) == 0
 
 
-async def test_guidance_turns_do_not_check_superuser(
+async def test_guidance_turns_evaluate_superuser_only_for_cooldown_exemption(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1200,11 +1276,11 @@ async def test_guidance_turns_do_not_check_superuser(
     _install_isolated_support_threads(monkeypatch)
     checks: list[int] = []
 
-    async def forbidden_permission(*_: object, **__: object) -> bool:
+    async def recorded_permission(*_: object, **__: object) -> bool:
         checks.append(len(checks))
-        raise AssertionError("guidance must not check SUPERUSER")
+        return False
 
-    monkeypatch.setattr(handlers, "SUPERUSER", forbidden_permission)
+    monkeypatch.setattr(handlers, "SUPERUSER", recorded_permission)
     _inject_semantic_assessment(monkeypatch, goals=("guidance",))
 
     async def fixed_guidance(*_: object, **__: object) -> object:
@@ -1233,7 +1309,7 @@ async def test_guidance_turns_do_not_check_superuser(
                 result=None,
             )
             ctx.should_finished(handlers.support_matcher)
-    assert checks == []
+    assert checks == [0, 1]
 
 
 async def test_sensitive_support_text_is_refused_before_capability_lookup(

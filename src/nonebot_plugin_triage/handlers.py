@@ -401,7 +401,12 @@ def _reply_visible_text(message: OriginalUniMsg) -> str | None:
     return visible[:_REPLY_CONTEXT_MAX_CHARS]
 
 
-def _support_request_allowed(bot: Bot, event: Event, target: MsgTarget) -> bool:
+async def _support_request_allowed(bot: Bot, event: Event, target: MsgTarget) -> bool:
+    try:
+        if bool(await SUPERUSER(bot, event)):
+            return True
+    except Exception:
+        logger.warning("NoneBot Triage entry-cooldown permission check failed")
     return plugin_runtime.support_rate_limiter.allow(
         adapter_name(bot),
         str(bot.self_id),
@@ -895,7 +900,7 @@ async def handle_support(
             UniMessage.text("当前全局维护者对话仍在处理，请稍后重新发送 triage。")
         )
     try:
-        allowed = _support_request_allowed(bot, event, target)
+        allowed = await _support_request_allowed(bot, event, target)
     except Exception:
         logger.warning("NoneBot Triage support-entry rate limiter is unavailable")
         await support_matcher.finish(UniMessage.text("求助入口暂时不可用，请稍后再试。"))
@@ -1167,7 +1172,7 @@ async def handle_query(
     occurrence_key: Match[str],
 ) -> None:
     try:
-        allowed = _support_request_allowed(bot, event, target)
+        allowed = await _support_request_allowed(bot, event, target)
     except Exception:
         logger.warning("NoneBot Triage maintenance rate limiter is unavailable")
         await query_matcher.finish(UniMessage.text("问题维护入口暂时不可用，请稍后再试。"))

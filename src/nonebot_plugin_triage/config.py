@@ -27,7 +27,7 @@ ModelName = Annotated[
 class NBTriageConfig(BaseModel):
     model_config = ConfigDict(hide_input_in_errors=True)
 
-    nbtriage_cooldown_seconds: int = Field(default=2, ge=1, le=86_400)
+    nbtriage_cooldown_seconds: int = Field(default=300, ge=1, le=86_400)
     nbtriage_rate_limit_max_scopes: int = Field(default=4_096, ge=1, le=1_000_000)
     nbtriage_capability_visibility_timeout_seconds: float = Field(default=0.25, gt=0, le=5)
     nbtriage_knowledge_pack_url: str | None = None

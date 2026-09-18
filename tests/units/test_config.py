@@ -48,6 +48,24 @@ def test_capability_annotation_startup_refresh_defaults_off_with_environment_ove
     assert configured.nbtriage_capability_annotation_startup_refresh is True
 
 
+def test_entry_cooldown_defaults_to_five_minutes_with_nonebot_environment_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = NBTriageConfig()
+    assert defaults.nbtriage_cooldown_seconds == 300
+
+    monkeypatch.setenv("NBTRIAGE_COOLDOWN_SECONDS", "45")
+    values = BaseSettings._settings_build_values(
+        NBTriageConfig,
+        {},
+        env_file=(),
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+    )
+    configured = NBTriageConfig.model_validate(values)
+    assert configured.nbtriage_cooldown_seconds == 45
+
+
 @pytest.mark.parametrize(
     "key",
     [

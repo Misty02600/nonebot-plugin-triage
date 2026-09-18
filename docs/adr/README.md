@@ -3,7 +3,7 @@
 这里列出仍作为当前一等架构约束的 ADR。精确状态、局部替代关系和完整理由以各 ADR 正文为准；
 已经替代、未采纳、评测性、实现级或仅作支持性解释的记录见[历史 ADR](history/README.md)。
 
-当前根目录保留 69 份，历史区保存 62 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
+当前根目录保留 84 份，历史区保存 63 份。这个数量是逐份按架构边界判断后的结果，不是配额，也不是
 为了简短而合并决定。阅读系统现状时先从[架构入口](../architecture/README.md)进入，再按问题查本索引。
 
 没有进入 ADR 的理由也不会丢失：跨实现的当前事实进入 architecture / flow，局部不变量进入代码注释和
@@ -24,6 +24,7 @@
 | [ADR-0065](0065-only-expose-conversation-history-for-supported-platforms.md) | 只在 Adapter 有真实会话历史 Provider 时向 Bug Agent 暴露聊天工具；不再用本地滚动窗口模拟跨平台历史 |
 | [ADR-0101](0101-use-langgraph-checkpoints-for-long-running-behavior-inquiries.md) | 已替代的加密 LangGraph Behavior 工作区；SUPERUSER 自由对话已迁移到 ADR-0128 |
 | [ADR-0128](0128-use-native-message-snapshots-for-maintainer-conversations.md) | 用 Pydantic AI、Harness 压缩和 LocalStore 单文件消息快照保存部署内唯一的维护者自由对话；每轮注入当前场景，忙时直接拒绝新请求，已实施 |
+| [ADR-0147](0147-use-five-minute-entry-cooldown-with-superuser-exemption.md) | 统一入口冷却默认 5 分钟；SUPERUSER 在 `triage` 主入口与 `triage 报错查询` 均豁免冷却，非 SUPERUSER 仍按同一 scope 窗口限流 |
 
 ## 自治、Agent 控制与远端数据安全
 
