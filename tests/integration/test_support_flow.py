@@ -1074,11 +1074,52 @@ async def test_support_matcher_rate_limits_all_support_responses(
         ctx.should_finished(handlers.support_matcher)
 
 
+async def test_semantic_transport_failure_fails_closed_without_clarifying(
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonebot_plugin_triage import handlers
+
+    class FailingAssessor:
+        async def assess(self, request: Any) -> Any:
+            from nbtriage.support.semantics import (
+                SupportAssessmentExecutionStatus,
+                SupportAssessmentOutcome,
+            )
+
+            return SupportAssessmentOutcome(
+                SupportAssessmentExecutionStatus.TRANSPORT_FAILURE,
+                None,
+            )
+
+    monkeypatch.setattr(
+        handlers,
+        "plugin_runtime",
+        replace(handlers.plugin_runtime, semantic_assessment_service=FailingAssessor()),
+    )
+    async with app.test_matcher(handlers.support_matcher) as ctx:
+        bot = ctx.create_bot()
+        event = _group_text_event(
+            "triage 表情搜索没反应",
+            message_id=108,
+            user_id=206,
+            to_me=False,
+        )
+        ctx.receive_event(bot, event)
+        ctx.should_call_send(
+            event,
+            FallbackMessage("本次请求理解暂时不可用，请稍后重试。"),
+            result=None,
+        )
+        ctx.should_finished(handlers.support_matcher)
+
+
 async def test_superuser_skips_support_entry_cooldown(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
+
     from nonebot_plugin_triage import handlers
 
     limiter_calls: list[tuple[str, ...]] = []
@@ -1117,6 +1158,7 @@ async def test_ordinary_user_still_consumes_support_entry_cooldown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nonebot_plugin_alconna import SupportAdapter, SupportScope, Target
+
     from nonebot_plugin_triage import handlers
 
     limiter_calls: list[tuple[str, ...]] = []

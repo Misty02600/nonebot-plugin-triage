@@ -23,7 +23,7 @@ from nonebot_plugin_triage.task_model_runtime import (
 )
 
 SUPPORT_SEMANTIC_TASK = "support-understanding-v8"
-SUPPORT_SEMANTIC_BUDGET_PROFILE = "joint-structure-repair-once-v1"
+SUPPORT_SEMANTIC_BUDGET_PROFILE = "joint-structure-repair-and-transport-retry-v1"
 SUPPORT_SEMANTIC_TIMEOUT_SECONDS = 60.0
 SUPPORT_SEMANTIC_MAX_OUTPUT_TOKENS = 240
 

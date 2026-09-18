@@ -954,6 +954,11 @@ async def handle_support(
         reply_text=reply_visible_text,
     )
     if routing.reason is SupportRoutingReason.ASSESSMENT_EXECUTION_FAILED:
+        logger.warning(
+            "NoneBot Triage support request abstained: reason={} execution_status={}",
+            routing.reason.value,
+            routing.execution_status.value,
+        )
         _close_scope_turn(matcher, lease)
         await support_matcher.finish(UniMessage.text("本次请求理解暂时不可用，请稍后重试。"))
     if (
@@ -979,6 +984,11 @@ async def handle_support(
     ):
         selection = routing.selection
         if selection is None or not set(selection.plugin_ids) <= dict(catalog.owner_refs).keys():
+            logger.warning(
+                "NoneBot Triage support feature recognition unavailable: reason={} execution_status={}",
+                routing.reason.value,
+                routing.execution_status.value,
+            )
             _close_scope_turn(matcher, lease)
             await support_matcher.finish(UniMessage.text("本次功能识别暂时不可用，请稍后重试。"))
         if selection.status == "ambiguous":

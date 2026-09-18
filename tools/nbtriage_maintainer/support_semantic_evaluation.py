@@ -30,7 +30,7 @@ SUPPORT_SEMANTIC_OFFICIAL_FIXTURE_SHA256 = (
 )
 _SEMANTIC_TASK = "support-understanding-v8"
 _SEMANTIC_PRIVACY_POLICY = SUPPORT_SEMANTIC_PRIVACY_POLICY
-_SEMANTIC_BUDGET_PROFILE = "joint-structure-repair-once-v1"
+_SEMANTIC_BUDGET_PROFILE = "joint-structure-repair-and-transport-retry-v1"
 
 
 class SupportSemanticEvaluationError(RuntimeError):

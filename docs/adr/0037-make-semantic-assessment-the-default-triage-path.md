@@ -1,5 +1,9 @@
 # ADR-0037：把语义 assessment 作为 triage 的正式默认路径
 
+> [ADR-0148](0148-retry-transient-semantic-transport-failures.md) 已窄范围部分替代第 6、7 条的“零重试”与
+> “每轮最多调用 client 一次且不重试”条款：语义 assessment 现允许 HTTP 429 / 5xx 的一次有界重试；
+> abstain、失败关闭、不建立 incident 与不猜测意图继续有效。
+
 > 当前联合输入、插件选择与输出修复预算局部由 [ADR-0138](0138-combine-support-intent-and-plugin-selection.md) 替代；下文保留原决定。
 
 | 状态 | 决策日期 |

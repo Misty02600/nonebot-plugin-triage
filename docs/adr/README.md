@@ -122,3 +122,4 @@
 | [ADR-0142](0142-hide-superuser-paths-from-public-capability-materials.md) | 公开目录、教学与帮助统一隐藏超级用户专属路径，同时保留真实鉴权 |
 | [ADR-0143](0143-share-two-supplements-across-support-and-bug-assessment.md) | 普通求助与调查前澄清共用最多两轮补充并保留问答 |
 | [ADR-0144](0144-resume-bug-investigation-from-public-precheck.md) | 已选插件成为调查范围，复核公开资料快照并携带初检实际输入输出 |
+| [ADR-0148](0148-retry-transient-semantic-transport-failures.md) | 语义 assessment 对 HTTP 429 / 5xx 瞬时传输故障允许一次有界重试，共享总预算且不重试超时 / 4xx |
